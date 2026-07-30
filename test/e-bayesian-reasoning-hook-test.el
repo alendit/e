@@ -287,7 +287,10 @@ unchanged."
         (should (equal (plist-get (car queued) :metadata)
                        (list :bayesian-reasoning
                              e-bayesian-reasoning--follow-up-marker
-                             :display 'hidden))))
+                             :display 'hidden
+                             :supersedes-message-id (plist-get message :id)
+                             :pending-summary
+                             e-bayesian-reasoning--follow-up-pending-summary))))
       (let ((audit (car (e-harness-turn-hook-audits
                          harness "session-1" "turn-1" 'bayesian-reasoning))))
         (should (eq (plist-get (plist-get audit :payload) :outcome) 'format-gap))
@@ -297,10 +300,10 @@ unchanged."
         (should (eq (plist-get (plist-get audit :payload) :truth-status)
                     'not-evaluated))))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-hook-hides-superseded-first-attempt ()
-  "On a gated failure the hook hides the finished reply it is correcting.
-The first attempt stays in the transcript for audit but is flagged hidden so
-only the model-authored correction is shown."
+(ert-deftest e-bayesian-reasoning-hook-test-hook-keeps-first-attempt-visible-until-replacement ()
+  "A corrective follow-up leaves its first attempt visible while it runs.
+Once the follow-up returns an assistant reply, the original is hidden from the
+clean transcript but remains durable for inspection."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (let ((message (e-harness--append-message
@@ -314,8 +317,23 @@ only the model-authored correction is shown."
              :session-id "session-1"
              :turn-id "turn-1"
              :assistant-message message))
-      (should (e-harness-message-hidden-p
-               (car (last (e-harness-messages harness "session-1"))))))))
+      (should-not (e-harness-message-hidden-p message))
+      (let* ((metadata (plist-get
+                        (car (e-harness-queued-prompts harness "session-1"))
+                        :metadata))
+             (_prompt (e-harness--append-message
+                       harness "session-1" "turn-2"
+                       (list :role 'user :content "corrective" :metadata metadata)))
+             (replacement (e-harness--append-message
+                           harness "session-1" "turn-2"
+                           (list :role 'assistant :content "revised reply"))))
+        (e-bayesian-reasoning--turn-finished-hook
+         '(:status done)
+         (list :harness harness
+               :session-id "session-1"
+               :turn-id "turn-2"
+               :assistant-message replacement))
+        (should (e-harness-message-hidden-p message))))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-hook-noop-on-clean-turn ()
   "A trivial turn queues no follow-up."

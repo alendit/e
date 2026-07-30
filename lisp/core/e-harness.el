@@ -1433,13 +1433,15 @@ The session must currently have a running active turn."
   (e-session-activity-events (e-harness-sessions harness) session-id))
 
 (cl-defun e-harness-record-hook-audit
-    (harness session-id turn-id &key owner hook-id outcome details summary)
+    (harness session-id turn-id
+             &key owner hook-id outcome details summary pending-summary)
   "Persist one capability hook audit outcome for a settled turn.
 
 OWNER names the capability, HOOK-ID identifies its hook contract, OUTCOME is a
 machine-readable result owned by that capability, DETAILS is an opaque plist or
-alist owned by the capability, and SUMMARY is optional generic presentation
-text.  Core owns only the durable event envelope;
+alist owned by the capability, SUMMARY is optional generic presentation text,
+and PENDING-SUMMARY is optional activity text to retain while a capability's
+queued follow-up replaces the reply.  Core owns only the durable event envelope;
 it must not interpret a capability's policy or mistake an audit outcome for a
 truth judgment.  Returns the emitted event.
 
@@ -1457,6 +1459,7 @@ all ordinary replies."
                        :outcome outcome
                        :truth-status 'not-evaluated
                        :summary summary
+                       :pending-summary pending-summary
                        :details details)))
     (e-harness--emit-turn-event harness session-id turn-id 'hook-audit payload)
     (car (last (e-harness-session-activity-events harness session-id)))))

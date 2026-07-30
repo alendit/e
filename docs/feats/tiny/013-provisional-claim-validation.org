@@ -1,0 +1,15 @@
+#+title: Provisional Claim Validation
+
+* Change
+
+Keep a provisional Bayesian answer visible while its corrective follow-up runs.
+Show the capability-provided =Validating claims…= activity in its place, and
+hide the provisional answer only after the replacement reply has completed.
+
+The harness carries optional pending hook activity without interpreting the
+capability's policy.  The chat shell renders it generically.
+
+* Validation
+
+- Bayesian hook tests cover delayed supersession.
+- Chat tests cover the pending activity and ordinary progress rendering.

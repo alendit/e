@@ -371,6 +371,10 @@ from this turn, keeping the prompt cost bounded."
 The hook tags the follow-up it requests so it never re-fires enforcement on
 the turn it generated, which would otherwise oscillate.")
 
+(defconst e-bayesian-reasoning--follow-up-pending-summary
+  "Validating claims…"
+  "Compact visible activity while a corrective turn replaces a reply.")
+
 (defconst e-bayesian-reasoning--specific-regexp
   "\\(?:[$€£][0-9]\\|[0-9][0-9.,]*%?\\|[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\|[A-Z][a-zA-Z0-9_]*[A-Z][a-zA-Z0-9_]*\\)"
   "Coarse bare-assertion tripwire: a number, money, ISO date, or CamelCase name.
@@ -415,6 +419,26 @@ turn it generated."
                                    :bayesian-reasoning)
                         e-bayesian-reasoning--follow-up-marker)))
           (e-harness-messages harness session-id)))))
+
+(defun e-bayesian-reasoning--follow-up-superseded-message-id (context)
+  "Return the first-attempt message id replaced by CONTEXT's follow-up.
+The target travels only in the hidden corrective prompt's metadata.  This
+keeps replacement ownership in the capability while the harness and shell
+handle its generic display and activity contracts."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id)))
+    (when (and harness session-id turn-id)
+      (when-let ((prompt
+                  (seq-find
+                   (lambda (message)
+                     (and (eq (plist-get message :role) 'user)
+                          (equal (plist-get message :turn-id) turn-id)
+                          (equal (plist-get (plist-get message :metadata)
+                                            :bayesian-reasoning)
+                                 e-bayesian-reasoning--follow-up-marker)))
+                   (e-harness-messages harness session-id))))
+        (plist-get (plist-get prompt :metadata) :supersedes-message-id)))))
 
 (defun e-bayesian-reasoning--marks (content)
   "Return parsed reasoning marks found in CONTENT, newest matcher order.
@@ -546,7 +570,7 @@ know this capability's marker grammar to render it."
    (t "Claim check recorded")))
 
 (defun e-bayesian-reasoning--record-audit
-    (harness session-id turn-id outcome details correction)
+    (harness session-id turn-id outcome details correction &optional pending-summary)
   "Persist one terminal Bayesian audit with OUTCOME and CORRECTION."
   (e-harness-record-hook-audit
    harness session-id turn-id
@@ -554,17 +578,26 @@ know this capability's marker grammar to render it."
    :hook-id e-bayesian-reasoning--hook-id
    :outcome outcome
    :summary (e-bayesian-reasoning--audit-summary outcome correction)
+   :pending-summary pending-summary
    :details (append details (list :correction correction))))
 
 (defun e-bayesian-reasoning--turn-finished-hook (value context)
   "Conditional `:turn-finished' hook enforcing the reasoning mark.
 Returns VALUE unchanged always -- the hook never rewrites the reply.  On a
 gated failure it requests exactly one corrective follow-up turn through
-`e-harness-request-follow-up', tagged so it does not recurse, and hides both
-the machine-authored follow-up prompt and the superseded first attempt so only
-the model's revised reply is shown; the first attempt stays in the transcript
-for audit.  Every performed check writes a durable hook-audit record."
-  (unless (e-bayesian-reasoning--follow-up-turn-p context)
+`e-harness-request-follow-up', tagged so it does not recurse.  The first
+attempt remains visible with a validation activity entry until the corrective
+turn has produced its replacement, then becomes hidden while staying in the
+transcript for audit.  Every performed check writes a durable hook-audit
+record."
+  (if (e-bayesian-reasoning--follow-up-turn-p context)
+      (when-let* ((harness (plist-get context :harness))
+                  (session-id (plist-get context :session-id))
+                  (replacement (plist-get context :assistant-message))
+                  (message-id (e-bayesian-reasoning--follow-up-superseded-message-id
+                               context)))
+        (when (fboundp 'e-harness-set-message-display)
+          (e-harness-set-message-display harness session-id message-id 'hidden)))
     (when-let* ((check (e-bayesian-reasoning--turn-check context))
                 (harness (plist-get context :harness))
                 (session-id (plist-get context :session-id))
@@ -586,16 +619,15 @@ for audit.  Every performed check writes a durable hook-audit record."
                    (e-bayesian-reasoning--follow-up-prompt gap)
                    :metadata (list :bayesian-reasoning
                                    e-bayesian-reasoning--follow-up-marker
-                                   :display 'hidden))
+                                   :display 'hidden
+                                   :supersedes-message-id
+                                   (plist-get (plist-get context :assistant-message)
+                                              :id)
+                                   :pending-summary
+                                   e-bayesian-reasoning--follow-up-pending-summary))
                   (e-bayesian-reasoning--record-audit
-                   harness session-id turn-id outcome details 'queued)
-                  ;; Hide the reply only after the correction is safely queued.
-                  (when-let ((message-id (plist-get
-                                          (plist-get context :assistant-message)
-                                          :id)))
-                    (when (fboundp 'e-harness-set-message-display)
-                      (e-harness-set-message-display
-                       harness session-id message-id 'hidden))))
+                   harness session-id turn-id outcome details 'queued
+                   e-bayesian-reasoning--follow-up-pending-summary))
               (error
                (e-bayesian-reasoning--record-audit
                 harness session-id turn-id 'verification-unavailable

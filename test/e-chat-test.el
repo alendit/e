@@ -2674,6 +2674,34 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
     (should (equal (e-chat--activity-summary-text record)
                    "Turn took 12min 42sec, 9 actions (2 claims)."))))
 
+(ert-deftest e-chat-test-pending-hook-summary-keeps-validation-visible ()
+  "A queued hook follow-up retains its capability-provided activity label."
+  (let ((record '(:started-at 10 :ended-at 772 :has-provider-activity t
+                  :final-rendered t)))
+    (e-chat--record-hook-audit
+     record '(:pending-summary "Validating claims…") 'activity)
+    (should (string-match-p
+             "Validating claims…"
+             (plist-get (e-chat--running-status-data "turn-1" record) :text)))))
+
+(ert-deftest e-chat-test-follow-up-turn-carries-pending-hook-summary ()
+  "A hidden follow-up shows its validation status while its reply streams."
+  (let ((buffer (e-chat-test--buffer nil "chat-pending-hook-summary")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) e-chat-session-id
+           (list :role 'user :turn-id "turn-2" :content "corrective"
+                 :metadata '(:display hidden :pending-summary "Validating claims…")))
+          (e-chat--render-event
+           (e-events-make :type 'turn-started :session-id e-chat-session-id
+                          :turn-id "turn-2" :created-at 10))
+          (should (string-match-p "Validating claims…" (buffer-string)))
+          (should (string-match-p (regexp-quote e-chat--assistant-glyph)
+                                  (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-failed-turn-expands-full-error-inline ()
   "RET on a focused failed system block expands provider details inline."
   (let ((buffer (e-chat-test--buffer nil "chat-failed-details")))

@@ -4831,17 +4831,38 @@ When RECORD is nil, clear only buffer-local status markers."
          (summary-text (and final-rendered
                             record
                             (e-chat--activity-summary-text record)))
+         (pending-summary (and record (plist-get record :pending-hook-summary)))
          (transient-text (and record (e-chat--transient-text record)))
          (text (if final-rendered
-                   (or (and summary-text
-                            (concat summary-text "\n\n"))
-                       transient-text)
-                 transient-text)))
+                   (concat (when summary-text
+                             (concat summary-text "\n\n"))
+                           (when pending-summary
+                             (concat pending-summary "\n\n")))
+                 (when (or pending-summary transient-text)
+                   (concat (when pending-summary
+                             (concat pending-summary "\n\n"))
+                           transient-text
+                           (when (and pending-summary has-progress)
+                             (e-chat--entry-text "Assistant"
+                                                 (e-chat--progress-dots))))))))
     (list :has-progress has-progress
           :final-rendered final-rendered
           :summary-text summary-text
           :text text
           :block-kind (if summary-text 'activity-summary 'activity))))
+
+(defun e-chat--turn-pending-hook-summary (turn-id)
+  "Return capability-provided pending hook activity for TURN-ID, if any."
+  (when (and e-chat-harness e-chat-session-id turn-id)
+    (when-let ((prompt
+                (seq-find
+                 (lambda (message)
+                   (and (eq (plist-get message :role) 'user)
+                        (equal (plist-get message :turn-id) turn-id)))
+                 (e-harness-messages e-chat-harness e-chat-session-id))))
+      (let ((summary (plist-get (plist-get prompt :metadata)
+                                :pending-summary)))
+        (and (stringp summary) summary)))))
 
 (defun e-chat--running-status-display-text (data)
   "Return the buffer text represented by running-status DATA."
@@ -5417,6 +5438,9 @@ claim count is a capability-declared summary metric; its opaque audit details
 remain available only through answer details and capability resources."
   (when-let ((summary (plist-get payload :summary)))
     (e-chat--add-intermittent-entry record "Hook audit" summary nil source))
+  (when-let ((pending-summary (plist-get payload :pending-summary)))
+    (when (stringp pending-summary)
+      (plist-put record :pending-hook-summary pending-summary)))
   (when-let ((claim-count (plist-get (plist-get payload :details) :claim-count)))
     (when (and (integerp claim-count) (>= claim-count 0))
       (plist-put record :claim-count claim-count))))
@@ -7147,11 +7171,13 @@ passed through assistant fontification, so the audit view is faithful."
    (lambda ()
      (pcase (plist-get event :type)
     ('turn-started
-     (e-chat--set-turn-time (plist-get event :turn-id)
-                             :started-at
-                             (plist-get event :created-at))
-     (e-chat--start-progress-indicator (plist-get event :turn-id))
-     (e-chat--set-status (format "running %s" (plist-get event :turn-id))))
+     (let ((turn-id (plist-get event :turn-id)))
+       (e-chat--set-turn-time turn-id :started-at (plist-get event :created-at))
+       (when-let ((pending-summary (e-chat--turn-pending-hook-summary turn-id)))
+         (plist-put (e-chat--turn-record turn-id)
+                    :pending-hook-summary pending-summary))
+       (e-chat--start-progress-indicator turn-id)
+       (e-chat--set-status (format "running %s" turn-id))))
     ('turn-finished
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
