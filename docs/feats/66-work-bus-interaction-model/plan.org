@@ -5,23 +5,383 @@
 
 Planned
 
-Directory keeps the =66-work-bus-interaction-model/= path; the plan settled on
-"board" for the shared scope (see [[*The scope above sessions]]).
+Evaluation complete.
+The direction is sound, but the plan needs the adjustments below before it is Ready.
+
+Directory keeps the =66-work-bus-interaction-model/= path; the plan settled on "board" for the shared scope (see [[*The scope above sessions]]).
+
+* Evaluation: unify execution and delivery without conflating policy
+
+** Verdict
+
+The feature should proceed, but an explicit execution graph must define the order of dependent steps.
+Every executable step should use =e-work= to track its state, cancellation, progress, result, and relationship to other work.
+The code that owns the pipeline should start a step only after the steps it depends on finish successfully.
+The board should record operation events and route later reactions; it should not decide which step of an operation runs next.
+Current synchronous hooks should migrate to ordered work stages whose cheap implementations may settle immediately without changing the contract.
+
+#+begin_reasoning
+claim: The unified model needs explicit continuation dependencies between work stages; callback-stack execution and board event order are insufficient as the general ordering contract.
+confidence: high
+alternatives: Keep synchronous hooks as a permanent policy path; use board event order alone to resume dependent execution.
+evidence: in:01KYSHFWGH3VDEN8CVG62KY527
+#+end_reasoning
+
+** Terms
+
+*** Board
+
+A board is shared runtime coordination state for a group of sessions.
+It holds an ordered event log, a current-state view rebuilt from that log, subscriptions, participating sessions, and limits on automatic wake-ups.
+It records facts such as user input, operation completion, schedule fires, and file notifications.
+The board does not execute work, edit transcripts, schedule task-queue jobs, or provision subagents.
+The board runtime selects relevant events and delivers them to a session inbox or to the one invocation waiting for a result.
+
+*** Ordered stages and continuations
+
+The current runtime calls policy hooks synchronously through =e-hooks-run-reduce=.
+That implementation provides ordering because the caller does not execute its next line until the hook returns.
+It should not remain the architectural ordering contract.
+
+In the target model, each policy step is a work stage with typed input and output.
+The code that owns the pipeline records what runs next and starts it only after the previous stage finishes.
+A cheap stage may finish during =e-work-start=, while a longer stage may finish later; both return the same kind of handle and start later stages in the same way.
+The Emacs thread does not wait for an asynchronous stage.
+The pipeline returns control to Emacs and starts the next stage from the finished stage's callback.
+
+For example, one tool path becomes:
+
+1. Prepare the provider tool call.
+2. Run the =pre-tool-call= transformation stage.
+3. Start the tool operation with the transformed call.
+4. Run the =post-tool-call= transformation stage over its result.
+5. Append the transformed result to the transcript.
+6. Start the next queued tool or provider request.
+
+Each arrow means the earlier step must finish before the later step starts; it does not rely on callback timing or board sequence.
+The same model applies to system guidance before request construction, turn-finished policy before turn settlement, cron guards before routed actions, and reset policy before reset completion.
+
+*** Why the execution graph and board are distinct
+
+Asynchrony does not remove ordering.
+It requires ordering to be represented as data and continuations instead of by blocking the caller's stack.
+A dependent stage remains pending until its predecessors settle, so later work cannot race past an unfinished policy decision.
+
+The board records and distributes facts after or during execution.
+Its sequence numbers order observation, but they do not by themselves encode which operation is allowed to continue.
+Using the board log to run the steps of one operation would mix two jobs: keeping and delivering history, and starting each required next step exactly once.
+
+The execution graph decides what runs next and how a failure stops or redirects later steps.
+The board runtime owns observation and delivery failure.
+A stage may emit board events, and the board may start a new graph in response to an event, but a graph edge controls the stages of an operation already in progress.
+
+This yields three contracts:
+
+- *Work state* :: =e-work= tracks every executable stage, including cheap transformations, turns, tools, actions, provider requests, subagent runs, and task-queue attempts.
+- *Execution graph* :: the code that owns the pipeline records what each stage depends on, passes results to later stages, carries cancellation and deadlines forward, and finishes the overall operation once.
+- *Event delivery* :: the board records operation events and external facts, keeps a current-state view, finds matching subscriptions, and asks the runtime to start or notify later work.
+
+The board becomes the primary observation and cross-session delivery model.
+The execution graph becomes the primary ordering model for calls and policy stages.
+The board does not decide the steps inside an operation, pair provider tool calls with results, schedule task-queue jobs, create subagents, or manage cron recurrence.
+
+** Ground truth from the current runtime
+
+The plan is well grounded in several existing mechanisms.
+
+- =e-work= already provides the common async lifecycle, event-driven joins, and =wait_for= race.
+- =e-waitable= already resolves =work:=, =task:=, =subagent:=, and =elisp-job:= references to handles.
+- =e-actions= already requires every capability action to declare an =e-work= spec, including cheap actions.
+- =e-loop= already runs each provider request as backend =e-work=.
+- =e-harness-subscribe= and =e-harness--emit= already send each harness event to its listeners, and the subagent runner uses them to wait for one completion event.
+- =e-harness-steer-active-turn=, =e-harness-queue-prompt=, =e-harness-request-follow-up=, and =e-harness-prompt-async= already contain the session delivery mechanics.
+- =e-loop= preserves tool call/result adjacency by allowing one active tool and appending its result before starting the next tool.
+
+The current runtime also exposes gaps that the plan understates.
+
+- =e-tools-register= still accepts three implementation forms: =:handler=, =:start=, and =:work=.
+  A tool using =:handler= or =:start= does not have a canonical =e-work= handle, so existing tools are not yet all post operations.
+- A whole agent turn has no =e-work= handle.
+  Individual backend requests inside the turn do, but =e-harness-prompt-async= returns a turn id and stores ad hoc active-turn state.
+- Schedule fires and file-notify fires have no operation identity today.
+  =e-cron= calls a function, and =e-background-session= calls =e-harness-prompt-async= directly.
+- =settle-call= is not a general session delivery channel.
+  The existing =wait_for= coordinator closes the one parent tool handle captured in its lexical scope, while =e-loop='s active tool is private to the turn loop.
+- =queue= is not valid for every target state today.
+  =e-harness-queue-prompt= requires a running turn, while =e-harness-request-follow-up= bypasses that guard but relies on settlement to trigger a drain.
+- No service maps a globally unique session id to its owning live harness.
+  The harness-instance catalog maps configured harnesses, not participating sessions.
+- The board is described as spanning harness instances, but the plan assigns target resolution and wake policy to "the harness."
+  No single harness owns a cross-harness board.
+- Subagent and task-queue registries already push change notifications; they are not polled.
+  Their registries also own domain state and, for task queue, persistence and retry policy.
+- Detached work, subagent records, and task records all have unbounded runtime registries today.
+  A board log cannot copy this retention policy without adding another leak.
+
+** Required model changes
+
+*** 1. Make =e-work= the universal executable-operation contract
+
+Store the same operation metadata for each =e-work= handle:
+
+- =operation-id=, =kind=, =owner=, =poster=, =board-id=, =intent=, and =visibility=;
+- =parent-operation-id= and =root-operation-id= for turns, provider requests, tools, task attempts, and subagent turns;
+- lifecycle, progress, result, error, cancellation, and timestamps from =e-work=;
+- optional domain reference such as =task:tsk_000001= or =subagent:sub_000004=.
+
+Keep board/session fields out of the =e-work-handle= struct.
+Pass them through start context or keep them in a board-owned side table keyed by handle id.
+=e-work= must not depend on the board, sessions, tools, or subagents.
+
+Make =e-tools-start= produce an =e-work= handle for every tool implementation.
+The preferred end state is one =:work= registration contract.
+During migration, adapt =:handler= to a cheap spec and =:start= to a cooperative spec at registration time, then remove the legacy branches after all built-in, resource, MCP, Emacs, web, evidence, writing, and developer tools migrate.
+
+Represent a whole turn as a cooperative =e-work= handle owned by =e-harness=.
+Store the handle in the active-turn entry and give it a cancel function before publishing it.
+Backend requests and tool operations become child operations of that turn.
+A task or subagent record may still represent the overall job, while its child turns record each actual execution attempt.
+
+Do not install a process-global "all work started" hook in =e-work-start=.
+Propagate an explicit operation observer in the =e-work= start context from tool, action, turn, task, and subagent dispatch boundaries.
+Batch tests and internal work without board context then remain valid and explicit.
+
+*** 2. Add a small execution graph over =e-work=
+
+Add sequencing helpers for the dependency patterns the runtime already uses:
+
+- =then= starts one stage after its predecessor succeeds and passes the result forward;
+- =reduce= runs an ordered list of transformation stages over one value;
+- =all= and =any= join or race handles through the existing =e-work-await-set= behavior;
+- =recover= handles an expected failure and either returns a replacement value or leaves the graph failed;
+- =finally= runs bounded cleanup without changing the settled result.
+
+Do not build a general durable workflow engine in this feature.
+The first version only needs in-memory stages, ids for the steps that must finish first, a clear result shape for each connection, cancellation and deadline handling, and one final result for the overall operation.
+
+The application service that owns a pipeline builds its graph.
+For example, =e-loop= owns the provider/tool pipeline, =e-harness= owns turn and reset pipelines, task queue owns task attempts, and cron owns guard-to-action dispatch.
+=e-work= tracks each stage and provides the sequencing helpers, but it does not learn tool, turn, session, or policy names.
+
+Replace =e-hooks-run-reduce= with a work-backed ordered-stage registry or adapt each registered hook to a cheap =e-work= spec during migration.
+A hook list remains ordered by hook id, but each stage starts from the previous stage's completion callback instead of relying on a direct =funcall= return.
+Once all hook points use the stage runner, remove the synchronous reducer from runtime execution.
+
+Every stage reports its start, progress, and result to the board observer.
+Graph edges are not board subscriptions.
+They are local ordering state owned by the pipeline and must remain correct when board recording or delivery is disabled.
+
+*** 3. Let the board carry events, not fake work handles
+
+A user message, schedule fire, file-notify notification, annotation state change, and terminal operation are all board events.
+Only executable operations need =e-work= handles.
+Do not create completed dummy handles merely to represent an input fact.
+
+A board event should include =seq=, =type=, =board-id=, =source=, =scope=, =payload-ref=, =operation-id= when applicable, =caused-by=, and a timestamp.
+Use a board-specific event shape because =e-events-make= requires a session id and models harness events rather than board-wide facts.
+
+Mark which events should appear in model context:
+
+- =internal= for provider-request and low-level carrier events;
+- =board= for work the agent may need to observe;
+- =session= for private input and work.
+
+The append-only log retains history for a bounded window.
+The current-state view keeps active work and recent results after old log entries are removed.
+Slice 1 must set limits for old log entries, completed operations, stored payload size, and detached handles.
+
+*** 4. Treat a waiting tool call separately from session input
+
+A tool result completes the specific tool call that started the work; it is not new input for a session.
+Record the open tool call by its =turn-id= and =tool-call-id= so only that call can receive the result.
+
+There are two delivery cases:
+
+- =(:kind invocation :turn-id T :tool-call-id C)= settles that still-open call;
+- =(:kind session :target REF :arrival inject|queue)= delivers input to a session.
+
+When the child operation finishes within the hold window, the next graph step completes the waiting tool call directly.
+The board records the same completion event, but that event does not complete the waiting tool call.
+Only the existing tool-call code appends a tool result to the transcript.
+A waiting tool call can receive only its own result; it cannot send that result to another session.
+
+Keep the current =wait_for= race until the waiting-tool-call path exists.
+When its deadline wins, complete the tool call with =work:<id>=, stop waiting for an inline result, and keep the operation visible in the board's current-state view.
+A separate session subscription may request a later queued wake.
+Do not describe timeout as changing one =:arrival= field from =settle-call= to =queue= because those destinations have different contracts.
+
+*** 5. Add a board runtime above harnesses
+
+Split the planned component into two owners:
+
+- =e-work-board.el= :: the event log, current-state view, subscriptions, saved read positions, wake limits, and built-in event filters and prompt builders;
+- =e-work-board-runtime.el= :: participating sessions, session lookup, timers, waiting tool calls, wake scheduling, and calls into harness delivery APIs.
+
+Each harness still owns its active turns, session inboxes, transcript mutation, forks, and provider calls.
+The board runtime looks up the harness and session id for the receiving session, then asks that harness to deliver the input.
+The board core stores sender and receiver ids without looking them up, so it never requires =e-harness=.
+
+For each participating session, store the board id, session id, harness instance id, and enough information to find the current live harness.
+Removal, harness recreation, session reset, and session deletion must revoke or refresh membership.
+Delivery to stale or non-member targets must produce a visible =delivery-failed= event without starting a turn.
+
+*** 6. Introduce one session inbox API
+
+Add a harness application service such as =e-harness-deliver-input= with explicit behavior:
+
+- =inject= appends pending steering input when a turn runs and starts a turn when idle;
+- =queue= appends to a session inbox, never alters a running turn, and schedules an inbox drain when the session is idle;
+- settlement drains at most one queued input batch according to wake policy.
+
+Fold =e-harness-queue-prompt=, =e-harness-request-follow-up=, and the idle branch of =e-harness-prompt-async= behind this service.
+Keep compatibility wrappers only until Slice 4 migrates all callers.
+This gives board delivery one API that works whether the target session is busy or idle.
+
+*** 7. Migrate policy hooks to ordered work stages
+
+=:pre-tool-call=, =:post-tool-call=, =:turn-finished=, =:session-reset=, =:system-guidance=, cron guards, and annotation persist/resolve hooks become named graph stages.
+Their ordering requirement remains unchanged: the dependent stage cannot start until the policy stage settles.
+Their execution contract changes from direct callback return to =e-work= result delivery.
+
+Cheap policy stays cheap.
+A pure transformation may use the =cheap= carrier and settle inline, but callers must consume it through the same continuation API used by an asynchronous stage.
+This keeps one semantic model while avoiding needless timers or turns.
+
+Unexpected stage failure fails the owning graph unless that graph declares a recovery edge.
+Cancellation and deadlines propagate from the root operation to unfinished policy stages.
+A completed stage may emit an audit event, but the board event is an observation of the stage rather than the signal that advances its dependent continuation.
+
+*** 8. Preserve domain services and remove only duplicated lifecycle plumbing
+
+The task queue keeps FIFO dispatch, bounded parallelism, pause/resume, retry, persistence, and harness selection.
+Subagents keep type selection, child creation, parent/child tracking, result reporting, and child control.
+Cron keeps recurrence, catch-up, and guard policy.
+Annotations keep the rules for documents and annotation threads.
+
+These services register their operations and facts with the board.
+The first implementation keeps the existing task and subagent records as the source of truth for their own fields.
+Task-queue persistence must remain synchronous with task mutation and must not depend on a batched, degraded, or budget-stopped board wake.
+
+Replace the phrase "registry polling" in Slice 5.
+Today, task queue and subagents each notify their own listeners and maintain a separate =e-work= handle that mirrors record state.
+The migration sends shared work events to the board while those registries continue to own task- or subagent-specific fields.
+
+*** 9. Define how subscriptions track unread events and failures
+
+Each subscription records where it started (=created-seq=), the next unread event (=next-seq=), and its delivery state.
+An event filter should return the chosen event numbers and the next unread event, rather than ambiguous =:drop EVENTS= data.
+This prevents replay loops and defines when log compaction is safe.
+
+Delivery should move through =pending=, =delivering=, and =delivered= or =failed= within the runtime.
+One-shot subscriptions expire only after successful delivery or an explicit terminal failure policy.
+The first implementation keeps this state only in the running Emacs process.
+It can avoid sending the same event twice during that process, but it cannot promise delivery across restarts.
+
+Do not allow agent-authored selectors or renderers registered from =run_elisp= in the first slices.
+A "pure and bounded" rule cannot stop an arbitrary Emacs Lisp function from looping and freezing the UI thread.
+Ship only built-in event filters and prompt builders first.
+Later extension may allow trusted capability-owned functions, with registration provenance and explicit failure policy.
+
+On selector or renderer error, disable the subscription and append =subscription-failed=.
+Do not silently switch to a default filter that may wake on different events unless the subscription explicitly allows it.
+
+** Changes by subsystem
+
+| Subsystem | Keep | Change for this feature |
+|-----------+------+-------------------------|
+| Tools | Provider call/result pairing and one-tool-at-a-time execution | Convert =:handler=/=:start=/=:work= to one =e-work= path; record parent and root operation ids |
+| Hooks | Stable hook points, ordering, and failure policy | Adapt handlers to =e-work= stages; advance through continuations; remove direct synchronous reduction after migration |
+| Turns | Harness ownership and transcript mutation | Give each turn an =e-work= handle and correlate child provider/tool operations |
+| Subagents | Child creation, parent/child tracking, report, steer, send | Record the overall subagent run and each turn attempt; receive board input through the session inbox; keep the subagent registry |
+| Task queue | FIFO, parallelism, retries, pause, persistence | Register task and attempt operations; preserve synchronous persistence; keep domain registry |
+| Cron | Timing and catch-up policy | Run guard and routed action as dependent work stages; post each accepted fire and stage lifecycle as events |
+| File notify | Watch, debounce, busy policy | Post each accepted fire as an external fact before session delivery |
+| Annotations | File/thread model and resolve policy | Run persist/resolve policy as ordered work stages; post answer tasks and accepted external changes |
+| Actions | Capability/action boundary | Already work-backed; pass board id and parent operation ids through =e-actions-dispatch= |
+| Provider requests | Backend adapter contract | Already work-backed; connect them as graph nodes and mark their board events internal by default |
+
+** Revised implementation slices
+
+*** Slice 0 -- Canonical operation lifecycle and continuations
+
+Make every tool execution work-backed, add a turn work handle, define the operation metadata and parent/child ids, and pass the board observer explicitly.
+Add =then=/=reduce=/=all=/=any=/=recover=/=finally= helpers for sequencing =e-work= handles.
+Migrate one complete pipeline, preferably pre-tool -> tool -> post-tool -> transcript append, to prove ordered result flow without blocking or board dependence.
+Preserve existing tool call/result behavior and =wait_for= behavior.
+
+Standalone value: tools, actions, turns, provider requests, policy stages, task attempts, and subagent attempts share one lifecycle, cancellation vocabulary, and causal execution model before a board is introduced.
+
+*** Slice 1 -- Board log, current-state view, retention, and resource
+
+Add the board state, record observed operations and ordered events, remove old history by policy, discard old completed handles, expose =board://=, and add a =dynamic-context= current-state view.
+No subscriptions and no wakes.
+
+Standalone value: outstanding and recently completed work becomes visible without changing turn scheduling.
+
+*** Slice 2 -- Session inbox and single-session subscriptions
+
+Add =e-harness-deliver-input=, built-in event filters and prompt builders, a saved read position for each subscription, batching, a quiet period before waking, wake limits, and delivery state.
+Target only the session that owns the board in this slice.
+
+Standalone value: a session can end a turn and receive one deterministic later wake, including delivery to an idle session.
+
+*** Slice 3 -- Waiting tool calls and =wait_for= integration
+
+Record each open tool call that is waiting for work, keep transcript updates in =e-loop=/=e-tools=, and connect the current =wait_for= race to board recording without allowing a tool result to go to another session.
+
+Standalone value: inline and detached tool calls use the same operation record and completion event while preserving the one-call fast path.
+
+*** Slice 4 -- Cross-harness board runtime and target resolution
+
+Track which sessions have joined the board and where they run; add =session:= and lazy =fork:= lookups, reject delivery outside the board, report stale sessions, limit forks, and report results to the parent.
+
+Standalone value: selected events can wake the session that owns the logical thread, regardless of harness instance.
+
+*** Slice 5 -- External producers and compatibility-path removal
+
+Post user input, cron fires, file-notify triggers, annotation triggers, and domain-operation events onto the board.
+Fold prompt queue, follow-up, steering, and background-session callers behind the session inbox service.
+Retire superseded compatibility paths after their callers migrate.
+
+Standalone value: every external cause and operation completion enters through one event and delivery path.
+
+*** Slice 6 -- Domain integration and agent-to-agent task handoff
+
+Bridge task queue and subagents without replacing their domain policy or persistence.
+Add claimable offers only for agent-to-agent hand-off, not as a second task scheduler.
+Tune budgets, retention, batching, and fork limits against real sessions.
+
+** Required validation additions
+
+Keep the validation already listed later in this plan and add these cases:
+
+- Every registered tool form yields an =e-work= handle during migration, and the final registry rejects =:handler= and =:start=.
+- A turn handle settles once across success, backend failure, policy-stage failure, cancellation, and retry.
+- A continuation never starts before every required predecessor settles successfully.
+- A cheap transformation stage and an asynchronous transformation stage produce identical downstream ordering and result flow.
+- Root cancellation and deadlines reach unfinished descendant stages, while completed nodes remain immutable.
+- A board observer failure or disabled board cannot prevent a graph continuation from running.
+- Parent and root operation ids link the turn, provider request, tool, task attempt, and subagent attempt without showing internal events in the default current-state view.
+- A work-backed post-tool stage transforms the result before transcript append without blocking Emacs or waiting on the board.
+- A queued delivery to an idle session starts exactly one turn; a queued delivery during a running turn starts only after settlement.
+- A waiting tool call can receive only its own result and cannot send that result to another session.
+- A late completion after =wait_for= timeout cannot append a second result to the old tool call.
+- A subscription's next unread event prevents duplicate delivery after batching, prompt-building failure, cancellation, and removal of old log entries.
+- A selector or renderer failure disables the subscription and produces a visible fault without changing to default semantics.
+- Board membership survives supported harness lookup changes or fails visibly after revocation; it never dispatches through a stale harness object.
+- Task-queue persistence still runs on every domain mutation when board wake delivery is stopped by a budget.
+- The event log, current-state view, detached handles, subscriptions, and completed domain records stay within configured limits in a long synthetic run.
 
 * Goal
 
-Make the queue the primary interaction model between the harness and the model,
-instead of the synchronous tool call.
+Make =e-work= the primary lifecycle for executable operations and make the board the primary event and delivery model between runtime producers and agent sessions.
+=e-loop= still owns how a provider tool call is paired with its result; that result does not become ordinary session input.
 
-An agent posts work packages onto a board, registers subscriptions describing
-which board events should reach it and how, and its turns are reactions to
-delivered events.  The classic synchronous tool call becomes one configuration
-of that model: post one work package, hold the turn open with a one-shot inline
-subscription on its completion.
+An agent starts operations and registers subscriptions describing which board events should reach an invocation or session destination.
+A normal tool call remains efficient: the open call waits for the work it started and receives that work's result.
 
-The same board carries user input, schedule fires, file-notify triggers,
-subagent completions, and task-queue work, so "the user typed something" and
-"the grep finished" are the same kind of fact arriving through the same path.
+The same board carries user input, schedule fires, file-notify triggers, operation completions, subagent completions, and task-queue work.
+"The user typed something" and "the grep finished" are both ordered facts, while only the grep has an executable-operation lifecycle.
 
 * What already exists
 
@@ -47,9 +407,7 @@ Most of the substrate landed in feats 55, 59, 60, and 64:
 - =e-harness-instances= :: several live harness instances with their own
   sessions, which is why the shared scope below is not just "the root session".
 
-Missing: subscriptions as first-class objects with a deterministic pick/render
-step, event delivery with a stated cause, one ordered event log, a projection of
-outstanding work, and a scope that spans sessions.
+Missing: inspectable subscriptions with fixed event-filtering and prompt-building steps, delivery that records why it happened, one ordered event log, a current-state view of outstanding work, and coordination across sessions.
 
 * Concern: interleaved threads of work in one context
 
@@ -78,20 +436,18 @@ Three distinct effects, worth separating because they have different fixes:
 2. *Plan fragmentation.*  Thread A's reasoning is cut in half by thread B's
    event and result.  Not fixed by better event payloads.  Fixed by not
    interleaving: put thread B somewhere else.
-3. *State ambiguity.*  "What is still running" has to be inferred from
-   interleaved history.  Fixed by a projection: history answers what happened,
-   the board answers what is true now.
+3. *State ambiguity.*  "What is still running" has to be inferred from interleaved history.
+   Fixed by a current-state view: history answers what happened, while the board answers what is true now.
 
 Effect 2 is the one that motivates the rest of this section.
 
-** Response: deliver to a session, at an arrival mode
+** Response: choose a receiving session and delivery channel
 
 Isolation is not a property to enumerate.  It falls out of two independent
 questions that a delivery has to answer anyway:
 
 - *Which session receives it?*  A session reference.
-- *How does it arrive at that session?*  An arrival mode, one per channel the
-  harness actually has.
+- *How does it reach that session?*  Through one of the delivery channels the harness already has.
 
 So a subscription carries =:target= and =:arrival=, and nothing else about
 placement.  Isolation is then a consequence: a target that is not the posting
@@ -182,8 +538,7 @@ returns a structured result.
 ** Where it stays genuinely hard
 
 - *Wake storms and cost.*  Each wake is a provider request with full context.
-  Batching, a per-board wake budget, and a minimum quiescence window are
-  required, not optional.
+  The board must batch nearby events, limit automatic wake-ups, and wait for a short quiet period before waking a session.
 - *Cycles.*  An agent can post work whose completion wakes it to post more.
   Subscriptions need max-wake counts and expiry; the board needs a wake budget
   with a visible stop.
@@ -216,7 +571,7 @@ An =e-work= handle plus board identity:
 One append-only log per board, with a monotonic =seq=.  Event types: =posted=,
 =claimed=, =progress=, =finished=, =failed=, =cancelled=, plus
 =subscription-degraded= and =budget-stopped= for the board's own faults.
-Runtime state, rebuildable, truncated behind the projection.
+This runtime state can be rebuilt, and old entries can be removed after the current-state view no longer needs them.
 
 ** Subscription
 
@@ -297,7 +652,7 @@ The board resolves =target= through a session-reference registry and hands the
 resolved session plus =arrival= to the harness, which owns the three channels.
 The board never spawns, forks, or starts a turn itself.
 
-Shipped target resolvers:
+Built-in target lookups:
 
 - =session:<id>= :: including =session:self= for the owning session.
 - =fork:<session-id>@<message-id>= :: forks at wake time through
@@ -422,7 +777,7 @@ definitions are session state; durability is an open question.
 
 * Slices
 
-** Slice 1 -- Board, event log, and projection
+** Slice 1 -- Board, event log, and current-state view
 
 Register every =e-work= handle on a board, assign sequence numbers, expose
 =board://= and the current-state segment.  Board id defaults to the root
@@ -433,9 +788,7 @@ Standalone value: detached work stops being invisible.  An agent that forgot to
 
 ** Slice 2 -- Subscriptions with deterministic select/render
 
-Subscription objects, the selector/renderer registry with the default set,
-matching, batched delivery to =session:self= with =queue= arrival, turn cause
-metadata, wake budget, quiescence, dormancy reporting, and the =subscribe= /
+Subscription records, the built-in event filters and prompt builders, matching, batched delivery to =session:self= through =queue=, turn-cause metadata, wake limits, a quiet period before waking, dormancy reporting, and the =subscribe= /
 =unsubscribe= / =subscriptions= / =register-*= actions.
 
 Standalone value: an agent can end a turn and be woken by its own work, with the
@@ -490,9 +843,8 @@ The board must be testable with no provider and no UI.
 
 Pure-function level:
 
-- selectors :: each default over synthetic event lists: progress coalescing,
-  all-terminal gating, latest-only, quiescence.  A signalling selector falls
-  back to the default and posts =subscription-degraded=.
+- event filters :: test each built-in filter over synthetic event lists: combine progress updates, wait for all work to finish, keep only the latest event, and wait for a quiet period.
+  A failing filter disables the subscription and records =subscription-failed=.
 - renderers :: stable output for a fixed event list; prompt string or seed
   messages independent of which session reference later receives them.
 
@@ -529,10 +881,8 @@ plan survives.  That question is behavioral and unit tests will not settle it.
 
 * Open questions
 
-- Default behavior for detached work with no explicit subscription: expose it
-  only through the next-turn board projection, or synthesize a subscription
-  targeting the poster with =queue= arrival.  Leaning projection-only with
-  dormancy reporting as the safety net.
+- Default behavior for detached work with no explicit subscription: show it only in the board's current-state view on the next turn, or create a subscription that queues a message for the session that started it.
+  Leaning toward the current-state view only, with a warning when the session becomes idle while completed work remains unread.
 - Whether a fork's mark is the post point or the subscription point when they
   differ.
 - Whether subscription definitions persist with the session.  Persistence
@@ -540,8 +890,7 @@ plan survives.  That question is behavioral and unit tests will not settle it.
 - How much event payload enters context versus staying behind a =board:// read=.
 - Whether agent-registered selectors persist across a reload, and where their
   source lives if so.
-- Compaction: the projection must survive compaction while old event messages
-  are dropped.
+- Removing old log entries must not erase the current-state view.
 - Whether =claim= needs a lease and timeout, or whether a claimed-but-abandoned
   package is just cancelled work.
 
@@ -567,13 +916,13 @@ plan survives.  That question is behavioral and unit tests will not settle it.
 7. *Side effects outward?*  Work execution stays in existing carriers.  The
    board mutates its log and tables; turn starting, spawning, and forking stay
    in the harness.  Selectors and renderers are pure by contract.
-8. *State?*  Log and projection: runtime, rebuildable, truncated.  Subscriptions
-   and selector registry: session-scoped runtime; durability open.  Budget
-   counters: per-board runtime.  Board membership: session metadata.
+8. *State?*  The event log and current-state view are runtime state that can be rebuilt, and old log entries are removed by policy.
+   Subscriptions and built-in filter choices are session runtime state; persistence is undecided.
+   Wake counters belong to the board, and board membership belongs to session metadata.
 9. *Performance?*  The inline fast path is unchanged.  Slice 1 adds one log
-   append per state transition and one projection render per turn.  Select/render
-   run per match on the UI thread and are bounded by contract.  The context
-   segment is a summary, not a dump.
+   append for each state change and one current-state render per turn.
+   Event filtering and prompt building run for each match on the UI thread and must be bounded.
+   The context segment is a summary, not a dump.
 10. *Abstractions real?*  A work package is an =e-work= handle with board
     identity, so nothing narrows the handle contract.  Target and arrival are
     orthogonal: a target resolves to a session, and an arrival dispatches against
