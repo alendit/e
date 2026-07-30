@@ -305,6 +305,14 @@ tests need a runner whose handle carries one."
       (let ((record (e-task-queue-get queue task-id)))
         (should (eq (plist-get record :status) 'done))
         (should (plist-get record :session-id))
+        (let* ((harness (e-harness-instance-get-or-create :chat-real))
+               (session (e-session-get
+                         (e-harness-sessions harness)
+                         (plist-get record :session-id))))
+          (should (equal (plist-get (plist-get session :metadata)
+                                    :task-queue-task-id)
+                         task-id))
+          (should-not (e-session-root-p session)))
         (should (cl-find 'text (plist-get record :outputs)
                          :key (lambda (o) (plist-get o :kind))))))))
 

@@ -1,0 +1,24 @@
+#+title: Root Session Listing
+#+startup: overview
+
+* Change
+
+General session pickers now list only user-facing root sessions.
+Subagent sessions and task-queue sessions remain in the session store and stay directly addressable through their dedicated surfaces.
+
+Task-queue sessions now carry durable =:task-queue-task-id= metadata.
+The session layer owns the root-session predicate and filtered listing, and chat and canvas pickers consume that shared policy.
+
+* Why tiny
+
+This is a narrow listing-policy change over existing durable session metadata.
+It does not change session lifecycle, persistence, or worker-specific navigation.
+
+* Validation
+
+#+begin_src sh
+eldev -p -dtT test --file test/e-session-test.el --file test/e-task-queue-test.el --file test/e-chat-test.el
+git diff --check
+#+end_src
+
+All 399 focused tests completed with 398 passed and one pre-existing Markdown-rendering skip.

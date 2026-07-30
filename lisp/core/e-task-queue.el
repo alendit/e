@@ -560,7 +560,11 @@ Settles through ON-SETTLE when the turn finishes, fails, or is cancelled.
 Returns a handle plist carrying the created `:session-id' and a `:cancel'
 function that aborts the active turn."
   (let* ((session (e-harness-create-session
-                   harness :metadata (plist-get task :metadata)))
+                   harness
+                   :metadata (plist-put
+                              (copy-sequence (plist-get task :metadata))
+                              :task-queue-task-id
+                              (plist-get task :task-id))))
          (session-id (plist-get session :id))
          (settled nil)
          subscription)

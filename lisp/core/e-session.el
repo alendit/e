@@ -155,6 +155,11 @@
      :state-class session-config
      :lifetime durable
      :indexed t)
+    (:task-queue-task-id
+     :owner task-queue
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
     (:mcp-active
      :owner mcp
      :state-class capability-state
@@ -2504,6 +2509,15 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
   (e-session--display-title-for-session
    (e-session--peek-session store session-id)))
 
+(defun e-session-root-p (session)
+  "Return non-nil when SESSION is a user-facing root session.
+Subagent and task-queue sessions remain directly addressable through their own
+surfaces, but do not belong in general session pickers."
+  (let ((metadata (plist-get session :metadata)))
+    (not (or (plist-get metadata :parent-session-id)
+             (plist-get metadata :subagent-role)
+             (plist-get metadata :task-queue-task-id)))))
+
 (defun e-session-list (store)
   "Return STORE sessions sorted by most recent message."
   (let (sessions)
@@ -2523,6 +2537,10 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
               (or (string> left-time right-time)
                   (and (string= left-time right-time)
                        (> left-seq right-seq))))))))
+
+(defun e-session-list-roots (store)
+  "Return user-facing root sessions in STORE, newest first."
+  (cl-remove-if-not #'e-session-root-p (e-session-list store)))
 
 (provide 'e-session)
 

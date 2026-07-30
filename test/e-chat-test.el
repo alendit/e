@@ -6481,10 +6481,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                        :chat-alpha)))
             candidates)))))))
 
-(ert-deftest e-chat-test-session-candidates-exclude-subagent-sessions ()
-  "Subagent child sessions never appear among chat session candidates.
-A subagent's child session is marked with `:parent-session-id'/`:subagent-role'
-metadata; the switch and active-sessions pickers list only top-level chats."
+(ert-deftest e-chat-test-session-candidates-include-only-root-sessions ()
+  "Worker sessions never appear among chat session candidates.
+Subagents and task-queue sessions are available through their own surfaces; the
+switch, resume, active-sessions, and overview surfaces list only root chats."
   (let* ((store (e-session-store-create))
          (harness (e-chat-test--activate-chat-session
                    (e-harness-create

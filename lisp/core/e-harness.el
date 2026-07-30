@@ -1428,6 +1428,10 @@ The session must currently have a running active turn."
   "Return display metadata for sessions owned by HARNESS."
   (e-session-list (e-harness-sessions harness)))
 
+(defun e-harness-root-session-list (harness)
+  "Return user-facing root sessions owned by HARNESS."
+  (e-session-list-roots (e-harness-sessions harness)))
+
 (defun e-harness-session-activity-events (harness session-id)
   "Return activity events for SESSION-ID in HARNESS."
   (e-session-activity-events (e-harness-sessions harness) session-id))

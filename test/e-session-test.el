@@ -1631,6 +1631,19 @@
                      (plist-get (car sessions) :file)))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-list-roots-excludes-worker-sessions ()
+  "Root listing omits subagent and task-queue sessions without deleting them."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "root")
+    (e-session-create store :id "subagent"
+                      :metadata '(:parent-session-id "root"))
+    (e-session-create store :id "task"
+                      :metadata '(:task-queue-task-id "tsk_000001"))
+    (should (equal (mapcar (lambda (session) (plist-get session :id))
+                           (e-session-list-roots store))
+                   '("root")))
+    (should (= (length (e-session-list store)) 3))))
+
 (ert-deftest e-session-test-list-sessions-sorted-by-last-message ()
   "Session list order follows last message time, not metadata touches."
   (let* ((directory (make-temp-file "e-session-" t))
