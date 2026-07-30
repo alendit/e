@@ -7332,6 +7332,13 @@ passed through assistant fontification, so the audit view is faithful."
         (plist-get event :payload)
         'activity)
        (e-chat--request-activity-redraw (plist-get event :turn-id))))
+    ('hook-audit
+     ;; Audits remain durable and queryable, but are ordinary turn activity,
+     ;; not user-facing system failures.  Keep the live path consistent with
+     ;; replay, which records the compact summary below.
+     (when-let ((summary (plist-get (plist-get event :payload) :summary)))
+       (e-chat--append-intermittent-entry
+        (plist-get event :turn-id) "Hook audit" summary nil 'activity)))
     ('tool-progress
      (e-chat--set-status "tool output")
      (when-let ((record (e-chat--existing-turn-record

@@ -1,0 +1,15 @@
+#+title: Quiet Hook-Audit Chat Events
+
+* Change
+
+Route live =hook-audit= events through the chat activity summary instead of
+the generic system-event fallback.  The audit remains durable and available
+through its session resource, while the chat never exposes its raw payload.
+
+This is tiny because it only completes the existing live presentation branch
+to match replay behavior.
+
+* Validation
+
+- Focused ERT coverage verifies that a live audit renders its compact summary
+  without a raw =Event:= system block or private payload details.

@@ -2647,6 +2647,24 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-compacts-live-hook-audit-payload ()
+  "A live hook audit has a compact activity summary, never a raw system event."
+  (let ((buffer (e-chat-test--buffer nil "chat-hook-audit")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'hook-audit
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:summary "Evidence references resolved"
+                                     :details (:private "not rendered"))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "Evidence references resolved" content))
+            (should-not (string-match-p "Event: (" content))
+            (should-not (string-match-p "not rendered" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-failed-turn-expands-full-error-inline ()
   "RET on a focused failed system block expands provider details inline."
   (let ((buffer (e-chat-test--buffer nil "chat-failed-details")))
