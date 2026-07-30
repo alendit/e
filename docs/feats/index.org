@@ -77,3 +77,4 @@ Status values for coding agents:
 | 64 | In-review | 64-wait-for-async-tools/ | wait_for: deadline-raced detach for async tools |
 | 65 | In-review | 65-bayesian-reasoning-capability/ | Bayesian Reasoning Capability |
 | 66 | Planned | 66-work-bus-interaction-model/ | Work Board: Subscription-Driven Turn Model |
+| 67 | Planned | 67-evidence-traceable-claim-audit/ | Evidence-Traceable Claim Audit |

@@ -1,0 +1,273 @@
+#+title: Evidence-Traceable Claim Audit
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Problem
+
+Feature 65 records a model-authored =evidence:= string, but validates only that
+the string is non-empty.  It does not resolve the text to a session input or a
+successful tool result, records no successful hook outcome, and leaves
+unmarked factual assertions unchecked by default.  A complete-looking block can
+therefore be mistaken for verified evidence.
+
+The session =20260730T081807-0b96e30f85e8= exposed all three failures.  The
+correct outcome is not “claim accepted”; it is a distinct, inspectable record
+of what the harness checked and what it did not check.
+
+* Direction
+
+Make a load-bearing claim auditable, not merely well formatted.  The harness
+will record a claim-check outcome; the Bayesian capability will own the policy
+and the evidence-reference grammar.  The check establishes provenance and
+completeness.  It never claims to establish that the conclusion is true or
+that the model's numerical confidence is calibrated.
+
+The stopping point after every slice is useful:
+
+1. Audit records make hook execution and its outcome observable.
+2. Evidence handles make claimed support resolvable to durable inputs or tool
+   results.
+3. A high-risk turn gate catches omitted marks without restoring the previous
+   every-prose false-positive behaviour.
+4. A correction loop and shell status make unsupported output visibly
+   provisional instead of silently “passed.”
+
+* Goals and non-goals
+
+** Goals
+
+- Persist one machine-authored claim-check record for each checked response.
+- Require non-abstaining claims to cite resolvable evidence handles.
+- Preserve the original response and its evidence linkage through reload and
+  compaction.
+- Distinguish =format-complete=, =references-resolved=, =correction-queued=,
+  and =verification-unavailable=; do not collapse them into “passed.”
+- Catch unmarked conclusions on turns whose request is classified as
+  diagnostic, causal, external-state, or recommendation-seeking.
+- Keep checks conditional and provider-neutral.
+
+** Non-goals
+
+- Infer truth from prose or certify a confidence number.
+- Run a second model call for ordinary turns.
+- Persist a mutable belief ledger across turns in this work item.
+- Make core depend on the Bayesian capability or make a shell parse Bayesian
+  blocks.
+
+* Design
+
+** Generic hook-audit event
+
+Add a narrow public harness API:
+
+#+begin_src elisp
+(e-harness-record-hook-audit harness session-id turn-id
+                             :owner 'bayesian-reasoning
+                             :hook-id "60-bayesian-reasoning-turn-finished"
+                             :outcome OUTCOME
+                             :details DETAILS)
+#+end_src
+
+The harness appends a durable =hook-audit= activity event.  It owns persistence,
+event ordering, index flushing, and replay.  =owner= and =details= are
+capability-owned data, so core does not learn Bayesian policy.  The event is
+written after the check and any correction request settle, and is available
+through the existing =session://.../activity= projection.  The Bayesian
+capability also exposes a
+small =e://bayesian-reasoning/claim-audits= resource that filters and renders
+its own records for a direct answer to “what did the checker say?”
+
+Every checked turn writes exactly one terminal event:
+
+| Outcome | Meaning |
+|---------+---------|
+| =abstained= | The reply explicitly chose insufficient evidence. |
+| =references-resolved= | The mark is complete and every cited handle resolves. |
+| =format-gap= | A required mark field is absent or malformed. |
+| =evidence-gap= | The claim lacks evidence handles or names an unknown, failed, or future handle. |
+| =verification-unavailable= | The check or correction could not complete; no success is implied. |
+| =not-applicable= | The turn did not meet the conditional gate.  This is recorded only in diagnostic mode, not by default. |
+
+=references-resolved= means only that the cited records exist and precede the
+claim.  The record includes =:truth-status :not-evaluated= so callers cannot
+mistake provenance for validation.  Failed records additionally carry
+=:correction none=, =queued=, or =unavailable=; correction scheduling is a
+lifecycle fact, not a claim-verdict outcome.
+
+** Evidence handles
+
+Evidence must no longer be free prose.  A handle is deterministic and durable:
+
+- =ev:<tool-result-message-id>= names a successful tool result.
+- =in:<user-message-id>= names a user statement.  It is explicitly classified
+  as =user-provided=, not external verification.
+
+The capability adds a dynamic context provider.  Before every provider request
+it lists the current turn's completed tool results and the current prompt as
+compact handles, with source kind, tool name, and canonical resource URI when
+one exists.  The model can therefore cite stable handles without knowing an
+opaque provider call id.  On later turns it retrieves older evidence through
+the existing evidence tools; that result receives a new current-turn =ev:=
+handle.  The provider is bounded to the current input plus the current turn's
+successful results, so it has stable small cost and does not rebuild a global
+ledger.
+
+The handle resolves by message id against the durable session store.  No new
+mutable evidence store is needed.  The audit record snapshots each resolved
+handle's message id, turn id, source kind, tool call id, and canonical URI.  It
+therefore remains interpretable even if a later compaction omits the tool text
+from model context.
+
+** Reasoning-mark v2
+
+The active marker keeps the small inline form but replaces the opaque evidence
+sentence with a comma-separated handle list:
+
+#+begin_example
+#+begin_reasoning
+claim: Persisted spans reduce query-path parsing work.
+confidence: medium
+alternatives: ingestion latency or stale classification can dominate instead.
+evidence: ev:01K..., ev:01K...
+#+end_reasoning
+#+end_example
+
+An abstention uses =alternatives: insufficient-evidence= and an empty evidence
+field.  Low confidence no longer excuses missing evidence for a factual claim.
+The parser returns an ordered =:evidence-refs= list, rejects duplicates and
+unknown prefixes, and keeps the historical v1 parser only for rendering old
+transcripts.  v1 blocks receive =format-gap= when newly checked; they are not
+silently promoted to v2 evidence.
+
+The hook resolves each handle to an earlier message.  =ev:= requires a tool
+message whose result status is =ok=.  =in:= requires a user message.  A handle
+may name evidence from the same turn only if its message precedes the assistant
+reply.  The hook records resolved and rejected refs separately.
+
+** Conditional gate
+
+Cheap lexical detection cannot reliably recognise factual claims.  The prior
+number/date/CamelCase gate proved this by correcting ordinary prose.  Replace
+it with two explicit policies:
+
+1. A marked response is always checked.
+2. A deterministic input classifier marks a turn as high risk when the user
+   asks for a diagnosis, causal explanation, current/external fact, code or
+   system behaviour, comparison, or recommendation.  A high-risk turn requires
+   either a v2 mark or an explicit abstention.
+
+The classifier is capability policy and is configuration-backed per session.
+It returns both a boolean and named reasons, which are stored in the audit
+record.  Its initial implementation is intentionally narrow and testable;
+unknown prompts remain unclassified rather than guessed.  Callers that need
+stronger coverage can select =strict= mode, which retains an opt-in output
+tripwire and records its false-positive rate.  No mode describes an unmarked
+reply as verified.
+
+** Correction and presentation
+
+On =format-gap= or =evidence-gap=, request one hidden corrective turn, then
+persist the terminal audit record with =:correction queued=.  The follow-up
+prompt names only the missing or unresolved handles and permits
+=insufficient-evidence=.  It must not say that the claim was false.
+
+Replace the current =ignore-errors= block.  An expected inability to enqueue
+records =verification-unavailable= and leaves the first answer visible; an
+unexpected programming error surfaces through the normal hook error path.
+The first answer is hidden only after the follow-up was successfully queued.
+
+Both shells render a small generic audit status from the =hook-audit= event:
+
+- no indicator for =not-applicable=;
+- “evidence references resolved” for =references-resolved=, never “verified”;
+- “claim check needs revision” when a correction was queued; and
+- “claim check unavailable” when enforcement could not run.
+
+The shells consume the generic event projection or a harness accessor; they do
+not import the Bayesian capability or parse its marker.
+
+* Implementation slices
+
+** Slice 1: generic durable hook-audit contract
+
+- Add =hook-audit= to the harness's durable activity event vocabulary and
+  replay/index tests.
+- Add =e-harness-record-hook-audit= and a generic query accessor for the latest
+  audit of a message or turn.
+- Add a generic shell-facing view model/accessor, without Bayesian labels.
+
+Exit condition: a synthetic hook can persist an audit record; reload preserves
+it; session activity and the new accessor return it in order.
+
+** Slice 2: Bayesian v2 marker and evidence resolution
+
+- Implement the dynamic evidence-handle provider and v2 parser.
+- Resolve =ev:= and =in:= against session messages and produce a structured
+  check result with resolved/rejected references.
+- Retain v1 parsing only for historical display; reject it for new enforcement.
+
+Exit condition: a complete mark with a real successful tool-result handle is
+=references-resolved=; invented, failed, duplicate, future, and opaque refs
+are =evidence-gap=.
+
+** Slice 3: high-risk gate and correction lifecycle
+
+- Add the narrow input classifier and per-session policy configuration.
+- Require a marker or abstention for marked/high-risk turns.
+- Emit one terminal audit record and queue exactly one correction on failure.
+- Replace silent error swallowing with the specified unavailable/error paths.
+
+Exit condition: the 30 July session's unmarked diagnostic explanations would
+receive a correction, while a link-only request remains not applicable.
+
+** Slice 4: shell status and audit resource
+
+- Add the Bayesian claim-audit resource.
+- Render generic status in classic chat and modernchat; preserve hidden-message
+  inspection for the first attempt and correction prompt.
+
+Exit condition: a user can tell whether a claim was merely referenced,
+corrected, or unavailable without reading JSONL or inferring hook execution.
+
+* Verification
+
+- Unit tests for marker v2 grammar, duplicate rejection, historical v1 display,
+  handle resolution, and low-confidence-without-evidence failure.
+- Harness/session reload tests for =hook-audit= ordering and durable references.
+- Full fake-backend turn tests: resolved evidence; invented handle; failed tool;
+  high-risk unmarked response; explicit abstention; successful correction;
+  enqueue-unavailable; and unexpected hook error.
+- Classic chat and modernchat tests for the three user-visible status states.
+- Replay the supplied session as a regression fixture: it must report no
+  recorded historical audit outcome, classify the later questions as high risk,
+  and never infer a silent success.
+- Run the focused ERT files and the full suite, then byte-compile changed Lisp.
+
+* Architecture self-check
+
+1. Slice 1 alone turns silent hook behaviour into durable audit evidence.
+2. This moves toward evidence-traceable, conditional calibration rather than
+   format-only self-attestation.
+3. Claim policy is likely to evolve and remains in the capability; persistence,
+   replay, and shell contracts remain generic and stable.
+4. The harness owns event durability; the Bayesian capability owns claim grammar,
+   gating, and resolution; shells own presentation.
+5. The generic audit contract reduces coupling.  No shell or core module names
+   Bayesian reasoning.
+6. Dependencies remain capability -> harness/session and shell -> generic
+   harness view, never the reverse.
+7. Session append and follow-up scheduling stay at the harness boundary.
+8. Evidence mappings are derived from immutable messages.  Only the audit result
+   is durable, which is the smallest state needed for an explanation later.
+9. The normal path adds one small context fragment only after evidence exists and
+   one activity append only when checked.  Strict review remains opt-in.
+10. The audit API is general for any capability hook and does not weaken its
+    semantics for non-Bayesian callers.
+11. Existing v1 blocks remain readable for transcript compatibility, but new
+    enforcement does not accept their opaque evidence field.
+12. The obsolete “non-empty evidence string means pass” rule is removed.
+13. Expected enforcement unavailability is recorded; unexpected errors surface.
+14. Focused tests prove each contract without a live Emacs reload.
