@@ -592,7 +592,7 @@ the display to a normal window when the selected window is a side window."
   buffer)
 
 (defun e-org-canvas--display-chat-buffer (buffer)
-  "Display Org Canvas backing chat BUFFER and keep chat invariants current."
+  "Display Org Canvas backing chat BUFFER and return its transcript window."
   (when (buffer-live-p buffer)
     (let ((window (if (e-chat--side-window-p)
                       (e-chat--display-from-side-window buffer)
@@ -601,15 +601,17 @@ the display to a normal window when the selected window is a side window."
                      :workspace (or (e-buffer-workspace buffer)
                                     (e-workspace-current))
                      :action '(display-buffer-at-bottom)))))
-      (when (window-live-p window)
-        (e-chat--after-display-buffer buffer))
       window)))
 
 (defun e-org-canvas--display-and-select-chat-buffer (buffer)
-  "Display Org Canvas backing chat BUFFER and select its window."
+  "Display Org Canvas backing chat BUFFER and focus its composer."
   (when-let ((window (e-org-canvas--display-chat-buffer buffer)))
     (when (window-live-p window)
-      (select-window window)))
+      ;; Select the transcript first so the shared chat shell can find its
+      ;; paired composer window.  It must be the last focus owner: selecting
+      ;; the transcript after this would leave users in a read-only buffer.
+      (select-window window)
+      (e-chat--after-display-buffer buffer)))
   buffer)
 
 (defun e-org-canvas--restore-buffer-session (buffer harness session-id workspace)
@@ -652,14 +654,14 @@ the display to a normal window when the selected window is a side window."
 
 (defun e-org-canvas--open-session-for-buffer-and-display
     (buffer &optional needs-file-name target-folder)
-  "Create an Org Canvas session for BUFFER, display BUFFER, and return chat."
-  (prog1 (let ((chat-buffer (e-org-canvas--open-session-for-buffer
-                             buffer
-                             needs-file-name
-                             target-folder)))
-           (e-org-canvas--display-chat-buffer chat-buffer)
-           chat-buffer)
-    (e-org-canvas--select-org-buffer buffer)))
+  "Create an Org Canvas session for BUFFER, focus its chat composer, and return it."
+  (let ((chat-buffer (e-org-canvas--open-session-for-buffer
+                      buffer
+                      needs-file-name
+                      target-folder)))
+    (e-org-canvas--select-org-buffer buffer)
+    (e-org-canvas--display-and-select-chat-buffer chat-buffer)
+    chat-buffer))
 
 ;;;###autoload
 (defun e-org-canvas-open-for-current-buffer ()

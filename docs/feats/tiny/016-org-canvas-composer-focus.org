@@ -1,0 +1,17 @@
+#+title: Org Canvas Composer Focus
+#+startup: overview
+
+* Change
+
+Org Canvas no longer reselects its read-only chat transcript after the shared
+chat shell has selected the composer.  Opening or creating an Org Canvas chat
+now leaves the dedicated composer focused and requests Evil insert state.
+
+* Why tiny
+
+This is a focus-order correction in one presentation shell.  The shared chat
+shell already owns composer focus and insert-state policy.
+
+* Validation
+
+- =eldev test -f test/e-org-canvas-test.el= (69 tests).

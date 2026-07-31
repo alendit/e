@@ -102,45 +102,52 @@
                     e-org-canvas-input-mode))
     (should (commandp symbol))))
 
-(ert-deftest e-org-canvas-test-open-current-buffer-creates-session-metadata-and-displays-chat ()
-  "Opening an Org buffer creates Org Canvas metadata and displays chat."
-  (let ((harness (e-org-canvas-test--harness)))
+(ert-deftest e-org-canvas-test-open-current-buffer-focuses-composer ()
+  "Opening an Org buffer leaves its chat composer selected and editable."
+  (let ((harness (e-org-canvas-test--harness))
+        (e-chat--surface-composition-enabled t)
+        insert-entered)
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :org-canvas-test))
             (e-harness-registry-register :org-canvas-test harness)
-            (with-temp-buffer
-              (rename-buffer "org-canvas-source" t)
-              (org-mode)
-              (insert "* Topic\nBody\n")
-              (let* ((source (current-buffer))
-                     (chat-buffer (e-org-canvas-open-for-current-buffer)))
-                (should (buffer-live-p chat-buffer))
-                (should (eq (window-buffer (selected-window))
-                            chat-buffer))
-                (let ((source-window (get-buffer-window source t))
-                      (chat-window (get-buffer-window chat-buffer t)))
-                  (should (window-live-p source-window))
-                  (should (window-live-p chat-window))
-                  (should (> (nth 1 (window-edges chat-window))
-                             (nth 1 (window-edges source-window)))))
-                (with-current-buffer source
-                  (should e-org-canvas-mode)
-                  (should e-chat-context-mode-suppressed))
-                (with-current-buffer chat-buffer
-                  (let* ((org-canvas (e-org-canvas-session-metadata
-                                      e-chat-harness
-                                      e-chat-session-id))
-                         (attachment (car (e-chat-session-attachments
-                                           e-chat-harness
-                                           e-chat-session-id))))
-                    (should (plist-get attachment :canvas))
-                    (should (equal (plist-get org-canvas :uri)
-                                   "buffer://org-canvas-source"))
-                    (should (equal (plist-get org-canvas :buffer-name)
-                                   "org-canvas-source"))
-                    (should (equal (plist-get org-canvas :mode) 'org))
-                    (should (plist-get org-canvas :root))))))))
+            (cl-letf (((symbol-function 'evil-insert-state)
+                       (lambda () (setq insert-entered t))))
+              (with-temp-buffer
+                (rename-buffer "org-canvas-source" t)
+                (org-mode)
+                (insert "* Topic\nBody\n")
+                (let* ((source (current-buffer))
+                       (chat-buffer (e-org-canvas-open-for-current-buffer))
+                       (composer (buffer-local-value
+                                  'e-chat--surface-composer-buffer chat-buffer)))
+                  (should (buffer-live-p chat-buffer))
+                  (should (buffer-live-p composer))
+                  (should (eq (window-buffer (selected-window)) composer))
+                  (should insert-entered)
+                  (let ((source-window (get-buffer-window source t))
+                        (chat-window (get-buffer-window chat-buffer t)))
+                    (should (window-live-p source-window))
+                    (should (window-live-p chat-window))
+                    (should (> (nth 1 (window-edges chat-window))
+                               (nth 1 (window-edges source-window)))))
+                  (with-current-buffer source
+                    (should e-org-canvas-mode)
+                    (should e-chat-context-mode-suppressed))
+                  (with-current-buffer chat-buffer
+                    (let* ((org-canvas (e-org-canvas-session-metadata
+                                        e-chat-harness
+                                        e-chat-session-id))
+                           (attachment (car (e-chat-session-attachments
+                                             e-chat-harness
+                                             e-chat-session-id))))
+                      (should (plist-get attachment :canvas))
+                      (should (equal (plist-get org-canvas :uri)
+                                     "buffer://org-canvas-source"))
+                      (should (equal (plist-get org-canvas :buffer-name)
+                                     "org-canvas-source"))
+                      (should (equal (plist-get org-canvas :mode) 'org))
+                      (should (plist-get org-canvas :root)))))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-activates-project-local-layer-for-file-project ()
@@ -603,14 +610,15 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas ()
-  "Selecting a directory creates an unsaved Org Canvas targeting that folder."
+(ert-deftest e-org-canvas-test-new-file-directory-focuses-chat-composer ()
+  "Selecting a directory creates an unsaved canvas and focuses its composer."
   (let ((directory (file-name-as-directory
                     (make-temp-file "e-org-canvas-directory-" t)))
         (harness (e-org-canvas-test--harness)))
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
+          (let ((e-chat-default-harness-id :org-canvas-test)
+                (e-chat--surface-composition-enabled t))
             (e-harness-registry-register :org-canvas-test harness)
             (let ((chat-buffer (e-org-canvas-new-file directory)))
               (with-current-buffer chat-buffer
@@ -618,7 +626,8 @@
                                     e-chat-harness
                                     e-chat-session-id))
                        (target-buffer (get-buffer
-                                       (plist-get org-canvas :buffer-name))))
+                                       (plist-get org-canvas :buffer-name)))
+                       (composer e-chat--surface-composer-buffer))
                   (should (plist-get org-canvas :needs-file-name))
                   (should (equal (plist-get org-canvas :target-folder)
                                  directory))
@@ -630,8 +639,9 @@
                     (should (derived-mode-p 'org-mode))
                     (should-not buffer-file-name)
                     (should (equal default-directory directory)))
+                  (should (buffer-live-p composer))
                   (should (eq (window-buffer (selected-window))
-                              target-buffer)))))))
+                              composer)))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (string-prefix-p "*e-org-canvas:" (buffer-name buffer))
