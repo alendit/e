@@ -4481,6 +4481,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (backward-word 1)
             (set-window-point window (point))
             (set-window-start window (point))
+            (e-chat--set-window-output-follow-state window nil)
             (let ((before-point (point))
                   (before-window-point (window-point window))
                   (before-window-start (window-start window)))
@@ -4552,6 +4553,88 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (delete-window window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composed-progress-follows-tail-viewports-only ()
+  "Composer focus follows a tailing transcript but preserves scrollback."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-composed-progress-viewport"))
+         transcript-window composer-window composer)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "history" 1 2 "Earlier" history)
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (setq composer (window-buffer composer-window))
+            ;; Selecting the input pane changes `current-buffer'; transcript
+            ;; events still render in its owning transcript buffer.
+            (set-buffer buffer)
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11))
+            (e-chat--render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:content "first progress")))
+            (e-chat--cancel-pending-activity-redraw)
+            (e-chat--render-turn-transient
+             "turn-1" (e-chat--existing-turn-record "turn-1"))
+            (e-chat--show-latest-output)
+            ;; The normal UI redraw does this before the next scheduled
+            ;; update.  Batch ERT has no redisplay loop of its own.
+            (redisplay t)
+            (let ((old-tail (cdr (e-chat--running-status-bounds))))
+              (should (eq (selected-window) composer-window))
+              (should (eq (window-buffer (selected-window)) composer))
+              (should (>= (window-end transcript-window t) old-tail))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nsecond progress")))
+              (e-chat--cancel-pending-activity-redraw)
+              (e-chat--render-turn-transient
+               "turn-1" (e-chat--existing-turn-record "turn-1"))
+              (should (= (window-point transcript-window)
+                         (cdr (e-chat--running-status-bounds))))
+              (should (eq (selected-window) composer-window))
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              ;; A real transcript navigation command records this state from
+              ;; its viewport.  Batch windows do not keep an independent
+              ;; display matrix, so state it directly here.
+              (e-chat--set-window-output-follow-state transcript-window nil)
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nthird progress")))
+              (e-chat--cancel-pending-activity-redraw)
+              (e-chat--render-turn-transient
+               "turn-1" (e-chat--existing-turn-record "turn-1"))
+              (should (= (window-start transcript-window) (point-min)))
+              (should (= (window-point transcript-window) (point-min)))
+              (should (eq (selected-window) composer-window))))
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))))
 
 (ert-deftest e-chat-test-window-config-tail-survives-late-window-restore ()
   "Active chat window-configuration focus tails after restored old point."

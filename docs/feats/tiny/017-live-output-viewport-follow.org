@@ -1,0 +1,18 @@
+#+title: Live Output Viewport Follow
+#+startup: overview
+
+* Change
+
+Live chat activity now follows each transcript viewport independently.  A
+viewport following the live tail advances when progress redraws.  Navigating a
+transcript records that viewport as reading scrollback, so later progress does
+not change its position.  The separate composer may remain focused throughout.
+
+* Why tiny
+
+This refines transient presentation state in the existing chat shell.  It does
+not change session, provider, or work-bus behavior.
+
+* Validation
+
+- =eldev test -f test/e-chat-test.el= (314 passed, 1 optional skip).
