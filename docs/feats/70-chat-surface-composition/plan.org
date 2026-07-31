@@ -1,0 +1,77 @@
+#+title: Chat Surface Composition
+#+startup: overview
+
+* Status
+
+Done.
+
+* Goal
+
+Replace the monolithic chat buffer's transcript-plus-editable-composer layout
+with an =e-chat= presentation surface composed of a read-only transcript buffer
+and a paired editable composer buffer.  The harness and capabilities continue
+to expose only generic sessions, events, resources, hooks, and prompt APIs.
+
+* Contract
+
+- The transcript buffer owns rendered blocks, activity, navigation, and
+  transcript-window follow policy.
+- The composer buffer owns draft text, point, completion, prefix handling, and
+  local inline-reference presentation.
+- The surface controller owns the relationship between those buffers and their
+  paired Emacs windows.  It is ephemeral presentation state, scoped to a
+  transcript window.
+- No capability, harness API, or provider adapter knows about either buffer or
+  the window arrangement.
+- Transcript rendering must not delete, restore, or otherwise mutate composer
+  text.  Composer commands submit through existing harness/session APIs.
+
+* Implementation slices
+
+1. DONE: add surface state, an input major mode that reuses the chat
+   composer keymap, and paired-window creation/cleanup.
+2. DONE: route input focus, submission, and context insertion through the composer
+   buffer while transcript events render exclusively in the transcript buffer.
+3. DONE: remove normal-path composer spacer/rebuild work.  Keep a test-only
+   monolithic seam while existing isolated transcript tests are migrated; it
+   is not a user configuration or production fallback.
+4. DONE: verify draft preservation across durable messages, activity, claim updates,
+   navigation, and window resizing.  Record any remaining legacy test seam as
+   an explicit follow-up rather than treating it as the architecture.
+
+* Completion notes
+
+- Interactive chat sessions now create a separate composer buffer and place it
+  below each displayed transcript window.  The composer window is resized only
+  after composer edits or window-layout changes.
+- Durable transcript rendering does not write to the composer buffer.  Queue
+  changes are the explicit exception because they update composer chrome.
+- Batch tests retain the old monolithic layout until their focused rendering
+  fixtures are migrated.  Interactive users cannot select that path.
+
+* Architecture self-check
+
+1. The first slice is useful on its own: it makes a transcript append unable
+   to change a live draft.
+2. This moves toward presentation-owned composition, not capability-aware UI.
+3. Window layout is the uncertain, local adapter; session/harness contracts are
+   stable and remain unchanged.
+4. The chat shell owns this behavior because it is the only consumer of its
+   buffers, keymaps, and windows.
+5. The boundary reduces coupling: transcript rendering consumes no composer
+   state, and composer editing consumes no block layout state.
+6. No dependency points from harness or capabilities toward this shell detail.
+7. Window effects live at the surface adapter edge.
+8. Surface/window state and drafts are ephemeral; durable messages remain in
+   the session store.
+9. Transcript append work no longer includes composer reconstruction or
+   transcript screen-line measurement.
+10. A generic multi-pane shell abstraction is deferred until a second shell
+    requires the same real contract.
+11. The old monolithic protocol is not retained for normal users.
+12. The eventual cleanup removes spacer-layout and composer capture/restore
+    paths from normal transcript rendering.
+13. Expected window-management failures surface; only absent visible windows
+    defer layout work.
+14. Focused tests prove the buffers' mutation boundary independently of a live
+    provider or capability.

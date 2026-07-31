@@ -723,6 +723,33 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--transcript-end-marker nil
   "Marker at the end of the protected transcript region.")
 
+(defvar e-chat--surface-composition-enabled (not noninteractive)
+  "Whether newly attached interactive chats use a separate composer surface.
+This is an internal rollout seam.  Batch tests bind it when they need to
+exercise the production surface; it is not a user-facing compatibility mode.")
+
+(defcustom e-chat-composer-window-min-height 3
+  "Minimum height of an e chat composer window."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-composer-window-max-height 10
+  "Maximum height of an e chat composer window."
+  :type 'integer
+  :group 'e-chat)
+
+(defvar-local e-chat--surface-composer-buffer nil
+  "Composer buffer paired with this transcript buffer, if any.")
+
+(defvar-local e-chat--surface-transcript-buffer nil
+  "Transcript buffer owned by this composer buffer, if any.")
+
+(defvar-local e-chat--surface-window-pairs nil
+  "Alist of transcript windows and their paired composer windows.")
+
+(defvar-local e-chat--surface-composer-layout-dirty nil
+  "Whether a composer edit may require its paired window to be refitted.")
+
 (defvar-local e-chat--composer-start-marker nil
   "Marker at the beginning of editable composer text.")
 
@@ -1276,6 +1303,7 @@ In the composer, leading ! captures command output, @ inserts file context,
 and / expands available prompts."
   (e-chat--setup-line-wrapping)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--surface-kill-composer nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
   (add-hook 'kill-buffer-hook
@@ -1289,9 +1317,206 @@ and / expands available prompts."
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (add-hook 'after-change-functions
             #'e-chat--mark-composer-scroll-needed nil t)
+  (add-hook 'after-change-functions
+            #'e-chat--surface-mark-composer-layout-dirty nil t)
   (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (e-chat--ensure-window-selection-hook))
+
+(defvar e-chat-composer-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map e-chat-mode-map)
+    (define-key map (kbd "<escape>") #'e-chat-composer-enter-navigation)
+    map)
+  "Keymap for the editable pane of a composed e chat surface.")
+
+(define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
+  "Editable input pane owned by an e chat transcript surface."
+  (use-local-map e-chat-composer-mode-map)
+  (e-chat--setup-line-wrapping)
+  (e-chat--disable-modal-editing)
+  (e-chat--disable-completion)
+  (add-hook 'after-change-functions
+            #'e-chat--mark-composer-scroll-needed nil t)
+  (add-hook 'post-command-hook #'e-chat--post-command nil t)
+  (add-hook 'post-command-hook #'e-chat--surface-composer-post-command nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--surface-composer-killed nil t))
+
+(defun e-chat--surface-transcript-p ()
+  "Return non-nil when the current buffer owns a separate composer buffer."
+  (and e-chat--surface-composition-enabled
+       (buffer-live-p e-chat--surface-composer-buffer)))
+
+(defun e-chat--surface-composer-p ()
+  "Return non-nil when the current buffer is a composed chat input pane."
+  (and e-chat--surface-composition-enabled
+       (buffer-live-p e-chat--surface-transcript-buffer)))
+
+(defun e-chat--surface-transcript-buffer ()
+  "Return the transcript buffer for the current chat surface."
+  (if (e-chat--surface-composer-p)
+      e-chat--surface-transcript-buffer
+    (current-buffer)))
+
+(defun e-chat--surface-composer-killed ()
+  "Clear this input pane from its transcript surface when it is killed."
+  (let ((composer (current-buffer)))
+    (when-let ((transcript e-chat--surface-transcript-buffer))
+      (when (buffer-live-p transcript)
+        (with-current-buffer transcript
+          (when (eq e-chat--surface-composer-buffer composer)
+            (setq e-chat--surface-composer-buffer nil)
+            (setq e-chat--surface-window-pairs nil)))))))
+
+(defun e-chat--surface-kill-composer ()
+  "Kill the composer buffer paired with the current transcript buffer."
+  (when-let ((composer e-chat--surface-composer-buffer))
+    (when (buffer-live-p composer)
+      (kill-buffer composer)))
+  (setq e-chat--surface-composer-buffer nil)
+  (setq e-chat--surface-window-pairs nil))
+
+(defun e-chat--surface-initialize-composer (&optional text preserve-focus)
+  "Replace the current composer pane contents with TEXT.
+PRESERVE-FOCUS keeps point where possible.  This only runs in the dedicated
+composer buffer; transcript rendering never calls it."
+  (let ((inhibit-read-only t)
+        (e-chat--composer-scroll-suppressed t)
+        (saved-point (point)))
+    (erase-buffer)
+    (setq e-chat--composer-spacer-marker (copy-marker (point-min)))
+    (setq e-chat--queue-start-marker nil)
+    (setq e-chat--queue-end-marker nil)
+    (e-chat--insert-queued-prompts)
+    (e-chat--insert-protected
+     (concat e-chat--composer-separator "\n") 'e-chat-separator-face)
+    (e-chat--insert-protected e-chat--composer-glyph 'e-chat-composer-face
+                              '(e-chat-composer t))
+    (setq e-chat--composer-start-marker (point-marker))
+    (set-marker-insertion-type e-chat--composer-start-marker nil)
+    (setq e-chat--transcript-end-marker (copy-marker (point-min)))
+    (when text
+      (insert (e-chat--sanitize-composer-text text)))
+    (setq e-chat--composer-scroll-needed nil)
+    (goto-char (if preserve-focus
+                   (min saved-point (point-max))
+                 (point-max)))))
+
+(defun e-chat--surface-create-composer (transcript)
+  "Create and return TRANSCRIPT's dedicated composer buffer."
+  (let ((composer (generate-new-buffer
+                   (format " *e-chat input:%s*" (buffer-name transcript)))))
+    (with-current-buffer composer
+      (e-chat-composer-mode)
+      (setq-local e-chat--surface-transcript-buffer transcript)
+      (setq-local e-current-harness
+                  (buffer-local-value 'e-current-harness transcript))
+      (setq-local e-chat-harness
+                  (buffer-local-value 'e-chat-harness transcript))
+      (setq-local e-chat-harness-instance-id
+                  (buffer-local-value 'e-chat-harness-instance-id transcript))
+      (setq-local e-chat-session-id
+                  (buffer-local-value 'e-chat-session-id transcript))
+      (setq-local e-chat--preview-buffer nil)
+      (setq-local default-directory
+                  (buffer-local-value 'default-directory transcript))
+      (e-chat--surface-initialize-composer))
+    composer))
+
+(defun e-chat--surface-ensure-composer ()
+  "Return the dedicated composer buffer for the current transcript buffer."
+  (if (e-chat--surface-composer-p)
+      (current-buffer)
+    (unless (buffer-live-p e-chat--surface-composer-buffer)
+      (setq e-chat--surface-composer-buffer
+            (e-chat--surface-create-composer (current-buffer))))
+    e-chat--surface-composer-buffer))
+
+(defun e-chat--surface-prune-window-pairs ()
+  "Discard dead window pairs from the current transcript surface."
+  (setq e-chat--surface-window-pairs
+        (cl-remove-if-not
+         (lambda (pair)
+           (and (window-live-p (car pair))
+                (window-live-p (cdr pair))
+                (eq (window-buffer (car pair)) (current-buffer))
+                (eq (window-buffer (cdr pair)) e-chat--surface-composer-buffer)))
+         e-chat--surface-window-pairs)))
+
+(defun e-chat--surface-composer-window (&optional transcript-window)
+  "Return the composer window paired with TRANSCRIPT-WINDOW, if any."
+  (e-chat--surface-prune-window-pairs)
+  (cdr (assoc (or transcript-window (selected-window))
+              e-chat--surface-window-pairs)))
+
+(defun e-chat--surface-fit-composer-window (&optional composer-window)
+  "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
+  (when (window-live-p composer-window)
+    (fit-window-to-buffer composer-window
+                          e-chat-composer-window-max-height
+                          e-chat-composer-window-min-height
+                          nil nil t)))
+
+(defun e-chat--surface-display-composer (&optional transcript-window select)
+  "Display the current transcript's composer below TRANSCRIPT-WINDOW.
+When SELECT is non-nil, select the composer window."
+  (let* ((transcript (current-buffer))
+         (composer (e-chat--surface-ensure-composer))
+         (transcript-window (or transcript-window
+                                (get-buffer-window transcript t)))
+         composer-window)
+    (when (window-live-p transcript-window)
+      (setq composer-window
+            (or (e-chat--surface-composer-window transcript-window)
+                (let ((window (split-window transcript-window
+                                            (- e-chat-composer-window-min-height)
+                                            'below)))
+                  (set-window-buffer window composer)
+                  (set-window-parameter window 'e-chat-composer transcript)
+                  (push (cons transcript-window window)
+                        e-chat--surface-window-pairs)
+                  window)))
+      (e-chat--surface-fit-composer-window composer-window)
+      (when select
+        (select-window composer-window)))
+    composer-window))
+
+(defun e-chat--surface-mark-composer-layout-dirty (_begin _end _length)
+  "Record that this composer changed and may need window sizing work."
+  (when (e-chat--surface-composer-p)
+    (setq e-chat--surface-composer-layout-dirty t)))
+
+(defun e-chat--surface-composer-post-command ()
+  "Keep a visible composer pane fitted after an input command."
+  (when (and (e-chat--surface-composer-p)
+             e-chat--surface-composer-layout-dirty)
+    (setq e-chat--surface-composer-layout-dirty nil)
+    (when-let ((transcript e-chat--surface-transcript-buffer))
+      (when (buffer-live-p transcript)
+        (with-current-buffer transcript
+          (dolist (pair e-chat--surface-window-pairs)
+            (e-chat--surface-fit-composer-window (cdr pair))))))))
+
+(defun e-chat--surface-refresh-composer-queue ()
+  "Refresh queue chrome in the separate composer without touching transcript.
+Queue changes are the only harness event that changes composer presentation;
+ordinary transcript rendering must leave the composer buffer untouched."
+  (when-let ((composer (e-chat--surface-ensure-composer)))
+    (with-current-buffer composer
+      (when (e-chat--composer-active-p)
+        (e-chat--surface-initialize-composer
+         (buffer-substring e-chat--composer-start-marker (point-max)) t)))))
+
+(defun e-chat-composer-enter-navigation ()
+  "Focus the transcript and enter response navigation from the input pane."
+  (interactive)
+  (let ((transcript e-chat--surface-transcript-buffer))
+    (unless (buffer-live-p transcript)
+      (user-error "This e chat composer has no live transcript"))
+    (when-let ((window (get-buffer-window transcript t)))
+      (select-window window))
+    (with-current-buffer transcript
+      (e-chat-enter-response-navigation))))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -1881,82 +2106,98 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 
 (defun e-chat--capture-composer-state ()
   "Return the active composer content and point position."
-  (when (e-chat--composer-active-p)
-    (let ((start (marker-position e-chat--composer-start-marker))
-          (end (point-max))
-          (window (e-chat--visible-window)))
-      (list :text (e-chat--sanitize-composer-text
-                   (buffer-substring e-chat--composer-start-marker end))
-            :point (point)
-            :window window
-            :window-point (and window (window-point window))
-            :window-start (and window (window-start window))
-            :point-offset
-            (when (and (>= (point) start)
-                       (<= (point) end))
-              (- (point) start))))))
+  (unless (e-chat--surface-transcript-p)
+    (when (e-chat--composer-active-p)
+      (let ((start (marker-position e-chat--composer-start-marker))
+            (end (point-max))
+            (window (e-chat--visible-window)))
+        (list :text (e-chat--sanitize-composer-text
+                     (buffer-substring e-chat--composer-start-marker end))
+              :point (point)
+              :window window
+              :window-point (and window (window-point window))
+              :window-start (and window (window-start window))
+              :point-offset
+              (when (and (>= (point) start)
+                         (<= (point) end))
+                (- (point) start)))))))
 
 (defun e-chat--restore-composer-state (state)
   "Restore an editable composer from STATE.
 When STATE is nil, insert an empty composer."
-  (e-chat--profile-call
-   'chat.composer-restore
-   (list :session-id e-chat-session-id
-         :buffer-name (buffer-name)
-         :metadata (list :has-state (and state t)))
-   (lambda ()
-     (unless e-chat--composer-restore-inhibited
-       (if (not state)
-           (e-chat--insert-composer)
-         (let ((offset (plist-get state :point-offset)))
-           (e-chat--insert-composer (plist-get state :text) (not offset))
-           (if offset
-               (goto-char (min (point-max)
-                               (+ (marker-position e-chat--composer-start-marker)
-                                  offset)))
-             (let ((point (plist-get state :point))
-                   (window (plist-get state :window))
-                   (window-point (plist-get state :window-point))
-                   (window-start (plist-get state :window-start)))
-               (when point
-                 (goto-char (min point (point-max))))
-               (when (window-live-p window)
-                 (when window-start
-                   (set-window-start window
-                                     (min window-start (point-max))
-                                     t))
-                 (when window-point
-                   (set-window-point window
-                                     (min window-point (point-max)))))))))))))
+  (if (e-chat--surface-transcript-p)
+      (e-chat--surface-ensure-composer)
+    (e-chat--profile-call
+     'chat.composer-restore
+     (list :session-id e-chat-session-id
+           :buffer-name (buffer-name)
+           :metadata (list :has-state (and state t)))
+     (lambda ()
+       (unless e-chat--composer-restore-inhibited
+         (if (not state)
+             (e-chat--insert-composer)
+           (let ((offset (plist-get state :point-offset)))
+             (e-chat--insert-composer (plist-get state :text) (not offset))
+             (if offset
+                 (goto-char (min (point-max)
+                                 (+ (marker-position e-chat--composer-start-marker)
+                                    offset)))
+               (let ((point (plist-get state :point))
+                     (window (plist-get state :window))
+                     (window-point (plist-get state :window-point))
+                     (window-start (plist-get state :window-start)))
+                 (when point
+                   (goto-char (min point (point-max))))
+                 (when (window-live-p window)
+                   (when window-start
+                     (set-window-start window
+                                       (min window-start (point-max))
+                                       t))
+                   (when window-point
+                     (set-window-point window
+                                       (min window-point (point-max))))))))))))))
 
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
 Return non-nil when a composer was removed."
-  (e-chat--profile-call
-   'chat.composer-delete
-   (list :session-id e-chat-session-id
-         :buffer-name (buffer-name))
-   (lambda ()
-     (let ((start (or (and (markerp e-chat--composer-spacer-marker)
-                           (marker-position e-chat--composer-spacer-marker))
-                      (and (markerp e-chat--transcript-end-marker)
-                           (marker-position e-chat--transcript-end-marker))
-                      (and (markerp e-chat--composer-start-marker)
-                           (marker-position e-chat--composer-start-marker)))))
-       (when start
-         (let ((inhibit-read-only t))
-           (let ((e-chat--composer-scroll-suppressed t))
-             (delete-region start (point-max)))
-           (set-marker e-chat--transcript-end-marker nil)
-           (set-marker e-chat--composer-start-marker nil)
-           (when (markerp e-chat--composer-spacer-marker)
-             (set-marker e-chat--composer-spacer-marker nil))
-           (when (markerp e-chat--queue-start-marker)
-             (set-marker e-chat--queue-start-marker nil))
-           (when (markerp e-chat--queue-end-marker)
-             (set-marker e-chat--queue-end-marker nil))
-           (setq e-chat--composer-scroll-needed nil)
-           t))))))
+  (cond
+   ((e-chat--surface-transcript-p) nil)
+   ((e-chat--surface-composer-p)
+    (when (e-chat--composer-active-p)
+      (let ((inhibit-read-only t)
+            (e-chat--composer-scroll-suppressed t))
+        (delete-region (marker-position e-chat--composer-start-marker)
+                       (point-max)))
+      (set-marker e-chat--transcript-end-marker nil)
+      (set-marker e-chat--composer-start-marker nil)
+      (setq e-chat--composer-scroll-needed nil)
+      t))
+   (t
+    (e-chat--profile-call
+     'chat.composer-delete
+     (list :session-id e-chat-session-id
+           :buffer-name (buffer-name))
+     (lambda ()
+       (let ((start (or (and (markerp e-chat--composer-spacer-marker)
+                             (marker-position e-chat--composer-spacer-marker))
+                        (and (markerp e-chat--transcript-end-marker)
+                             (marker-position e-chat--transcript-end-marker))
+                        (and (markerp e-chat--composer-start-marker)
+                             (marker-position e-chat--composer-start-marker)))))
+         (when start
+           (let ((inhibit-read-only t))
+             (let ((e-chat--composer-scroll-suppressed t))
+               (delete-region start (point-max)))
+             (set-marker e-chat--transcript-end-marker nil)
+             (set-marker e-chat--composer-start-marker nil)
+             (when (markerp e-chat--composer-spacer-marker)
+               (set-marker e-chat--composer-spacer-marker nil))
+             (when (markerp e-chat--queue-start-marker)
+               (set-marker e-chat--queue-start-marker nil))
+             (when (markerp e-chat--queue-end-marker)
+               (set-marker e-chat--queue-end-marker nil))
+             (setq e-chat--composer-scroll-needed nil)
+             t))))))))
 
 (defun e-chat--sanitize-composer-text (text)
   "Return TEXT without leaked transcript presentation properties."
@@ -2142,6 +2383,12 @@ keeps composer positioning O(window-height) instead of O(transcript-length)."
 (defun e-chat--insert-composer (&optional text preserve-focus)
   "Insert an editable composer at the end of the current chat buffer.
 When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
+  (cond
+   ((e-chat--surface-transcript-p)
+    (e-chat--surface-ensure-composer))
+   ((e-chat--surface-composer-p)
+    (e-chat--surface-initialize-composer text preserve-focus))
+   (t
   (e-chat--profile-call
    'chat.composer-insert
    (list :session-id e-chat-session-id
@@ -2194,12 +2441,14 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
                (when (window-live-p saved-window)
                  (set-window-point saved-window
                                    (min saved-point (point-max)))))
-           (e-chat--show-composer)))))))
+           (e-chat--show-composer)))))))))
 
 (defun e-chat--ensure-composer ()
   "Ensure the current chat buffer has an active composer."
-  (unless (e-chat--composer-active-p)
-    (e-chat--insert-composer)))
+  (if (e-chat--surface-transcript-p)
+      (e-chat--surface-ensure-composer)
+    (unless (e-chat--composer-active-p)
+      (e-chat--insert-composer))))
 
 (defun e-chat--point-in-composer-p (&optional position)
   "Return non-nil when POSITION, or point, is in editable composer text."
@@ -3176,25 +3425,28 @@ active.  It defaults to the historical chat context radius of two lines."
 
 (defun e-chat--insert-context-reference (reference)
   "Insert REFERENCE as a protected inline atom in the composer."
-  (unless (e-chat--composer-active-p)
-    (e-chat--insert-composer))
-  (unless (e-chat--point-in-composer-p)
-    (goto-char (point-max)))
-  (let* ((reference (e-chat--context-reference-with-id reference))
-         (display (format "@[%s]" (plist-get reference :label)))
-         (start (point))
-         (inhibit-read-only t))
-    (insert display)
-    (add-text-properties
-     start
-     (point)
-     `(read-only t
-       e-chat-context-reference ,reference
-       font-lock-face e-chat-context-reference-face
-       help-echo ,(plist-get reference :uri)
-       front-sticky nil
-       rear-nonsticky t))
-    reference))
+  (if (e-chat--surface-transcript-p)
+      (with-current-buffer (e-chat--surface-ensure-composer)
+        (e-chat--insert-context-reference reference))
+    (unless (e-chat--composer-active-p)
+      (e-chat--insert-composer))
+    (unless (e-chat--point-in-composer-p)
+      (goto-char (point-max)))
+    (let* ((reference (e-chat--context-reference-with-id reference))
+           (display (format "@[%s]" (plist-get reference :label)))
+           (start (point))
+           (inhibit-read-only t))
+      (insert display)
+      (add-text-properties
+       start
+       (point)
+       `(read-only t
+         e-chat-context-reference ,reference
+         font-lock-face e-chat-context-reference-face
+         help-echo ,(plist-get reference :uri)
+         front-sticky nil
+         rear-nonsticky t))
+      reference)))
 
 (defun e-chat--replace-context-reference (old-id new-reference)
   "Replace inline composer reference OLD-ID with NEW-REFERENCE."
@@ -6824,11 +7076,20 @@ revealed block when revealing, or on the block that was focused when hiding."
 
 (defun e-chat--refresh-composer-position ()
   "Refresh composer spacer for the current visible window."
-  (when (e-chat--composer-active-p)
+  (cond
+   ((e-chat--surface-transcript-p)
+    (e-chat--surface-prune-window-pairs)
+    (dolist (pair e-chat--surface-window-pairs)
+      (e-chat--surface-fit-composer-window (cdr pair))))
+   ((e-chat--surface-composer-p)
+    (when-let ((transcript e-chat--surface-transcript-buffer))
+      (with-current-buffer transcript
+        (e-chat--refresh-composer-position))))
+   ((e-chat--composer-active-p)
     (let ((text (buffer-substring e-chat--composer-start-marker
                                   (point-max))))
       (e-chat--delete-composer)
-      (e-chat--insert-composer text))))
+      (e-chat--insert-composer text)))))
 
 (defun e-chat--refresh-visible-composers ()
   "Refresh composer spacers for visible e chat buffers."
@@ -6842,7 +7103,12 @@ revealed block when revealing, or on the block that was focused when hiding."
             (push buffer seen)
             (with-current-buffer buffer
               (when (derived-mode-p 'e-chat-mode)
-                (e-chat--refresh-composer-position)))))))))
+                (if (e-chat--surface-transcript-p)
+                    (progn
+                      (e-chat--surface-prune-window-pairs)
+                      (dolist (pair e-chat--surface-window-pairs)
+                        (e-chat--surface-fit-composer-window (cdr pair))))
+                  (e-chat--refresh-composer-position))))))))))
 
 (defun e-chat--ensure-window-refresh-hook ()
   "Ensure visible chat composers refresh when frame windows change."
@@ -6851,13 +7117,18 @@ revealed block when revealing, or on the block that was focused when hiding."
 
 (defun e-chat--show-composer ()
   "Move point and visible window focus to the composer."
-  (goto-char (point-max))
-  (when-let ((window (e-chat--visible-window)))
-    (set-window-point window (point))
-    (unless e-chat--recenter-inhibited
-      (with-selected-window window
-        (ignore-errors
-          (recenter -2))))))
+  (if (e-chat--surface-transcript-p)
+      (when-let ((window (e-chat--surface-display-composer nil t)))
+        (with-current-buffer (window-buffer window)
+          (goto-char (point-max))
+          (set-window-point window (point))))
+    (goto-char (point-max))
+    (when-let ((window (e-chat--visible-window)))
+      (set-window-point window (point))
+      (unless e-chat--recenter-inhibited
+        (with-selected-window window
+          (ignore-errors
+            (recenter -2)))))))
 
 (defun e-chat--show-latest-output ()
   "Show the latest chat output while keeping input focus in the composer."
@@ -6895,6 +7166,8 @@ revealed block when revealing, or on the block that was focused when hiding."
   (with-current-buffer buffer
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
+    (when (e-chat--surface-transcript-p)
+      (e-chat--surface-display-composer))
     (e-chat--enter-composer-input-state)
     (when (e-chat--active-turn-running-p)
       (e-chat--show-latest-output)))
@@ -7044,7 +7317,7 @@ loaded-session backfill generation while rebuilding the transcript."
     (e-chat--insert-protected (e-chat--title-block-text)
                               'e-chat-title-face)
     (unless omit-composer
-      (e-chat--insert-composer))))
+      (e-chat--ensure-composer))))
 
 (defun e-chat--format-token-count (tokens)
   "Return compact display text for TOKENS."
@@ -7240,20 +7513,23 @@ is reserved for terminal context boundaries."
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
 When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
-  (unless (and (not refresh-mode-line)
-               (equal status e-chat--status)
-               header-line-format)
-    (e-chat--profile-call
-     'chat.status
-     (list :session-id e-chat-session-id
-           :buffer-name (buffer-name)
-           :metadata (list :status status
-                           :refresh-mode-line (and refresh-mode-line t)))
-     (lambda ()
-       (setq e-chat--status status)
-       (setq header-line-format (e-chat--header-line-text status))
-       (when refresh-mode-line
-         (e-chat--refresh-mode-line-status))))))
+  (if (e-chat--surface-composer-p)
+      (with-current-buffer e-chat--surface-transcript-buffer
+        (e-chat--set-status status refresh-mode-line))
+    (unless (and (not refresh-mode-line)
+                 (equal status e-chat--status)
+                 header-line-format)
+      (e-chat--profile-call
+       'chat.status
+       (list :session-id e-chat-session-id
+             :buffer-name (buffer-name)
+             :metadata (list :status status
+                             :refresh-mode-line (and refresh-mode-line t)))
+       (lambda ()
+         (setq e-chat--status status)
+         (setq header-line-format (e-chat--header-line-text status))
+         (when refresh-mode-line
+           (e-chat--refresh-mode-line-status)))))))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."
@@ -7538,8 +7814,10 @@ separate dimmed representation instead."
       (plist-get (plist-get event :payload) :status))
      (e-chat--request-activity-redraw (plist-get event :turn-id)))
     ('queue-changed
-     (e-chat--ensure-composer)
-     (e-chat--refresh-composer-position))
+     (if (e-chat--surface-transcript-p)
+         (e-chat--surface-refresh-composer-queue)
+       (e-chat--ensure-composer)
+       (e-chat--refresh-composer-position)))
     ('turn-steered
      (let* ((turn-id (plist-get event :turn-id))
             (payload (plist-get event :payload))
@@ -7962,11 +8240,17 @@ HARNESS are internal test seams."
     (unless unloaded-session
       (e-chat--ensure-session harness session-id instance-id))
   (with-current-buffer buffer
-    (let ((composer-state
-           (and (eq e-chat-harness harness)
-                (equal e-chat-session-id session-id)
-                (eq e-chat-harness-instance-id instance-id)
-                (e-chat--capture-composer-state)))
+    (let* ((same-session
+            (and (eq e-chat-harness harness)
+                 (equal e-chat-session-id session-id)
+                 (eq e-chat-harness-instance-id instance-id)))
+           (previous-surface-composer e-chat--surface-composer-buffer)
+           (surface-composer
+            (and same-session previous-surface-composer))
+           (composer-state
+            (and same-session
+                 (not surface-composer)
+                 (e-chat--capture-composer-state)))
           (existing-workspace (e-buffer-workspace buffer)))
       (e-chat--cancel-session-load-request)
       (unless unloaded-session
@@ -7982,6 +8266,13 @@ HARNESS are internal test seams."
       (setq-local e-chat-harness-instance-id instance-id)
       (setq-local e-chat-session-id session-id)
       (setq-local e-chat--preview-buffer nil)
+      (when e-chat--surface-composition-enabled
+        (when (and (buffer-live-p previous-surface-composer)
+                   (not same-session))
+          (kill-buffer previous-surface-composer))
+        (when (buffer-live-p surface-composer)
+          (setq-local e-chat--surface-composer-buffer surface-composer))
+        (e-chat--surface-ensure-composer))
       (e-buffer-set-workspace
        buffer
        (if e-workspace-rebind-shell-on-open
@@ -9495,6 +9786,10 @@ the transcript matches the new mode immediately."
 When ARG is a string, submit it as a noninteractive prompt.  Interactively,
 plain submit steers an active turn and prefix submit queues a follow-up."
   (interactive "P")
+  (when (e-chat--surface-transcript-p)
+    (cl-return-from e-chat-submit
+      (with-current-buffer (e-chat--surface-ensure-composer)
+        (e-chat-submit arg))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (let* ((explicit-prompt (and (stringp arg) arg))
@@ -9564,6 +9859,10 @@ plain submit steers an active turn and prefix submit queues a follow-up."
 (defun e-chat-reset ()
   "Reset the current chat session and rendered buffer."
   (interactive)
+  (when (e-chat--surface-composer-p)
+    (cl-return-from e-chat-reset
+      (with-current-buffer e-chat--surface-transcript-buffer
+        (e-chat-reset))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat--clear)

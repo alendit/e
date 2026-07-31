@@ -71,6 +71,43 @@ tests, matching how the buffer behaves when shown to a user."
       (setq e-chat--assume-redraw-visible t))
     buffer))
 
+(ert-deftest e-chat-test-composed-surface-keeps-draft-outside-transcript ()
+  "Transcript rendering must not recreate or alter the separate composer."
+  (let* ((e-chat--surface-composition-enabled t)
+         (buffer (e-chat-test--buffer nil "chat-composed-surface")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((composer e-chat--surface-composer-buffer)
+                (draft "keep this unsent draft")
+                composer-tick)
+            (should (buffer-live-p composer))
+            (should (eq (buffer-local-value 'e-chat--surface-transcript-buffer
+                                            composer)
+                        buffer))
+            (with-current-buffer composer
+              (goto-char (point-max))
+              (insert draft)
+              (setq composer-tick (buffer-chars-modified-tick)))
+            (e-chat--render-event
+             (e-events-make :type 'message-added
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:message (:role user
+                                                  :content "render this"))))
+            (should-not (string-match-p (regexp-quote e-chat--composer-glyph)
+                                        (buffer-string)))
+            (should (string-match-p "render this" (buffer-string)))
+            (with-current-buffer composer
+              (should (equal (e-chat--composer-text) draft))
+              (should (= (buffer-chars-modified-tick) composer-tick)))
+            (e-chat--insert-context-reference
+             '(:uri "file:///tmp/context" :label "context" :text "source"))
+            (with-current-buffer composer
+              (should (string-match-p "@\\[context\\]"
+                                      (e-chat--composer-text))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (defun e-chat-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
   (dolist (buffer (buffer-list))
