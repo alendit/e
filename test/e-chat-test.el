@@ -171,6 +171,16 @@ tests, matching how the buffer behaves when shown to a user."
   (call-interactively #'e-chat-enter-response-navigation)
   (e-chat-test--focused-block))
 
+(defun e-chat-test--message-display-hidden-p (message-id)
+  "Return non-nil when MESSAGE-ID is locally projected as hidden."
+  (let* ((block-id (e-chat--message-block-id message-id))
+         (block (and block-id
+                     (gethash block-id e-chat--block-registry)))
+         (start (and block (marker-position (plist-get block :start-marker)))))
+    (and start
+         (e-chat--block-display-hidden-p block)
+         (invisible-p start))))
+
 (defun e-chat-test--kill-buffer-name (name)
   "Kill buffer NAME when it exists."
   (when-let ((buffer (get-buffer name)))
@@ -503,9 +513,9 @@ tests, matching how the buffer behaves when shown to a user."
         (kill-buffer second-buffer)))))
 
 (ert-deftest e-chat-test-render-session-skips-hidden-messages ()
-  "A message flagged `:display' `hidden' is not rendered in the transcript.
+  "A message flagged `:display' `hidden' is invisible in the clean transcript.
 A superseded first attempt stays in the store for audit but the shell shows
-only the visible reply."
+only the visible reply while retaining a durable-to-rendered projection."
   (let ((buffer (e-chat-test--buffer nil "chat-hidden-render")))
     (unwind-protect
         (with-current-buffer buffer
@@ -519,16 +529,21 @@ only the visible reply."
                  :content "superseded first attempt" :display 'hidden))
           (e-chat--clear)
           (e-chat--render-session)
-          (let ((content (buffer-string)))
-            (should (string-match-p "visible answer" content))
-            (should-not (string-match-p "superseded first attempt" content))))
+          (let* ((visible-id (e-chat--message-block-id "m-visible"))
+                 (hidden-id (e-chat--message-block-id "m-hidden")))
+            (should visible-id)
+            (should hidden-id)
+            (should (e-chat--live-block-record visible-id))
+            (should-not (e-chat--live-block-record hidden-id))
+            (should (e-chat-test--message-display-hidden-p "m-hidden"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-message-updated-hides-rendered-reply ()
-  "Flipping a rendered message to hidden removes it via `message-updated'.
+(ert-deftest e-chat-test-message-updated-reconciles-rendered-reply-locally ()
+  "Flipping a rendered message hidden/visible updates its block without replay.
 The bayesian follow-up hides the first attempt after it was already shown, so
-the shell must react to the `message-updated' event and drop the block."
+the shell must react to the `message-updated' event without rebuilding a long
+transcript."
   (let ((buffer (e-chat-test--buffer nil "chat-hidden-update")))
     (unwind-protect
         (with-current-buffer buffer
@@ -538,11 +553,22 @@ the shell must react to the `message-updated' event and drop the block."
                           (list :role 'assistant
                                 :content "first attempt reply"))))
             (should (string-match-p "first attempt reply" (buffer-string)))
-            (e-harness-set-message-display
-             e-chat-harness "chat-hidden-update"
-             (plist-get message :id) 'hidden)
-            (should-not (string-match-p "first attempt reply"
-                                        (buffer-string)))))
+            (let ((rerenders 0)
+                  (message-id (plist-get message :id)))
+              (cl-letf (((symbol-function 'e-chat--rerender-transcript)
+                         (lambda () (setq rerenders (1+ rerenders)))) )
+                (e-harness-set-message-display
+                 e-chat-harness "chat-hidden-update" message-id 'hidden)
+                (let ((block-id (e-chat--message-block-id message-id)))
+                  (should block-id)
+                  (should-not (e-chat--live-block-record block-id))
+                  (should (e-chat-test--message-display-hidden-p message-id)))
+                (e-harness-set-message-display
+                 e-chat-harness "chat-hidden-update" message-id nil)
+                (let ((block-id (e-chat--message-block-id message-id)))
+                  (should (e-chat--live-block-record block-id))
+                  (should-not (e-chat-test--message-display-hidden-p message-id)))
+                (should (= rerenders 0))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -569,8 +595,8 @@ on demand so the user can audit what the calibration follow-up removed."
                  :metadata '(:display hidden)))
           (e-chat--clear)
           (e-chat--render-session)
-          (should-not (string-match-p "superseded first attempt"
-                                      (buffer-string)))
+          (should (e-chat-test--message-display-hidden-p "m-first"))
+          (should (e-chat-test--message-display-hidden-p "m-prompt"))
           (e-chat-test--focus-block-containing "revised answer")
           (should-not e-chat--reveal-hidden)
           (call-interactively
@@ -610,8 +636,7 @@ one-answer transcript."
           (call-interactively
            (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
           (should-not e-chat--reveal-hidden)
-          (should-not (string-match-p "superseded first attempt"
-                                      (buffer-string))))
+          (should (e-chat-test--message-display-hidden-p "m-first")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -638,8 +663,7 @@ must drop any revealed hidden blocks."
           (should (string-match-p "superseded first attempt" (buffer-string)))
           (call-interactively #'e-chat-response-navigation-insert)
           (should-not e-chat--reveal-hidden)
-          (should-not (string-match-p "superseded first attempt"
-                                      (buffer-string))))
+          (should (e-chat-test--message-display-hidden-p "m-first")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

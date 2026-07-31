@@ -14,6 +14,8 @@ Done.
 - Token-usage, progress-start, steering, hook-audit, and intermittent activity
   projections in the chat shell.
 - Commits =b30d198=, =64c2f22=, =46a19c8=, =cdb7a0e=, and =2822ede=.
+- Post-completion correction: terminal =message-updated= handling in the chat
+  shell, following the 2026-07-31 live profile.
 
 * Review loop
 
@@ -52,6 +54,31 @@ journals absent from the catalog.
 =e-session-test-index-store-lists-without-loading-transcripts= passes alongside
 the stale-catalog recovery test; commit =cdb7a0e= contains the correction.
 
+** DONE High: A message display update replayed the complete transcript
+
+*** Problem
+
+The live profile showed two =message-updated= events taking about five seconds
+each.  A claim-validation correction changes the display disposition of an
+already-rendered assistant message, but the chat shell had no identity bridge
+from durable message id to its rendered block, so it rebuilt the entire
+transcript.
+
+*** Change
+
+The chat buffer now owns a transient =message-id -> block-id= projection.
+Each durable entry retains its own invisible layout range when normally hidden,
+including immediately preceding separators.  A normal display update changes
+that range locally and refreshes only derived local selection/separator state.
+The explicit audit-reveal command still uses its full replay path because its
+dimmed hidden-entry representation is intentionally different.
+
+*** Evidence
+
+=e-chat-test-message-updated-reconciles-rendered-reply-locally= proves both
+hide and restore invoke no transcript replay.  The full chat suite passes with
+310 expected results and one existing environment-dependent markdown skip.
+
 * Final review
 
 No unresolved findings.  Durable journal appends now leave the Emacs UI thread,
@@ -68,6 +95,8 @@ synchronous by design.
 - Controlled event-burst trace: =/tmp/e-profile/20260730-174106-000001.jsonl=.
   =chat.render-event= peaked at 0.600 ms; =session.append-record= at 0.076 ms;
   the one coalesced activity redraw took 1.095 ms.
+- =eldev test --file e-chat-test.el=: 310 expected results, no unexpected
+  results, one existing environment-dependent markdown skip.
 
 * Live reload
 
@@ -81,13 +110,18 @@ adapter owns filesystem effects.  Journals remain authoritative durable state;
 the catalog is derived and recoverable.  Chat event dispatch updates local view
 state and asks the existing UI-work service to project it, avoiding a second
 renderer or a new shared event abstraction.
+The message-to-block index is likewise buffer-local derived state: the session
+remains the durable owner of message identity, while the shell owns its current
+layout and visibility projection.
 
 * Design self-check
 
-1. Each committed slice is useful independently.
+1. Each committed slice is useful independently; local disposition updates
+   remove a multi-second replay from an ordinary correction path.
 2. The direction is UI-thread-free persistence and bounded latest-value UI work.
 3. Writer transport is a local, replaceable boundary; journal format is stable.
-4. The controller owns durability delivery; chat owns presentation state.
+4. The controller owns durability delivery; chat owns presentation state,
+   including the durable-message-to-block projection.
 5. Interfaces are narrow append/checkpoint/ack and scheduled projection calls.
 6. Core policy depends on those contracts, not Node or shell implementation.
 7. Filesystem effects are outside the Emacs interactive path.

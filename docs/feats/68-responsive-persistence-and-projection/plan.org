@@ -31,6 +31,13 @@ ordered; token usage and progress remain latest-value updates.
    through the existing coalesced activity projection.  Terminal transcript
    updates remain ordered and immediate.  Validate replay, writer retry/order,
    hidden-buffer behavior, and a representative event-burst profile.
+4. DONE: A later live profile found that a terminal =message-updated= event
+   still replayed the complete transcript when a claim-validation correction
+   changed a message's display disposition.  The chat buffer now owns a
+   transient durable-message-to-block projection.  Ordinary hidden/visible
+   changes update that one block and its adjacent layout locally; the explicit
+   audit-reveal view retains its separate full replay because it deliberately
+   uses a different representation.
 
 * Completion evidence
 
@@ -41,3 +48,7 @@ It recorded 81 =chat.render-event= calls with a 0.600 ms maximum, 40
 =session.append-record= calls with a 0.076 ms maximum, and one coalesced
 =chat.activity-redraw= at 1.095 ms.  The trace is a deterministic workload,
 not a replacement for profiling a live provider turn.
+
+The follow-up local-projection slice has focused ERT coverage for initial
+hidden-message projection, hide and restore of an already-rendered message
+without =e-chat--rerender-transcript=, and the explicit audit-reveal toggle.

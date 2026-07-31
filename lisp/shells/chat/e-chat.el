@@ -753,6 +753,12 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--block-registry nil
   "Hash table of rendered block metadata keyed by block id.")
 
+(defvar-local e-chat--message-block-index nil
+  "Hash table mapping durable message ids to rendered block ids.
+The session owns message identity; this buffer-local projection owns the
+corresponding presentation block.  It lets display-disposition events update a
+single rendered message without replaying the transcript.")
+
 (defvar-local e-chat--block-order nil
   "Rendered block ids in transcript order.")
 
@@ -3445,6 +3451,30 @@ selection."
     (setq e-chat--block-registry (make-hash-table :test 'equal)))
   e-chat--block-registry)
 
+(defun e-chat--ensure-message-block-index ()
+  "Ensure durable-message projection state exists for the current chat buffer."
+  (unless (hash-table-p e-chat--message-block-index)
+    (setq e-chat--message-block-index (make-hash-table :test 'equal)))
+  e-chat--message-block-index)
+
+(defun e-chat--message-block-id (message-id)
+  "Return the rendered block id projected for durable MESSAGE-ID, if any."
+  (and message-id
+       (hash-table-p e-chat--message-block-index)
+       (gethash message-id e-chat--message-block-index)))
+
+(defun e-chat--block-display-hidden-p (record)
+  "Return non-nil when rendered block RECORD is hidden by message disposition."
+  (plist-get record :display-hidden))
+
+(defun e-chat--associate-message-block (message-id block-id)
+  "Associate durable MESSAGE-ID with presentation BLOCK-ID.
+The relation is one-to-one inside a chat buffer."
+  (when (and message-id block-id)
+    (puthash message-id block-id (e-chat--ensure-message-block-index))
+    (when-let ((record (gethash block-id (e-chat--ensure-block-registry))))
+      (plist-put record :message-id message-id))))
+
 (defun e-chat--turn-record (turn-id)
   "Return mutable metadata for TURN-ID, creating it when needed."
   (when turn-id
@@ -3485,6 +3515,11 @@ selection."
                             :kind nil
                             :action-text nil
                             :details-text nil
+                            :message-id nil
+                            :display-hidden nil
+                            :display-overlay nil
+                            :side nil
+                            :layout-start-marker nil
                             :content-start-marker nil
                             :content-end-marker nil
                             :tool-items nil
@@ -3499,8 +3534,18 @@ selection."
 (defun e-chat--remove-block-record (block-id)
   "Remove BLOCK-ID from rendered block metadata."
   (when block-id
-    (when (hash-table-p e-chat--block-registry)
-      (remhash block-id e-chat--block-registry))
+    (let ((record (and (hash-table-p e-chat--block-registry)
+                       (gethash block-id e-chat--block-registry))))
+      (when-let ((overlay (plist-get record :display-overlay)))
+        (when (overlayp overlay)
+          (delete-overlay overlay)))
+      (when-let ((message-id (plist-get record :message-id)))
+        (when (and (hash-table-p e-chat--message-block-index)
+                   (equal (gethash message-id e-chat--message-block-index)
+                          block-id))
+          (remhash message-id e-chat--message-block-index)))
+      (when (hash-table-p e-chat--block-registry)
+        (remhash block-id e-chat--block-registry)))
     (setq e-chat--block-order (delete block-id e-chat--block-order))
     (when (equal e-chat--focused-block-id block-id)
       (setq e-chat--focused-block-id nil)
@@ -3514,6 +3559,79 @@ selection."
       (setq e-chat--tool-list-index 0)
       (when (overlayp e-chat--tool-list-overlay)
         (delete-overlay e-chat--tool-list-overlay)))))
+
+(defun e-chat--block-layout-bounds (record)
+  "Return presentation bounds owned by rendered block RECORD, or nil.
+The layout range includes separators immediately preceding the entry, so
+hiding a message cannot leave an orphaned response or turn separator."
+  (let* ((start-marker (or (plist-get record :layout-start-marker)
+                           (plist-get record :start-marker)))
+         (end-marker (plist-get record :end-marker))
+         (start (and (markerp start-marker) (marker-position start-marker)))
+         (end (and (markerp end-marker) (marker-position end-marker))))
+    (and start end (< start end) (cons start end))))
+
+(defun e-chat--set-block-layout-hidden (record hidden)
+  "Set rendered block RECORD's layout visibility to HIDDEN.
+Only visibility owned by the durable-message projection is changed; unrelated
+text invisibility in the chat buffer remains intact."
+  (when-let ((bounds (e-chat--block-layout-bounds record)))
+    (let ((start (car bounds))
+          (end (cdr bounds))
+          (overlay (plist-get record :display-overlay)))
+      (when (overlayp overlay)
+        (delete-overlay overlay))
+      (if hidden
+          (let ((overlay (make-overlay start end nil nil nil)))
+            (overlay-put overlay 'invisible 'e-chat-message-hidden)
+            (overlay-put overlay 'evaporate t)
+            (plist-put record :display-overlay overlay))
+        (plist-put record :display-overlay nil))
+      (plist-put record :display-hidden hidden)
+      t)))
+
+(defun e-chat--refresh-last-rendered-entry ()
+  "Recompute separator state from the final visible durable entry."
+  (let (record)
+    (dolist (block-id (reverse e-chat--block-order))
+      (when (and (not record)
+                 (hash-table-p e-chat--block-registry))
+        (let ((candidate (gethash block-id e-chat--block-registry)))
+          (when (and candidate
+                     (plist-get candidate :side)
+                     (not (e-chat--block-display-hidden-p candidate))
+                     (e-chat--block-layout-bounds candidate))
+            (setq record candidate)))))
+    (setq e-chat--last-rendered-turn-id (plist-get record :turn-id)
+          e-chat--last-rendered-side (plist-get record :side))))
+
+(defun e-chat--refresh-latest-final-block ()
+  "Refresh the latest visible final assistant block cache."
+  (setq e-chat--latest-final-block-id
+        (and (hash-table-p e-chat--block-registry)
+             (cl-find-if
+              (lambda (block-id)
+                (let ((record (gethash block-id e-chat--block-registry)))
+                  (and (eq (plist-get record :kind) 'final)
+                       (not (e-chat--block-display-hidden-p record))
+                       (e-chat--block-layout-bounds record))))
+              (reverse e-chat--block-order)))))
+
+(defun e-chat--reconcile-message-display (message)
+  "Apply MESSAGE's display disposition to its rendered projection.
+Return non-nil when the projection was updated locally.  Audit reveal mode
+uses a distinct hidden-message presentation, so its rare updates deliberately
+fall back to its existing full projection path."
+  (let* ((message-id (plist-get message :id))
+         (block-id (e-chat--message-block-id message-id))
+         (record (and block-id (hash-table-p e-chat--block-registry)
+                      (gethash block-id e-chat--block-registry))))
+    (when (and record (not e-chat--reveal-hidden))
+      (e-chat--set-block-layout-hidden
+       record (e-harness-message-hidden-p message))
+      (e-chat--refresh-last-rendered-entry)
+      (e-chat--refresh-latest-final-block)
+      t)))
 
 (defun e-chat--set-turn-time (turn-id field value)
   "Set TURN-ID timing FIELD to VALUE when both are available."
@@ -3659,14 +3777,16 @@ DETAILS-TEXT describe block actions."
   (let ((block-id e-chat--latest-final-block-id))
     (unless (and block-id
                  (hash-table-p e-chat--block-registry)
-                 (gethash block-id e-chat--block-registry))
+                 (let ((record (gethash block-id e-chat--block-registry)))
+                   (and record
+                        (not (e-chat--block-display-hidden-p record)))))
       (setq block-id
             (and (hash-table-p e-chat--block-registry)
                  (cl-find-if
                   (lambda (candidate)
-                    (eq (plist-get (gethash candidate e-chat--block-registry)
-                                   :kind)
-                        'final))
+                    (let ((record (gethash candidate e-chat--block-registry)))
+                      (and (eq (plist-get record :kind) 'final)
+                           (not (e-chat--block-display-hidden-p record)))))
                   (reverse e-chat--block-order)))))
     (or (and block-id (gethash block-id e-chat--block-registry))
         (user-error "No final e chat response"))))
@@ -4687,7 +4807,8 @@ When RECORD is nil, clear only buffer-local status markers."
                        (marker-position start-marker)))
            (end (and (markerp end-marker)
                      (marker-position end-marker))))
-      (when (and start end (< start end))
+      (when (and start end (< start end)
+                 (not (e-chat--block-display-hidden-p record)))
         record))))
 
 (defun e-chat--capture-running-status-navigation-state ()
@@ -6232,20 +6353,24 @@ Preserve Markdown faces already present in the range."
                             t)))
 
 (defun e-chat--insert-entry
-    (title content &optional ensure-composer turn-id details-text)
+    (title content &optional ensure-composer turn-id details-text message-id hidden)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
 TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
-non-nil, is used by focused block activation.  Assistant CONTENT is passed
-through the structured-block registry before display; a shell with no
-registered kinds shows CONTENT unchanged."
+non-nil, is used by focused block activation.  MESSAGE-ID associates a durable
+session message with its rendered block.  When HIDDEN is non-nil, the entry is
+kept in the projection but invisible until its display disposition changes.
+Assistant CONTENT is passed through the structured-block registry before
+display; a shell with no registered kinds shows CONTENT unchanged."
   (e-chat--profile-call
    'chat.insert-entry
    (list :session-id e-chat-session-id
          :turn-id turn-id
          :buffer-name (buffer-name)
          :metadata (list :title title
-                         :ensure-composer (and ensure-composer t)))
+                         :ensure-composer (and ensure-composer t)
+                         :durable-message (and message-id t)
+                         :hidden (and hidden t)))
    (lambda ()
      (let* ((active-turn-id (or e-chat--progress-turn-id
                                 (e-chat--running-status-turn-id)))
@@ -6266,13 +6391,14 @@ registered kinds shows CONTENT unchanged."
          (goto-char (point-max))
          (unless (or (bobp) (bolp))
            (insert "\n"))
-         (e-chat--insert-durable-entry-separators turn-id side)
-         (let ((start (point)))
-           (let ((content-start (+ start (e-chat--entry-content-offset title))))
+         (let ((layout-start (point)))
+           (e-chat--insert-durable-entry-separators turn-id side)
+           (let* ((start (point))
+                  (content-start (+ start (e-chat--entry-content-offset title))))
              (e-chat--insert-protected
               (e-chat--entry-text title content)
               (e-chat--entry-face title)
-             (when block-id
+              (when block-id
                 `(e-chat-turn-id ,turn-id
                   e-chat-block-id ,block-id)))
              (when (equal title "Assistant")
@@ -6280,33 +6406,32 @@ registered kinds shows CONTENT unchanged."
                    (e-chat--apply-assistant-org content-start (point))
                  (if (e-chat--defer-assistant-markdown-p content)
                      (e-chat--schedule-assistant-markdown
-                      content-start
-                      (point)
-                      block-id)
-                   (e-chat--apply-assistant-markdown
-                    content-start
-                    (point))))
-               (e-chat--apply-final-assistant-face
-                content-start
-                (point)))
+                      content-start (point) block-id)
+                   (e-chat--apply-assistant-markdown content-start (point))))
+               (e-chat--apply-final-assistant-face content-start (point)))
              (e-chat--update-block-bounds
-              block-id
-              turn-id
-              start
-              (point)
+              block-id turn-id start (point)
               (e-chat--block-kind-for-title title)
-              content
-              content-start
-              (+ content-start (length content))
-              nil
-              details-text)
-             (e-chat--record-durable-entry-rendered turn-id side))))
+              content content-start (+ content-start (length content)) nil details-text)
+             (when block-id
+               (let ((record (e-chat--block-record block-id turn-id)))
+                 (plist-put record :layout-start-marker
+                            (copy-marker layout-start nil))
+                 (plist-put record :side side)
+                 (e-chat--associate-message-block message-id block-id)
+                 (when hidden
+                   (e-chat--set-block-layout-hidden record t))))
+             (unless hidden
+               (e-chat--record-durable-entry-rendered turn-id side))))
        (if active-turn-id
            (progn
              (e-chat--restore-composer-state composer-state)
              (e-chat--render-running-status active-turn-id active-record))
          (when (or ensure-composer had-composer)
-           (e-chat--restore-composer-state composer-state)))))))
+           (e-chat--restore-composer-state composer-state)))
+       (when hidden
+         (e-chat--refresh-last-rendered-entry)
+         (e-chat--refresh-latest-final-block)))))))
 
 (defun e-chat-enter-response-navigation ()
   "Enter response navigation mode and focus the nearest rendered turn."
@@ -6880,6 +7005,7 @@ loaded-session backfill generation while rebuilding the transcript."
     (setq e-chat--queue-end-marker nil)
     (setq e-chat--turn-registry (make-hash-table :test 'equal))
     (setq e-chat--block-registry (make-hash-table :test 'equal))
+    (setq e-chat--message-block-index (make-hash-table :test 'equal))
     (setq e-chat--block-order nil)
     (setq e-chat--block-counter 0)
     (setq e-chat--context-reference-counter 0)
@@ -7201,6 +7327,21 @@ passed through assistant fontification, so the audit view is faithful."
                        e-chat--hidden-entry-title-prefix role)))
           (if (stringp content) content (format "%S" content)))))
 
+(defun e-chat--render-durable-message (message turn-id &optional ensure-composer)
+  "Render durable MESSAGE for TURN-ID and return its entry data.
+Hidden messages remain in the buffer-local message projection but are made
+invisible in the normal reading view.  Audit reveal mode deliberately uses its
+separate dimmed representation instead."
+  (let* ((hidden (e-harness-message-hidden-p message))
+         (entry (if (and hidden e-chat--reveal-hidden)
+                    (e-chat--hidden-message-entry message)
+                  (e-chat--message-entry message))))
+    (e-chat--insert-entry
+     (car entry) (cdr entry) ensure-composer turn-id nil
+     (plist-get message :id)
+     (and hidden (not e-chat--reveal-hidden)))
+    entry))
+
 (defun e-chat--final-assistant-message (turn-id)
   "Return the final assistant message for TURN-ID in the attached session."
   (car
@@ -7227,8 +7368,7 @@ passed through assistant fontification, so the audit view is faithful."
                        e-chat-session-id))))
           (e-chat--render-turn-activity-events turn-id activity-events))
         (e-chat--finalize-turn-display turn-id)
-        (let ((entry (e-chat--message-entry message)))
-          (e-chat--insert-entry (car entry) (cdr entry) nil turn-id))
+        (e-chat--render-durable-message message turn-id)
         t))))
 
 (defun e-chat--render-event (event)
@@ -7343,16 +7483,11 @@ passed through assistant fontification, so the audit view is faithful."
       t
       (plist-get event :turn-id)))
     ('message-added
-     (let* ((message (plist-get (plist-get event :payload) :message))
-            (entry (e-chat--message-entry message)))
+     (let ((message (plist-get (plist-get event :payload) :message)))
        (cond
         ((e-chat--tool-message-p message)
          ;; Tool transcript messages are internal model context.  Presentation
          ;; activity is driven only by current durable activity events.
-         nil)
-        ((e-harness-message-hidden-p message)
-         ;; A message hidden from the start (e.g. a machine-authored corrective
-         ;; prompt) stays in the transcript for audit but is never rendered.
          nil)
         (t
          (let ((assistant-p (eq (plist-get message :role) 'assistant))
@@ -7367,17 +7502,19 @@ passed through assistant fontification, so the audit view is faithful."
                (e-chat--delete-turn-transient record)))
            (when assistant-p
              (e-chat--finalize-turn-display turn-id))
-           (e-chat--insert-entry (car entry) (cdr entry) nil turn-id)
+           (e-chat--render-durable-message message turn-id)
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)
              (e-chat--refresh-session-display)))))))
     ('message-updated
      ;; A stored message's display disposition changed (e.g. the bayesian
-     ;; follow-up hid an already-rendered first attempt).  Blocks are keyed by
-     ;; block id, not message id, so re-render the transcript rather than hunt
-     ;; for one block; this is rare and off the hot path.
-     (e-chat--rerender-transcript))
+     ;; follow-up hid an already-rendered first attempt).  Durable message id
+     ;; projection makes the ordinary clean-view case a local visibility
+     ;; update; audit reveal keeps its distinct hidden-entry representation.
+     (let ((message (plist-get (plist-get event :payload) :message)))
+       (unless (e-chat--reconcile-message-display message)
+         (e-chat--rerender-transcript))))
     ('provider-request-started
      (e-chat--set-status "waiting for provider")
      (e-chat--record-provider-started
@@ -7583,20 +7720,18 @@ attached session's full transcript."
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
       (let ((hidden (e-harness-message-hidden-p message)))
-        (unless (or (e-chat--tool-message-p message)
-                    (and hidden (not e-chat--reveal-hidden)))
+        (unless (e-chat--tool-message-p message)
           (if hidden
-              ;; Revealed for audit: a dimmed, focusable block that never joins
-              ;; the turn's activity/finalization flow, so it cannot disturb the
-              ;; visible answer's rendering.
-              (let ((entry (e-chat--hidden-message-entry message)))
-                (e-chat--insert-entry (car entry) (cdr entry) t turn-id))
-            (let ((entry (e-chat--message-entry message)))
-              (when (eq (plist-get message :role) 'assistant)
-                (e-chat--render-turn-activity-events turn-id activity-events))
-              (e-chat--insert-entry (car entry) (cdr entry) t turn-id)
-              (when (eq (plist-get message :role) 'assistant)
-                (e-chat--finalize-turn-display turn-id)))))))
+              ;; In normal view, retain a hidden physical projection so the
+              ;; event path can restore it without rebuilding this transcript.
+              ;; Audit reveal renders the separate dimmed entry through the
+              ;; same helper.
+              (e-chat--render-durable-message message turn-id t)
+            (when (eq (plist-get message :role) 'assistant)
+              (e-chat--render-turn-activity-events turn-id activity-events))
+            (e-chat--render-durable-message message turn-id t)
+            (when (eq (plist-get message :role) 'assistant)
+              (e-chat--finalize-turn-display turn-id))))))
     (e-chat--render-replayed-active-activity activity-events)
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
