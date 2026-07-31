@@ -1305,6 +1305,9 @@ behavior.  Interactive mutation paths must not call this function."
 (defun e-session--normalize-message (message)
   "Return MESSAGE normalized after JSON replay."
   (plist-put message :role (e-session--known-role (plist-get message :role)))
+  (when-let ((origin (plist-get message :origin)))
+    (when (stringp origin)
+      (plist-put message :origin (intern origin))))
   (when (plist-member message :display)
     (plist-put message :display
                (e-session--known-display (plist-get message :display))))

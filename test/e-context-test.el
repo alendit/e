@@ -16,6 +16,42 @@
 (require 'e-context)
 (require 'e-session)
 
+(ert-deftest e-context-test-source-descriptor-identifies-exact-content ()
+  "Context sources have short handles and full request-time content digests."
+  (let ((first (e-context-source-create
+                :uri "file:///tmp/topic.org"
+                :label "topic"
+                :content "first"))
+        (same (e-context-source-create
+               :uri "file:///tmp/topic.org"
+               :label "topic"
+               :content "first"))
+        (changed (e-context-source-create
+                  :uri "file:///tmp/topic.org"
+                  :label "topic"
+                  :content "second")))
+    (should (string-match-p "\\`src:[0-9A-F]\\{16\\}\\'"
+                            (e-context-source-handle first)))
+    (should (equal (e-context-source-handle first)
+                   (e-context-source-handle same)))
+    (should-not (equal (e-context-source-handle first)
+                       (e-context-source-handle changed)))
+    (should (= (length (plist-get first :content-sha256)) 64))))
+
+(ert-deftest e-context-test-backend-message-strips-internal-provenance ()
+  "Backend messages do not expose input origin or source descriptor metadata."
+  (let ((message
+         (e-context--backend-message
+          '(:role user
+            :origin harness
+            :content "repair"
+            :metadata (:display hidden :input-origin harness)
+            :evidence-sources ((:handle "src:ABC"))))))
+    (should-not (plist-member message :origin))
+    (should-not (plist-member message :evidence-sources))
+    (should-not (plist-member (plist-get message :metadata) :input-origin))
+    (should (eq (plist-get (plist-get message :metadata) :display) 'hidden))))
+
 (ert-deftest e-context-test-transcript-stack-preserves-session-order ()
   "Transcript-stack builds backend context from ordered session messages."
   (let ((store (e-session-store-create))

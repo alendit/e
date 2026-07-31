@@ -231,6 +231,33 @@
                    '((:role system :content "Capability instructions.")
                      (:role system :content "provider:turn-1"))))))
 
+(ert-deftest e-capabilities-test-context-retains-source-on-segment-only ()
+  "Provider source descriptors stay on segments, not backend messages."
+  (let* ((source '(:id "ABC" :handle "src:ABC"
+                   :uri "file:///tmp/topic.org"))
+         (provider
+          (e-context-provider-create
+           :name 'sourced
+           :cache-placement 'dynamic-context
+           :build
+           (lambda (&rest _)
+             (list (list :role 'system
+                         :content "sourced context"
+                         e-context-evidence-sources-key
+                         (list source))))))
+         (capability
+          (e-capability-create
+           :id 'context
+           :context-providers (list provider)))
+         (context (e-capabilities-context (list capability)))
+         (message (car (plist-get context :messages)))
+         (segment (car (plist-get context :segments))))
+    (should-not (plist-member message e-context-evidence-sources-key))
+    (should (equal (plist-get segment e-context-evidence-sources-key)
+                   (list source)))
+    (should (equal (plist-get segment :messages)
+                   '((:role system :content "sourced context"))))))
+
 (ert-deftest e-capabilities-test-context-priority-orders_fragments ()
   "Context aggregation keeps static instructions before provider fragments."
   (let* ((early-provider

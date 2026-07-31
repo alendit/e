@@ -158,6 +158,7 @@
                               (plist-get (car messages) :turn-id)))
       (should (equal (mapcar (lambda (message) (plist-get message :role)) messages)
                      '(user assistant)))
+      (should (eq (plist-get (car messages) :origin) 'human))
       (should (equal (plist-get (cadr messages) :content) "answer")))
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))))
 
@@ -179,6 +180,8 @@
                (setq seen (list :value value
                                 :session-id (plist-get context :session-id)
                                 :turn-id (plist-get context :turn-id)
+                                :model-context
+                                (plist-get context :model-context)
                                 :assistant-message
                                 (plist-get context :assistant-message)))
                value)))))
@@ -194,6 +197,8 @@
                      ,assistant-text)))
     (should (equal (plist-get seen :session-id) "session-1"))
     (should (stringp (plist-get seen :turn-id)))
+    (should (equal (plist-get (plist-get seen :model-context) :strategy)
+                   'transcript-stack))
     (should (equal (plist-get (plist-get seen :assistant-message) :role)
                    'assistant))
     (should (equal (plist-get (plist-get seen :assistant-message) :content)

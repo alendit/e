@@ -16,6 +16,7 @@
 (require 'e-compaction)
 (require 'e-session)
 (require 'seq)
+(require 'subr-x)
 
 (cl-defstruct (e-context
                (:constructor e-context-create)
@@ -31,6 +32,40 @@
   build
   (cache-placement 'stable-context)
   snapshot-build)
+
+(defconst e-context-evidence-sources-key :evidence-sources
+  "Internal message key carrying request-time source descriptors.
+
+Context providers may attach a list of descriptors under this key.  Context
+assembly removes the key from backend-facing messages and retains the
+descriptors on the corresponding context segment.")
+
+(cl-defun e-context-source-create
+    (&key uri label content (source-kind 'current-state) provider)
+  "Create an immutable request-time source descriptor for CONTENT at URI.
+
+The short `src:' handle is derived from URI and CONTENT.  The descriptor keeps
+the full digest for durable audit records.  PROVIDER identifies the contributing
+adapter without becoming part of claim policy."
+  (unless (and (stringp uri) (not (string-empty-p uri)))
+    (signal 'wrong-type-argument (list 'stringp uri)))
+  (unless (stringp content)
+    (signal 'wrong-type-argument (list 'stringp content)))
+  (let* ((digest (upcase
+                  (secure-hash 'sha256
+                               (concat uri "\0" content))))
+         (id (substring digest 0 16)))
+    (list :id id
+          :handle (concat "src:" id)
+          :uri uri
+          :label (or label uri)
+          :source-kind source-kind
+          :provider provider
+          :content-sha256 digest)))
+
+(defun e-context-source-handle (source)
+  "Return SOURCE's model-facing `src:' handle."
+  (plist-get source :handle))
 
 (defun e-context-name (strategy)
   "Return STRATEGY name."
@@ -178,6 +213,14 @@ backend-neutral messages that should appear before the session transcript."
     (cl-remf copy :turn-id)
     (cl-remf copy :type)
     (cl-remf copy :parent-id)
+    (cl-remf copy :origin)
+    (cl-remf copy e-context-evidence-sources-key)
+    (when-let ((metadata (plist-get copy :metadata)))
+      (setq metadata (copy-sequence metadata))
+      (cl-remf metadata :input-origin)
+      (if metadata
+          (plist-put copy :metadata metadata)
+        (cl-remf copy :metadata)))
     (when (eq (plist-get copy :role) 'compaction-summary)
       (plist-put copy :role 'system))
     copy))

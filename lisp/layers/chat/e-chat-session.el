@@ -332,11 +332,28 @@ in the next turn's context."
     (setq text (replace-regexp-in-string "<" "&lt;" text t t))
     (replace-regexp-in-string ">" "&gt;" text t t)))
 
-(defun e-chat-session--attachment-section (attachment)
-  "Return a model-facing current-state section for ATTACHMENT."
+(defun e-chat-session--attachment-source (attachment content)
+  "Return request-time source provenance for ATTACHMENT CONTENT."
+  (e-context-source-create
+   :uri (e-chat-session--attachment-uri attachment)
+   :label (plist-get attachment :label)
+   :content content
+   :source-kind 'current-state-attachment
+   :provider 'chat-session))
+
+(defun e-chat-session--attachment-section
+    (attachment &optional content source)
+  "Return a model-facing current-state section for ATTACHMENT.
+
+CONTENT and SOURCE let the caller reuse one attachment read and its matching
+request-time source descriptor."
   (let* ((canvas (plist-get attachment :canvas))
-         (tag (if canvas "canvas" "attachment")))
-    (format "<%s id=\"%s\" uri=\"%s\" label=\"%s\">\n%s\n</%s>"
+         (tag (if canvas "canvas" "attachment"))
+         (content (or content
+                      (e-chat-session--attachment-content attachment)))
+         (source (or source
+                     (e-chat-session--attachment-source attachment content))))
+    (format "<%s id=\"%s\" uri=\"%s\" label=\"%s\" evidence=\"%s\">\n%s\n</%s>"
             tag
             (e-chat-session--xml-attribute-escape
              (plist-get attachment :id))
@@ -344,7 +361,9 @@ in the next turn's context."
              (plist-get attachment :uri))
             (e-chat-session--xml-attribute-escape
              (plist-get attachment :label))
-            (e-chat-session--attachment-content attachment)
+            (e-chat-session--xml-attribute-escape
+             (e-context-source-handle source))
+            content
             tag)))
 
 (cl-defun e-chat-session-context-attachments-provider
@@ -355,11 +374,31 @@ in the next turn's context."
                           (ignore-errors
                             (e-chat-session-attachments harness session-id)))))
     (when attachments
-      (let ((has-canvas (cl-some (lambda (attachment)
-                                   (plist-get attachment :canvas))
-                                 attachments)))
+      (let* ((has-canvas (cl-some (lambda (attachment)
+                                    (plist-get attachment :canvas))
+                                  attachments))
+             (rendered
+              (mapcar
+               (lambda (attachment)
+                 (let* ((content
+                         (e-chat-session--attachment-content attachment))
+                        (source
+                         (e-chat-session--attachment-source
+                          attachment content)))
+                   (list :source source
+                         :section
+                         (e-chat-session--attachment-section
+                          attachment content source))))
+               attachments))
+             (sources (mapcar (lambda (item)
+                                (plist-get item :source))
+                              rendered))
+             (sections (mapcar (lambda (item)
+                                 (plist-get item :section))
+                               rendered)))
         (list
          (list :role 'system
+               e-context-evidence-sources-key sources
                :content
                (string-join
                 (cons
@@ -367,7 +406,8 @@ in the next turn's context."
                   "Live session context attachments follow. These are "
                   "current-state attachments rebuilt for every turn; they "
                   "replace prior attachment state and are not transcript "
-                  "history."
+                  "history. When a factual claim relies on an attachment, "
+                  "cite the exact `src:' handle in its `evidence' attribute."
                   (when has-canvas
                     (concat
                      "\n\nA <canvas> attachment is the user's working "
@@ -386,7 +426,7 @@ in the next turn's context."
                      "document. If a write does not appear in the canvas, "
                      "re-read the <canvas> uri and write to that exact uri "
                      "rather than guessing another buffer.")))
-                 (mapcar #'e-chat-session--attachment-section attachments))
+                 sections)
                 "\n\n")))))))
 
 (defun e-chat-session-capability-create ()

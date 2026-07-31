@@ -1324,7 +1324,10 @@ queued prompt is picked up by the normal post-settlement drain
 hooks complete, so the drain path stays the single owner of turn scheduling."
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
-  (e-harness--enqueue-prompt-item harness session-id prompt references metadata))
+  (let ((metadata (copy-sequence metadata)))
+    (setq metadata (plist-put metadata :input-origin 'harness))
+    (e-harness--enqueue-prompt-item
+     harness session-id prompt references metadata)))
 
 (cl-defun e-harness-queue-prompt
     (harness session-id prompt &key references metadata)
@@ -2333,6 +2336,7 @@ Returns the updated message, or nil when no such message exists."
    session-id
    turn-id
    (list :role 'user
+         :origin (or (plist-get metadata :input-origin) 'human)
          :content prompt
          :metadata metadata)))
 
@@ -2528,7 +2532,7 @@ When a turn produced multiple assistant messages, return the last one."
          :metadata (plist-get candidate :metadata))))))
 
 (defun e-harness--run-turn-finished-hooks
-    (harness session-id turn-id result)
+    (harness session-id turn-id result &optional model-context)
   "Run `:turn-finished' hooks for HARNESS SESSION-ID TURN-ID over RESULT."
   (e-hooks-run-reduce
    (e-harness-hooks harness)
@@ -2537,6 +2541,7 @@ When a turn produced multiple assistant messages, return the last one."
    (list :harness harness
          :session-id session-id
          :turn-id turn-id
+         :model-context model-context
          :assistant-message
          (e-harness--turn-assistant-message harness session-id turn-id))))
 
@@ -2723,7 +2728,8 @@ cancellation.  SESSION-ID identifies the session."
                 (nreverse (plist-get entry :provider-anchor-candidates)))
 	               (let ((hooked-result
 	                      (e-harness--run-turn-finished-hooks
-	                       harness session-id turn-id result)))
+	                       harness session-id turn-id result
+                               (plist-get entry :context))))
 	                 (plist-put entry :result hooked-result)
 	                 (plist-put entry :status 'done)
 	                 (e-harness--schedule-queue-drain

@@ -328,12 +328,25 @@
                                       :messages))
                                 :content)))
         (should (string-match-p "<canvas" content))
+        (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
+                                content))
         (should (string-match-p "first canvas state" content))
         ;; The canvas guidance must steer writes to the attachment uri and
         ;; warn off look-alike helper buffers, so the model does not write to
         ;; the wrong buffer.
         (should (string-match-p "Always write to the exact uri" content))
         (should (string-match-p "e-org-canvas-input" content)))
+      (let* ((context (e-chat-session-context harness "session-1"))
+             (source
+              (car
+               (cl-loop
+                for segment in (plist-get context :segments)
+                append (plist-get segment e-context-evidence-sources-key)))))
+        (should (equal (plist-get source :source-kind)
+                       'current-state-attachment))
+        (should (equal (plist-get source :provider) 'chat-session))
+        (should (equal (plist-get source :uri)
+                       (concat "buffer://" (buffer-name)))))
       (erase-buffer)
       (insert "second canvas state")
       (let ((content (plist-get (car (plist-get

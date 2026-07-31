@@ -422,22 +422,28 @@ providers."
                               :session-id session-id
                               :turn-id turn-id
                               :context-purpose context-purpose))
-              (push (list :cache-placement
-                          (e-capabilities--provider-cache-placement provider)
-                          :priority (e-capabilities--provider-priority provider)
-                          :capability-index capability-index
-                          :provider-index provider-index
-                          :message-index message-index
-                          :segment-kind
-                          (e-capabilities--provider-segment-kind provider)
-                          :segment-id
-                          (list (e-capability-id capability)
-                                (if (e-context-provider-p provider)
-                                    (e-context-provider-name provider)
-                                  provider-index)
-                                message-index)
-                          :message message)
-                    fragments)
+              (let ((sources (plist-get
+                              message
+                              e-context-evidence-sources-key))
+                    (backend-message (copy-sequence message)))
+                (cl-remf backend-message e-context-evidence-sources-key)
+                (push (list :cache-placement
+                            (e-capabilities--provider-cache-placement provider)
+                            :priority (e-capabilities--provider-priority provider)
+                            :capability-index capability-index
+                            :provider-index provider-index
+                            :message-index message-index
+                            :segment-kind
+                            (e-capabilities--provider-segment-kind provider)
+                            :segment-id
+                            (list (e-capability-id capability)
+                                  (if (e-context-provider-p provider)
+                                      (e-context-provider-name provider)
+                                    provider-index)
+                                  message-index)
+                            :sources (copy-tree sources)
+                            :message backend-message)
+                      fragments))
               (setq message-index (1+ message-index))))
           (setq provider-index (1+ provider-index))))
       (setq capability-index (1+ capability-index)))
@@ -455,10 +461,14 @@ providers."
 
 (defun e-capabilities--fragment-segment (fragment)
   "Return backend-neutral context segment for FRAGMENT."
-  (e-context-segment-create
-   :kind (plist-get fragment :segment-kind)
-   :id (plist-get fragment :segment-id)
-   :messages (list (plist-get fragment :message))))
+  (let ((segment
+         (e-context-segment-create
+          :kind (plist-get fragment :segment-kind)
+          :id (plist-get fragment :segment-id)
+          :messages (list (plist-get fragment :message)))))
+    (when-let ((sources (plist-get fragment :sources)))
+      (plist-put segment e-context-evidence-sources-key sources))
+    segment))
 
 (cl-defun e-capabilities-context
     (capabilities &key harness session-id turn-id context-purpose)
