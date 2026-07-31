@@ -20,13 +20,6 @@ The code that owns the pipeline should start a step only after the steps it depe
 The board should record operation events and route later reactions; it should not decide which step of an operation runs next.
 Current synchronous hooks should migrate to ordered work stages whose cheap implementations may settle immediately without changing the contract.
 
-#+begin_reasoning
-claim: The unified model needs explicit continuation dependencies between work stages; callback-stack execution and board event order are insufficient as the general ordering contract.
-confidence: high
-alternatives: Keep synchronous hooks as a permanent policy path; use board event order alone to resume dependent execution.
-evidence: in:01KYSHFWGH3VDEN8CVG62KY527
-#+end_reasoning
-
 ** Terms
 
 *** Board
