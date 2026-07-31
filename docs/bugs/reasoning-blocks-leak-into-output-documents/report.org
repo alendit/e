@@ -1,0 +1,20 @@
+#+title: Reasoning Blocks Leak Into Output Documents
+#+startup: overview
+
+* Report
+
+On 2026-07-31 the user showed an Org Canvas document containing a reserved
+=#+begin_reasoning= block and stated that claim-check metadata belongs only in
+the final assistant message, never in an output document.
+
+The visible example was
+=docs/feats/66-work-bus-interaction-model/plan.org=.  Its prose was useful, but
+the document also contained =claim:=, =confidence:=, =alternatives:=, and
+=evidence:= audit fields.
+
+* Expected
+
+Reasoning blocks may exist in the final assistant transcript message so the
+turn-finished hook can audit them and presentation shells can hide them.
+They must not be written into canvases, files, temporary output documents, or
+other tool-produced artifacts.

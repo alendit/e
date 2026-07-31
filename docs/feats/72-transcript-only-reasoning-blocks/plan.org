@@ -1,0 +1,85 @@
+#+title: Transcript-Only Reasoning Blocks
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Problem
+
+Bayesian reasoning blocks are assistant-transcript audit metadata, but current
+guidance can lead an Org Canvas agent to include them in a document edit.
+The runtime then persists internal =claim:= fields in a user artifact even
+though the turn-finished hook only checks the final assistant message.
+
+* Direction
+
+The Bayesian capability owns the reserved block and its artifact boundary.
+It will state that the block belongs only in the final assistant transcript
+message and sanitize the two model-facing resource mutations, =write= and
+=edit=, before execution.  Org Canvas will clarify its output guidance without
+learning the fence grammar.
+
+* Slices
+
+** Slice 1: explicit model contract
+
+- Replace "visible reply" with "final assistant transcript message."
+- Forbid the block in tool arguments, capability-action arguments, files,
+  canvases, temporary resources, and other artifacts.
+- Clarify that Org Canvas durable output excludes internal reasoning,
+  calibration, and audit metadata.
+
+Exit condition: the combined guidance has one unambiguous destination for the
+block.
+
+** Slice 2: deterministic resource-write boundary
+
+- Add a Bayesian =:pre-tool-call= hook.
+- Remove reserved Org and Markdown reasoning fences from =write.content=.
+- Remove them from every =edit.edits[].newText= while preserving =oldText=.
+- Leave non-mutating tools and unrelated text unchanged.
+
+Exit condition: the reproduced =edit= call cannot place the block in a
+resource even if the model ignores the guidance.
+
+** Slice 3: regression, cleanup, and review
+
+- Add unit and harness-lifecycle coverage for write and edit sanitization.
+- Cover Org Canvas guidance.
+- Remove the leaked block from feature 66 without staging its unrelated active
+  edits.
+- Run focused affected suites, byte compilation, and whitespace checks.
+- Create =review.org= and finish the feature only with no unresolved notes.
+
+* Compatibility
+
+The assistant transcript format and turn-finished checker do not change.
+Existing artifacts are not scanned globally.  An edit may still name an
+existing reasoning block in =oldText= so it can delete it.  Exact reserved
+fences in new resource content are treated as internal metadata and removed.
+
+* Design self-check
+
+1. Guidance alone improves behavior; the write boundary makes it deterministic.
+2. This moves toward internal audit metadata that cannot leak into user
+   artifacts.
+3. The fence syntax is stable capability policy; artifact types may expand and
+   remain local to small argument adapters.
+4. Bayesian reasoning owns its reserved metadata.  Org Canvas owns only its
+   output guidance.  Resources remain policy-free.
+5. The change avoids coupling Org Canvas or resource adapters to Bayesian
+   syntax.
+6. Dependencies continue from capability policy toward the generic hook and
+   tool-call contracts.
+7. Resource mutation stays in resource adapters; the hook only transforms
+   arguments before that side effect.
+8. No new durable state is added.
+9. Sanitization scans only write replacement strings already in memory.
+10. =write= and =edit= retain their contracts with cleaned string arguments.
+11. Existing assistant messages and artifact reads remain compatible.
+12. No legacy path is needed.
+13. Expected reserved blocks are removed; malformed tool arguments still fail
+    in the normal resource layer.
+14. Pure sanitizer tests and one lifecycle test prove policy independently of
+    the full UI.
