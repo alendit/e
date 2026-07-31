@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 * Problem
 
@@ -83,3 +83,21 @@ fences in new resource content are treated as internal metadata and removed.
     in the normal resource layer.
 14. Pure sanitizer tests and one lifecycle test prove policy independently of
     the full UI.
+
+* Completion
+
+Implemented in =f21c056=.
+The already-leaked block was removed from feature 66 in =b6e6abe= without
+staging that plan's unrelated active edits.
+
+The final boundary has two parts:
+
+- model guidance names the final assistant transcript as the only destination;
+- the Bayesian pre-tool hook removes reserved blocks from =write.content= and
+  =edit.edits.newText= before resource execution.
+
+The hook leaves =edit.edits.oldText= exact so existing leaks remain removable.
+It leaves non-mutating calls unchanged.
+
+Repository-side validation passed: 240 affected tests, byte compilation, and
+=git diff --check=.  The running Emacs was left unchanged.

@@ -46,3 +46,17 @@ resource adapters.
 
 Implementation is tracked by
 =docs/feats/72-transcript-only-reasoning-blocks/plan.org=.
+
+* Resolution
+
+Resolved by =f21c056= and =b6e6abe=.
+
+Bayesian and Org Canvas guidance now reserve reasoning blocks for the final
+assistant transcript message.  A Bayesian pre-tool hook also removes reserved
+blocks from complete writes and edit replacement text before resource
+execution.  Existing blocks may still appear in =oldText= so an edit can remove
+them.
+
+Focused and broader affected ERT coverage passed 240/240.  A real =file://=
+resource edit proved that the block does not reach disk.  Byte compilation and
+whitespace validation passed.  The running Emacs was not reloaded.
