@@ -16,7 +16,6 @@
 (require 'e)
 (require 'e-bayesian-reasoning)
 (require 'e-chat-session)
-(require 'e-file-capabilities)
 (require 'e-harness)
 (require 'e-backend)
 
@@ -595,130 +594,11 @@ unchanged."
                  :content "Maybe; I would need to check before saying.")))
     (should-not (e-harness-queued-prompts harness "session-1"))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-strips-blocks-from-write-content ()
-  "The pre-tool boundary removes transcript metadata from complete writes."
-  (let* ((block
-          "#+begin_reasoning\nclaim: internal\nconfidence: high\nalternatives: none\nevidence: in:01KASKED\n#+end_reasoning")
-         (prepared
-          (e-bayesian-reasoning--sanitize-artifact-tool-call
-           (list :id "call-1" :name "write"
-                 :arguments (list :uri "file://plan.org"
-                                  :content (concat "Before\n\n" block
-                                                   "\n\nAfter\n")))
-           nil))
-         (content (plist-get (plist-get prepared :arguments) :content)))
-    (should-not (string-match-p "begin_reasoning" content))
-    (should-not (string-match-p "claim: internal" content))
-    (should (string-match-p "Before" content))
-    (should (string-match-p "After" content))))
-
-(ert-deftest e-bayesian-reasoning-hook-test-edit-preserves-old-block-to-remove-it ()
-  "Edit cleanup can match an old block but cannot add one in replacement text."
-  (let* ((block
-          "```reasoning\nclaim: internal\nconfidence: high\nalternatives: none\nevidence: in:01KASKED\n```")
-         (prepared
-          (e-bayesian-reasoning--sanitize-artifact-tool-call
-           (list :id "call-1" :name "edit"
-                 :arguments
-                 (list :uri "file://plan.org"
-                       :edits
-                       (list
-                        (list :oldText block
-                              :newText (concat "Useful prose.\n" block)))))
-           nil))
-         (edit (car (plist-get (plist-get prepared :arguments) :edits))))
-    (should (equal (plist-get edit :oldText) block))
-    (should (equal (plist-get edit :newText) "Useful prose.\n"))))
-
-(ert-deftest e-bayesian-reasoning-hook-test-leaves-non-mutating-call-unchanged ()
-  "The artifact boundary does not rewrite unrelated or non-mutating calls."
-  (let ((call
-         (list :id "call-1" :name "read"
-               :arguments
-               (list :uri "file://plan.org"
-                     :query "#+begin_reasoning"))))
-    (should
-     (equal (e-bayesian-reasoning--sanitize-artifact-tool-call call nil)
-            call))))
-
-(ert-deftest e-bayesian-reasoning-hook-test-lifecycle-sanitizes-artifact-edit ()
-  "The registered Bayesian pre-tool hook enforces the artifact boundary."
-  (let* ((harness
-          (e-harness-create
-           :backend (e-backend-fake-create :items nil)
-           :intrinsic-capabilities
-           (list (e-bayesian-reasoning-capability-create))))
-         (block
-          "#+begin_reasoning\nclaim: internal\nconfidence: high\nalternatives: none\nevidence: in:01KASKED\n#+end_reasoning"))
-    (e-harness-create-session harness :id "session-1")
-    (let* ((lifecycle (e-harness-tool-lifecycle
-                       harness "session-1" "turn-1"))
-           (prepared
-            (e-tool-lifecycle-prepare-call
-             lifecycle
-             (list :id "call-1" :name "edit"
-                   :arguments
-                   (list :uri "buffer://plan.org"
-                         :edits
-                         (list (list :oldText "Old"
-                                     :newText (concat "New\n" block)))))))
-           (new-text
-            (plist-get
-             (car (plist-get (plist-get prepared :arguments) :edits))
-             :newText)))
-      (should (equal new-text "New\n")))))
-
-(ert-deftest e-bayesian-reasoning-hook-test-resource-edit-cannot-persist-block ()
-  "A real resource edit receives cleaned replacement content."
-  (let* ((directory (make-temp-file "e-reasoning-artifact-" t))
-         (file (expand-file-name "plan.org" directory))
-         (harness
-          (e-harness-create
-           :backend (e-backend-fake-create :items nil)
-           :intrinsic-capabilities
-           (list (e-file-handling-capability-create directory)
-                 (e-bayesian-reasoning-capability-create))))
-         (block
-          "#+begin_reasoning\nclaim: internal\nconfidence: high\nalternatives: none\nevidence: in:01KASKED\n#+end_reasoning")
-         done result failure)
-    (unwind-protect
-        (progn
-          (write-region "Old\n" nil file nil 'silent)
-          (e-harness-create-session harness :id "session-1")
-          (let* ((lifecycle (e-harness-tool-lifecycle
-                             harness "session-1" "turn-1"))
-                 (prepared
-                  (e-tool-lifecycle-prepare-call
-                   lifecycle
-                   (list :id "call-1" :name "edit"
-                         :arguments
-                         (list :uri (concat "file://" file)
-                               ;; Reproduce the provider's accepted one-edit
-                               ;; object shape from the reported session.
-                               :edits
-                               (list :oldText "Old\n"
-                                     :newText (concat "New\n" block)))))))
-            (e-tool-lifecycle-start-call
-             lifecycle prepared
-             :on-done (lambda (value) (setq result value done t))
-             :on-error (lambda (err) (setq failure err done t))))
-          (let ((deadline (+ (float-time) 1)))
-            (while (and (not done) (< (float-time) deadline))
-              (accept-process-output nil 0.01)))
-          (when failure
-            (signal (car failure) (cdr failure)))
-          (should done)
-          (with-temp-buffer
-            (insert-file-contents file)
-            (should (equal (buffer-string) "New\n"))))
-      (delete-directory directory t))))
-
 (ert-deftest e-bayesian-reasoning-hook-test-capability-registers-turn-finished-hook ()
-  "The capability contributes transcript checking and artifact-boundary hooks."
+  "The capability contributes a turn-finished hook."
   (let* ((capability (e-bayesian-reasoning-capability-create))
          (points (mapcar #'e-hook-point (e-capability-hooks capability))))
-    (should (memq :turn-finished points))
-    (should (memq :pre-tool-call points))))
+    (should (memq :turn-finished points))))
 
 (provide 'e-bayesian-reasoning-hook-test)
 
