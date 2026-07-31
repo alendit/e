@@ -42,6 +42,7 @@
               (should (eq (window-buffer composer-window) composer))
               (should (> (nth 1 (window-edges composer-window))
                          (nth 1 (window-edges transcript-window))))
+              (should (= (window-body-height composer-window) 4))
               (should buffer-read-only)
               (with-current-buffer composer
                 (should-not (string-match-p

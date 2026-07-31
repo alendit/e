@@ -728,8 +728,11 @@ intentionally not persisted in session metadata.")
 This is an internal rollout seam.  Batch tests bind it when they need to
 exercise the production surface; it is not a user-facing compatibility mode.")
 
-(defcustom e-chat-composer-window-min-height 3
-  "Minimum height of an e chat composer window."
+(defcustom e-chat-composer-window-min-height 5
+  "Minimum height of an e chat composer window.
+
+Window heights include Emacs's mode line, so the default leaves four editable
+text rows in the composer."
   :type 'integer
   :group 'e-chat)
 
