@@ -1,0 +1,17 @@
+#+title: Composed Chat Buffer Switch
+#+startup: overview
+
+* Change
+
+Switching to a composed chat through a generic buffer command now restores the
+full chat surface.  The transcript remains visible, its composer is recreated
+below it when needed, and focus moves to the editable composer.
+
+* Why tiny
+
+This completes one presentation-shell activation path.  It does not alter chat
+state, rendering, provider behavior, or window policy outside a composed chat.
+
+* Validation
+
+- =eldev test -f test/e-chat-test.el=.

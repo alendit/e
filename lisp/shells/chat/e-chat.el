@@ -676,6 +676,23 @@ intentionally not persisted in session metadata.")
     (e-chat--tail-active-turn-buffer-if-selected buffer)
     (e-chat--schedule-tail-active-turn-buffer buffer)))
 
+(defvar e-chat--surface-activation-in-progress nil
+  "Non-nil while a selected composed chat surface is being restored.")
+
+(defun e-chat--activate-selected-surface-after-buffer-switch ()
+  "Restore the selected composed chat surface after a generic buffer switch.
+Ordinary `switch-to-buffer' calls replace only the selected window's buffer.
+A composed chat owns a transcript and a paired composer, so make that generic
+buffer-level transition enter its presentation shell just as chat-specific
+display commands do."
+  (unless e-chat--surface-activation-in-progress
+    (let ((buffer (window-buffer (selected-window))))
+      (when (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (e-chat--surface-transcript-p)))
+        (let ((e-chat--surface-activation-in-progress t))
+          (e-chat--after-display-buffer buffer))))))
+
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
   (unless (memq #'e-chat--mark-selected-session-read
@@ -707,6 +724,10 @@ intentionally not persisted in session metadata.")
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
                 #'e-chat--flush-deferred-hidden-mode-line-statuses)))
+  (unless (memq #'e-chat--activate-selected-surface-after-buffer-switch
+                buffer-list-update-hook)
+    (add-hook 'buffer-list-update-hook
+              #'e-chat--activate-selected-surface-after-buffer-switch))
   (when (boundp 'persp-activated-functions)
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)

@@ -1380,6 +1380,28 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-switch-to-buffer-restores-composed-surface ()
+  "Generic buffer switching restores a composed chat's editable surface."
+  (let* ((e-chat--surface-composition-enabled t)
+         (origin (get-buffer-create " *e-chat switch origin*"))
+         (buffer (e-chat-test--buffer nil "chat-switch-composed-surface"))
+         (window (selected-window))
+         composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows window)
+          (switch-to-buffer origin)
+          (switch-to-buffer buffer)
+          (setq composer
+                (buffer-local-value 'e-chat--surface-composer-buffer buffer))
+          (should (buffer-live-p composer))
+          (should (eq (window-buffer (selected-window)) composer))
+          (should (eq (get-buffer-window buffer t) window)))
+      (when (buffer-live-p origin)
+        (kill-buffer origin))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-after-display-active-turn-focuses-latest-output ()
   "Displaying a running chat tails to the active output, not stale scrollback."
   (let ((buffer (e-chat-test--buffer nil "chat-display-active-output"))
