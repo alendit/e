@@ -8736,8 +8736,8 @@ The context-window denominator comes from the live provider lookup
     (e-chat-kill-region-or-backward-word 1)
     (should (string= (buffer-string) " world"))))
 
-(ert-deftest e-chat-test-evil-composer-bindings-reclaim-c-w ()
-  "Evil insert and emacs states rebind \\`C-w' scoped to the composer map."
+(ert-deftest e-chat-test-evil-composer-bindings-reclaim-shadowed-keys ()
+  "Evil-local composer bindings retain word kill and normal Escape behavior."
   (let (calls)
     (cl-letf (((symbol-function 'evil-define-key*)
                (lambda (&rest args)
@@ -8748,7 +8748,12 @@ The context-window denominator comes from the live provider lookup
                             e-chat-mode-map
                             (kbd "C-w")
                             #'e-chat-kill-region-or-backward-word)
-                      calls)))))
+                      calls)))
+    (should (member (list 'normal
+                          e-chat-mode-map
+                          (kbd "<escape>")
+                          #'e-chat-composer-enter-navigation)
+                    calls))))
 
 (ert-deftest e-chat-test-evil-composer-bindings-noop-without-evil ()
   "Composer Evil rebinding is a no-op when Evil is unavailable."

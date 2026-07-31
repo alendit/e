@@ -1253,19 +1253,24 @@ This leaves the global minor mode enabled for every other buffer."
           #'e-chat-add-context-to-session))))))
 
 (defun e-chat--configure-evil-composer-bindings ()
-  "Reclaim \\`C-w' for the composer when Evil/Doom is active.
+  "Configure the composer bindings that Evil would otherwise shadow.
 Evil binds `C-w' as the window-command prefix in its insert and emacs
-states, shadowing the composer's own binding.  Define it directly in the
-relevant Evil state maps scoped to `e-chat-mode-map' so it wins locally
-without disturbing Evil's global `C-w' elsewhere.  A no-op when Evil is
-absent."
+states, shadowing the composer's own binding.  In normal state it also owns
+Escape before the local composer keymap sees it.  Define those bindings in
+the relevant Evil state maps so they win locally without disturbing global
+Evil behavior elsewhere.  A no-op when Evil is absent."
   (when (fboundp 'evil-define-key*)
     (dolist (state '(insert emacs))
       (funcall #'evil-define-key*
                state
                e-chat-mode-map
                (kbd "C-w")
-               #'e-chat-kill-region-or-backward-word))))
+               #'e-chat-kill-region-or-backward-word))
+    (funcall #'evil-define-key*
+             'normal
+             e-chat-mode-map
+             (kbd "<escape>")
+             #'e-chat-composer-enter-navigation)))
 
 (defun e-chat--refresh-keymaps ()
   "Refresh chat keymaps after live reload."
@@ -1515,22 +1520,20 @@ ordinary transcript rendering must leave the composer buffer untouched."
          (buffer-substring e-chat--composer-start-marker (point-max)) t)))))
 
 (defun e-chat-composer-enter-navigation ()
-  "Focus the transcript and enter response navigation from the input pane."
+  "Focus the transcript and enter response navigation when it has a block."
   (interactive)
   (let ((transcript e-chat--surface-transcript-buffer))
     (unless (buffer-live-p transcript)
       (user-error "This e chat composer has no live transcript"))
-    ;; Do not leave the input pane when there is nothing to navigate.  Besides
-    ;; being less surprising, this preserves the input focus after an early
-    ;; Escape in a brand-new session.
-    (with-current-buffer transcript
-      (unless (or (e-chat--block-at-point)
-                  (e-chat--last-rendered-block-id))
-        (user-error "No rendered e chat blocks")))
     (when-let ((window (get-buffer-window transcript t)))
       (select-window window))
     (with-current-buffer transcript
-      (e-chat-enter-response-navigation))))
+      ;; A brand-new transcript has no block to navigate, but Escape still
+      ;; means leave the composer.  Once content exists, retain the normal
+      ;; navigation behavior.
+      (when (or (e-chat--block-at-point)
+                (e-chat--last-rendered-block-id))
+        (e-chat-enter-response-navigation)))))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."

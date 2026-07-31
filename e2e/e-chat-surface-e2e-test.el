@@ -47,13 +47,15 @@
                 (should-not (string-match-p
                              (regexp-quote e-chat--composer-separator)
                              (buffer-string))))
-              ;; With no output there is nowhere to navigate, so Escape must
-              ;; leave focus in the composer rather than exposing transcript
-              ;; text for accidental editing.
+              ;; Escape always leaves the composer.  An empty transcript has
+              ;; no response-navigation block yet, but it is still the
+              ;; correct focus target.
               (with-current-buffer composer
-                (should-error (e-chat-composer-enter-navigation)
-                              :type 'user-error))
-              (should (eq (selected-window) composer-window))
+                (e-chat-composer-enter-navigation))
+              (should (eq (selected-window) transcript-window))
+              (with-current-buffer buffer
+                (should-not e-chat-response-navigation-mode))
+              (select-window composer-window)
               (with-current-buffer composer
                 (goto-char (point-max))
                 (insert "surface prompt")
@@ -62,17 +64,19 @@
                               (e-harness-wait-batch harness session-id 1.0)
                               :status)
                              'done))
-              (should (string-match-p "surface prompt" (buffer-string)))
-              (should (string-match-p "surface answer" (buffer-string)))
-              (should-not (string-match-p (regexp-quote e-chat--composer-glyph)
-                                          (buffer-string)))
+              (with-current-buffer buffer
+                (should (string-match-p "surface prompt" (buffer-string)))
+                (should (string-match-p "surface answer" (buffer-string)))
+                (should-not (string-match-p (regexp-quote e-chat--composer-glyph)
+                                            (buffer-string))))
               (with-current-buffer composer
                 (should (equal (e-chat--composer-text) ""))
                 (e-chat-composer-enter-navigation))
               (should (eq (selected-window) transcript-window))
-              (let ((last-command-event ?x))
-                (should-error (self-insert-command 1)
-                              :type 'buffer-read-only)))))
+              (with-current-buffer buffer
+                (let ((last-command-event ?x))
+                  (should-error (self-insert-command 1)
+                                :type 'buffer-read-only))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))
