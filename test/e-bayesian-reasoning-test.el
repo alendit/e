@@ -32,6 +32,10 @@
                           e-bayesian-reasoning-instructions))
   (should (string-match-p "src:"
                           e-bayesian-reasoning-instructions))
+  (should (string-match-p "final assistant transcript message"
+                          e-bayesian-reasoning-instructions))
+  (should (string-match-p "Never include it in tool or capability-action arguments"
+                          e-bayesian-reasoning-instructions))
   (should (string-match-p "not answer content"
                           e-bayesian-reasoning-instructions)))
 

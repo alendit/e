@@ -37,7 +37,7 @@
                   (harness session-id turn-id &rest args))
 
 (defconst e-bayesian-reasoning-instructions
-  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. In the visible reply, wrap each load-bearing factual conclusion as `*<claim>*', replacing `<claim>' with the conclusion text. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the substantive one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' a comma-separated list of the exact `ev:', `in:', or `src:' evidence handles provided in context. Only an explicit `insufficient-evidence' abstention may leave evidence blank. This block is hidden from the rendered reply and read only by deterministic tooling. Internal workflow and validation bookkeeping is audit metadata, not answer content: do not say that you followed or ran a workflow, cite an internal workflow URI, or report process markers in the user-facing reply."
+  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. In the final assistant transcript message, wrap each load-bearing factual conclusion as `*<claim>*', replacing `<claim>' with the conclusion text. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block in that final assistant transcript message: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the substantive one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' a comma-separated list of the exact `ev:', `in:', or `src:' evidence handles provided in context. Only an explicit `insufficient-evidence' abstention may leave evidence blank. The reasoning block is assistant-transcript audit metadata only. Never include it in tool or capability-action arguments, files, canvases, temporary resources, generated documents, or any other artifact. It is hidden from the rendered assistant reply and read only by deterministic tooling. Internal workflow and validation bookkeeping is audit metadata, not answer content: do not say that you followed or ran a workflow, cite an internal workflow URI, or report process markers in the user-facing reply."
   "Compact model-facing disposition for calibrated reasoning.")
 
 (defconst e-bayesian-reasoning--fence-regexp
@@ -91,6 +91,64 @@ the registry's matcher contract."
                          (e-bayesian-reasoning--fence-matches
                           content "```reasoning" "```"))))
     (sort matches (lambda (a b) (< (plist-get a :start) (plist-get b :start))))))
+
+(defun e-bayesian-reasoning--strip-artifact-blocks (content)
+  "Return CONTENT without reserved reasoning fences.
+
+Reasoning fences are assistant-transcript audit metadata.  Removing matches in
+reverse offset order preserves every non-matching byte and keeps earlier match
+positions valid."
+  (if (not (stringp content))
+      content
+    (let ((result content))
+      (dolist (match
+               (reverse (e-bayesian-reasoning--reasoning-matcher content)))
+        (setq result
+              (concat (substring result 0 (plist-get match :start))
+                      (substring result (plist-get match :end)))))
+      result)))
+
+(defun e-bayesian-reasoning--sanitize-artifact-edit (edit)
+  "Return resource EDIT with reasoning fences removed from `newText' only."
+  (if (not (listp edit))
+      edit
+    (let* ((copy (copy-tree edit))
+           (new-text (plist-get copy :newText)))
+      (when (stringp new-text)
+        (setq copy
+              (plist-put copy :newText
+                         (e-bayesian-reasoning--strip-artifact-blocks
+                          new-text))))
+      copy)))
+
+(defun e-bayesian-reasoning--sanitize-artifact-tool-call (tool-call _context)
+  "Keep reserved reasoning blocks out of mutating resource TOOL-CALL arguments.
+
+Complete `write' content and `edit' replacement text are artifact output.
+An edit's `oldText' remains exact so an agent can remove a block already present
+in a resource."
+  (let* ((copy (copy-tree tool-call))
+         (arguments (plist-get copy :arguments)))
+    (pcase (plist-get copy :name)
+      ("write"
+       (when (and (listp arguments)
+                  (stringp (plist-get arguments :content)))
+         (setq arguments
+               (plist-put
+                arguments :content
+                (e-bayesian-reasoning--strip-artifact-blocks
+                 (plist-get arguments :content))))))
+      ("edit"
+       (when (listp arguments)
+         (let ((edits (plist-get arguments :edits)))
+           (setq arguments
+                 (plist-put
+                  arguments :edits
+                  (if (and (listp edits) (plist-member edits :newText))
+                      (e-bayesian-reasoning--sanitize-artifact-edit edits)
+                    (mapcar #'e-bayesian-reasoning--sanitize-artifact-edit
+                            edits))))))))
+    (plist-put copy :arguments arguments)))
 
 (defun e-bayesian-reasoning-parse-reasoning-block (string)
   "Parse a reasoning fence STRING into its field plist, or nil when malformed.
@@ -796,11 +854,17 @@ durable hook-audit record."
           :display 'hidden
           :parser #'e-bayesian-reasoning-parse-reasoning-block))
    :hooks
-   (list (e-hook-create
-          :id "60-bayesian-reasoning-turn-finished"
-          :point :turn-finished
-          :description "Conditionally request one calibration follow-up."
-          :handler #'e-bayesian-reasoning--turn-finished-hook))))
+   (list
+    (e-hook-create
+     :id "60-bayesian-reasoning-turn-finished"
+     :point :turn-finished
+     :description "Conditionally request one calibration follow-up."
+     :handler #'e-bayesian-reasoning--turn-finished-hook)
+    (e-hook-create
+     :id "90-bayesian-reasoning-artifact-boundary"
+     :point :pre-tool-call
+     :description "Keep assistant-only reasoning metadata out of artifacts."
+     :handler #'e-bayesian-reasoning--sanitize-artifact-tool-call))))
 
 (provide 'e-bayesian-reasoning)
 

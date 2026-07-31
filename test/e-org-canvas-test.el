@@ -963,6 +963,10 @@
         ;; *e-org-canvas* / *e-org-canvas-input* helper buffers.
         (should (string-match-p "document-uri" content))
         (should (string-match-p "helper buffers" content))
+        (should (string-match-p
+                 "audit metadata belongs only in the final assistant transcript message"
+                 content))
+        (should (string-match-p "never put it in the Org document" content))
         ;; Guidance should keep prose itemization out of tables while still
         ;; pointing at table affordances for compact data.
         (should (string-match-p "lists and nested sublists" content))

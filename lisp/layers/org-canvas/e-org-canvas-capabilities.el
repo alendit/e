@@ -240,7 +240,7 @@ Before finalizing an edit, check newly written Org prose for accidental wrapped 
            (string-join
             (list
              "Org Canvas mode is active for this session."
-             "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Keep the final assistant message brief."
+             "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Internal reasoning, calibration, claim-check, and audit metadata belongs only in the final assistant transcript message; never put it in the Org document or any other artifact. Keep the final assistant message brief."
              "When editing Org prose, preserve sentence-per-line style: put each sentence on its own physical line and do not hard-wrap sentences to an artificial fill column; let Emacs visual-line/display wrapping handle width."
              "Use lists and nested sublists for prose itemization. Use tables for short-cell data that benefits from column scanning, not for sentences or paragraphs; when table cells may grow, consider Org table width cookies such as | <20> | to keep columns readable."
              "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
