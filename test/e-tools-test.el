@@ -205,6 +205,45 @@
                      :content "done"
                      :metadata nil)))))
 
+(ert-deftest e-tools-test-current-context-summary-omits-live-runtime-objects ()
+  "The context summary exposes scalar inspection data without live state."
+  (let ((registry (e-tools-registry-create))
+        summary)
+    (e-tools-register registry
+                      :name "alpha"
+                      :description "Return ok."
+                      :handler (lambda (_arguments) "ok"))
+    (e-tools-register registry
+                      :name "inspect"
+                      :description "Capture the safe context summary."
+                      :start
+                      (cl-function
+                       (lambda (&key on-done &allow-other-keys)
+                         (setq summary
+                               (e-tools-current-context-summary))
+                         (funcall on-done "ok"))))
+    (e-tools-test--execute-with-context
+     registry
+     '(:id "call-1" :name "inspect" :arguments nil)
+     (list :harness (list :live "runtime")
+           :session-id "session-1"
+           :turn-id "turn-1"
+           :deadline 42
+           :nested t
+           :parent-tool-call-id "parent-1"))
+    (should (equal summary
+                   '(:session-id "session-1"
+                     :turn-id "turn-1"
+                     :tool-call-id "call-1"
+                     :tool-call-name "inspect"
+                     :deadline 42
+                     :nested t
+                     :parent-tool-call-id "parent-1"
+                     :tool-names ("alpha" "inspect"))))
+    (should-not (plist-member summary :harness))
+    (should-not (plist-member summary :tools))
+    (should-not (plist-member summary :capabilities))))
+
 (ert-deftest e-tools-test-start-ignores-request-after-synchronous-settlement ()
   "A request returned after `on-done' must not be published as active work."
   (let ((registry (e-tools-registry-create))

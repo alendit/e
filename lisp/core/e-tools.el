@@ -61,6 +61,24 @@
   "Return the current tool start context, or nil."
   e-tools--current-context)
 
+(defun e-tools-current-context-summary ()
+  "Return a scalar inspection summary of the current tool context.
+This is the model-facing inspection surface for the dynamic tool context.
+It deliberately omits the harness, registry, capabilities, closures, and
+other live runtime objects held by `e-tools-current-context'."
+  (let* ((context (e-tools-current-context))
+         (call (plist-get context :tool-call))
+         (registry (plist-get context :tools)))
+    (list :session-id (plist-get context :session-id)
+          :turn-id (plist-get context :turn-id)
+          :tool-call-id (plist-get call :id)
+          :tool-call-name (plist-get call :name)
+          :deadline (plist-get context :deadline)
+          :nested (and (plist-get context :nested) t)
+          :parent-tool-call-id (plist-get context :parent-tool-call-id)
+          :tool-names (and (e-tools-registry-p registry)
+                           (copy-sequence (e-tools-registry-order registry))))))
+
 (defun e-tools-current-registry ()
   "Return the active tool registry from `e-tools-current-context'."
   (let ((registry (plist-get (e-tools-current-context) :tools)))
