@@ -45,23 +45,23 @@ descriptors on the corresponding context segment.")
   "Create an immutable request-time source descriptor for CONTENT at URI.
 
 The short `src:' handle is derived from URI and CONTENT.  The descriptor keeps
-the full digest for durable audit records.  PROVIDER identifies the contributing
-adapter without becoming part of claim policy."
+CONTENT's full digest for durable audit records.  PROVIDER identifies the
+contributing adapter without becoming part of claim policy."
   (unless (and (stringp uri) (not (string-empty-p uri)))
     (signal 'wrong-type-argument (list 'stringp uri)))
   (unless (stringp content)
     (signal 'wrong-type-argument (list 'stringp content)))
-  (let* ((digest (upcase
-                  (secure-hash 'sha256
-                               (concat uri "\0" content))))
-         (id (substring digest 0 16)))
+  (let* ((identity-digest
+          (upcase (secure-hash 'sha256 (concat uri "\0" content))))
+         (content-digest (upcase (secure-hash 'sha256 content)))
+         (id (substring identity-digest 0 16)))
     (list :id id
           :handle (concat "src:" id)
           :uri uri
           :label (or label uri)
           :source-kind source-kind
           :provider provider
-          :content-sha256 digest)))
+          :content-sha256 content-digest)))
 
 (defun e-context-source-handle (source)
   "Return SOURCE's model-facing `src:' handle."

@@ -29,14 +29,23 @@
         (changed (e-context-source-create
                   :uri "file:///tmp/topic.org"
                   :label "topic"
-                  :content "second")))
+                  :content "second"))
+        (moved (e-context-source-create
+                :uri "file:///tmp/moved-topic.org"
+                :label "topic"
+                :content "first")))
     (should (string-match-p "\\`src:[0-9A-F]\\{16\\}\\'"
                             (e-context-source-handle first)))
     (should (equal (e-context-source-handle first)
                    (e-context-source-handle same)))
     (should-not (equal (e-context-source-handle first)
                        (e-context-source-handle changed)))
-    (should (= (length (plist-get first :content-sha256)) 64))))
+    (should-not (equal (e-context-source-handle first)
+                       (e-context-source-handle moved)))
+    (should (equal (plist-get first :content-sha256)
+                   (upcase (secure-hash 'sha256 "first"))))
+    (should (equal (plist-get first :content-sha256)
+                   (plist-get moved :content-sha256)))))
 
 (ert-deftest e-context-test-backend-message-strips-internal-provenance ()
   "Backend messages do not expose input origin or source descriptor metadata."
