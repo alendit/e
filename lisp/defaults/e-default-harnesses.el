@@ -266,6 +266,7 @@ hold HARNESS."
           (e-harness-default-project-root fresh))
     (setf (e-harness-runtime-capability-config harness)
           (copy-tree (e-harness-runtime-capability-config fresh)))
+    (e-harness-clear-effective-capability-config-cache harness)
     (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
       (setf (e-harness-context-strategy harness)
             (e-harness-context-strategy fresh))))

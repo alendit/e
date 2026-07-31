@@ -1,0 +1,39 @@
+#+title: Profile Memory Bounds
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Evidence
+
+The =20260731-115211= memory profile attributed roughly 980 MB of retained
+allocation to repeated effective capability configuration resolution while
+replaying chat output.  Normal OpenAI parsing also appended every raw provider
+response to a hidden buffer, even with debugging disabled.
+
+* Direction
+
+Keep these high-churn derived values outside the presentation path:
+
+- harnesses own a weak, derived cache of effective capability configuration;
+- source revisions make global and directory-local edits invalidate cache keys;
+- provider raw payloads are debug-only diagnostics with a fixed byte budget.
+
+The cache returns copies so callers cannot mutate its private values.  Explicit
+overrides remain uncached because they are caller-owned, per-call policy.
+
+* Slices
+
+** DONE Harness effective-config cache
+
+- Cache resolved configuration by capability, options, root, global revision,
+  and Emacs directory-local source identity.
+- Invalidate the harness cache after runtime configuration or factory refresh.
+- Keep global configuration live through a revision watcher.
+
+** TODO Bound raw provider diagnostics
+
+- Do not create or append the raw provider buffer outside debug mode.
+- Retain only a fixed tail of raw payload data in both the buffer and last
+  diagnostics.

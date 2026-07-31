@@ -81,3 +81,4 @@ Status values for coding agents:
 | 68 | Done | 68-responsive-persistence-and-projection/ | Responsive Persistence and Scheduled Chat Projection |
 | 69 | Done | 69-source-aware-claim-repair/ | Source-Aware Claim Repair |
 | 70 | Done | 70-chat-surface-composition/ | Chat Surface Composition |
+| 71 | In-progress | 71-profile-memory-bounds/ | Profile Memory Bounds |

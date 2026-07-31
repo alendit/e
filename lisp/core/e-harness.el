@@ -73,6 +73,10 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
 (defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
   "Layer change callbacks keyed by harness.")
 
+(defvar e-harness--effective-capability-config-caches
+  (make-hash-table :test 'eq :weakness 'key)
+  "Weakly-owned effective capability configuration caches by harness.")
+
 (defvar-local e-current-harness nil
   "Harness currently owned by the active presentation buffer, when any.")
 
@@ -163,6 +167,20 @@ layer selection APIs change the enabled layer set."
    (alist-get capability-id
               (e-harness-runtime-capability-config harness))))
 
+(defun e-harness--effective-capability-config-cache (harness)
+  "Return HARNESS's private effective configuration cache."
+  (or (gethash harness e-harness--effective-capability-config-caches)
+      (let ((cache (make-hash-table :test 'equal)))
+        (puthash harness cache e-harness--effective-capability-config-caches)
+        cache)))
+
+(defun e-harness-clear-effective-capability-config-cache (harness)
+  "Discard all derived effective capability configuration for HARNESS.
+Use this after changing harness-local runtime configuration outside the public
+configuration setter."
+  (remhash harness e-harness--effective-capability-config-caches)
+  harness)
+
 (defun e-harness-set-capability-config (harness capability-id config)
   "Set HARNESS-local runtime CONFIG plist for CAPABILITY-ID.
 When CONFIG is nil, clear the runtime config for CAPABILITY-ID."
@@ -173,6 +191,7 @@ When CONFIG is nil, clear the runtime config for CAPABILITY-ID."
               (copy-sequence config))
       (setq configs (assq-delete-all capability-id configs)))
     (setf (e-harness-runtime-capability-config harness) configs)
+    (e-harness-clear-effective-capability-config-cache harness)
     config))
 
 (cl-defun e-harness-effective-capability-config
@@ -180,13 +199,36 @@ When CONFIG is nil, clear the runtime config for CAPABILITY-ID."
   "Return effective CAPABILITY-ID config for HARNESS.
 Resolution uses DIRECTORY or the session project root, then HARNESS-local
 runtime config, then explicit OVERRIDES."
-  (e-capability-config-resolve
-   capability-id
-   options
-   :directory (or directory
-                  (e-harness-project-root harness session-id))
-   :runtime-config (e-harness-capability-config harness capability-id)
-   :overrides overrides))
+  (let ((root (or directory (e-harness-project-root harness session-id))))
+    ;; Explicit overrides are per-call policy.  Keeping them out of this cache
+    ;; avoids retaining caller-owned data and preserves the old fresh-result
+    ;; semantics for callers that build overrides dynamically.
+    (if overrides
+        (e-capability-config-resolve
+         capability-id options
+         :directory root
+         :runtime-config (e-harness-capability-config harness capability-id)
+         :overrides overrides)
+      (let* ((key (list capability-id
+                        options
+                        root
+                        (e-capability-config-generation)
+                        (e-capability-config-directory-revision root)))
+             (cache (e-harness--effective-capability-config-cache harness))
+             (missing (make-symbol "missing"))
+             (cached (gethash key cache missing)))
+        (if (not (eq cached missing))
+            ;; Resolved config was previously a fresh value.  Do not let a
+            ;; caller mutate the harness-owned derived value through its return.
+            (copy-tree cached)
+          (let ((resolved
+                 (e-capability-config-resolve
+                  capability-id options
+                  :directory root
+                  :runtime-config
+                  (e-harness-capability-config harness capability-id))))
+            (puthash key (copy-tree resolved) cache)
+            resolved))))))
 
 (defun e-harness--append-layer-id (ids id)
   "Return IDS with ID appended once."

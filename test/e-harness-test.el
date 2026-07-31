@@ -109,6 +109,78 @@
               '(:value "explicit" :items ("project-item"))))))
       (delete-directory directory t))))
 
+(ert-deftest e-harness-test-effective-capability-config-caches-resolved-values ()
+  "Repeated equivalent config reads avoid resolving directory-local state."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+        (calls 0))
+    (cl-letf (((symbol-function 'e-capability-config-resolve)
+               (lambda (&rest _)
+                 (setq calls (1+ calls))
+                 (list :value "resolved"))))
+      (let ((first (e-harness-effective-capability-config
+                    harness 'dummy-config
+                    e-harness-test--capability-config-options))
+            (second (e-harness-effective-capability-config
+                     harness 'dummy-config
+                     e-harness-test--capability-config-options)))
+        (should (= calls 1))
+        (should (equal first second))
+        (setf (plist-get first :value) "mutated")
+        (should (equal (plist-get second :value) "resolved"))))))
+
+(ert-deftest e-harness-test-effective-capability-config-invalidates-runtime-cache ()
+  "Changing runtime config discards derived effective config for the harness."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+        (calls 0))
+    (cl-letf (((symbol-function 'e-capability-config-resolve)
+               (lambda (&rest _)
+                 (setq calls (1+ calls))
+                 (list :value (number-to-string calls)))))
+      (e-harness-effective-capability-config
+       harness 'dummy-config e-harness-test--capability-config-options)
+      (e-harness-set-capability-config harness 'dummy-config '(:value "runtime"))
+      (should
+       (equal
+        (e-harness-effective-capability-config
+         harness 'dummy-config e-harness-test--capability-config-options)
+        '(:value "2")))
+      (should (= calls 2)))))
+
+(ert-deftest e-harness-test-effective-capability-config-observes-global-revision ()
+  "Changing global config makes a cached effective config stale."
+  (let ((e-capability-config nil)
+        (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+        (calls 0))
+    (cl-letf (((symbol-function 'e-capability-config-resolve)
+               (lambda (&rest _)
+                 (setq calls (1+ calls))
+                 (list :value (number-to-string calls)))))
+      (e-harness-effective-capability-config
+       harness 'dummy-config e-harness-test--capability-config-options)
+      (setq e-capability-config '((dummy-config :value "global")))
+      (should
+       (equal
+        (e-harness-effective-capability-config
+         harness 'dummy-config e-harness-test--capability-config-options)
+        '(:value "2")))
+      (should (= calls 2)))))
+
+(ert-deftest e-harness-test-effective-capability-config-does-not-cache-overrides ()
+  "Explicit override values remain per-call and are never retained by the cache."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+        (calls 0))
+    (cl-letf (((symbol-function 'e-capability-config-resolve)
+               (lambda (&rest _)
+                 (setq calls (1+ calls))
+                 (list :value (number-to-string calls)))))
+      (e-harness-effective-capability-config
+       harness 'dummy-config e-harness-test--capability-config-options
+       :overrides '(:value "one"))
+      (e-harness-effective-capability-config
+       harness 'dummy-config e-harness-test--capability-config-options
+       :overrides '(:value "two"))
+      (should (= calls 2)))))
+
 (ert-deftest e-harness-test-capability-config-describe-uses-buffer-harness ()
   "Describing config in a chat-like buffer uses the active session root."
   (let ((project (make-temp-file "e-harness-describe-project-" t))

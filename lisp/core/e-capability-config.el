@@ -36,6 +36,22 @@ capability symbol and PLIST contains keyword options owned by that capability."
   :type '(alist :key-type symbol :value-type plist)
   :group 'e-capability-config)
 
+(defvar e-capability-config--generation 0
+  "Monotonic revision of the global capability configuration.")
+
+(defun e-capability-config-generation ()
+  "Return the revision of the global capability configuration."
+  e-capability-config--generation)
+
+(defun e-capability-config--note-global-change
+    (_symbol _new-value _operation _where)
+  "Advance the configuration revision after `e-capability-config' changes."
+  (setq e-capability-config--generation
+        (1+ e-capability-config--generation)))
+
+(add-variable-watcher 'e-capability-config
+                      #'e-capability-config--note-global-change)
+
 (cl-defstruct (e-capability-config-option
                (:constructor e-capability-config-option-create))
   key
@@ -103,6 +119,21 @@ when DIRECTORY has no actual directory-local `e-capability-config' binding."
               (list :source 'directory-local
                     :directory root
                     :value e-capability-config))))))))
+
+(defun e-capability-config-directory-revision (directory)
+  "Return the current directory-local configuration revision for DIRECTORY.
+This is a cheap source identity suitable for derived caches.  Emacs validates
+the directory-local cache against its source file before returning it, so an
+edited `.dir-locals.el' produces a different revision without resolving the
+capability configuration itself."
+  (when directory
+    (let ((root (file-name-as-directory (expand-file-name directory))))
+      (when (file-directory-p root)
+        ;; `dir-locals-find-file' checks the cached source modification time
+        ;; without applying the local variables to a temporary buffer.
+        (copy-tree
+         (dir-locals-find-file
+          (expand-file-name ".e-capability-config-probe" root)))))))
 
 (defun e-capability-config--directory-value (directory)
   "Return directory-local `e-capability-config' for DIRECTORY, or nil."
