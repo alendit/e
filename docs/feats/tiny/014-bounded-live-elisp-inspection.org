@@ -1,0 +1,23 @@
+#+title: Bounded Live Elisp Inspection
+
+* Change
+
+Bind circular and depth/length-bounded printer settings while =run_elisp=
+evaluates model-authored forms.  This prevents an accidental =%S= or =prin1=
+of cyclic live runtime state from exhausting Emacs before the existing result
+preview can run.
+
+Expose =(e-tools-current-context-summary)= as the small inspection surface for
+the active tool context.  It reports IDs, deadline/nesting metadata, and tool
+names without returning live harness or registry objects.  The =run_elisp=
+description recommends this summary API for context inspection.
+
+This is tiny because it adds a narrow, derived inspection result and a local
+dynamic binding around an existing evaluation boundary.  It does not change
+the harness context contract or persist new state.
+
+* Validation
+
+- Core tool tests cover the scalar context summary.
+- Emacs tool tests cover cyclic-context printing during evaluation and the
+  model-facing summary guidance.
