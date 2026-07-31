@@ -42,6 +42,18 @@
               (should (eq (window-buffer composer-window) composer))
               (should (> (nth 1 (window-edges composer-window))
                          (nth 1 (window-edges transcript-window))))
+              (should buffer-read-only)
+              (with-current-buffer composer
+                (should-not (string-match-p
+                             (regexp-quote e-chat--composer-separator)
+                             (buffer-string))))
+              ;; With no output there is nowhere to navigate, so Escape must
+              ;; leave focus in the composer rather than exposing transcript
+              ;; text for accidental editing.
+              (with-current-buffer composer
+                (should-error (e-chat-composer-enter-navigation)
+                              :type 'user-error))
+              (should (eq (selected-window) composer-window))
               (with-current-buffer composer
                 (goto-char (point-max))
                 (insert "surface prompt")
@@ -57,7 +69,10 @@
               (with-current-buffer composer
                 (should (equal (e-chat--composer-text) ""))
                 (e-chat-composer-enter-navigation))
-              (should (eq (selected-window) transcript-window)))))
+              (should (eq (selected-window) transcript-window))
+              (let ((last-command-event ?x))
+                (should-error (self-insert-command 1)
+                              :type 'buffer-read-only)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))

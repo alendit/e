@@ -1338,9 +1338,16 @@ and / expands available prompts."
   (e-chat--disable-completion)
   (add-hook 'after-change-functions
             #'e-chat--mark-composer-scroll-needed nil t)
+  (add-hook 'after-change-functions
+            #'e-chat--surface-mark-composer-layout-dirty nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (add-hook 'post-command-hook #'e-chat--surface-composer-post-command nil t)
   (add-hook 'kill-buffer-hook #'e-chat--surface-composer-killed nil t))
+
+(defun e-chat--composer-enter-insert-state ()
+  "Put an Evil-enabled composer buffer into insert state when it is focused."
+  (when (fboundp 'evil-insert-state)
+    (evil-insert-state)))
 
 (defun e-chat--surface-transcript-p ()
   "Return non-nil when the current buffer owns a separate composer buffer."
@@ -1388,8 +1395,8 @@ composer buffer; transcript rendering never calls it."
     (setq e-chat--queue-start-marker nil)
     (setq e-chat--queue-end-marker nil)
     (e-chat--insert-queued-prompts)
-    (e-chat--insert-protected
-     (concat e-chat--composer-separator "\n") 'e-chat-separator-face)
+    ;; The composer has its own window, so the monolithic-buffer divider would
+    ;; only duplicate the window boundary.
     (e-chat--insert-protected e-chat--composer-glyph 'e-chat-composer-face
                               '(e-chat-composer t))
     (setq e-chat--composer-start-marker (point-marker))
@@ -1513,6 +1520,13 @@ ordinary transcript rendering must leave the composer buffer untouched."
   (let ((transcript e-chat--surface-transcript-buffer))
     (unless (buffer-live-p transcript)
       (user-error "This e chat composer has no live transcript"))
+    ;; Do not leave the input pane when there is nothing to navigate.  Besides
+    ;; being less surprising, this preserves the input focus after an early
+    ;; Escape in a brand-new session.
+    (with-current-buffer transcript
+      (unless (or (e-chat--block-at-point)
+                  (e-chat--last-rendered-block-id))
+        (user-error "No rendered e chat blocks")))
     (when-let ((window (get-buffer-window transcript t)))
       (select-window window))
     (with-current-buffer transcript
@@ -1585,6 +1599,7 @@ ordinary transcript rendering must leave the composer buffer untouched."
   "Configure modal editors to keep `e-chat-mode' non-normal."
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'e-chat-mode 'emacs)
+    (evil-set-initial-state 'e-chat-composer-mode 'insert)
     (evil-set-initial-state 'e-chat-overview-mode 'emacs)))
 
 (e-chat--configure-modal-editing-policy)
@@ -7120,6 +7135,7 @@ revealed block when revealing, or on the block that was focused when hiding."
   (if (e-chat--surface-transcript-p)
       (when-let ((window (e-chat--surface-display-composer nil t)))
         (with-current-buffer (window-buffer window)
+          (e-chat--composer-enter-insert-state)
           (goto-char (point-max))
           (set-window-point window (point))))
     (goto-char (point-max))
@@ -8304,6 +8320,11 @@ HARNESS are internal test seams."
       (e-chat--set-status
        (if unloaded-session "loading session" "idle")
        (not unloaded-session))
+      ;; The transcript no longer has an editable composer tail.  Protect it
+      ;; as a whole so an early Escape or any unbound editing key cannot make
+      ;; arbitrary text part of the rendered conversation.
+      (when (e-chat--surface-transcript-p)
+        (setq-local buffer-read-only t))
       (e-chat--subscribe harness buffer session-id)))
     buffer))
 

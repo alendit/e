@@ -1395,7 +1395,17 @@ must drop any revealed hidden blocks."
                  (push (list mode state) configured))))
       (e-chat--configure-modal-editing-policy)
       (should (member '(e-chat-mode emacs) configured))
+      (should (member '(e-chat-composer-mode insert) configured))
       (should (member '(e-chat-overview-mode emacs) configured)))))
+
+(ert-deftest e-chat-test-composer-focus-enters-evil-insert-state ()
+  "Showing the separate composer requests Evil's insert state."
+  (let (entered)
+    (cl-letf (((symbol-function 'evil-insert-state)
+               (lambda () (setq entered t))))
+      (with-temp-buffer
+        (e-chat--composer-enter-insert-state)))
+    (should entered)))
 
 (ert-deftest e-chat-test-overview-mode-neutralizes-evil ()
   "Overview mode keeps Evil from intercepting sidebar navigation keys."
