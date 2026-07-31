@@ -3025,6 +3025,56 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-subscription-skips-redundant-assistant-deltas ()
+  "The shell handles only one text delta for each provider response round.
+The loop still consumes every delta to form the durable final answer; this
+test covers only the chat presentation subscription's redundant callbacks."
+  (let ((buffer (e-chat-test--buffer nil "chat-delta-subscription")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((rendered nil)
+                (original-render (symbol-function 'e-chat--render-event))
+                (provider-start
+                 (e-events-make :type 'provider-request-started
+                                :session-id e-chat-session-id
+                                :turn-id "turn-1"
+                                :payload '(:status started)))
+                (delta
+                 (e-events-make :type 'assistant-delta
+                                :session-id e-chat-session-id
+                                :turn-id "turn-1"
+                                :payload '(:content "part")))
+                (reasoning
+                 (e-events-make :type 'reasoning-delta
+                                :session-id e-chat-session-id
+                                :turn-id "turn-1"
+                                :payload '(:content "thinking"))))
+            (cl-letf (((symbol-function 'e-chat--render-event)
+                       (lambda (event)
+                         (push (plist-get event :type) rendered)
+                         (funcall original-render event))))
+              (e-harness--emit e-chat-harness provider-start)
+              (e-harness--emit e-chat-harness delta)
+              (e-harness--emit e-chat-harness delta)
+              (should (equal (nreverse rendered)
+                             '(provider-request-started assistant-delta)))
+              ;; If another visible phase supersedes the header, the next text
+              ;; chunk restores the current streaming status.
+              (setq rendered nil)
+              (e-harness--emit e-chat-harness reasoning)
+              (e-harness--emit e-chat-harness delta)
+              (should (equal (nreverse rendered)
+                             '(reasoning-delta assistant-delta)))
+              ;; Tool turns can start another provider response without
+              ;; changing turn id, so the next request re-enables one delta.
+              (setq rendered nil)
+              (e-harness--emit e-chat-harness provider-start)
+              (e-harness--emit e-chat-harness delta)
+              (should (equal (nreverse rendered)
+                             '(provider-request-started assistant-delta))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-turn-steered-schedules-visible-indicator ()
   "A steering event schedules a visible active-turn indicator."
   (let ((buffer (e-chat-test--buffer nil "chat-steered-indicator")))

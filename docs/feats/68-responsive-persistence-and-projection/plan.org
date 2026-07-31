@@ -38,6 +38,11 @@ ordered; token usage and progress remain latest-value updates.
    changes update that one block and its adjacent layout locally; the explicit
    audit-reveal view retains its separate full replay because it deliberately
    uses a different representation.
+5. DONE: Provider text chunks are still accumulated by the core loop for the
+   final durable assistant message, but the chat presentation now handles only
+   the first chunk in each provider response.  That first event changes the
+   status to =streaming=; repeated chunks cannot change the visible shell and
+   are suppressed until the next =provider-request-started= event.
 
 * Completion evidence
 
@@ -52,3 +57,5 @@ not a replacement for profiling a live provider turn.
 The follow-up local-projection slice has focused ERT coverage for initial
 hidden-message projection, hide and restore of an already-rendered message
 without =e-chat--rerender-transcript=, and the explicit audit-reveal toggle.
+It also covers repeated text chunks and a later provider response in the same
+tool-using turn.

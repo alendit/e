@@ -16,6 +16,8 @@ Done.
 - Commits =b30d198=, =64c2f22=, =46a19c8=, =cdb7a0e=, and =2822ede=.
 - Post-completion correction: terminal =message-updated= handling in the chat
   shell, following the 2026-07-31 live profile.
+- Follow-up event reduction: repeated provider text chunks after the visible
+  =streaming= status transition.
 
 * Review loop
 
@@ -79,6 +81,29 @@ dimmed hidden-entry representation is intentionally different.
 hide and restore invoke no transcript replay.  The full chat suite passes with
 310 expected results and one existing environment-dependent markdown skip.
 
+** DONE Medium: Every provider text chunk entered the chat renderer
+
+*** Problem
+
+One provider response can produce hundreds of =assistant-delta= events.  The
+core loop needs all of them to assemble the final assistant message, but the
+chat shell does not render partial answer text: only the first chunk changes
+its status to =streaming=.  The remaining callbacks therefore did no useful
+presentation work.
+
+*** Change
+
+The shell records that it has shown streaming status for the current provider
+response and drops later delta callbacks at its subscription boundary.  A new
+=provider-request-started= event resets that local state, including a second
+provider round after a tool call in the same turn.  The core loop and durable
+message assembly remain untouched.
+
+*** Evidence
+
+=e-chat-test-subscription-skips-redundant-assistant-deltas= proves one delta
+is rendered per provider response and that the next response is re-enabled.
+
 * Final review
 
 No unresolved findings.  Durable journal appends now leave the Emacs UI thread,
@@ -97,6 +122,8 @@ synchronous by design.
   the one coalesced activity redraw took 1.095 ms.
 - =eldev test --file e-chat-test.el=: 310 expected results, no unexpected
   results, one existing environment-dependent markdown skip.
+- Follow-up =eldev test --file e-chat-test.el=: 311 expected results, no
+  unexpected results, one existing environment-dependent markdown skip.
 
 * Live reload
 
@@ -113,6 +140,8 @@ renderer or a new shared event abstraction.
 The message-to-block index is likewise buffer-local derived state: the session
 remains the durable owner of message identity, while the shell owns its current
 layout and visibility projection.
+Provider chunk aggregation remains core-loop state; the shell owns only its
+response-local decision that further chunks have no distinct presentation.
 
 * Design self-check
 

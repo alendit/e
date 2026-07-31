@@ -905,6 +905,11 @@ mode-line refreshes for the current chat buffer.")
 (defvar-local e-chat--status nil
   "Current chat status text shown in the header line.")
 
+(defvar-local e-chat--assistant-streaming-p nil
+  "Non-nil after this chat has displayed streaming status for a provider round.
+Provider text deltas remain necessary to assemble the durable final message,
+but the shell only needs the first one to update its status presentation.")
+
 (defvar-local e-chat--rendered-session-title nil
   "Session title currently rendered in the chat title block.")
 
@@ -1777,7 +1782,10 @@ context insertions from the chat buffer the user is looking at."
            (when (buffer-live-p buffer)
              (with-current-buffer buffer
                (when (eq e-chat-harness harness)
-                 (e-chat--render-event event)))))
+                 (unless (and (eq (plist-get event :type) 'assistant-delta)
+                              e-chat--assistant-streaming-p
+                              (equal e-chat--status "streaming"))
+                   (e-chat--render-event event))))))
          :session-id session-id)))
 
 (defun e-chat--unsubscribe ()
@@ -7017,6 +7025,7 @@ loaded-session backfill generation while rebuilding the transcript."
     (setq e-chat--block-view-block-id nil)
     (setq e-chat--tool-list-block-id nil)
     (setq e-chat--tool-list-index 0)
+    (setq e-chat--assistant-streaming-p nil)
     (when (overlayp e-chat--focused-turn-overlay)
       (delete-overlay e-chat--focused-turn-overlay))
     (setq e-chat--focused-turn-overlay nil)
@@ -7516,6 +7525,7 @@ separate dimmed representation instead."
        (unless (e-chat--reconcile-message-display message)
          (e-chat--rerender-transcript))))
     ('provider-request-started
+     (setq e-chat--assistant-streaming-p nil)
      (e-chat--set-status "waiting for provider")
      (e-chat--record-provider-started
       (plist-get event :turn-id)
@@ -7540,6 +7550,7 @@ separate dimmed representation instead."
        (e-chat--set-status "steered")
        (e-chat--request-activity-redraw turn-id 'activity)))
     ('assistant-delta
+     (setq e-chat--assistant-streaming-p t)
      (e-chat--set-status "streaming"))
     ('reasoning-delta
      (e-chat--set-status "reasoning")
