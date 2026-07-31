@@ -3624,20 +3624,34 @@ active.  It defaults to the historical chat context radius of two lines."
       (delete-region (car bounds) (cdr bounds)))
     t))
 
+(defun e-chat--delete-context-reference-before-point ()
+  "Delete the context reference immediately before point, when present."
+  (when (and (e-chat--composer-active-p)
+             (> (point) (marker-position e-chat--composer-start-marker))
+             (get-text-property (1- (point)) 'e-chat-context-reference))
+    (e-chat--delete-context-reference-at (1- (point)))))
+
+(defun e-chat--delete-context-reference-after-point ()
+  "Delete the context reference immediately after point, when present."
+  (when (and (e-chat--composer-active-p)
+             (< (point) (point-max))
+             (get-text-property (point) 'e-chat-context-reference))
+    (e-chat--delete-context-reference-at (point))))
+
 (defun e-chat-delete-backward-char (arg &optional killp)
-  "Delete backward ARG chars, removing adjacent context atoms as units.
+  "Delete backward ARG chars, removing a preceding context atom as a unit.
 KILLP is passed through to `delete-char' for normal text."
   (interactive "p\nP")
   (unless (and (= arg 1)
-               (e-chat--delete-context-reference-at (point)))
+               (e-chat--delete-context-reference-before-point))
     (delete-char (- arg) killp)))
 
 (defun e-chat-delete-forward-char (arg &optional killp)
-  "Delete forward ARG chars, removing adjacent context atoms as units.
+  "Delete forward ARG chars, removing a following context atom as a unit.
 KILLP is passed through to `delete-char' for normal text."
   (interactive "p\nP")
   (unless (and (= arg 1)
-               (e-chat--delete-context-reference-at (point)))
+               (e-chat--delete-context-reference-after-point))
     (delete-char arg killp)))
 
 (defun e-chat-kill-region-or-backward-word (arg)

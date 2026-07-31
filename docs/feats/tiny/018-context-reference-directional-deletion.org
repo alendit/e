@@ -1,0 +1,18 @@
+#+title: Context Reference Directional Deletion
+#+startup: overview
+
+* Change
+
+Inline context references remain protected atoms, but Backspace now removes
+only the reference immediately before point and forward Delete only the one at
+point.  Deleting ordinary text on the opposite side no longer reaches across a
+reference boundary.
+
+* Why tiny
+
+This is a local input-command correction in the chat shell.  It does not alter
+the context-reference representation or session data.
+
+* Validation
+
+- =eldev test -f test/e-chat-test.el= (315 passed, 1 optional skip).

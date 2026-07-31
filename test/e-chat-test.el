@@ -1629,38 +1629,54 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-composer-delete-removes-inline-reference-at-boundary ()
-  "Backspace and forward delete remove whole inline reference atoms."
-  (let ((buffer (e-chat-test--buffer nil "chat-reference-delete")))
+(ert-deftest e-chat-test-composer-delete-respects-inline-reference-boundaries ()
+  "Delete reference atoms only on the side selected by the delete command."
+  (let* ((e-chat--surface-composition-enabled t)
+         (buffer (e-chat-test--buffer nil "chat-reference-delete"))
+         composer)
     (unwind-protect
-        (with-current-buffer buffer
-          (goto-char (point-max))
-          (insert "before ")
-          (e-chat--insert-context-reference
-           '(:id "ref-1"
-             :uri "buffer://source"
-             :label "source:2"
-             :text "two"
-             :start-line 2
-             :end-line 2
-             :point-line 2))
-          (insert "after")
-          (search-backward "after")
-          (call-interactively (key-binding (kbd "DEL")))
-          (should (equal (e-chat--composer-text) "before after"))
-          (goto-char e-chat--composer-start-marker)
-          (insert "again ")
-          (e-chat--insert-context-reference
-           '(:id "ref-2"
-             :uri "buffer://source"
-             :label "source:3"
-             :text "three"
-             :start-line 3
-             :end-line 3
-             :point-line 3))
-          (search-backward "@[source:3]")
-          (call-interactively (key-binding (kbd "C-d")))
-          (should (equal (e-chat--composer-text) "again before after")))
+        (progn
+          (setq composer
+                (buffer-local-value 'e-chat--surface-composer-buffer buffer))
+          (with-current-buffer composer
+            (goto-char (point-max))
+            (insert "before ")
+            (e-chat--insert-context-reference
+             '(:id "ref-1"
+               :uri "buffer://source"
+               :label "source:2"
+               :text "two"
+               :start-line 2
+               :end-line 2
+               :point-line 2))
+            (insert " after")
+            ;; Forward delete after the atom and backspace before it should
+            ;; operate on ordinary text, not reach across the boundary.
+            (search-backward " after")
+            (call-interactively (key-binding (kbd "C-d")))
+            (should (equal (e-chat--composer-text) "before @[source:2]after"))
+            (search-backward "@[source:2]")
+            (call-interactively (key-binding (kbd "DEL")))
+            (should (equal (e-chat--composer-text) "before@[source:2]after"))
+            ;; Forward delete at the atom removes the whole atom.
+            (call-interactively (key-binding (kbd "C-d")))
+            (should (equal (e-chat--composer-text) "beforeafter"))
+            (let ((inhibit-read-only t))
+              (delete-region e-chat--composer-start-marker (point-max)))
+            (insert "again ")
+            (e-chat--insert-context-reference
+             '(:id "ref-2"
+               :uri "buffer://source"
+               :label "source:3"
+               :text "three"
+               :start-line 3
+               :end-line 3
+               :point-line 3))
+            (insert " tail")
+            ;; Backspace after the atom removes the whole atom.
+            (search-backward " tail")
+            (call-interactively (key-binding (kbd "DEL")))
+            (should (equal (e-chat--composer-text) "again  tail"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
