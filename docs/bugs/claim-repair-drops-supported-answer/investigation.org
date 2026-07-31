@@ -1,0 +1,64 @@
+#+title: Claim Repair Drops a Supported Answer Investigation
+
+* Runtime evidence
+
+The persisted runtime transcript was inspected at:
+
+=/Users/dvorona/.config/emacs/.local/cache/e/sessions/sessions/20260731T082318-4f55eb425ee5.jsonl=
+
+The relevant sequence is:
+
+1. The user asked what the attached spec proposed for Release 266 and beyond.
+2. The assistant returned a detailed PageRank and external-execution summary.
+3. Its hidden reasoning block contained a substantive =claim:= sentence, but
+   cited the unresolved shorthand =evidence: in:01=.
+4. The hook audit recorded =evidence-gap= with rejected reference =in:01= and
+   reason =unknown=.
+5. The hidden corrective turn received only its own generated prompt as a new
+   =in:= handle and returned an insufficient-evidence answer.
+6. The original detailed answer was then hidden.
+
+The attached topic document was also inspected.  Its summary and delivery
+sequence explicitly state that Release 266 proposes Hyper-native PageRank and
+that a later release targets external execution and a wider algorithm catalog.
+The original answer therefore had source support that the evidence-handle
+model could not represent.
+
+A bounded read-only =emacsclient --eval= probe was attempted to record the
+loaded capability state.  The Emacs server did not respond, so the probe was
+interrupted.  No reload or live mutation was performed.
+
+* Code findings
+
+1. =e-bayesian-reasoning--current-turn-evidence-context= exposes only the
+   current user-role transcript message and successful current-turn tool
+   results.
+2. =e-chat-session-context-attachments-provider= contributes canvas content as
+   live system context.  It exposes no evidence handle even though the model
+   can use that content to answer.
+3. Evidence resolution equates every =user= role message with
+   =user-provided= evidence.  A harness-generated hidden correction prompt is
+   therefore eligible as =in:= evidence.
+4. Corrective turns bypass =e-bayesian-reasoning--turn-check=.  Completion of
+   any assistant replacement hides the original response, even when the
+   replacement is malformed or unsupported.
+5. The completeness check does not require a non-empty =claim:= field.
+
+* Conclusion
+
+This is a provenance and correction-lifecycle bug, not evidence that the
+original factual answer was unsupported.
+
+The fix should:
+
+- expose request-time current-state sources through a generic context-source
+  descriptor and =src:= handle;
+- distinguish human input from harness-generated prompts;
+- include the originating turn's exact available handles in a repair prompt;
+- validate one corrective replacement without recursively scheduling another;
+- hide the original only when the replacement reaches an accepted terminal
+  outcome; and
+- require a substantive claim field.
+
+Implementation is tracked by
+=docs/feats/69-source-aware-claim-repair/plan.org=.

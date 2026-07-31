@@ -1,0 +1,14 @@
+#+title: Claim Repair Drops a Supported Answer
+
+* Report
+
+Session =20260731T082318-4f55eb425ee5= answered a direct question about an
+attached Graph Analytics design summary.  The answer cited =in:01= instead of
+an exact evidence handle.  The Bayesian stop hook correctly rejected that
+unknown handle, but its hidden corrective turn replaced the detailed answer
+with an insufficient-evidence response even though the attached document
+supported the original answer.
+
+The expected behavior is to preserve supported answer detail, repair the
+evidence reference when possible, and accept a replacement only after the
+replacement itself passes the terminal claim check.

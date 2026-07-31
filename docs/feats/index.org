@@ -79,3 +79,4 @@ Status values for coding agents:
 | 66 | Planned | 66-work-bus-interaction-model/ | Work Board: Subscription-Driven Turn Model |
 | 67 | Done | 67-evidence-traceable-claim-audit/ | Evidence-Traceable Claim Audit |
 | 68 | Done | 68-responsive-persistence-and-projection/ | Responsive Persistence and Scheduled Chat Projection |
+| 69 | In-progress | 69-source-aware-claim-repair/ | Source-Aware Claim Repair |

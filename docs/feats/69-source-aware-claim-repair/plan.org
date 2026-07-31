@@ -1,0 +1,129 @@
+#+title: Source-Aware Claim Repair
+#+startup: overview
+
+* Status
+
+In-progress.
+
+The user requested implementation on 2026-07-31 after reviewing the failure in
+session =20260731T082318-4f55eb425ee5=.
+
+* Problem
+
+The claim audit can cite human transcript input and successful tool results,
+but not live context-provider sources such as an attached canvas.  When a model
+misstates a handle, the corrective turn receives a new evidence environment,
+may treat its own generated correction prompt as user evidence, and is accepted
+without validation.  A supported answer can therefore be replaced by an
+unsupported abstention.
+
+* Direction
+
+Make request-time context sources auditable through a generic core contract,
+then make claim repair a one-shot validated state transition.
+
+The harness and context core own source descriptors, exact request-time context,
+and input origin.  Context providers opt into the source contract without
+depending on Bayesian reasoning.  The Bayesian capability owns =src:= grammar,
+claim policy, repair prompts, and terminal correction outcomes.
+
+* Scope
+
+** Slice 1: generic context-source provenance
+
+- Add a small context-source descriptor containing a short stable handle,
+  canonical URI, label, source kind, and full content digest.
+- Let context-provider messages attach source descriptors as internal metadata.
+- Strip that metadata from backend messages while retaining it on context
+  segments.
+- Pass the exact captured model context to turn-finished hooks.
+- Add =src:= handles to chat-session attachment tags.
+
+Exit condition: a canvas context segment exposes a =src:= handle, backend
+messages contain no internal source metadata, and the turn-finished hook sees
+the exact descriptor used for the request.
+
+** Slice 2: source-aware Bayesian resolution
+
+- Accept =src:= references alongside =in:= and =ev:=.
+- Resolve =src:= only against descriptors in the captured turn context.
+- Snapshot URI, label, source kind, and digest into the durable audit.
+- Require a non-empty =claim:= value.
+- Expose exact available handles from the originating turn to the repair
+  prompt.
+
+Exit condition: an attachment-backed claim reaches =references-resolved= and
+an invented or stale source handle reaches =evidence-gap=.
+
+** Slice 3: validated correction lifecycle
+
+- Mark queued hook follow-ups as harness-originated input.
+- Exclude harness-originated messages from =in:= context and resolution.
+- Check the corrective replacement exactly once without queuing another
+  follow-up.
+- On an accepted replacement, hide the original and record a terminal linked
+  audit.
+- On a rejected replacement, hide the rejected replacement, keep the original
+  visible, record =correction-unresolved=, and clear pending validation state.
+
+Exit condition: a correction prompt cannot support its own factual claim, an
+invalid replacement cannot supersede the original, and the lifecycle never
+oscillates.
+
+** Slice 4: regression and review
+
+- Add focused core, attachment, Bayesian, session-replay, classic-chat, and
+  modernchat tests where affected.
+- Update the bug investigation and this plan with exact validation.
+- Create =review.org=, resolve findings, and mark the feature Done only when no
+  notes remain.
+
+* Compatibility
+
+- Existing =in:= and =ev:= handles remain valid.
+- Existing transcripts replay unchanged; absent input origin is treated as
+  human for compatibility.
+- =src:= is additive.
+- Providers that do not attach source descriptors remain valid but their
+  passive context cannot be cited as provenance.
+- Corrective turns remain bounded to one extra provider turn.
+
+* Verification
+
+- Focused ERT for =e-context=, =e-capabilities=, =e-chat-session=,
+  =e-bayesian-reasoning=, =e-harness=, classic chat, and modernchat.
+- A regression fixture reproducing the supplied attachment-backed correction.
+- Broader affected suites.
+- =git diff --check=.
+- Batch byte compilation if focused validation passes.
+- No full live reload unless the user separately requests it.
+
+* Design self-check
+
+1. Slice 1 alone gives passive sources an auditable identity.
+2. The work moves toward evidence-traceable answers that recover without
+   discarding supported content.
+3. Handle presentation may change; source origin, request-time snapshots, and
+   one-shot correction validation are stable requirements.  The handle grammar
+   remains local to the Bayesian capability.
+4. Context core owns source descriptors, the harness owns lifecycle, chat
+   session owns attachment materialization, and Bayesian reasoning owns claim
+   policy.
+5. The generic source contract reduces coupling; providers and policy depend on
+   a narrow descriptor rather than each other.
+6. Stable policy does not depend on Org canvas, a shell, or a backend.
+7. File and buffer reads stay in the attachment provider; the checker consumes
+   immutable descriptors.
+8. The captured turn context lives only for the active turn.  Durable audits
+   retain only the small resolved-source snapshot needed for explanation.
+9. Source hashing is linear in content already read for prompt construction and
+   avoids a redundant repair-time read.
+10. Source descriptors are optional and substitutable; a provider never has to
+    fake provenance it cannot supply.
+11. Existing transcript handles remain compatible and =src:= is additive.
+12. Remove the legacy role-equals-human assumption and unconditional correction
+    acceptance.
+13. Expected unresolved corrections become a terminal audit state; unexpected
+    hook and context failures still surface.
+14. Core behavior is independently testable with fake backends and synthetic
+    context segments; shell tests cover only presentation consequences.
