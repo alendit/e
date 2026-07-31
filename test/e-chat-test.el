@@ -2828,6 +2828,19 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
              "Validating claims…"
              (plist-get (e-chat--running-status-data "turn-1" record) :text)))))
 
+(ert-deftest e-chat-test-terminal-hook-audit-clears-pending-summary ()
+  "A terminal hook audit removes a queued correction's validation label."
+  (let ((record '(:started-at 10 :ended-at 772 :has-provider-activity t
+                  :final-rendered t)))
+    (e-chat--record-hook-audit
+     record '(:pending-summary "Validating claims…") 'activity)
+    (e-chat--record-hook-audit
+     record '(:summary "Claim correction unresolved"
+              :pending-summary nil
+              :details (:correction failed))
+     'activity)
+    (should-not (plist-get record :pending-hook-summary))))
+
 (ert-deftest e-chat-test-follow-up-turn-carries-pending-hook-summary ()
   "A hidden follow-up shows its validation status while its reply streams."
   (let ((buffer (e-chat-test--buffer nil "chat-pending-hook-summary")))

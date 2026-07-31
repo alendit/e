@@ -203,6 +203,21 @@
                         'hidden))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-message-origin-survives-reload-as-symbol ()
+  "Persistent input provenance replays in the runtime's symbol form."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (e-session-append-message
+           store "session-1"
+           '(:id "msg-1" :role user :origin harness :content "repair"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (message (car (e-session-messages loaded "session-1"))))
+            (should (eq (plist-get message :origin) 'harness))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-session-generates-id-and-reloads ()
   "Persistent sessions get generated ids and replay messages in order."
   (let* ((directory (make-temp-file "e-session-" t))

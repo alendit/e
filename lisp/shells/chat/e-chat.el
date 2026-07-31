@@ -5462,9 +5462,13 @@ claim count is a capability-declared summary metric; its opaque audit details
 remain available only through answer details and capability resources."
   (when-let ((summary (plist-get payload :summary)))
     (e-chat--add-intermittent-entry record "Hook audit" summary nil source))
-  (when-let ((pending-summary (plist-get payload :pending-summary)))
-    (when (stringp pending-summary)
-      (plist-put record :pending-hook-summary pending-summary)))
+  (when (plist-member payload :pending-summary)
+    (let ((pending-summary (plist-get payload :pending-summary)))
+      (plist-put record
+                 :pending-hook-summary
+                 (and (stringp pending-summary)
+                      (not (string-empty-p pending-summary))
+                      pending-summary))))
   (when-let ((claim-count (plist-get (plist-get payload :details) :claim-count)))
     (when (and (integerp claim-count) (>= claim-count 0))
       (plist-put record :claim-count claim-count))))

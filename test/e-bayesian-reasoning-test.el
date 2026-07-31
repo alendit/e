@@ -30,6 +30,8 @@
                           e-bayesian-reasoning-instructions))
   (should (string-match-p "\\*<claim>\\*"
                           e-bayesian-reasoning-instructions))
+  (should (string-match-p "src:"
+                          e-bayesian-reasoning-instructions))
   (should (string-match-p "not answer content"
                           e-bayesian-reasoning-instructions)))
 

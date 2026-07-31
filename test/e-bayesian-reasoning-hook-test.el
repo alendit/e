@@ -15,6 +15,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-bayesian-reasoning)
+(require 'e-chat-session)
 (require 'e-harness)
 (require 'e-backend)
 
@@ -31,9 +32,10 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
                   :type 'e-harness-no-active-turn)
     ;; The settlement-valid path accepts it.
     (e-harness-request-follow-up harness "session-1" "corrective")
-    (should (equal (mapcar (lambda (item) (plist-get item :prompt))
-                           (e-harness-queued-prompts harness "session-1"))
-                   '("corrective")))))
+    (let ((queued (car (e-harness-queued-prompts harness "session-1"))))
+      (should (equal (plist-get queued :prompt) "corrective"))
+      (should (eq (plist-get (plist-get queued :metadata) :input-origin)
+                  'harness)))))
 
 ;;;; Deterministic mark-completeness checks
 
@@ -48,6 +50,12 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
   (should
    (e-bayesian-reasoning--mark-gap
     '(:claim "X" :confidence "pretty sure" :alternatives "Y" :evidence "e"))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-missing-claim-is-a-gap ()
+  "A mark must state the substantive claim, not just its other fields."
+  (should
+   (e-bayesian-reasoning--mark-gap
+    '(:claim "" :confidence "high" :alternatives "Y" :evidence "in:01KUSER"))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-missing-alternative-is-a-gap ()
   "A mark with no alternative fails."
@@ -130,7 +138,7 @@ normal answer would draw a correction."
     (e-harness-create-session harness :id session-id)
     (e-session-append-message
      (e-harness-sessions harness) session-id
-     '(:id "01KUSER" :role user :turn-id "turn-1" :content "Why is it slow?"))
+     '(:id "01KASKED" :role user :turn-id "turn-1" :content "Why is it slow?"))
     (setq tool
           (e-session-append-message
            (e-harness-sessions harness) session-id
@@ -159,6 +167,80 @@ normal answer would draw a correction."
            (content (plist-get (car messages) :content)))
       (should (string-match-p (regexp-quote (concat "ev:" (plist-get tool :id)))
                               content)))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-resolves-request-time-source-handle ()
+  "A `src:' handle resolves against the exact captured model context."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-1")
+         (source
+          (e-context-source-create
+           :uri "file:///tmp/spec.org"
+           :label "spec.org"
+           :content "The feature uses native execution."
+           :source-kind 'attachment
+           :provider 'chat-session))
+         (handle (e-context-source-handle source)))
+    (e-harness-create-session harness :id session-id)
+    (e-session-append-message
+     (e-harness-sessions harness) session-id
+     '(:id "01KASKED" :role user :origin human :turn-id "turn-1"
+       :content "Summarize the design."))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) session-id
+             (list :id "01KASSIST" :role 'assistant :turn-id turn-id
+                   :content
+                   (concat
+                    "It uses native execution.\n\n```reasoning\n"
+                    "claim: the feature uses native execution\n"
+                    "confidence: high\nalternatives: external execution\n"
+                    "evidence: " handle "\n```\n"))))
+           (check
+            (e-bayesian-reasoning--turn-check
+             (list :harness harness :session-id session-id :turn-id turn-id
+                   :assistant-message assistant
+                   :model-context
+                   (list :segments
+                         (list
+                          (list e-context-evidence-sources-key
+                                (list source))))))))
+      (should (eq (plist-get check :outcome) 'references-resolved))
+      (let ((resolved
+             (car (plist-get (plist-get check :details) :resolved))))
+        (should (equal (plist-get resolved :reference) handle))
+        (should (equal (plist-get resolved :uri) "file:///tmp/spec.org"))
+        (should (equal (plist-get resolved :content-sha256)
+                       (plist-get source :content-sha256)))))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-harness-prompt-is-not-input-evidence ()
+  "A hidden repair prompt cannot validate itself through an `in:' handle."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-2"))
+    (e-harness-create-session harness :id session-id)
+    (e-session-append-message
+     (e-harness-sessions harness) session-id
+     '(:id "01KRETRY" :role user :origin harness :turn-id "turn-2"
+       :content "Repair the claim."))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) session-id
+             '(:id "01KASSIST" :role assistant :turn-id "turn-2"
+               :content
+               "Repaired.\n\n```reasoning\nclaim: repaired\nconfidence: high\nalternatives: not repaired\nevidence: in:01KRETRY\n```\n")))
+           (context
+            (list :harness harness :session-id session-id :turn-id turn-id
+                  :assistant-message assistant))
+           (check (e-bayesian-reasoning--turn-check context)))
+      (should (eq (plist-get check :outcome) 'evidence-gap))
+      (should (eq (plist-get
+                   (car (plist-get (plist-get check :details) :rejected))
+                   :reason)
+                  'wrong-source))
+      (should-not
+       (e-bayesian-reasoning--current-turn-evidence-context
+        :harness harness :session-id session-id :turn-id turn-id)))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-high-risk-unmarked-turn-is-a-gap ()
   "A diagnostic request requires a mark or explicit abstention."
@@ -247,6 +329,19 @@ supported detail merely to shorten the reply."
     (should (string-match-p "fabricate" prompt))
     (should (string-match-p "supported detail" prompt))))
 
+(ert-deftest e-bayesian-reasoning-hook-test-follow-up-prompt-carries-originating-handles ()
+  "A repair prompt distinguishes a bad citation from a rejected claim."
+  (let ((prompt
+         (e-bayesian-reasoning--follow-up-prompt
+          "replace unresolved evidence"
+          '("src:0123456789ABCDEF" "in:01KASKED")
+          '((:reference "in:01KBAD" :reason unknown)))))
+    (should (string-match-p "claim was not rejected" prompt))
+    (should (string-match-p "src:0123456789ABCDEF" prompt))
+    (should (string-match-p "in:01KASKED" prompt))
+    (should (string-match-p "in:01KBAD" prompt))
+    (should (string-match-p "Repair an invalid citation" prompt))))
+
 ;;;; The hook: requests exactly one follow-up, never rewrites the value
 
 (defconst e-bayesian-reasoning-hook-test--incomplete-mark-reply
@@ -290,7 +385,8 @@ unchanged."
                              :display 'hidden
                              :supersedes-message-id (plist-get message :id)
                              :pending-summary
-                             e-bayesian-reasoning--follow-up-pending-summary))))
+                             e-bayesian-reasoning--follow-up-pending-summary
+                             :input-origin 'harness))))
       (let ((audit (car (e-harness-turn-hook-audits
                          harness "session-1" "turn-1" 'bayesian-reasoning))))
         (should (eq (plist-get (plist-get audit :payload) :outcome) 'format-gap))
@@ -300,10 +396,8 @@ unchanged."
         (should (eq (plist-get (plist-get audit :payload) :truth-status)
                     'not-evaluated))))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-hook-keeps-first-attempt-visible-until-replacement ()
-  "A corrective follow-up leaves its first attempt visible while it runs.
-Once the follow-up returns an assistant reply, the original is hidden from the
-clean transcript but remains durable for inspection."
+(ert-deftest e-bayesian-reasoning-hook-test-invalid-replacement-keeps-original-visible ()
+  "An invalid corrective reply is hidden and cannot erase the original."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (let ((message (e-harness--append-message
@@ -333,7 +427,159 @@ clean transcript but remains durable for inspection."
                :session-id "session-1"
                :turn-id "turn-2"
                :assistant-message replacement))
-        (should (e-harness-message-hidden-p message))))))
+        (should-not (e-harness-message-hidden-p message))
+        (should (e-harness-message-hidden-p replacement))
+        (let* ((audits
+                (e-harness-turn-hook-audits
+                 harness "session-1" "turn-1" 'bayesian-reasoning))
+               (payload (plist-get (car (last audits)) :payload)))
+          (should (eq (plist-get payload :outcome) 'correction-unresolved))
+          (should (eq (plist-get (plist-get payload :details) :correction)
+                      'failed)))))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-valid-replacement-hides-original ()
+  "A validated corrective reply replaces the original and closes its audit."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness--append-message
+     harness "session-1" "turn-1"
+     '(:id "01KASKED" :role user :origin human :content "Why did errors rise?"))
+    (let ((message
+           (e-harness--append-message
+            harness "session-1" "turn-1"
+            (list :role 'assistant
+                  :content
+                  e-bayesian-reasoning-hook-test--incomplete-mark-reply))))
+      (e-bayesian-reasoning--turn-finished-hook
+       '(:status done)
+       (list :harness harness
+             :session-id "session-1"
+             :turn-id "turn-1"
+             :assistant-message message))
+      (let* ((metadata (plist-get
+                        (car (e-harness-queued-prompts harness "session-1"))
+                        :metadata))
+             (_prompt
+              (e-harness--append-message
+               harness "session-1" "turn-2"
+               (list :role 'user :origin 'harness
+                     :content "corrective" :metadata metadata)))
+             (replacement
+              (e-harness--append-message
+               harness "session-1" "turn-2"
+               (list
+                :role 'assistant
+                :content
+                (concat
+                 "The measured rise needs another explanation.\n\n"
+                 "```reasoning\nclaim: the measured error rise needs another explanation\n"
+                 "confidence: medium\nalternatives: rollout caused the rise\n"
+                 "evidence: in:01KASKED\n```\n")))))
+        (e-bayesian-reasoning--turn-finished-hook
+         '(:status done)
+         (list :harness harness
+               :session-id "session-1"
+               :turn-id "turn-2"
+               :assistant-message replacement))
+        (should (e-harness-message-hidden-p message))
+        (should-not (e-harness-message-hidden-p replacement))
+        (let* ((audits
+                (e-harness-turn-hook-audits
+                 harness "session-1" "turn-1" 'bayesian-reasoning))
+               (payload (plist-get (car (last audits)) :payload)))
+          (should (eq (plist-get payload :outcome) 'references-resolved))
+          (should (eq (plist-get (plist-get payload :details) :correction)
+                      'completed)))))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-attachment-repair-regression ()
+  "An opaque citation cannot turn a source-backed answer into `I don't know'."
+  (let* ((calls 0)
+         (request-messages nil)
+         (backend
+          (e-backend-create
+           :name "claim-repair-regression"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done
+                           on-error on-request-start)
+              (ignore options on-error)
+              (setq calls (1+ calls))
+              (push (copy-tree messages) request-messages)
+              (when on-request-start
+                (funcall on-request-start (e-backend-request-create)))
+              (funcall
+               on-item
+               (list
+                :type 'assistant-message
+                :content
+                (if (= calls 1)
+                    (concat
+                     "Release 266 uses native PageRank; later work moves "
+                     "execution outside Hyper.\n\n"
+                     "```reasoning\n"
+                     "claim: Release 266 uses native PageRank before external execution\n"
+                     "confidence: high\nalternatives: external execution ships first\n"
+                     "evidence: in:01\n```\n")
+                  "I don't know.")))
+              (funcall on-item '(:type done :reason stop))
+              (funcall on-done '(:status done))
+              (e-backend-request-create)))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (e-harness-activate-capability
+     harness (e-bayesian-reasoning-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (with-temp-buffer
+      (rename-buffer "e-claim-repair-regression-source" t)
+      (insert
+       "Release 266 uses native PageRank in Hyper. Later work targets external execution.")
+      (e-chat-session-attach-context
+       harness "session-1"
+       (list :uri (concat "buffer://" (buffer-name))
+             :label "graph analytics spec"
+             :buffer-name (buffer-name)))
+      (e-harness-prompt-batch
+       harness "session-1" "What does the graph analytics spec propose?")
+      (let ((deadline (+ (float-time) 1)))
+        (while (and (< calls 2) (< (float-time) deadline))
+          (accept-process-output nil 0.01)))
+      (should (= calls 2))
+      (let* ((messages (e-harness-messages harness "session-1"))
+             (assistants
+              (seq-filter
+               (lambda (message)
+                 (eq (plist-get message :role) 'assistant))
+               messages))
+             (repair-prompt
+              (seq-find
+               (lambda (message)
+                 (eq (e-bayesian-reasoning--message-input-origin message)
+                     'harness))
+               messages))
+             (original (car assistants))
+             (replacement (cadr assistants))
+             (first-request (car (last request-messages)))
+             (source-message
+              (seq-find
+               (lambda (message)
+                 (and (eq (plist-get message :role) 'system)
+                      (string-match-p "<attachment"
+                                      (plist-get message :content))))
+               first-request)))
+        (should source-message)
+        (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
+                                (plist-get source-message :content)))
+        (should (string-match-p "src:[0-9A-F]\\{16\\}"
+                                (plist-get repair-prompt :content)))
+        (should-not (e-harness-message-hidden-p original))
+        (should (e-harness-message-hidden-p replacement))
+        (let* ((audits
+                (e-harness-turn-hook-audits
+                 harness "session-1" (plist-get original :turn-id)
+                 'bayesian-reasoning))
+               (payload (plist-get (car (last audits)) :payload)))
+          (should (eq (plist-get payload :outcome)
+                      'correction-unresolved)))))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-hook-noop-on-clean-turn ()
   "A trivial turn queues no follow-up."
