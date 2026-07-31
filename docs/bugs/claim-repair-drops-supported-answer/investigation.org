@@ -62,3 +62,19 @@ The fix should:
 
 Implementation is tracked by
 =docs/feats/69-source-aware-claim-repair/plan.org=.
+
+* Resolution
+
+Implemented and reviewed on 2026-07-31.
+
+- Chat attachments now expose exact request-time =src:= handles backed by
+  source URI and content digest.
+- Repair prompts carry the originating turn's handles and rejected references.
+- Harness-authored correction prompts are excluded from human =in:= evidence.
+- Corrective replies are validated once.  A rejected replacement is hidden,
+  the original stays visible, and the audit records =correction-unresolved=.
+- The reasoning mark now requires a substantive =claim:= field.
+
+The regression test reproduces the attached-source, opaque =in:01=, and
+corrective =I don't know.= sequence.  It confirms that the original answer is
+preserved.

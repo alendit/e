@@ -1,0 +1,179 @@
+#+title: Review: Source-Aware Claim Repair
+#+author: e implementation
+#+date: 2026-07-31
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+The implementation meets all four plan slices.  Request-time attachments have
+auditable =src:= handles, human and harness input have distinct provenance, and
+a corrective answer must pass the same deterministic check before it can hide
+the original.  No unresolved findings remain.
+
+* Scope reviewed
+
+- Plan and bug evidence in this feature directory and
+  =docs/bugs/claim-repair-drops-supported-answer/=.
+- Generic context and harness changes in commits =2d3b33f= and =e44bad3=.
+- Bayesian correction and classic-chat presentation changes in commit
+  =3894879=.
+- Focused core, session, attachment, Bayesian, classic-chat, and modernchat
+  tests.
+- The end-to-end attachment repair regression based on session
+  =20260731T082318-4f55eb425ee5=.
+
+* Review loop
+
+** DONE Medium: The recorded content digest included the URI
+
+*** Problem
+
+The source descriptor called its audit field =content-sha256=, but the first
+implementation stored the digest of =URI NUL content=.  That value was useful
+for source identity but did not meet the plan's contract for a full content
+digest.  It would also change when identical content moved to another URI.
+
+*** Change
+
+=e-context-source-create= now derives the short source handle from
+=URI NUL content= and records a separate SHA-256 digest of the content alone.
+
+*** Evidence
+
+The context test now proves that moving identical content changes its handle
+but preserves =content-sha256=.  The 189-test context, capability, attachment,
+harness, and Bayesian set passed after the change.
+
+* Plan coverage
+
+- Slice 1: context providers can retain internal source descriptors on context
+  segments without leaking them into backend message plists.  Chat attachments
+  advertise their exact handle, and turn-finished hooks receive captured model
+  context.
+- Slice 2: Bayesian marks accept and resolve =src:=, snapshot source metadata
+  and digest, require a substantive claim, and carry originating handles into
+  repair prompts.
+- Slice 3: queued repairs are harness-originated, cannot validate themselves as
+  human input, and are checked once.  Only accepted repairs hide the original;
+  rejected repairs are hidden and record =correction-unresolved=.
+- Slice 4: focused and end-to-end regression coverage passed.  Classic chat
+  clears terminal pending status; modernchat still omits hidden messages.
+
+* Architecture review
+
+Ownership remains split at real contracts.  Core context owns provider-neutral
+source descriptors.  The harness owns input origin and turn lifecycle.
+Chat-session owns attachment reads and source annotation.  Bayesian reasoning
+owns citation grammar and correction policy.  Shell code only renders generic
+audit state.
+
+No stable policy depends on the chat shell, Org canvas, or a backend adapter.
+The added durable state is limited to message origin and compact audit
+snapshots.  Existing transcripts remain compatible because user messages with
+no origin replay as human input.
+
+Source hashing adds two linear SHA-256 passes over content already read for
+prompt construction.  It adds no extra file or buffer read and no repair-time
+scan.
+
+* Design self-check
+
+1. Each committed slice is independently useful: auditable sources first,
+   validated repair second, then the digest-contract review fix.
+2. The result moves toward source-traceable answers that recover without
+   discarding supported content.
+3. The uncertain handle presentation stays local; source identity, origin, and
+   one-shot validation remain explicit stable contracts.
+4. Each behavior has one owner as recorded in the architecture review.
+5. Coupling is reduced through a narrow optional source descriptor.
+6. Dependency direction remains from providers and policy toward core
+   contracts, never from core toward a shell or capability.
+7. Attachment I/O stays at the chat-session edge.
+8. Captured model context is turn-scoped; only compact origin and audit facts
+   persist.
+9. Hashing is bounded to content already materialized and requires no extra
+   I/O.
+10. Providers can omit source descriptors without weakening their other
+    contracts.
+11. =in:= and =ev:= remain valid; legacy messages without origin remain human.
+12. The role-equals-human assumption and unconditional correction acceptance
+    were removed.
+13. Expected repair rejection becomes =correction-unresolved=; unexpected
+    errors still surface.
+14. Core policy is covered without a real backend; shell tests cover only
+    presentation consequences.
+
+* Verification
+
+#+begin_src sh
+eldev test -f test/e-context-test.el -f test/e-capabilities-test.el \
+  -f test/e-chat-session-test.el -f test/e-harness-test.el
+#+end_src
+
+#+begin_example
+Ran 163 tests, 163 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-bayesian-reasoning-test.el \
+  -f test/e-bayesian-reasoning-mark-test.el \
+  -f test/e-bayesian-reasoning-hook-test.el \
+  -f test/e-chat-test.el -f test/e-modernchat-test.el \
+  -f test/e-session-test.el
+#+end_src
+
+#+begin_example
+Ran 428 tests, 427 results as expected, 0 unexpected, 1 skipped
+The skipped Markdown fontification test is environment-dependent and unrelated.
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-context-test.el -f test/e-capabilities-test.el \
+  -f test/e-chat-session-test.el -f test/e-harness-test.el \
+  -f test/e-bayesian-reasoning-hook-test.el
+#+end_src
+
+#+begin_example
+Ran 189 tests, 189 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+eldev compile
+git diff --check
+#+end_src
+
+#+begin_example
+Compilation completed.  One pre-existing unused-variable warning appeared in
+e-session-tmp-resources.el.
+git diff --check produced no output.
+#+end_example
+
+* UX and performance playthrough
+
+The batch end-to-end playthrough attached live buffer content, returned the
+same opaque =in:01= citation as the reported session, and made the corrective
+backend reply =I don't know.=.  The attachment handle reached the repair
+prompt, the original stayed visible, the rejected replacement became hidden,
+and the original turn recorded =correction-unresolved=.
+
+Separate classic-chat coverage proves a terminal audit clears
+=Validating claims…=.  Modernchat coverage proves hidden replacement messages
+remain omitted.
+
+No profiling was needed.  The only new per-request work is hashing content
+already read for the attachment.
+
+* Live reload
+
+A bounded read-only =emacsclient --eval= probe was attempted during the
+investigation, but the Emacs server did not respond and the probe was
+interrupted.  Per the repository rule for external agents, no full reload was
+performed and the user's running Emacs remains unchanged.
+
+* Unresolved
+
+None.

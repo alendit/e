@@ -3,10 +3,13 @@
 
 * Status
 
-In-progress.
+Done.
 
 The user requested implementation on 2026-07-31 after reviewing the failure in
 session =20260731T082318-4f55eb425ee5=.
+
+Implementation and review completed on 2026-07-31 in commits =2d3b33f=,
+=3894879=, and =e44bad3=.  See =review.org= for findings and exact verification.
 
 * Problem
 
