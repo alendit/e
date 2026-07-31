@@ -108,6 +108,36 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-window-cycle-skips-transcript ()
+  "C-x o treats a composed transcript and composer as one chat surface."
+  (let* ((e-chat--surface-composition-enabled t)
+         (buffer (e-chat-test--buffer nil "chat-composer-window-cycle"))
+         transcript-window composer-window external-window external-buffer)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (setq external-window (split-window composer-window nil 'right))
+            (setq external-buffer (generate-new-buffer " *e-chat external*"))
+            (set-window-buffer external-window external-buffer)
+            (select-window composer-window)
+            (with-current-buffer (window-buffer composer-window)
+              (call-interactively (key-binding (kbd "C-x o"))))
+            (should (eq (selected-window) external-window))
+            (should-not (eq (selected-window) transcript-window))))
+      (when (window-live-p external-window)
+        (delete-window external-window))
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (defun e-chat-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
   (dolist (buffer (buffer-list))

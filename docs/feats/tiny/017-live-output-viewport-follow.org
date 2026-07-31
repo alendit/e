@@ -8,6 +8,10 @@ viewport following the live tail advances when progress redraws.  Navigating a
 transcript records that viewport as reading scrollback, so later progress does
 not change its position.  The separate composer may remain focused throughout.
 
+In a composed chat, =C-x o= treats the transcript and composer as one surface
+and skips both when moving to another window.  Use the chat navigation command
+to intentionally enter the transcript.
+
 * Why tiny
 
 This refines transient presentation state in the existing chat shell.  It does
@@ -15,4 +19,5 @@ not change session, provider, or work-bus behavior.
 
 * Validation
 
-- =eldev test -f test/e-chat-test.el= (314 passed, 1 optional skip).
+- =eldev test -f test/e-chat-test.el= (315 passed, 1 optional skip).
+- =eldev compile=.

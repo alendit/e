@@ -1156,6 +1156,7 @@ for audit, then clears it when the user returns to the composer.")
     (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
     (define-key map (kbd "C-p") #'e-chat-previous-line)
     (define-key map (kbd "<up>") #'e-chat-previous-line)
+    (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
@@ -1275,6 +1276,17 @@ Evil behavior elsewhere.  A no-op when Evil is absent."
              (kbd "<escape>")
              #'e-chat-composer-enter-navigation)))
 
+(defun e-chat--make-composer-mode-map (&optional map)
+  "Return MAP configured as the local keymap for composed chat input."
+  (let ((map (or map (make-sparse-keymap))))
+    (set-keymap-parent map e-chat-mode-map)
+    (define-key map (kbd "<escape>") #'e-chat-composer-enter-navigation)
+    map))
+
+(defvar e-chat-composer-mode-map
+  (e-chat--make-composer-mode-map)
+  "Keymap for the editable pane of a composed e chat surface.")
+
 (defun e-chat--refresh-keymaps ()
   "Refresh chat keymaps after live reload."
   (setq e-chat-response-navigation-mode-map
@@ -1289,6 +1301,8 @@ Evil behavior elsewhere.  A no-op when Evil is absent."
   (setq e-chat-overview-mode-map
         (e-chat--make-overview-mode-map e-chat-overview-mode-map))
   (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
+  (setq e-chat-composer-mode-map
+        (e-chat--make-composer-mode-map e-chat-composer-mode-map))
   (e-chat--configure-evil-composer-bindings))
 
 (defun e-chat--setup-line-wrapping ()
@@ -1330,13 +1344,6 @@ and / expands available prompts."
   (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (e-chat--ensure-window-selection-hook))
-
-(defvar e-chat-composer-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map e-chat-mode-map)
-    (define-key map (kbd "<escape>") #'e-chat-composer-enter-navigation)
-    map)
-  "Keymap for the editable pane of a composed e chat surface.")
 
 (define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
   "Editable input pane owned by an e chat transcript surface."
@@ -1463,6 +1470,35 @@ composer buffer; transcript rendering never calls it."
   (e-chat--surface-prune-window-pairs)
   (cdr (assoc (or transcript-window (selected-window))
               e-chat--surface-window-pairs)))
+
+(defun e-chat--surface-member-window-p (window transcript composer)
+  "Return non-nil when WINDOW belongs to TRANSCRIPT and COMPOSER's surface."
+  (memq (window-buffer window) (list transcript composer)))
+
+(defun e-chat-surface-other-window (&optional arg all-frames)
+  "Select the next window outside the current composed chat surface.
+The transcript and its composer are one interaction surface: transcript
+navigation is explicit, so ordinary window cycling must not land in the
+read-only transcript.  A monolithic chat keeps `other-window' unchanged."
+  (interactive "^p")
+  (let* ((transcript (e-chat--surface-transcript-buffer))
+         (composer (and (buffer-live-p transcript)
+                        (buffer-local-value 'e-chat--surface-composer-buffer
+                                            transcript)))
+         (steps (abs (or arg 1)))
+         (direction (if (< (or arg 1) 0) -1 1)))
+    (if (not (buffer-live-p composer))
+        (other-window (or arg 1) all-frames)
+      (dotimes (_ steps)
+        ;; `other-window' owns the host's frame/minibuffer policy.  We only
+        ;; skip the windows that make up this one chat surface.
+        (let ((remaining (max 1 (length (window-list nil 'nomini)))))
+          (while (and (> remaining 0)
+                      (progn
+                        (other-window direction all-frames)
+                        (e-chat--surface-member-window-p
+                         (selected-window) transcript composer)))
+            (setq remaining (1- remaining))))))))
 
 (defun e-chat--surface-fit-composer-window (&optional composer-window)
   "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
