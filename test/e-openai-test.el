@@ -1050,9 +1050,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                :item-type nil
                :parsed-type done))))))
 
-(ert-deftest e-openai-test-parse-stream-appends-raw-response-buffer ()
-  "Raw provider responses are retained in a hidden inspection buffer."
-  (let ((buffer-name e-openai-codex-raw-responses-buffer-name)
+(ert-deftest e-openai-test-parse-stream-does-not-retain-raw-response-by-default ()
+  "Raw provider responses are not retained unless debug mode is enabled."
+  (let ((e-openai-codex-debug nil)
+        (buffer-name e-openai-codex-raw-responses-buffer-name)
         (stream "data: {\"type\":\"response.completed\"}\n\n"))
     (when (get-buffer buffer-name)
       (kill-buffer buffer-name))
@@ -1060,13 +1061,32 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (progn
           (e-openai-codex-parse-stream stream)
           (should (string-prefix-p " " buffer-name))
-          (should (get-buffer buffer-name))
-          (with-current-buffer buffer-name
-            (should (string-match-p
-                     (regexp-quote stream)
-                     (buffer-string)))))
+          (should-not (get-buffer buffer-name)))
       (when (get-buffer buffer-name)
         (kill-buffer buffer-name)))))
+
+(ert-deftest e-openai-test-debug-raw-response-retention-is-bounded ()
+  "Debug raw payload retention keeps only the configured trailing byte budget."
+  (let ((e-openai-codex-debug t)
+        (e-openai-codex-raw-responses-max-bytes 128)
+        (e-openai-codex--last-diagnostics nil)
+        (buffer-name " *e-openai-codex-raw-responses-test*")
+        (stream (concat (make-string 512 ?x) "END")))
+    (when (get-buffer buffer-name)
+      (kill-buffer buffer-name))
+    (let ((e-openai-codex-raw-responses-buffer-name buffer-name))
+      (unwind-protect
+          (progn
+            (e-openai-codex-parse-stream stream)
+            (with-current-buffer buffer-name
+              (should (<= (string-bytes (buffer-string)) 128))
+              (should (string-suffix-p "END\n" (buffer-string))))
+            (let ((raw (plist-get e-openai-codex--last-diagnostics
+                                  :raw-response)))
+              (should (<= (string-bytes raw) 128))
+              (should (string-suffix-p "END" raw))))
+        (when (get-buffer buffer-name)
+          (kill-buffer buffer-name))))))
 
 (ert-deftest e-openai-test-parse-json-error-response ()
   "Non-stream provider JSON errors become backend error items."

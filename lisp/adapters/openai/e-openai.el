@@ -329,6 +329,14 @@ value.  Responses profiles can opt into provider continuation anchors with
   :type 'boolean
   :group 'e-openai)
 
+(defcustom e-openai-codex-raw-responses-max-bytes (* 256 1024)
+  "Maximum raw provider diagnostic payload retained in bytes.
+The bound applies to both `e-openai-codex--last-diagnostics' and the hidden
+raw response buffer.  Set this to zero to keep event summaries without raw
+provider payloads."
+  :type '(integer :tag "Bytes")
+  :group 'e-openai)
+
 (defcustom e-openai-codex-raw-responses-buffer-name
   " *e-openai-codex-raw-responses*"
   "Hidden buffer used to retain raw Codex provider responses."
@@ -466,9 +474,38 @@ Diagnostics are captured only when `e-openai-codex-debug' is non-nil."
         (display-buffer (current-buffer)))
     e-openai-codex--last-diagnostics))
 
+(defun e-openai-codex--raw-response-tail (stream-text)
+  "Return a UTF-8-safe bounded tail of STREAM-TEXT for debug diagnostics."
+  (let* ((text (or stream-text ""))
+         (limit (max 0 e-openai-codex-raw-responses-max-bytes)))
+    (cond
+     ((zerop limit) "")
+     ((<= (string-bytes text) limit) text)
+     (t
+      ;; Work in UTF-8 bytes so the configured budget means the same thing for
+      ;; ASCII and multibyte provider text.  Move right over continuation bytes
+      ;; before decoding so the retained tail starts on a character boundary.
+      (let* ((encoded (encode-coding-string text 'utf-8))
+             (start (- (length encoded) limit)))
+        (while (and (< start (length encoded))
+                    (let ((byte (aref encoded start)))
+                      (and (>= byte #x80) (<= byte #xBF))))
+          (setq start (1+ start)))
+        (decode-coding-string (substring encoded start) 'utf-8 t))))))
+
+(defun e-openai-codex--trim-raw-response-buffer (buffer)
+  "Trim BUFFER to `e-openai-codex-raw-responses-max-bytes'."
+  (let ((limit (max 0 e-openai-codex-raw-responses-max-bytes)))
+    (when (> (string-bytes (buffer-string)) limit)
+      (let ((tail (e-openai-codex--raw-response-tail (buffer-string))))
+        (erase-buffer)
+        (insert tail)))))
+
 (defun e-openai-codex--append-raw-response (stream-text)
-  "Append STREAM-TEXT to the hidden raw provider response buffer."
-  (unless (string-empty-p (or stream-text ""))
+  "Append a bounded debug tail of STREAM-TEXT to the hidden response buffer."
+  (when (and e-openai-codex-debug
+             (not (string-empty-p (or stream-text "")))
+             (> e-openai-codex-raw-responses-max-bytes 0))
     (with-current-buffer (get-buffer-create
                           e-openai-codex-raw-responses-buffer-name)
       (let ((inhibit-read-only t))
@@ -476,9 +513,10 @@ Diagnostics are captured only when `e-openai-codex-debug' is non-nil."
         (unless (bobp)
           (insert "\n"))
         (insert ";;; " (current-time-string) "\n")
-        (insert stream-text)
+        (insert (e-openai-codex--raw-response-tail stream-text))
         (unless (bolp)
-          (insert "\n"))))))
+          (insert "\n"))
+        (e-openai-codex--trim-raw-response-buffer (current-buffer))))))
 
 (defun e-openai-codex-auth-file (&optional codex-home)
   "Return the Codex auth file path for CODEX-HOME.
@@ -1481,7 +1519,7 @@ LIMIT defaults to 240 characters."
         (push error-item items)))
     (when e-openai-codex-debug
       (setq e-openai-codex--last-diagnostics
-            (list :raw-response stream-text
+            (list :raw-response (e-openai-codex--raw-response-tail stream-text)
                   :events (nreverse event-summaries))))
     (nreverse items)))
 

@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 * Evidence
 
@@ -32,8 +32,14 @@ overrides remain uncached because they are caller-owned, per-call policy.
 - Invalidate the harness cache after runtime configuration or factory refresh.
 - Keep global configuration live through a revision watcher.
 
-** TODO Bound raw provider diagnostics
+** DONE Bound raw provider diagnostics
 
 - Do not create or append the raw provider buffer outside debug mode.
 - Retain only a fixed tail of raw payload data in both the buffer and last
   diagnostics.
+
+* Validation
+
+- =eldev test -f test/e-harness-test.el= (121 tests)
+- =eldev test -f test/e-openai-test.el= (81 tests)
+- =eldev test= (1,751 passed; 1 skipped)
