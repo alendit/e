@@ -185,7 +185,7 @@ CASE-SENSITIVE defaults to non-nil."
   "Compile facade search QUERY with OPTIONS to an rg-compatible regexp."
   (e-resource-pattern--search-regexp query options #'e-resource-pattern--rg-quote))
 
-(defcustom e-resource-pattern-default-search-limit 1000
+(defcustom e-resource-pattern-default-search-limit 20
   "Default maximum ranked search matches."
   :type 'integer
   :group 'e)
@@ -305,6 +305,63 @@ All query terms must occur in TEXT.  Higher scores are better."
             :matched-terms (vconcat (mapcar (lambda (match)
                                                (plist-get match :term))
                                              matches))))))
+
+(cl-defstruct (e-resource-pattern-search-collector
+               (:constructor e-resource-pattern-search-collector-create))
+  "Bounded collector for newline-delimited search candidates."
+  limit
+  transform
+  carry
+  matches
+  count
+  truncated)
+
+(defun e-resource-pattern-search-collector-feed (collector chunk)
+  "Feed CHUNK to COLLECTOR and return non-nil when its limit is exceeded."
+  (unless (e-resource-pattern-search-collector-truncated collector)
+    (let ((text (concat (or (e-resource-pattern-search-collector-carry collector) "")
+                        chunk))
+          (start 0)
+          stopped)
+      (setf (e-resource-pattern-search-collector-carry collector) "")
+      (while (and (not stopped) (string-match "\n" text start))
+        (let ((line (substring text start (match-beginning 0))))
+          (setq start (match-end 0))
+          (when-let ((match
+                      (funcall
+                       (e-resource-pattern-search-collector-transform collector)
+                       line)))
+            (if (< (or (e-resource-pattern-search-collector-count collector) 0)
+                   (e-resource-pattern-search-collector-limit collector))
+                (progn
+                  (push match
+                        (e-resource-pattern-search-collector-matches collector))
+                  (cl-incf
+                   (e-resource-pattern-search-collector-count collector)))
+              (setf (e-resource-pattern-search-collector-truncated collector) t)
+              (setq stopped t)))))
+      (unless stopped
+        (setf (e-resource-pattern-search-collector-carry collector)
+              (substring text start)))))
+  (e-resource-pattern-search-collector-truncated collector))
+
+(defun e-resource-pattern-search-collector-finish (collector)
+  "Process COLLECTOR's final unterminated line, if any."
+  (when-let ((carry (e-resource-pattern-search-collector-carry collector)))
+    (unless (or (string-empty-p carry)
+                (e-resource-pattern-search-collector-truncated collector))
+      (e-resource-pattern-search-collector-feed collector "\n")))
+  collector)
+
+(defun e-resource-pattern-search-collector-result (collector)
+  "Return the public search result collected by COLLECTOR."
+  (e-resource-pattern-search-collector-finish collector)
+  (list :matches
+        (vconcat
+         (e-resource-pattern-rank-search-matches
+          (nreverse (e-resource-pattern-search-collector-matches collector))))
+        :truncated
+        (and (e-resource-pattern-search-collector-truncated collector) t)))
 
 (defun e-resource-pattern-search-matches-in-text
     (uri text query options &optional name start-line)

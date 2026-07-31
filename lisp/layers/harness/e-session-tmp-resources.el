@@ -724,8 +724,11 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         (arguments (plist-get work-arguments :operation-arguments)))
     (pcase-let ((`(,query ,options) arguments))
       (let* ((root (e-session-tmp-directory harness session-id))
+             (scope (e-session-tmp--scope-path harness session-id uri))
              (scope-relative (e-session-tmp--scope-relative-name uri))
              (glob-pattern (plist-get options :glob))
+             (actual-limit (e-resource-pattern-search-limit
+                            (plist-get options :limit)))
              (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
              (args (append
                     (list "--json"
@@ -744,33 +747,41 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
             (list :immediate
                   (e-session-tmp--search-resource harness session-id uri query options)
                   :metadata (list :operation 'search :scheme "tmp"))
-          (list :program (e-session-tmp--find-executable "rg")
-                :directory root
-                :args args
-                :ok-statuses '(0 1)
-                :metadata (list :operation 'search :scheme "tmp")))))))
+          (let ((collector
+                 (e-resource-pattern-search-collector-create
+                  :limit actual-limit
+                  :count 0
+                  :transform
+                  (lambda (line)
+                    (e-session-tmp--search-match-from-rg-json
+                     line root scope glob-pattern query options)))))
+            (list :program (e-session-tmp--find-executable "rg")
+                  :directory root
+                  :args args
+                  :ok-statuses '(0 1)
+                  :capture-output nil
+                  :state collector
+                  :on-output
+                  (lambda (_handle process chunk active-collector)
+                    (when (e-resource-pattern-search-collector-feed
+                           active-collector chunk)
+                      (when (process-live-p process)
+                        (kill-process process))))
+                  :finish-on-nonzero t
+                  :metadata (list :operation 'search :scheme "tmp"))))))))
 
 (defun e-session-tmp--search-work-result
-    (harness session-id raw work-arguments _context)
+    (_harness _session-id raw _work-arguments _context)
   "Return tmp search resource content from process RAW result."
   (if (plist-member raw :matches)
       raw
-    (let ((uri (plist-get work-arguments :uri))
-          (arguments (plist-get work-arguments :operation-arguments)))
-      (pcase-let ((`(,_query ,options) arguments))
-        (let* ((root (e-session-tmp-directory harness session-id))
-               (scope (e-session-tmp--scope-path harness session-id uri))
-               (glob-pattern (plist-get options :glob))
-               (actual-limit (e-resource-pattern-search-limit
-                              (plist-get options :limit))))
-          (e-session-tmp--search-content
-           (plist-get raw :lines)
-           root
-           scope
-           glob-pattern
-           actual-limit
-           _query
-           options))))))
+    (let ((collector (plist-get raw :state)))
+      (unless (or (eq (plist-get raw :status) 'ok)
+                  (e-resource-pattern-search-collector-truncated collector))
+        (signal 'e-session-tmp-resources-process-failed
+                (list (or (plist-get raw :suffix)
+                          (string-trim (or (plist-get raw :stderr) ""))))))
+      (e-resource-pattern-search-collector-result collector))))
 
 (defun e-session-tmp--search-work (harness session-id)
   "Return tmp search work spec for HARNESS SESSION-ID."

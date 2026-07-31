@@ -1,0 +1,19 @@
+#+title: Bound Resource Search Output
+#+startup: overview
+
+* Status
+
+Done
+
+* Change
+
+The default resource-search result limit is 20.
+The asynchronous =file://= and =tmp://= search paths parse =rg --json= incrementally and stop the process after observing =limit + 1= matching candidates.
+They retain at most =limit= candidates, use the extra candidate to set =:truncated=, and avoid copying and splitting the complete process output.
+Advanced searches that require whole-resource evaluation retain their existing path.
+
+* Validation
+
+- Focused ERT coverage verifies the default, bounded collector, early process stop, ordinary file search, provider delegation, and temporary-resource search.
+- The combined =e-resource-patterns-test.el=, =e-base-tools-test.el=, and =e-session-tmp-resources-test.el= suites pass: 68 tests.
+- The three changed modules byte-compile cleanly in batch Emacs.

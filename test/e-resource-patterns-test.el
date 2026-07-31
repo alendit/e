@@ -133,6 +133,32 @@
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-resource-patterns-test-default-search-limit-is-small ()
+  "Unspecified searches use a small result bound."
+  (should (= (e-resource-pattern-search-limit nil) 20)))
+
+(ert-deftest e-resource-patterns-test-search-collector-bounds-candidates ()
+  "The streaming collector stops after LIMIT plus one matching candidate."
+  (let ((collector
+         (e-resource-pattern-search-collector-create
+          :limit 2
+          :count 0
+          :transform (lambda (line)
+                       (unless (string-prefix-p "skip" line)
+                         (list :uri line :score (length line)))))))
+    (should-not
+     (e-resource-pattern-search-collector-feed
+      collector "a\nskip-one\n"))
+    (should
+     (e-resource-pattern-search-collector-feed
+      collector "longer\nthird\nfourth\n"))
+    (should
+     (equal (e-resource-pattern-search-collector-result collector)
+            '(:matches [(:uri "longer" :score 6 :rank 1)
+                        (:uri "a" :score 1 :rank 2)]
+              :truncated t)))
+    (should (= (e-resource-pattern-search-collector-count collector) 2))))
+
 (provide 'e-resource-patterns-test)
 
 ;;; e-resource-patterns-test.el ends here

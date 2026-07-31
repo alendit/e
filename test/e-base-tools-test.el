@@ -96,6 +96,35 @@ printf '%s\\n' delayed.txt
       (delete-directory directory t)
       (delete-directory bin-dir t))))
 
+(ert-deftest e-base-tools-test-search-stops-rg-after-limit ()
+  "file:// search stops collecting once LIMIT plus one match is observed."
+  (let* ((directory (make-temp-file "e-base-search-limit-" t))
+         (bin-dir (make-temp-file "e-base-search-limit-bin-" t))
+         (_rg (e-base-tools-test--fake-executable
+               bin-dir
+               "rg"
+               "cat <<'EOF'
+{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"one.txt\"},\"lines\":{\"text\":\"needle one\\n\"},\"line_number\":1}}
+{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"two.txt\"},\"lines\":{\"text\":\"needle two\\n\"},\"line_number\":1}}
+{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"three.txt\"},\"lines\":{\"text\":\"needle three\\n\"},\"line_number\":1}}
+EOF
+sleep 5
+"))
+         (started (float-time)))
+    (unwind-protect
+        (let* ((exec-path (cons bin-dir exec-path))
+               (result
+                (e-base-tools-test--execute
+                 (e-base-tools-test--resource-tools directory)
+                 "search"
+                 '(:uri "file://" :query "needle" :limit 2)))
+               (content (plist-get result :content)))
+          (should (< (- (float-time) started) 2))
+          (should (equal (length (plist-get content :matches)) 2))
+          (should (eq (plist-get content :truncated) t)))
+      (delete-directory directory t)
+      (delete-directory bin-dir t))))
+
 (ert-deftest e-base-tools-test-sync-process-lines-rejects-hot-path ()
   "The synchronous process-lines helper fails before process-file in hot paths."
   (let (started)

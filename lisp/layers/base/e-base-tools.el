@@ -1094,9 +1094,12 @@ result plist; otherwise return nil so the caller runs the default backend."
         (arguments (plist-get work-arguments :operation-arguments)))
     (pcase-let ((`(,query ,options) arguments))
       (let* ((primary (e-base-tools--primary-root directory))
+             (scope (e-base-tools--resource-path uri directory))
              (scope-relative (e-base-tools--file-scope-relative-path
                               uri directory))
              (glob-pattern (plist-get options :glob))
+             (actual-limit (e-resource-pattern-search-limit
+                            (plist-get options :limit)))
              (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
              (metadata (list :operation 'search :scheme "file"))
              (provider-result
@@ -1124,32 +1127,41 @@ result plist; otherwise return nil so the caller runs the default backend."
                  uri query options directory)
                 :metadata metadata))
          (t
-          (list :program (e-base-tools--find-executable "rg")
-                :directory primary
-                :args args
-                :ok-statuses '(0 1)
-                :metadata metadata)))))))
+          (let ((collector
+                 (e-resource-pattern-search-collector-create
+                  :limit actual-limit
+                  :count 0
+                  :transform
+                  (lambda (line)
+                    (e-base-tools--search-match-from-rg-json
+                     line directory scope glob-pattern query options)))))
+            (list :program (e-base-tools--find-executable "rg")
+                  :directory primary
+                  :args args
+                  :ok-statuses '(0 1)
+                  :capture-output nil
+                  :state collector
+                  :on-output
+                  (lambda (_handle process chunk active-collector)
+                    (when (e-resource-pattern-search-collector-feed
+                           active-collector chunk)
+                      (when (process-live-p process)
+                        (kill-process process))))
+                  :finish-on-nonzero t
+                  :metadata metadata))))))))
 
 (defun e-base-tools--file-search-work-result
-    (directory raw work-arguments _context)
+    (_directory raw _work-arguments _context)
   "Return file search resource content from process RAW result."
   (if (plist-member raw :matches)
       raw
-    (let ((uri (plist-get work-arguments :uri))
-          (arguments (plist-get work-arguments :operation-arguments)))
-      (pcase-let ((`(,query ,options) arguments))
-        (let* ((scope (e-base-tools--resource-path uri directory))
-               (glob-pattern (plist-get options :glob))
-               (actual-limit (e-resource-pattern-search-limit
-                              (plist-get options :limit))))
-          (e-base-tools--file-search-content
-           (plist-get raw :lines)
-           directory
-           scope
-           glob-pattern
-           actual-limit
-           query
-           options))))))
+    (let ((collector (plist-get raw :state)))
+      (unless (or (eq (plist-get raw :status) 'ok)
+                  (e-resource-pattern-search-collector-truncated collector))
+        (signal 'e-base-tools-process-failed
+                (list (or (plist-get raw :suffix)
+                          (string-trim (or (plist-get raw :stderr) ""))))))
+      (e-resource-pattern-search-collector-result collector))))
 
 (defun e-base-tools--file-search-work (directory)
   "Return file search work spec rooted at DIRECTORY."
