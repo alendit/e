@@ -433,6 +433,25 @@ When READ-ONLY is non-nil, buffer resources only support reads."
              :content)
             '(:result "(1 2 3 ...)")))))
 
+(ert-deftest e-emacs-tools-test-run-elisp-binds-safe-printer-during-evaluation ()
+  "run_elisp contains accidental printing of cyclic live tool context state."
+  (let ((registry (e-tools-registry-create))
+        (harness (make-vector 1 nil))
+        (e-emacs-tools-run-elisp-print-length 5)
+        (e-emacs-tools-run-elisp-print-level 4)
+        (e-emacs-tools-run-elisp-result-max-bytes 1000))
+    (aset harness 0 harness)
+    (e-emacs-tools-register-run-elisp registry)
+    (let* ((result
+            (e-emacs-tools-test--run-elisp-result
+             registry
+             "(list print-circle print-level print-length (format \"%S\" (e-tools-current-context)))"
+             (list :harness harness :session-id "session-1")))
+           (printed (plist-get (plist-get result :content) :result)))
+      (should (eq (plist-get result :status) 'ok))
+      (should (string-match-p "(t 4 5" printed))
+      (should (string-match-p "#1#" printed)))))
+
 (ert-deftest e-emacs-tools-test-run-elisp-bounds-string-results ()
   "run_elisp bounds large string results before printing them."
   (let ((registry (e-tools-registry-create))
@@ -627,6 +646,7 @@ point, so the test loop must yield rather than spin the CPU."
       (should (string-match-p "e-tools-call" description))
       (should (string-match-p "e-tools-call!" description))
       (should (string-match-p "e-actions-call" description))
+      (should (string-match-p "e-tools-current-context-summary" description))
       (should (string-match-p "active tools" description))
       (should (string-match-p "active capability actions" description))
       (should (string-match-p "freezes the interface" description))

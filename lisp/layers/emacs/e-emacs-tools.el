@@ -693,6 +693,18 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     (e-emacs-tools--truncate-printed-result
      (prin1-to-string preview))))
 
+(defun e-emacs-tools--eval-forms-with-bounded-printer (forms)
+  "Evaluate FORMS with safe printer bindings for model-authored inspection.
+The bindings contain accidental `%S' or `prin1' rendering of cyclic and deep
+live runtime objects while the submitted code runs."
+  (let ((print-circle t)
+        (print-length (max 0 e-emacs-tools-run-elisp-print-length))
+        (print-level (max 0 e-emacs-tools-run-elisp-print-level))
+        result)
+    (dolist (form forms)
+      (setq result (eval form t)))
+    result))
+
 (defun e-emacs-tools-register-list-buffers (registry)
   "Register a tool that lists live Emacs buffers in REGISTRY."
   (e-tools-register
@@ -744,6 +756,8 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     "with e-actions-call. Nested tool calls are for cheap composition; long or "
     "async-backed tools must run as top-level tools so their Work lifecycle can "
     "stream progress and settle without blocking this eval. "
+    "Use (e-tools-current-context-summary) to inspect the active tool context; "
+    "it returns IDs, deadline and nesting data, and active tool names. "
     "This runs in the live UI Emacs, so anything that "
     "blocks it -- loading or byte-compiling large Elisp, recursive directory "
     "scans, long computations -- freezes the interface while it runs. "
@@ -798,10 +812,10 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
        (if timeout
            (with-timeout (timeout
                           (e-emacs-tools--reject-run-elisp-timeout timeout))
-             (dolist (form forms)
-               (setq result (eval form t))))
-         (dolist (form forms)
-           (setq result (eval form t))))
+             (setq result
+                   (e-emacs-tools--eval-forms-with-bounded-printer forms)))
+         (setq result
+               (e-emacs-tools--eval-forms-with-bounded-printer forms)))
        (list :result (e-emacs-tools--bounded-result-string result))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)
