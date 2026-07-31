@@ -14,11 +14,9 @@ though the turn-finished hook only checks the final assistant message.
 
 * Direction
 
-The Bayesian capability owns the reserved block and its artifact boundary.
-It will state that the block belongs only in the final assistant transcript
-message and sanitize the two model-facing resource mutations, =write= and
-=edit=, before execution.  Org Canvas will clarify its output guidance without
-learning the fence grammar.
+The Bayesian capability owns the reserved block and the instruction that limits it to the assistant transcript.
+Org Canvas clarifies that its document output excludes internal reasoning metadata without learning the fence grammar.
+Resource tools remain transparent and do not rewrite agent output.
 
 * Slices
 
@@ -33,20 +31,17 @@ learning the fence grammar.
 Exit condition: the combined guidance has one unambiguous destination for the
 block.
 
-** Slice 2: deterministic resource-write boundary
+** Slice 2: keep enforcement with the agent
 
-- Add a Bayesian =:pre-tool-call= hook.
-- Remove reserved Org and Markdown reasoning fences from =write.content=.
-- Remove them from every =edit.edits[].newText= while preserving =oldText=.
-- Leave non-mutating tools and unrelated text unchanged.
+- Do not add a Bayesian =:pre-tool-call= hook or rewrite =write= and =edit= arguments.
+- Keep resource tools transparent to model output.
+- Test the explicit Bayesian and Org Canvas instructions.
 
-Exit condition: the reproduced =edit= call cannot place the block in a
-resource even if the model ignores the guidance.
+Exit condition: the agent receives an unambiguous contract, with no artifact-specific enforcement code.
 
 ** Slice 3: regression, cleanup, and review
 
-- Add unit and harness-lifecycle coverage for write and edit sanitization.
-- Cover Org Canvas guidance.
+- Cover the Bayesian and Org Canvas guidance.
 - Remove the leaked block from feature 66 without staging its unrelated active
   edits.
 - Run focused affected suites, byte compilation, and whitespace checks.
@@ -54,50 +49,39 @@ resource even if the model ignores the guidance.
 
 * Compatibility
 
-The assistant transcript format and turn-finished checker do not change.
-Existing artifacts are not scanned globally.  An edit may still name an
-existing reasoning block in =oldText= so it can delete it.  Exact reserved
-fences in new resource content are treated as internal metadata and removed.
+The assistant transcript format, turn-finished checker, and resource tool contracts do not change.
+Existing artifacts are not scanned or rewritten.
+An agent can still remove an existing leaked block with a normal edit.
 
 * Design self-check
 
-1. Guidance alone improves behavior; the write boundary makes it deterministic.
-2. This moves toward internal audit metadata that cannot leak into user
-   artifacts.
-3. The fence syntax is stable capability policy; artifact types may expand and
-   remain local to small argument adapters.
+1. The explicit agent contract directly fixes the ambiguous instruction that caused the leak.
+2. This moves toward agents keeping internal audit metadata out of user artifacts by contract.
+3. The stable decision is that the block belongs in assistant output; future Org annotation support remains a separate, opt-in extension.
 4. Bayesian reasoning owns its reserved metadata.  Org Canvas owns only its
    output guidance.  Resources remain policy-free.
 5. The change avoids coupling Org Canvas or resource adapters to Bayesian
    syntax.
-6. Dependencies continue from capability policy toward the generic hook and
-   tool-call contracts.
-7. Resource mutation stays in resource adapters; the hook only transforms
-   arguments before that side effect.
+6. No new dependency on generic hooks or resource tools is added.
+7. Resource side effects remain unchanged and unwrapped.
 8. No new durable state is added.
-9. Sanitization scans only write replacement strings already in memory.
-10. =write= and =edit= retain their contracts with cleaned string arguments.
+9. The change adds only instruction text and has no runtime processing cost.
+10. =write= and =edit= retain their existing transparent contracts.
 11. Existing assistant messages and artifact reads remain compatible.
 12. No legacy path is needed.
-13. Expected reserved blocks are removed; malformed tool arguments still fail
-    in the normal resource layer.
-14. Pure sanitizer tests and one lifecycle test prove policy independently of
-    the full UI.
+13. The agent owns expected placement mistakes; unexpected resource errors still surface normally.
+14. Instruction tests prove the contract independently of the UI.
 
 * Completion
 
-Implemented in =f21c056=.
+The instruction clarification was implemented in =f21c056=.
+The deterministic sanitizer from that commit was removed in =e92efdc= after user review found it overengineered.
 The already-leaked block was removed from feature 66 in =b6e6abe= without
 staging that plan's unrelated active edits.
 
-The final boundary has two parts:
+The final implementation is guidance only.
+Bayesian guidance names the final assistant transcript as the only destination, and Org Canvas guidance excludes reasoning metadata from documents and other artifacts.
+No tool call is inspected or rewritten.
 
-- model guidance names the final assistant transcript as the only destination;
-- the Bayesian pre-tool hook removes reserved blocks from =write.content= and
-  =edit.edits.newText= before resource execution.
-
-The hook leaves =edit.edits.oldText= exact so existing leaks remain removable.
-It leaves non-mutating calls unchanged.
-
-Repository-side validation passed: 240 affected tests, byte compilation, and
+Repository-side validation passed: 235 affected tests, byte compilation, and
 =git diff --check=.  The running Emacs was left unchanged.

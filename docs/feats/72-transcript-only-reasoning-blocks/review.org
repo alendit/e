@@ -28,33 +28,24 @@ another artifact.
 
 Instruction tests assert both sides of this contract.
 
-** Resolved: guidance alone could not enforce the boundary
+** Resolved: deterministic tool rewriting was overengineered
 
 *** Problem
 
-The resource lifecycle previously passed =write.content= and
-=edit.edits.newText= through unchanged.  The turn-finished checker reads only
-the final assistant message, so a tool-argument block had no audit value.
+The first implementation added a Bayesian =:pre-tool-call= hook that stripped reserved blocks from =write= and =edit= arguments.
+User review rejected this because the agent should follow the output contract directly.
+The hook also coupled Bayesian syntax to otherwise generic tool calls and silently changed requested output.
 
 *** Change
 
-The Bayesian capability now contributes a =:pre-tool-call= hook.  It strips
-complete reserved Org and Markdown reasoning fences from resource writes and
-edit replacement text.  It preserves =oldText= exactly so an existing leaked
-block can be matched and removed.
-
-The boundary intentionally does not rewrite arbitrary shell or =run_elisp=
-source.  Rewriting executable text would be unsafe and would also corrupt valid
-searches for the reserved markers.  General artifact placement remains covered
-by the explicit model contract; deterministic enforcement covers the standard
-model-facing resource mutation tools.
+The sanitizer, pre-tool hook, and enforcement tests were removed in =e92efdc=.
+The final implementation consists only of the explicit Bayesian and Org Canvas instructions.
+Resource tools remain transparent and preserve the content the agent supplies.
 
 *** Evidence
 
-Pure tests cover writes, edit lists, the provider's one-edit object shape,
-preserved =oldText=, surrounding prose, and unchanged non-mutating calls.  A
-harness-lifecycle test proves hook registration and execution.  A real
-=file://= edit proves the cleaned replacement is what reaches disk.
+The capability again registers only its existing turn-finished hook.
+Instruction tests assert that reasoning metadata belongs only in the final assistant transcript message and never in an Org document.
 
 * Verification
 
@@ -68,7 +59,7 @@ eldev test -f test/e-bayesian-reasoning-test.el \
 #+end_src
 
 #+begin_example
-Ran 240 tests, 240 results as expected, 0 unexpected
+Ran 235 tests, 235 results as expected, 0 unexpected
 #+end_example
 
 #+begin_src sh
@@ -76,32 +67,23 @@ eldev compile
 git diff --check
 #+end_src
 
-Both passed.  Compilation reported one existing unused-argument warning in
-=lisp/adapters/openai/e-openai.el=, outside this change.
+Both passed.
 
 * UX and performance playthrough
 
-The user's screenshot and the persisted session supplied the real Org Canvas
-failure path.  The resource-level regression test replays its =edit= argument
-shape and verifies clean disk content.  The feature changes no window, focus,
-rendering, or interactive command behavior, so a live UI playthrough would add
-no distinct coverage.
-
-The sanitizer performs one linear scan of each mutated string already present
-in memory.  It adds no I/O or durable state.
+The user's screenshot and persisted session supplied the real Org Canvas failure path.
+The feature changes instruction context, not window, focus, rendering, or interactive command behavior, so a live UI playthrough would add no distinct coverage.
+The final implementation adds no runtime processing, I/O, or durable state.
 
 * Architecture review
 
-The Bayesian capability owns both the reserved syntax and its pre-side-effect
-policy.  Org Canvas only clarifies its artifact contract, and generic resource
-adapters remain unaware of Bayesian metadata.  Dependencies still point from
-capability policy toward generic hook and tool-call contracts.  No compatibility
-shim or new abstraction was added.
+The Bayesian capability owns the reserved syntax and its placement instruction.
+Org Canvas only clarifies its artifact contract, and generic hooks and resource adapters remain unaware of Bayesian metadata.
+No compatibility shim, runtime interceptor, or new abstraction remains.
 
 The design self-check in =plan.org= was re-evaluated against the final diff and
-remains accurate.  In particular, the change reduces coupling, adds no state,
-keeps side effects in resource adapters, preserves public tool contracts, and
-tests the policy independently of the full UI.
+remains accurate.
+In particular, the corrected change reduces coupling, adds no state or runtime cost, preserves transparent tool contracts, and tests the instruction policy independently of the full UI.
 
 * Live reload
 

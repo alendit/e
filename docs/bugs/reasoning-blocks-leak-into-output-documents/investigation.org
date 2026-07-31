@@ -28,35 +28,31 @@ evidence without requiring a full Emacs reload.
 2. Org Canvas guidance says the document is the primary output target and that
    durable results belong there.  In combination, the model can reasonably
    treat the document edit as the visible reply.
-3. The Bayesian capability registers the block as hidden assistant output, but
-   has no artifact-write boundary.  =write.content= and =edit.edits[].newText=
-   reach resources unchanged.
+3. Resource tools correctly preserve the content the agent asks them to write.
+   Teaching them Bayesian fence syntax would mix capability policy into generic artifact mutation.
 4. The turn-finished checker reads only assistant message content.  A block
    placed only in a tool argument cannot help the audit and only pollutes the
    artifact.
 
 * Direction
 
-Make the transcript-only rule explicit in both Bayesian and Org Canvas
-guidance.  Add a Bayesian pre-tool hook that removes reserved reasoning fences
-from =write= content and =edit= replacement text before resource mutation.
-Keep =edit.oldText= unchanged so an agent can remove a block that already
-exists.  Do not add Bayesian knowledge to Org Canvas write code or generic
-resource adapters.
+Make the transcript-only rule explicit in both Bayesian and Org Canvas guidance.
+Keep enforcement with the agent instead of rewriting resource-tool arguments.
+Do not add Bayesian knowledge to Org Canvas write code, generic resource adapters, or a pre-tool hook.
 
 Implementation is tracked by
 =docs/feats/72-transcript-only-reasoning-blocks/plan.org=.
 
 * Resolution
 
-Resolved by =f21c056= and =b6e6abe=.
+Resolved by =f21c056=, =b6e6abe=, and the simplification in =e92efdc=.
 
 Bayesian and Org Canvas guidance now reserve reasoning blocks for the final
-assistant transcript message.  A Bayesian pre-tool hook also removes reserved
-blocks from complete writes and edit replacement text before resource
-execution.  Existing blocks may still appear in =oldText= so an edit can remove
-them.
+assistant transcript message.
+Resource tools remain transparent and do not inspect or rewrite agent output.
+The leaked block in feature 66 was removed with a normal edit.
 
-Focused and broader affected ERT coverage passed 240/240.  A real =file://=
-resource edit proved that the block does not reach disk.  Byte compilation and
+Focused and broader affected ERT coverage passed 235/235.
+Instruction tests cover the Bayesian and Org Canvas sides of the contract.
+Byte compilation and
 whitespace validation passed.  The running Emacs was not reloaded.
