@@ -3,9 +3,10 @@
 
 * Status
 
-Planned
+Ready
 
-The architectural direction is accepted, but implementation should not start until the identity, bus-selector/settlement, board-registry, and inbox-delivery contracts in this revision have been reviewed together.
+The identity, bus-selector/settlement, board-registry, inbox-delivery, and first-version default contracts have been reviewed together.
+Implementation may start with Slice 0; the explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
 
@@ -142,6 +143,7 @@ The mechanism exists.
 =e-session-fork= with =:at= already rebuilds a linear path up to a message; it becomes an ordinary session-producing action returning a session id, exactly like subagent spawn.
 The authorized application service creates and registers the fork participant explicitly; a later subscription may then address its identity or match its declared tags.
 The mark is always a session transcript entry id, never a board =message-id=; the pickup receipt records the board-message-to-transcript-entry mapping.
+The first version requires callers to provide =:at=; omission is a validation error rather than an implicit choice of transcript position.
 
 - A fork does not merge or automatically rejoin.
   If it should report back, it posts a board input containing a bounded summary, stable =source-input-key=, and either an exact parent selector or tags; normal board pickup performs delivery.
@@ -395,6 +397,7 @@ Model-facing actions accept declarative selector clauses only, while trusted in-
 
 Each subscription has one immutable selector, readiness/accumulator policy, declarative effect, cursor, lifetime/firing/publication budgets, owning consumer, and provenance.
 Changing its matcher or effect cancels and replaces it; the first process-local version needs no named/versioned predicate registry.
+Compatible code reload leaves the installed predicate closure in place until its subscription is explicitly replaced or cancelled; it performs no automatic migration or reinstallation, and historical match decisions remain frozen.
 The canonical readiness policies are =on-success=, =on-failure=, =on-terminal=, =all-terminal=, =first-terminal=, =batch=, and =latest-after-quiet= with the truth-table meanings above.
 A one-shot subscription reaches =completed= only after its effect commits; a repeating subscription returns to =active= after each committed activation.
 
@@ -566,6 +569,11 @@ A prepared/applying effect and pending/delivering/accepted pickup pin their boun
 Log compaction may replace payloads with tombstones but may not skip an unread cursor or invalidate a result reference silently.
 Inline tool-result delivery, successful =await=, and consumption of a derived board post mark the corresponding participant as having observed the terminal work.
 Resource reads do not mutate observation implicitly; an explicit action may mark work observed.
+Terminal work with no waiting invocation or continuation subscription remains visible in current state.
+When its board next becomes idle, the UI emits at most one warning for the newly unobserved terminal set; refreshes do not repeat that warning unless new unobserved terminal work appears, and the warning never synthesizes participant input.
+
+All retention, tombstone, retry, subscriber-count, reconnect, idle-expiry, propagation, wake, batching, and participant bounds are explicit configuration.
+The first implementation uses conservative deterministic-test defaults; Slice 6 tunes production values from measured sessions without changing the contracts.
 
 ** Choosing readiness and post content
 
@@ -839,7 +847,7 @@ Following the project's action/tool split, cheap synchronous operations are capa
   These surfaces enforce the participant's controller/private grants, delegate to the same registry/application services and trusted actor contract, and never tunnel client identity through =e-actions-call=.
 - The first slices expose built-in selector clauses, readiness policies, and declarative continuation effects; trusted in-process callers may additionally install an ordinary bounded predicate closure.
 - Resource =board://<board-id>/= exposes lifecycle, messages, outstanding work, recent terminal snapshots, events, subscriptions, activations/effects, causal projections, clients, participants, grants, budgets, and per-operation detail.
-- A compact dynamic-context segment shows the current participant's attached board, outstanding work, and live subscriptions/effects.
+- A compact dynamic-context segment shows only ids, states, counts, and bounded summaries for the current participant's attached board, outstanding work, and live subscriptions/effects; full events and results stay behind =board://<board-id>/...= resource reads.
 - Chat/application entry points create or open a board first and post board messages; session-management entry points create/select participants inside that board.
 
 Model-facing tool count does not grow.
@@ -901,6 +909,7 @@ Record causal parent/root/hop/lineage/publication-budget fields from the first d
 
 Add the minimal configured-harness adapter and idempotent single-participant pickup path using existing idle/queue and accepting/inject lanes.
 Add per-session =board-output-seq= allocation and output publication, stable session-store/catalog/access ports needed for atomic resume, bounded board retention, and the runtime-concepts update.
+Expose the compact ids/states/counts/summaries context projection and explicit conservative configuration defaults; keep full events/results behind board resources.
 
 Standalone value: one board is a real top-level interaction context; chat-like tagged input can reach a subscribed session and its output returns to the board without any standalone-session path.
 
@@ -922,10 +931,12 @@ Standalone value: inline and detached calls share one work/event identity and pr
 ** Slice 3 -- Full subscription/effect and inbox settlement
 
 Generalize Slice 2's exact effect skeleton to all subscription/activation/effect states, cursor/accumulator replay, selector authorization-before-predicate, ordinary bounded trusted predicate closures, replacement/mute/resume/cancel/expiry, match freezing, and idempotent effect receipts.
+Keep installed predicate closures across compatible reload until explicit replacement/cancellation, with no registry or automatic migration.
 Add =post-input= continuations with exact =to= or tags; generalize Slice 2's =all-terminal=/=first-terminal= join readiness to =on-success=, =on-failure=, =on-terminal=, =batch=, and =latest-after-quiet= subscriptions.
 Ensure effect success is the board append rather than downstream pickup; keep zero-match posts visible and do not autospawn.
 
 Extend participant pickup with the complete generation-neutral FIFO/cap/expiry state machine against one injected endpoint/fake resolver, all harness phases, accepted/consumed/discarded receipts, accepting-to-settling steering sweep, reset/abort races, observation, snapshot pins, accumulated turn causes, causal projection, propagation budgets, and separate wake budgets.
+Add the single idle-transition warning for newly unobserved terminal work without creating an input message.
 Checkpoint frozen decisions and effect bytes so replay never reruns historical predicates/effect preparation.
 
 Standalone value: any operation or board fact can deterministically cause an exact reply or generic tagged follow-up, and every causal edge remains inspectable and idempotent.
@@ -935,6 +946,7 @@ Standalone value: any operation or board fact can deterministically cause an exa
 Extend the minimal attachment plumbing into full qualified participant resolution and generation reconciliation across harness instances.
 Complete non-activating session-catalog/session-access-store/store-id coverage, shared-store validation/deduplication, authenticated ACL administration, explicit-instance dormant resume, private participant controls, diagnostic presentation subscriptions, cross-target grants, and rebind/revoke/move reconciliation.
 Expose fork and spawn only as explicit authorized session-management operations that atomically create/attach a participant; callers may then address that participant exactly or let it install tag subscriptions.
+Require an explicit transcript-entry =:at= for forks in the first version.
 Supply the cross-generation board ledger, stale/dormant bounded pending delivery, lost-ack reconciliation, and stale/uncertain handling for the generation-neutral state machine from Slice 3.
 Add fork caps, but no routing-triggered fork/spawn and no general autospawn.
 
@@ -1077,16 +1089,21 @@ Run once with one =main= subscriber, once with two =main= subscribers to prove b
 Prove that chat used no standalone-session path or implicit root selection, exact tool pairing added no redundant tag input, zero generic matches did not autospawn, every causal edge is inspectable, late work remained visible, outputs did not feed back as input, and no presentation =e-ui-work= was enrolled.
 That question is behavioral and unit tests will not settle it.
 
-* Open questions
+* Accepted implementation defaults and deferred follow-ups
 
-- Exactly when the UI warns about detached terminal work with no waiting invocation or continuation subscription.
-  The routing decision is settled: it remains in board current state and does not invent a participant input.
-- Which transcript entry an explicit fork operation should default to when the caller omits =:at=; routing never creates the fork implicitly.
-- Whether and how board messages, subscriptions/activation receipts, and memberships become durable after the process-local version proves its lifecycle.
-- How much event payload enters context versus staying behind a =board://<board-id>/...= read.
-- Whether process-local predicate closures are discarded, faulted, or explicitly reinstalled across compatible code reload; historical matches remain frozen either way.
-- Exact retention, tombstone, retry, subscriber-count, client reconnect, empty-board idle-expiry, propagation, and wake defaults after deterministic stress measurements.
-- Claimable offers, leases, and executor competition belong to a follow-up plan if selector-routed/tagged broadcast messages prove insufficient for agent hand-off.
+The first-version choices are normative and leave no architectural question blocking Slice 0:
+
+- Context receives ids, states, counts, and bounded summaries; full events and results remain behind =board://<board-id>/...= reads.
+- Compatible reload retains each installed predicate closure until explicit replacement or cancellation; there is no registry, version protocol, or automatic migration, and historical matches remain frozen.
+- Fork requires an explicit transcript-entry =:at=.
+- Newly unobserved terminal work remains in board current state and produces one warning when the board next becomes idle; it never becomes synthetic participant input.
+- Every resource and scheduling limit is explicit configuration with conservative deterministic-test defaults; Slice 6 tunes production values from measurements.
+
+The following are explicitly deferred and do not block this plan:
+
+- Durability of board messages, subscriptions/activation receipts, and memberships across Emacs restarts after the process-local lifecycle proves itself.
+- Claimable offers, leases, exactly-one executor competition, and general autospawn if selector-routed/tagged broadcast messages later prove insufficient for agent hand-off.
+- Final production retention, tombstone, retry, subscriber-count, client reconnect, empty-board idle-expiry, propagation, wake, batching, and participant-limit values.
 
 * Required self-check (design-sensitive)
 
