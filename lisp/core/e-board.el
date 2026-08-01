@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-work)
 
 (define-error 'e-board-error "e board error")
 (define-error 'e-board-id-conflict "e board id conflict" 'e-board-error)
@@ -57,11 +58,22 @@
                (:conc-name e-board-publication-))
   status message pickup-ids)
 
+(cl-defstruct (e-board-work
+                (:constructor e-board-work--create)
+                (:conc-name e-board-work-))
+  id handle metadata state terminal-seq terminal-payload)
+
+(cl-defstruct (e-board-invocation
+                (:constructor e-board-invocation--create)
+                (:conc-name e-board-invocation-))
+  id work-id state callback activation-id)
+
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
-  pickups source-high-watermarks source-recent)
+  pickups source-high-watermarks source-recent work-table invocations pending-effects
+  effect-scheduler)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -113,7 +125,7 @@ The board object remains valid for inspection by its holder."
                    (string< (format "%s" (e-board-id left))
                             (format "%s" (e-board-id right)))))))
 
-(cl-defun e-board-create (&key id id-function (register t))
+(cl-defun e-board-create (&key id id-function effect-scheduler (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
 explicit ids to individual operations takes precedence over this generator."
@@ -126,9 +138,13 @@ explicit ids to individual operations takes precedence over this generator."
                  :message-table (make-hash-table :test 'equal)
                  :participants (make-hash-table :test 'equal)
                  :subscriptions nil
-                 :pickups (make-hash-table :test 'equal)
-                 :source-high-watermarks (make-hash-table :test 'equal)
-                 :source-recent (make-hash-table :test 'equal))))
+                  :pickups (make-hash-table :test 'equal)
+                  :source-high-watermarks (make-hash-table :test 'equal)
+                  :source-recent (make-hash-table :test 'equal)
+                  :work-table (make-hash-table :test 'equal)
+                  :invocations (make-hash-table :test 'equal)
+                  :pending-effects nil
+                  :effect-scheduler effect-scheduler)))
     (when register (e-board-register board))
     board))
 
@@ -157,6 +173,140 @@ explicit ids to individual operations takes precedence over this generator."
 (defun e-board-pickup (board delivery-id)
   "Return BOARD pickup DELIVERY-ID, or nil."
   (gethash delivery-id (e-board-pickups board)))
+
+(defun e-board-observed-work (board work-id)
+  "Return BOARD's observed work record for WORK-ID, or nil."
+  (gethash work-id (e-board-work-table board)))
+
+(defun e-board-invocation (board invocation-id)
+  "Return BOARD's exact invocation relation for INVOCATION-ID, or nil."
+  (gethash invocation-id (e-board-invocations board)))
+
+(defun e-board--schedule-effect (board effect)
+  "Schedule BOARD EFFECT after the initiating work-start stack unwinds."
+  (setf (e-board-pending-effects board)
+        (append (e-board-pending-effects board) (list effect)))
+  (if-let ((scheduler (e-board-effect-scheduler board)))
+      (funcall scheduler (lambda () (e-board-drain-effects board)))
+    (run-at-time 0 nil (lambda () (e-board-drain-effects board)))))
+
+(defun e-board-drain-effects (board)
+  "Apply BOARD's frozen effects once, in publication order.
+The runtime invokes this through the injected scheduler; reducers only append
+effect records and never synchronously enter a tool or harness callback."
+  (let ((effects (e-board-pending-effects board)))
+    (setf (e-board-pending-effects board) nil)
+    (dolist (effect effects)
+      (funcall effect))))
+
+(defun e-board--settle-invocation (board invocation state payload)
+  "Commit INVOCATION's exact reply effect for terminal STATE and PAYLOAD."
+  (when (eq (e-board-invocation-state invocation) 'open)
+    (setf (e-board-invocation-state invocation) 'prepared)
+    (let ((activation-id
+           (list (e-board-id board) (e-board-invocation-id invocation) 1)))
+      (setf (e-board-invocation-activation-id invocation) activation-id)
+      (e-board--append-event
+       board 'activation-prepared
+       (list :activation-id activation-id
+             :work-id (e-board-invocation-work-id invocation)
+             :effect 'reply-to-invocation))
+      (e-board--schedule-effect
+       board
+       (lambda ()
+         (when (eq (e-board-invocation-state invocation) 'prepared)
+           (setf (e-board-invocation-state invocation) 'applying)
+           (condition-case err
+               (progn
+                 (funcall (e-board-invocation-callback invocation) state payload)
+                 (setf (e-board-invocation-state invocation) 'committed)
+                 (e-board--append-event
+                  board 'effect-committed
+                  (list :activation-id activation-id
+                        :effect 'reply-to-invocation)))
+             (error
+              (setf (e-board-invocation-state invocation) 'failed)
+              (e-board--append-event
+               board 'effect-failed
+               (list :activation-id activation-id :error err))))))))))
+
+(defun e-board--observe-work-terminal (board work state payload)
+  "Append WORK's terminal fact, then freeze every exact invocation reply."
+  (unless (e-board-work-terminal-seq work)
+    (let ((event (e-board--append-event
+                  board state
+                  (list :work-id (e-board-work-id work)
+                        :state state :payload payload))))
+      (setf (e-board-work-state work) state
+            (e-board-work-terminal-seq work) (e-board-event-seq event)
+            (e-board-work-terminal-payload work) payload)
+      (maphash
+       (lambda (_id invocation)
+         (when (equal (e-board-invocation-work-id invocation)
+                      (e-board-work-id work))
+           (e-board--settle-invocation board invocation state payload)))
+       (e-board-invocations board)))))
+
+(cl-defun e-board-enroll-work (board handle &key metadata)
+  "Enroll prepared HANDLE in BOARD before its runner may start.
+The canonical work id is the handle id.  The dedicated observer is installed
+before runner entry so synchronous carriers cannot settle outside the log."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (e-work-handle-started-p handle)
+    (signal 'e-board-error (list "Cannot enroll started work" handle)))
+  (let ((id (e-work-handle-id handle)))
+    (when (e-board-observed-work board id)
+      (signal 'e-board-id-conflict (list id)))
+    (let ((work (e-board-work--create
+                 :id id :handle handle :metadata (copy-tree metadata)
+                 :state 'posted)))
+      (puthash id work (e-board-work-table board))
+      (e-board--append-event board 'posted
+                             (list :work-id id :metadata (copy-tree metadata)))
+      (e-work-install-publication-observer
+       handle
+       (lambda (_handle state payload)
+         (e-board--observe-work-terminal board work state payload)))
+      work)))
+
+(cl-defun e-board-subscribe-invocation (board work-id callback &key id)
+  "Install one exact reply relation for BOARD WORK-ID.
+CALLBACK is an injected invocation service.  It receives the terminal work
+state and payload only after the terminal board event has committed."
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (unless (e-board-observed-work board work-id)
+    (signal 'e-board-error (list "Unknown board work" work-id)))
+  (let ((id (or id (e-board--next-id board 'invocation))))
+    (when (e-board-invocation board id)
+      (signal 'e-board-id-conflict (list id)))
+    (let ((invocation (e-board-invocation--create
+                       :id id :work-id work-id :state 'open :callback callback)))
+      (puthash id invocation (e-board-invocations board))
+      (e-board--append-event board 'subscription-added
+                             (list :subscription-id id :work-id work-id
+                                   :effect 'reply-to-invocation))
+      ;; Enrolling and subscribing can be separated by a caller transaction.
+      ;; If an already-terminal handle is intentionally subscribed, publish one
+      ;; frozen activation without scanning unrelated history.
+      (let ((work (e-board-observed-work board work-id)))
+        (when (e-board-work-terminal-seq work)
+          (e-board--settle-invocation board invocation
+                                      (e-board-work-state work)
+                                      (e-board-work-terminal-payload work))))
+      invocation)))
+
+(cl-defun e-board-enroll-invocation-work
+    (board handle invocation-id callback &key metadata)
+  "Atomically enroll prepared HANDLE and its exact INVOCATION-ID relation.
+CALLBACK is the private loop-owned result seam.  This convenience keeps the
+required pre-run ordering at one application boundary without making `e-work'
+depend on board state."
+  (e-board-enroll-work board handle :metadata metadata)
+  (e-board-subscribe-invocation board (e-work-handle-id handle) callback
+                                 :id invocation-id)
+  handle)
 
 (defun e-board--active-participant-p (participant)
   "Return non-nil when PARTICIPANT can receive a new pickup."

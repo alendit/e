@@ -126,7 +126,39 @@
         (should (eq (e-board-message-kind message) 'output))
         (should-not (e-board-message-pickup-ids message))
         (should (equal (mapcar #'e-board-event-type (e-board-events board))
-                       '(output-posted)))))))
+                        '(output-posted)))))))
+
+(ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
+  "Cheap work publishes its terminal fact before its deferred exact reply."
+  (e-board-test--with-empty-registry
+    (let (effects replies)
+      (let* ((board (e-board-create :id "board"
+                                    :effect-scheduler
+                                    (lambda (effect) (push effect effects))))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "cheap" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done")) nil)))
+        (e-board-enroll-work board handle)
+        (e-board-subscribe-invocation
+         board (e-work-handle-id handle)
+         (lambda (state payload) (push (list state payload) replies))
+         :id "turn-1/call-1")
+        (e-work-start-prepared handle)
+        (should-not replies)
+        (should (eq (e-board-work-state
+                     (e-board-observed-work board (e-work-handle-id handle)))
+                    'finished))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(posted subscription-added finished activation-prepared)))
+        (funcall (pop effects))
+        (should (equal replies '((finished "done"))))
+        (should (eq (e-board-invocation-state
+                     (e-board-invocation board "turn-1/call-1"))
+                    'committed))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(posted subscription-added finished activation-prepared
+                                effect-committed)))))))
 
 (provide 'e-board-test)
 

@@ -249,8 +249,9 @@ CAUSES lists every completed tool call that induced a follow-up request."
 
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-           append-message refresh-messages on-request-start on-done on-error
-           cancelled-p drain-pending-input segments turn-work-handle)
+            append-message refresh-messages on-request-start on-done on-error
+            cancelled-p drain-pending-input segments turn-work-handle
+            board-enroll-work)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
@@ -489,11 +490,12 @@ tool I/O, and turn settlement are callback-driven."
                                              :parent-work-id
                                              (and (e-work-handle-p turn-work-handle)
                                                   (e-work-handle-id turn-work-handle))
-                                             :root-work-id
-                                             (and (e-work-handle-p turn-work-handle)
-                                                  (e-work-handle-id turn-work-handle))
-                                             :deadline
-                                             (plist-get options :deadline))
+                                              :root-work-id
+                                              (and (e-work-handle-p turn-work-handle)
+                                                   (e-work-handle-id turn-work-handle))
+                                              :board-enroll-work board-enroll-work
+                                              :deadline
+                                              (plist-get options :deadline))
                                       :on-request-start
                                       (lambda (request)
                                         (publish-tool-request
@@ -689,7 +691,8 @@ tool I/O, and turn settlement are callback-driven."
 
 (cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-           append-message refresh-messages on-request-start segments turn-work-handle)
+            append-message refresh-messages on-request-start segments turn-work-handle
+            board-enroll-work)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -710,6 +713,7 @@ one."
      :tool-lifecycle tool-lifecycle
       :options options
       :turn-work-handle turn-work-handle
+      :board-enroll-work board-enroll-work
      :segments segments
      :on-event on-event
      :append-message append-message

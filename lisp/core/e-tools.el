@@ -1107,13 +1107,36 @@ handle after allocation and before its runner may execute."
                               'error
                               (e-tools--condition-message err)
                               (list :error (car err))))))))
-             (publish-request
-              (request)
+              (publish-request
+               (request)
               (when (and request (not settled))
                 (setq active-request request))
-              (when (and request (not settled) on-request-start)
-                (funcall on-request-start request)))
-             (arm-deadline
+               (when (and request (not settled) on-request-start)
+                 (funcall on-request-start request)))
+              (prepare-work
+               (handle)
+               "Expose HANDLE, then enroll its exact board invocation when requested."
+               (when on-work-prepared
+                 (funcall on-work-prepared handle))
+               (when-let ((enroll (plist-get tool-context :board-enroll-work)))
+                 (condition-case err
+                     (funcall
+                      enroll handle
+                      (lambda (state payload)
+                        (pcase state
+                          ('finished (finish-ok payload))
+                          ('failed (finish-error payload))
+                          ('cancelled
+                           (finish-error
+                            (list 'e-work-cancelled
+                                  (format "Work %s was cancelled"
+                                          (e-work-handle-id handle))))))))
+                     (error
+                      ;; Enrollment happens before runner entry.  Failing this
+                      ;; local setup must never invoke the external carrier.
+                      (e-work-fail handle err)
+                      (signal (car err) (cdr err))))))
+              (arm-deadline
               ()
               (when-let ((deadline (effective-deadline)))
                 (unless (or settled (timerp deadline-timer))
@@ -1158,15 +1181,16 @@ handle after allocation and before its runner may execute."
                                  work
                                  (plist-get call :arguments)
                                  :context tool-context
-                                :on-done #'finish-ok
-                                :on-error #'finish-error
+                                 :on-done (unless (plist-get tool-context :board-enroll-work)
+                                            #'finish-ok)
+                                 :on-error (unless (plist-get tool-context :board-enroll-work)
+                                             #'finish-error)
                                 :on-progress
                                 (lambda (payload)
                                    (when on-event
                                      (funcall on-event 'tool-progress payload)))))
                                request)
-                          (when on-work-prepared
-                            (funcall on-work-prepared handle))
+                           (prepare-work handle)
                           (e-work-start-prepared
                            handle
                            :arguments (plist-get call :arguments)
@@ -1188,10 +1212,11 @@ handle after allocation and before its runner may execute."
                                    (list :tool-arguments
                                          (plist-get call :arguments))
                                    :context tool-context
-                                   :on-done #'finish-ok
-                                   :on-error #'finish-error)))
-                               (when on-work-prepared
-                                 (funcall on-work-prepared handle))
+                                    :on-done (unless (plist-get tool-context :board-enroll-work)
+                                               #'finish-ok)
+                                    :on-error (unless (plist-get tool-context :board-enroll-work)
+                                                #'finish-error))))
+                                (prepare-work handle)
                                (e-work-start-prepared
                                handle
                                :arguments (list :tool-arguments
@@ -1212,11 +1237,12 @@ handle after allocation and before its runner may execute."
                                        :tool-arguments
                                        (plist-get call :arguments))
                                    :context tool-context
-                                   :on-done #'finish-ok
-                                   :on-error #'finish-error))
+                                    :on-done (unless (plist-get tool-context :board-enroll-work)
+                                               #'finish-ok)
+                                    :on-error (unless (plist-get tool-context :board-enroll-work)
+                                                 #'finish-error)))
                                 request)
-                          (when on-work-prepared
-                            (funcall on-work-prepared handle))
+                           (prepare-work handle)
                           (e-work-start-prepared
                            handle
                            :arguments (list :delay 0
@@ -1231,7 +1257,7 @@ handle after allocation and before its runner may execute."
              nil)
             (error
              (finish-error err)
-             nil)))))))
+              nil)))))))
 
 (provide 'e-tools)
 
