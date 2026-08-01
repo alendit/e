@@ -6,7 +6,10 @@
 In-progress
 
 The identity, bus-selector/settlement, board-registry, inbox-delivery, and first-version default contracts have been reviewed together.
-Slice 0 is in progress.  The explicitly deferred follow-ups below are not blockers.
+Slice 0 is complete.  Slice 1 and Slice 2 foundations are in progress: board
+identity/routing, prepared work enrollment, exact invocation replies, attached
+harness work observation, and participant output publication have landed.
+The explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
 
