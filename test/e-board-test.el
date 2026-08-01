@@ -100,7 +100,24 @@
       (should (= (length (e-board-publication-pickup-ids
                           (e-board-post-input board :tags '(main) :author "client:local"
                                               :attributes '(:priority high))))
-                 1)))))
+                  1)))))
+
+(ert-deftest e-board-test-predicate-faults-only-its-subscription ()
+  "A trusted predicate error is visible and cannot abort other routes."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (e-board-subscribe board "one" '(:tags (main)) :id "working")
+      (e-board-subscribe board "one"
+                         '(:tags (main) :predicate (lambda (_message) (error "bad")))
+                         :id "faulting")
+      (let ((publication (e-board-post-input board :tags '(main))))
+        (should (= (length (e-board-publication-pickup-ids publication)) 1))
+        (should (eq (e-board-subscription-state
+                     (e-board-find-subscription board "faulting"))
+                    'faulted))
+        (should (member 'subscription-faulted
+                        (mapcar #'e-board-event-type (e-board-events board))))))))
 
 (ert-deftest e-board-test-unrouted-inputs-and-monotonic-event-log ()
   "Unmatched input remains inspectable and every mutation advances sequence."

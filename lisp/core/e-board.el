@@ -512,7 +512,7 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
     (and (cl-every (lambda (tag) (member tag tags)) all)
          (or (null any) (cl-some (lambda (tag) (member tag tags)) any)))))
 
-(defun e-board--selector-matches-p (subscription message)
+(defun e-board--selector-matches-p (board subscription message)
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
     (and (eq (e-board-message-kind message) 'input)
@@ -532,7 +532,18 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
                             ((listp attributes) attributes)
                             (t (signal 'wrong-type-argument
                                        (list 'listp attributes))))))
-          (e-board--tags-match-p selector message))))
+          (e-board--tags-match-p selector message)
+          (if-let ((predicate (plist-get selector :predicate)))
+              (condition-case err
+                  (funcall predicate message)
+                (error
+                 (setf (e-board-subscription-state subscription) 'faulted)
+                 (e-board--append-event
+                  board 'subscription-faulted
+                  (list :subscription-id (e-board-subscription-id subscription)
+                        :error err))
+                 nil))
+            t))))
 
 (defun e-board--eligible-subscription-p (board subscription)
   "Return non-nil when SUBSCRIPTION is active and its participant can receive."
@@ -581,7 +592,7 @@ lifetime belongs to participant membership."
      (lambda (subscription)
        (and (not (e-board-subscription-built-in-p subscription))
             (e-board--eligible-subscription-p board subscription)
-            (e-board--selector-matches-p subscription message)))
+             (e-board--selector-matches-p board subscription message)))
       (e-board-subscriptions board))))
 
 (defun e-board--post-input-subscriptions (board message)
@@ -598,7 +609,7 @@ This gives post effects a bounded, visible cycle stop without special routing."
               (listp (e-board-subscription-effect subscription))
               (eq (car (e-board-subscription-effect subscription)) :post-input)
               (not (member (e-board-subscription-id subscription) lineage))
-              (e-board--selector-matches-p subscription message)))
+               (e-board--selector-matches-p board subscription message)))
        (e-board-subscriptions board)))))
 
 (defun e-board--schedule-post-input (board subscription message)
