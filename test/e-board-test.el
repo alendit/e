@@ -262,7 +262,44 @@
       (should-error (e-board-set-subscription-state board "main" 'active)
                     :type 'e-board-error)
       (should-error (e-board-set-subscription-state board "address" 'muted)
-                    :type 'e-board-error))))
+                     :type 'e-board-error))))
+
+(ert-deftest e-board-test-post-input-effect-creates-a-deferred-derived-message ()
+  "A matching continuation posts through the board after routing commits."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler
+                                   (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe
+         board "one" '(:tags (source))
+         :id "continuation"
+         :effect '(:post-input :to "one" :content "derived"))
+        (e-board-post-input board :id "source" :tags '(source) :content "original")
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (let* ((derived (car (last (e-board-messages board))))
+               (pickup (e-board-pickup board (car (e-board-message-pickup-ids derived)))))
+          (should (equal (e-board-message-content derived) "derived"))
+           (should (equal (e-board-message-to derived) "one"))
+           (should (equal (e-board-pickup-participant-id pickup) "one")))))))
+
+(ert-deftest e-board-test-post-input-effect-does-not-reenter-its-lineage ()
+  "A continuation cannot schedule itself from its own derived input."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler
+                                   (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe
+         board "one" '(:tags (source)) :id "loop"
+         :effect '(:post-input :tags (source) :content "derived"))
+        (e-board-post-input board :tags '(source) :content "original")
+        (funcall (pop effects))
+        (should-not effects)
+        (should (= (length (e-board-messages board)) 2))))))
 
 (provide 'e-board-test)
 

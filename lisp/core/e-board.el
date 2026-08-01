@@ -48,6 +48,9 @@
                (:conc-name e-board-subscription-))
   id board-id participant-id selector effect state built-in-p)
 
+(defconst e-board-max-derived-hops 8
+  "Maximum subscription lineage depth for derived board inputs.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -473,11 +476,12 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
     (board participant-id selector &key id (state 'active) (effect 'create-pickup))
   "Install an ordinary immutable input subscription for PARTICIPANT-ID.
 SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
-only effect is `create-pickup', so subscriptions cannot hide delivery callbacks
-inside the board model.  New subscriptions only inspect future inputs."
+   effects are `create-pickup' and declarative `(:post-input ...)'.  New
+ subscriptions only inspect future inputs."
   (unless (e-board-participant board participant-id)
     (signal 'e-board-error (list "Unknown participant" participant-id)))
-  (unless (eq effect 'create-pickup)
+  (unless (or (eq effect 'create-pickup)
+              (and (listp effect) (eq (car effect) :post-input)))
     (signal 'e-board-error (list "Unsupported board effect" effect)))
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
@@ -578,7 +582,75 @@ lifetime belongs to participant membership."
        (and (not (e-board-subscription-built-in-p subscription))
             (e-board--eligible-subscription-p board subscription)
             (e-board--selector-matches-p subscription message)))
-     (e-board-subscriptions board))))
+      (e-board-subscriptions board))))
+
+(defun e-board--post-input-subscriptions (board message)
+  "Return ordinary post-input subscriptions eligible for MESSAGE.
+Derived messages cannot activate a subscription already in their lineage.
+This gives post effects a bounded, visible cycle stop without special routing."
+  (unless (e-board-message-to message)
+    (let* ((attributes (e-board-message-attributes message))
+           (lineage (plist-get attributes :board-subscription-lineage)))
+      (cl-remove-if-not
+       (lambda (subscription)
+         (and (eq (e-board-subscription-state subscription) 'active)
+              (not (e-board-subscription-built-in-p subscription))
+              (listp (e-board-subscription-effect subscription))
+              (eq (car (e-board-subscription-effect subscription)) :post-input)
+              (not (member (e-board-subscription-id subscription) lineage))
+              (e-board--selector-matches-p subscription message)))
+       (e-board-subscriptions board)))))
+
+(defun e-board--schedule-post-input (board subscription message)
+  "Freeze and schedule SUBSCRIPTION's declarative post from MESSAGE."
+  (let* ((effect (cdr (e-board-subscription-effect subscription)))
+         (attributes (copy-tree (plist-get effect :attributes)))
+         (lineage (append (copy-sequence
+                           (plist-get (e-board-message-attributes message)
+                                      :board-subscription-lineage))
+                          (list (e-board-subscription-id subscription))))
+         (activation-id (list (e-board-id board) (e-board-subscription-id subscription)
+                              (e-board-message-id message))))
+    (if (> (length lineage) e-board-max-derived-hops)
+        (e-board--append-event
+         board 'effect-stopped
+         (list :activation-id activation-id :reason 'causal-hop-limit))
+      (e-board--append-event
+       board 'activation-prepared
+       (list :activation-id activation-id
+             :subscription-id (e-board-subscription-id subscription)
+             :effect 'post-input))
+      (e-board--schedule-effect
+       board
+       (lambda ()
+         (condition-case err
+             (let ((publication
+                    (e-board-post-input
+                     board
+                     :author (or (plist-get effect :author)
+                                 (format "participant:%s"
+                                         (e-board-subscription-participant-id subscription)))
+                     :tags (copy-tree (plist-get effect :tags))
+                     :attributes
+                     (append attributes
+                             (list :board-subscription-lineage lineage))
+                     :to (plist-get effect :to)
+                     :mode (or (plist-get effect :mode) 'inject)
+                     :content (plist-get effect :content)
+                     :reference (plist-get effect :reference)
+                     :source-input-key
+                     (list (e-board-subscription-id subscription) 1
+                           (e-board-message-seq message)))))
+               (e-board--append-event
+                board 'effect-committed
+                (list :activation-id activation-id :effect 'post-input
+                      :message-id (and (e-board-publication-message publication)
+                                       (e-board-message-id
+                                        (e-board-publication-message publication))))))
+           (error
+            (e-board--append-event
+             board 'effect-failed
+             (list :activation-id activation-id :error err)))))))))
 
 (defun e-board--source-key-parts (source-key)
   "Return SOURCE-KEY as (PRODUCER GENERATION SEQ), or signal.
@@ -649,6 +721,7 @@ Return nil when the key is new and may be appended."
 (defun e-board--route-input (board message)
   "Freeze MESSAGE routing matches and create at most one pickup per participant."
   (let ((subscriptions (e-board--matching-subscriptions board message))
+        (post-subscriptions (e-board--post-input-subscriptions board message))
         (by-participant (make-hash-table :test 'equal))
         participant-ids pickup-ids)
     ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
@@ -683,10 +756,12 @@ Return nil when the key is new and may be appended."
            (setq pickup-ids (append pickup-ids (list delivery-id)))))
        (setf (e-board-message-matching-participant-ids message) participant-ids
              (e-board-message-pickup-ids message) pickup-ids)
-       (e-board--append-event board 'input-routed
-                              (list :message-id (e-board-message-id message)
-                                    :participant-ids participant-ids
-                                    :pickup-ids pickup-ids)))
+        (e-board--append-event board 'input-routed
+                               (list :message-id (e-board-message-id message)
+                                     :participant-ids participant-ids
+                                     :pickup-ids pickup-ids)))
+    (dolist (subscription post-subscriptions)
+      (e-board--schedule-post-input board subscription message))
     (e-board-publication--create
      :status 'posted :message message :pickup-ids pickup-ids)))
 
