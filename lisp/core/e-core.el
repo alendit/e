@@ -26,6 +26,7 @@
 (require 'e-request)
 (require 'e-work)
 (require 'e-board)
+(require 'e-board-registry)
 (require 'e-store)
 (require 'e-capability-config)
 (require 'e-capabilities)
@@ -65,6 +66,7 @@
         :request-lifecycle t
         :work t
         :board t
+        :board-registry t
         :store t
         :skills t
         :startup t
