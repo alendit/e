@@ -1,9 +1,11 @@
-#+title: Work Board: Work Results and Turn Notifications
+#+title: Board: Top-Level Interaction and Work Coordination
 #+startup: overview
 
 * Status
 
-Ready
+Planned
+
+The architectural direction is accepted, but implementation should not start until the identity, graph-settlement, board-registry, and inbox-delivery contracts in this revision have been reviewed together.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
 
@@ -11,7 +13,7 @@ Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board"
 
 Make =e-work= the common lifecycle for executable operations.
 Add a small in-memory execution graph that orders dependent =e-work= stages without blocking Emacs.
-Make the board the event and delivery model between runtime producers and agent sessions.
+Make the board the top-level message, event, and delivery model between chat, runtime producers, and participant sessions.
 
 =e-loop= still owns how a provider tool call is paired with its result.
 Returning a result to a waiting tool call is separate from sending a later notification to a session.
@@ -46,6 +48,7 @@ The current runtime also has gaps this feature must close:
 - Schedule and file-notify fires are input facts without operation identity.
 - The current =wait_for= coordinator returns a result to one captured tool call; it cannot notify a session later.
 - =e-harness-queue-prompt= requires a running turn, while idle delivery follows a different path.
+- =e-chat= opens and prompts a session directly instead of connecting to a board message stream.
 - No service maps a participating session id to its current live harness across harness instances.
 - Subagent and task-queue registries already push change notifications and must remain the source of truth for their domain state.
 - Detached work, subagent records, and task records need bounded retention before the board can retain related history safely.
@@ -82,25 +85,25 @@ Effect 2 is the one that motivates the rest of this section.
 
 A notification answers two questions:
 
-- *Which session receives it?*  The =:session= field.
+- *Which board participant receives it?*  The =:target= field.
 - *When may it enter that session?*  The =:mode= field.
 
 A notification sent to another session does not interrupt the session that started the work.
 
-*** Choosing the session
+*** Choosing the participant
 
-The posting session, an existing child, a fork, a sibling, the parent: all of these are one thing, a session on the board.
-Naming them as separate destination kinds was the mistake; it hid that the interesting cases (deliver to a sibling, deliver to the parent, fan the same event to three sessions with three different renderings) were inexpressible.
+The posting session, an existing child, a fork, a sibling, the parent: all are participant sessions on the board.
+Naming them as separate destination kinds was the mistake; it hid that the interesting cases (deliver to a sibling, deliver to the parent, fan the same event to three participants with three different renderings) were inexpressible.
 
-The =:session= value is resolved when the notification is ready, using the same pattern =e-waitable= already uses for work references:
+The =:target= value is resolved when the notification is ready:
 
-- =session:<id>= :: a concrete session, including the poster's own.
-- =fork:<session-id>@<message-id>= :: fork that session at that message, then deliver.
+- =participant:<participant-id>= :: a concrete registered participant, including the poster's own.
+- =fork:<participant-id>@<session-entry-id>= :: fork that participant session at an explicit transcript entry, register the new participant, then deliver.
   Resolved lazily, so the fork is only paid for if the event fires.
 
 The shipped set stops there on purpose.
 A notification cannot create a new subagent from a type because that would hide the cost and configuration until the work finished.
-Create the child first, then name its session.
+Create and register the child first, then name its participant id.
 
 *** Results in the current turn and later turns
 
@@ -113,7 +116,7 @@ A later notification uses one of two modes:
 
 | Mode | What happens |
 |------+--------------|
-| =inject= | Add the message at the next safe point in a running turn, or start a turn if the session is idle |
+| =inject= | Add the message only at a future safe point in an =accepting= turn for the same board; otherwise use that participant's inbox |
 | =queue= | Keep the message in the session inbox until the session is idle |
 
 The existing =wait_for= race remains until this path is built.
@@ -131,9 +134,11 @@ A fork answers plan fragmentation when the reaction needs the context that exist
 
 The mechanism exists.
 =e-session-fork= with =:at= already rebuilds a linear path up to a message; it becomes an ordinary session-producing action returning a session id, exactly like subagent spawn.
-A notification then names the fork, or uses =fork:<session>@<mark>= to create it only when the result is ready.
+A notification then names the fork participant, or uses =fork:<participant>@<session-entry-id>= to create and register it only when the result is ready.
+The mark is always a session transcript entry id, never a board =message-id=; the pickup receipt records the board-message-to-transcript-entry mapping.
 
-- The parent absorbs a summary, not a context.
+- A fork does not merge or automatically rejoin.
+  If it should report back, it posts an explicitly addressed board input containing a bounded summary and a stable =source-input-key=; normal board pickup delivers it to the parent participant.
   Merging two divergent contexts is not attempted, now or later.
 - The cost is real: a fork duplicates context and re-pays cache warmup, so it is opt-in and never a default.
   Lazy resolution means an unused notification costs only a message id.
@@ -153,37 +158,151 @@ When the reaction is describable, a child is cheaper and returns a structured re
 - *Fork sprawl.*  Branch-per-event is easy to overuse.
   Cap concurrent forks per session and report the cap.
 - *Cross-session delivery rights.*  A notification can wake another session.
-  Delivery must be confined to board participants and record which session requested it.
-- *Deadlock.*  An agent awaiting work only it can perform.
-  Detectable when a wait set's members are all claimable work scoped to the waiting session.
+  Delivery must be confined to authorized board participants and record which participant requested it.
+- *Future claim deadlock.*  If claimable offers are added later, an agent could await work that only it is eligible to perform.
+  That belongs to the follow-up claim state machine, not the broadcast-message implementation here.
 
 * Model
+
+** Board messages and chat ingress
+
+Chat connects to a board as an authorized board client, not as a session.
+The connection has a board-local =client-id= and trusted local-user/requester context but no harness endpoint or transcript.
+Posting from chat calls the board ingress service and creates one board-owned input message; it never calls =e-harness-prompt-async= or mutates a session inbox directly.
+Chat renders the board message stream, while participant sessions keep their own transcripts as private execution context.
+
+Each board message has =message-id=, =board-id=, monotonic posted =seq=, =kind=, qualified =author= (=client:<id>= or =participant:<id>=), and bounded content/reference.
+The first version has two kinds:
+
+- =input= :: carries =audience=, =mode=, and optional producer =source-input-key=; eligible participant sessions may pick it up as turn input.
+- =output= :: carries a required stable =source-output-key=, ordered =reply-to-message-ids= and =caused-by-delivery-ids=; it is visible to chat/observers and is never automatically redelivered as input.
+
+Input =mode= is =inject= by default; chat's explicit queue/prefix submission uses =queue=.
+The mode is frozen into each pickup envelope and follows the same delivery-phase table as a notification.
+Both source-key forms are board-scoped =(producer-id, producer-generation, producer-seq)= tuples; a producer allocates its strictly increasing sequence before publication and serializes its posts.
+=producer-generation= is the client connection generation, the participant membership's stable posting epoch, or an application producer's explicit epoch; it is not the replaceable harness endpoint generation, and participant endpoint rebind does not change it.
+A repeated producer post whose key remains in the recent map returns the existing message and pickup ids; fork summaries and other retryable producers persist one =source-input-key= before their first attempt.
+The board atomically advances a per-kind, per-producer source high-watermark with the append and retains a bounded recent key-to-message map.
+A key at or below that watermark whose map entry has been compacted returns explicit =source-history-expired= and never appends; a late or out-of-order key is therefore refused rather than mistaken for new input.
+
+=audience= is either an explicit set of participant ids or =board=.
+=board= freezes the set of active, input-subscribed participants when the message is posted; one slow participant does not hold back another.
+If no participant is eligible, the message remains visibly =unrouted= until an authorized caller routes or cancels it.
+Adding a participant does not silently replay earlier messages; replay requires an explicit starting sequence.
+
+For every audience member, the board creates one logical pickup envelope with stable =delivery-id= =(board-id, message-id, participant-id)= and participant id, and tracks its state independently.
+Endpoint token/generation is not part of that immutable envelope; it belongs to a replaceable physical-attempt record selected only when the pickup reaches the FIFO head.
+The runtime reauthorizes membership and generation before each attempt, at acceptance, and again when a queued item starts a turn.
+The participant's =message-next-seq= is the first board input not yet classified for that participant.
+The same harness receipt and delivery-phase contract used for notifications accepts and consumes the pickup exactly once.
+This is fan-out of an addressed board message, not a claimable work offer: every frozen audience member receives its own copy.
+
+Pickup is FIFO per participant.
+At most one pickup is =ready=, =rebinding=, =delivering=, or =accepted= for that participant; later addressed inputs remain bounded pending records and cannot overtake a retry/reset.
+=message-next-seq= advances only after the input is ignored for that participant or a pickup/tombstone is committed.
+Routing an older =unrouted= message assigns a new =routed-seq= and inserts it at that current FIFO position while retaining its original =posted-seq= for audit.
+A per-participant pending cap/expiry turns excess or permanently stalled pickups into explicit =overflowed= /=expired= tombstones; it never silently drops them or blocks another participant's cursor.
+
+The normal interaction path is:
+
+1. Chat posts an =input= message to the board.
+2. The board records it and freezes its audience/pickup ids.
+3. Eligible sessions pick it up through =e-harness-deliver-input=; consuming it creates a board-scoped turn and one transcript input.
+4. A participant's final assistant response is posted idempotently as one =output= whose =source-output-key= uses the participant producer identity/generation and a persisted monotonic =board-output-seq= stored on that assistant transcript entry.
+   It relates to the ordered set of board message/delivery ids consumed since that participant's preceding assistant output, so several injected inputs in one turn remain representable.
+5. Chat observes the board output; no session-to-chat backchannel is needed.
+
+The common source high-watermark/recent-map rule makes output publication bounded and at-most-once: a retained duplicate returns the existing output, while a retry older than retained history returns =source-history-expired= and cannot append a duplicate.
+=e-session= owns a per-session next-output counter and allocates the sequence atomically with assistant transcript append; session-store replay preserves both the entry field and counter.
+Legacy entries without the field are pre-board history and are never retroactively published; loading them seeds the counter from the greatest recorded field (or zero), and the first new assistant entry receives the next value.
+A repeated completion callback rereads the same entry field, so reload, output-pending retry, and recent-map eviction cannot allocate a second source identity.
+Chat subscriber/render failure is isolated after board append and does not retry publication, and old runtime-generation callbacks cannot publish.
+Transcript/turn settlement creates a bounded =output-pending= projection record and does not wait on chat rendering.
+If board append itself fails, the runtime retries that record with the same source key or records visible =output-publication-failed= without resettling the turn.
+
+An agent that wants another participant to act posts an explicitly addressed =input= or installs a notification targeting that participant.
+Merely posting an =output= cannot create a feedback loop.
 
 ** Executable operations and ordered stages
 
 Every executable operation is an =e-work= handle.
 Input facts such as user messages, schedule fires, file notifications, and annotation changes are board events without dummy work handles.
 
-Operation metadata lives in start context or in a board-owned side table keyed by handle id.
-It includes =operation-id=, =kind=, =owner=, =poster=, =board-id=, =intent=, =visibility=, =parent-operation-id=, =root-operation-id=, and an optional domain reference.
+The =e-work-handle-id= is the canonical =work-id=.
+There is no second execution =operation-id=; that term remains available to =e-operations= for semantic resource operations such as =read= and =write=.
+Operation metadata lives in start context or in a board-owned side table keyed by =work-id=.
+It includes =kind=, =owner-service=, =poster-participant-id=, =poster-endpoint-generation=, =board-id=, =intent=, =visibility=, =parent-work-id=, =root-work-id=, =predecessor-work-ids=, =caused-by-event-seqs=, and an optional =domain-ref=.
 The =e-work-handle= structure does not gain board, session, tool, or subagent dependencies.
 Tools, turns, provider requests, policy stages, task attempts, and subagent attempts all produce handles.
 
+=parent-work-id= expresses ownership/nesting, =predecessor-work-ids= expresses graph ordering, and =caused-by-event-seqs= links board input facts to the work they caused.
+These immutable generic relations live in =e-work= start/handle metadata and are never inferred from timestamps.
+The board side table copies them as an observed projection rather than becoming a second identity authority.
+
+*** Operation identity contract
+
+The table is normative.
+It prevents invocation identity, durable domain identity, and executable-work identity from collapsing into one id.
+
+| Runtime thing | Canonical identity | Board representation | Required relation and settlement rule |
+|---------------+--------------------+----------------------+---------------------------------------|
+| Executable stage | =work-id=, exactly the =e-work-handle-id= | One observed operation record and at most one terminal event | Parent/root express nesting; predecessors/event causes express ordering; settlement is immutable |
+| Agent turn | Existing durable =turn-id= plus a distinct =work-id= | The turn work record uses =domain-ref= =turn:<turn-id>= | Provider attempts, tools, and policy stages are child work; retry replaces a child attempt, not the turn identity |
+| Tool invocation waiting for work | Pair =(turn-id, tool-call-id)= | A waiting-invocation relation, not another operation record | It waits for one canonical =work-id= and may settle before that work; =e-loop= appends its result exactly once |
+| =wait_for= inline or detached execution | The executable child's =work-id= in both cases | One operation record throughout | A deadline settles only the waiting invocation with =work:<work-id>=; it does not settle, rename, or replace the work |
+| Compatibility detachable wrapper | Its temporary handle id, marked =kind= =invocation-adapter= and =visibility= =internal= | Not enrolled, addressable, or a notification target | It maps legacy callers to the canonical child =work-id= and is removed when Slice 2 completes |
+| Task or subagent attempt | Attempt =work-id= plus existing =task:<id>= or =subagent:<id>= =domain-ref= | Work state is observed; the domain registry remains authoritative | A retry is a new child attempt; the durable task/subagent id never substitutes for a work id |
+| External fact | Board =(board-id, seq)= | Event only | It may carry =caused-by-work-ids= or =caused-by-event-seqs=, but gets no dummy handle |
+| Claimable offer before execution | Board-local =offer-id= | Reserved future offer state, not an operation record | Claiming would create a new =work-id= linked by =domain-ref= =offer:<offer-id>=; claim semantics belong to follow-up work |
+| Presentation-local =e-ui-work= job | Its ordinary =e-work= handle id | Not enrolled by default | Presentation scheduling stays outside the board unless a future explicit diagnostic adapter observes it |
+
+The common start path allocates the handle before invoking its runner.
+When a board observer is present it enrolls that =work-id= before the runner can settle, which keeps cheap and asynchronous work on the same identity path.
+The explicit exception is =visibility= =internal=: an invocation adapter is not enrolled and propagates its observer/notification intent only to the already-preallocated canonical child.
+
+*** Graph-settlement truth table
+
 A small in-memory execution graph orders dependent handles.
-The graph provides =then=, =reduce=, =all=, =any=, =recover=, and =finally= over existing settlement callbacks and =e-work-await-set=.
-Each stage starts only after its required predecessors finish successfully.
-Failure and cancellation propagate to stages that have not started unless a recovery step handles the outcome.
-Cancelling the graph's final handle cancels running descendants and marks pending stages cancelled.
-The graph is discarded after settlement; normal operation events remain on the board.
+Each combinator returns a distinct graph-result =e-work= handle.
+A stage factory must promptly return an =e-work= handle; =:deferred= is an internal carrier-runner result and is never a stage-factory result.
+A factory that signals before returning a handle fails the graph-result handle.
+
+| Combinator | When it starts work | Finished result | Failure and cancellation | Sibling or loser behavior |
+|------------+---------------------+-----------------+--------------------------+---------------------------|
+| =then(source, f)= | Call =f(value)= only after =source= finishes | Mirror the handle returned by =f= | A failed or cancelled source is mirrored and =f= is not called | None |
+| =reduce(source, fs)= | Apply =then= left to right | Last stage value, or the source value when =fs= is empty | First unhandled failure/cancellation stops later factories | Already-finished stages remain immutable |
+| =all(handles)= | Observe all inputs immediately; start no hidden work | After every input is terminal, return values in input order if all finished | After every input is terminal, fail with the first failure in input order; otherwise cancel if any input cancelled | Never cancels siblings implicitly |
+| =any(handles)= | Observe all inputs immediately | Mirror the first terminal input; simultaneous terminals use input order | Failure or cancellation may therefore win | Losers continue and remain independently observable; graph subscriptions release after the winner |
+| =recover(source, f)= | Call =f(error)= only after failure | Finished source passes through; otherwise mirror the recovery handle | Cancellation passes through without calling =f=; a failed recovery remains failed | None |
+| =finally(source, f)= | Call =f(outcome)= after any terminal source state | If cleanup finishes, preserve the original outcome | Cleanup failure/cancellation fails the result with =e-work-finally-error= carrying both outcomes | None |
+
+These =all= and =any= meanings intentionally match the current =e-work-await-set= meanings: =all= waits for all terminal states and =any= means first terminal, not first success.
+=all= over an empty list finishes with an empty result; =any= over an empty list fails immediately with =e-work-graph-empty-any=.
+If first-success or fail-fast fan-in is needed later, it receives a different name instead of silently changing these contracts.
+
+Cancelling a pending graph-result handle cancels only handles created by that graph's stage factories and marks not-yet-started stages cancelled.
+Borrowed input handles are not cancelled unless the caller opts into =:cancel-inputs=.
+Once the graph-result is terminal, later cancellation is a no-op; =any= losers are not retained or cancelled by the graph.
+
+Mirroring a predecessor's =cancelled= terminal state uses a non-propagating internal settlement primitive such as =e-work-settle-cancelled=.
+=e-work-cancel= remains the outward request that invokes owned cancel functions before settling.
+This distinction lets =any= mirror a cancelled winner without cancelling losers, and graph-wide cancellation is never recoverable.
+If graph-wide cancellation arrives before a pending =finally= factory starts, that factory is fenced like every other not-yet-started stage; =finally= is guaranteed only after an ordinary source terminal outcome.
+
+Graph continuations and operation observers are separate, ordered channels rather than =e-work-on-settle= cleanup callbacks.
+Settlement commits once, the board observer sees a predecessor terminal event before a successor can be posted, and then continuations run in registration order.
+Observer failures are isolated and recorded without suppressing owner completion or graph continuation.
+Cheap and asynchronous settlement use the same ordering.
 
 The application service that owns a pipeline builds its graph.
 =e-loop= owns the provider and tool pipeline, =e-harness= owns turn and reset pipelines, task queue owns attempts, and cron owns guard-to-action dispatch.
 Graph edges remain correct when board recording or delivery is unavailable.
 The board never advances an operation.
+Lower-level/non-live pipelines may omit a board observer entirely; the live board application path treats initial enrollment as a precondition, then isolates post-start observer/delivery faults from execution.
 
 Sequencing is non-blocking.
 A stage may perform bounded setup on the Emacs thread and must return a handle promptly.
-Long work starts an asynchronous carrier and returns =:deferred=.
+Long work starts an asynchronous carrier whose runner may return =:deferred= internally; the stage still returns its handle.
 Completion callbacks may update small in-memory state and start the next stage, while expensive follow-up work becomes another stage.
 The graph does not poll, sleep, call =accept-process-output=, or wait in an interactive loop.
 
@@ -193,9 +312,22 @@ Once the hook points use the stage runner, the direct synchronous reducer leaves
 
 ** Event log
 
-One append-only log per board, with a monotonic =seq=.
-Event types are =posted=, =claimed=, =progress=, =finished=, =failed=, and =cancelled=, plus =notification-failed= and =budget-stopped= for board faults.
-This runtime state can be rebuilt, and old entries can be removed after the current-state view no longer needs them.
+One serialized append-only mutation log per board, with a monotonic =seq=.
+Message/fact event types are =input-posted=, =output-posted=, =output-publication-failed=, =input-unrouted=, =input-routed=, and =fact-posted=.
+An =input-routed= event records the original message/posted sequence, the new =routed-seq=, frozen audience, and pickup ids so replay can reconstruct pending delivery without mutating old log entries.
+State-transition event families are =notification-transition=, =delivery-transition=, =observation-changed=, and =output-pending-changed=.
+A notification transition records rule id/version, old/new state, cursor, wake count, and any frozen envelope reference/bytes; a delivery transition records source kind/id, delivery id/version, old/new state, immutable logical envelope, replaceable physical attempt/generation, and receipt or tombstone delta.
+Delivery transition names include =input-accepted=, =input-consumed=, =input-discarded=, =input-expired=, =input-overflowed=, and =input-uncertain= for both board-message pickups and notification-derived input.
+Observation and output-pending transitions carry their complete bounded replacement record.
+Operation event types are =posted=, =progress=, =finished=, =failed=, and =cancelled=, plus =notification-failed= and =budget-stopped= for board faults.
+Lifecycle event types include =board-created=, =participant-added=, =participant-stale=, =participant-rebound=, =participant-removed=, =board-closing=, and =board-closed=.
+Terminal events append in causal order.
+High-frequency progress is a latest-value projection with rate-limited log checkpoints, not one board append per provider stream delta.
+Every board mutation commits its typed transition event(s) and new projection version atomically; there is no mutable rule, cursor, pickup, physical attempt, wake count, observation, or output-pending state that exists only outside this contract.
+
+Compaction writes an atomic typed checkpoint at =checkpoint-seq= containing board lifecycle/identity, retained messages/tombstones, memberships, source high-watermarks, work projections, complete rule/envelope/attempt state, pickup queues/cursors, delivery ledgers, wake counts, observations, output-pending records, and retention pins.
+Replay starts from that checkpoint and applies the typed tail after =checkpoint-seq=; a no-checkpoint board starts from =board-created=.
+Old entries can be removed only after the checkpoint is committed in registry state and unread cursors/pins no longer require their payloads.
 
 ** Notifications
 
@@ -204,7 +336,7 @@ The common work-start API can return a result to the current tool call and reque
 #+begin_src elisp
 (start-work
  :wait-for 30
- :notify (list :session "session:sub_000004"
+ :notify (list :target "participant:ptc_000004"
                :mode 'queue
                :message "run the failing test and report what broke"))
 #+end_src
@@ -215,12 +347,12 @@ The notification is independent and may still send a later message when requeste
 
 A simple notification has three fields:
 
-- =:session= :: the session that should receive the message.
+- =:target= :: the board participant that should receive the message.
 - =:mode= :: =inject= or =queue=.
 - =:message= :: what the receiving turn should do with the result.
 
-The runtime adds the work id, state, result summary or result reference, and recorded intent to the message.
-A notification attached to one work start is one-shot and fires when that work finishes or fails.
+The runtime adds the board id, work id, state, result summary or result reference, and recorded intent to the message.
+A notification attached to one work start is one-shot and fires when that work finishes, fails, or is cancelled.
 The caller does not need to create a separate board rule for this common case.
 
 The same notification shape is available as a board action for work that already exists.
@@ -228,13 +360,133 @@ Advanced rules may watch several work ids, wait for all of them, batch nearby re
 Those options extend the same fields instead of introducing a separate user-facing subscription API.
 
 Internally, the board stores notification rules with a start position, next unread event, delivery state, lifetime, and wake limits.
-A rule moves through =pending=, =delivering=, and =delivered= or =failed=.
 A one-shot rule is removed only after successful delivery or its declared terminal failure policy.
+
+The combined work-start application service uses an =e-work= pre-run enrollment seam: =e-work= allocates/prepares the handle/work id, the injected seam atomically appends =posted= and installs/binds the notification rule with =created-seq=, and only after that callback commits does =e-work= invoke the runner.
+The board transaction neither allocates a handle nor invokes/advances its runner, and =e-work= has no board dependency.
+An explicitly requested notification is validated before preparation; if its enrollment/rule bind fails, the prepared start settles visibly with =e-board-enrollment-error= and the external runner is not invoked.
+After runner invocation begins, later observer faults are isolated and cannot change operation settlement or graph continuation.
+An observer is therefore installed before cheap work can settle.
+Adding a rule for already-existing work checks the board's terminal snapshot in the same mutation and queues it exactly once when already terminal.
+Runtime delivery is scheduled after the initiating start stack unwinds; no notification-caused harness mutation or provider turn starts before =e-work-start= returns.
+
+** Board/inbox state machine
+
+The board rule state and harness delivery phase are separate state machines.
+The board decides that a batch should be delivered; the harness alone decides whether that input can still join the current turn.
+
+*** Notification-rule states
+
+| State | Meaning | Allowed exits |
+|-------+---------+---------------|
+| =pending= | Watching from =next-seq=; no delivery identity exists | =preparing=, =cancelled=, =expired=, =failed= |
+| =preparing= | Batch and stable id exist; resolve target, reauthorize, invoke the builder once, and freeze bytes | =ready=, remain =preparing= while waiting for a pre-call rebind, =cancelled=, =expired=, or =failed= |
+| =ready= | Authorized participant and immutable payload/id exist; one replaceable physical-attempt binding is selected and no harness call has begun | =delivering=, =rebinding= before a call, =cancelled=, =expired=, =failed= |
+| =rebinding= | Immutable participant/id/bytes remain frozen, but the proven-uncommitted physical attempt is cleared while awaiting an authorized endpoint | =ready= with a new generation, =cancelled=, =expired=, or =failed= |
+| =delivering= | A harness call is in flight with that same opaque id, frozen bytes, and committed attempt binding | =accepted=, =delivered=, =ready= for a same-endpoint retry, =rebinding= only when no mutation is proven, =cancelling=, =failed=, or =uncertain= |
+| =accepted= | Harness owns one deduplicated inbox/steering item, not yet consumed into a transcript | =delivered=, =cancelling=, or =failed= on explicit discard |
+| =cancelling= | Cancellation raced with resolution, acceptance, or transcript consumption | =cancelled= if unconsumed, otherwise =delivered= |
+| =delivered= | The input was consumed into one turn transcript exactly once | Terminal for one-shot; repeating rules return to =pending= with the next cursor |
+| =failed= | Deterministic policy, builder, authorization, revocation, discard, or exhausted-retry fault was recorded | Terminal unless an explicit administrative retry creates a new delivery |
+| =uncertain= | An endpoint disappeared after a call may have committed and no receipt can be reconciled | Terminal and never redelivered under another generation |
+| =cancelled= | Caller cancelled before transcript consumption | Terminal with a dedupe tombstone |
+| =expired= | Lifetime or wake budget ended before delivery | Terminal with a visible reason |
+
+Board-message pickups have their own explicit FIFO projection rather than overloading notification-rule terminal names:
+
+| Pickup state | Meaning | Allowed exits |
+|--------------+---------+---------------|
+| =pending= | Immutable pickup waits at its FIFO position | =ready= at the head, =cancelled=, =expired=, =overflowed=, or =failed= |
+| =ready= | Head pickup has one replaceable physical attempt selected and no harness call begun | =delivering=, =rebinding=, =cancelled=, =expired=, or =failed= |
+| =rebinding= | The proven-uncommitted attempt was cleared; logical pickup is unchanged | =ready= with an authorized endpoint, =cancelled=, =expired=, or =failed= |
+| =delivering= | Harness call is in flight with a committed attempt binding | =accepted=, =ready= for same-endpoint retry, =rebinding= only when no mutation is proven, =cancelling=, =failed=, or =uncertain= |
+| =accepted= | Harness owns one deduplicated item not yet in a transcript | =consumed=, =cancelling=, or =discarded= with acknowledgement |
+| =cancelling= | Cancellation races with acceptance/consumption | =cancelled= when unconsumed, =discarded= with acknowledgement, or =consumed= when transcript consumption won |
+| =consumed= | Receipt maps the pickup to exactly one transcript entry | Terminal; releases the FIFO |
+| =discarded= | Harness acknowledged that the accepted item cannot be consumed | Terminal; releases the FIFO |
+| =failed= | Permanent rejection or exhausted retry happened before acceptance | Terminal; releases the FIFO with a visible fault |
+| =uncertain= | Endpoint vanished after possible commit and receipt cannot be reconciled | Terminal; records an ordering-gap tombstone and releases the FIFO |
+| =cancelled= | Cancellation completed before consumption | Terminal; releases the FIFO with a dedupe tombstone |
+| =expired= | Lifetime ended before acceptance | Terminal; releases the FIFO with a visible reason |
+| =overflowed= | Bounded pending capacity refused this pickup | Terminal tombstone; never attempted |
+
+Delivery ids are opaque to the shared machine.
+A notification uses =(board-id, notification-id, delivery-number, first-seq, last-seq)=; a board-message pickup normatively uses =(board-id, message-id, participant-id)=.
+=delivery-number= increments only when a new notification batch is frozen; every retry reuses the exact id, resolved target, and bytes.
+=next-seq= means the first event not yet classified: ignored, copied into an accumulator, frozen into an envelope, or accounted for by a terminal rule fault.
+The rule advances it only after committing that classification in board state; retries use the frozen envelope and never rescan the log.
+A deterministic terminal fault stops rule evaluation without pretending that the event was accepted or delivered.
+
+The normative preparation order is: freeze event ids/snapshots, allocate =delivery-id=, parse the board-local target without side effects, authorize requester/visibility and permission to target or fork, resolve the concrete target idempotently, revalidate membership/generation, invoke the builder once, freeze bounded bytes, then enter =ready=.
+For =fork:=, pure parsing/authorization of the base participant and typed transcript mark therefore precedes session creation; creation is keyed by =delivery-id= so retry returns the same fork.
+A denied target invokes the builder zero times.
+A failure after =ready= never rebuilds or changes bytes.
+A stale endpoint discovered before any harness call may wait for authorized rebind with the same id; revocation is permanent.
+The immutable envelope stores the board participant and bytes, while each physical attempt stores endpoint token/generation separately.
+Only a proven-uncommitted attempt may clear that binding and enter =rebinding=; an unknown commit becomes =uncertain= instead.
+
+Cancelling in =pending=, =preparing=, =ready=, or =rebinding= is immediate.
+Cancelling in =delivering= or =accepted= reconciles by the same =delivery-id=: an unconsumed item may become =cancelled= and leaves a receipt tombstone, while a consumed item wins as =delivered=.
+Cancellation never retracts a transcript message or starts a duplicate compensating turn.
+Cancelling a notification never cancels its watched work; cancelling work emits a =cancelled= operation event that the one-work rule delivers by default.
+
+Board-message pickup content and audience are authorized/frozen at post/routing time.
+The head pickup for a participant moves from FIFO =pending= to =ready= with its normative id and then follows the pickup table; later pickups remain =pending= until the head reaches any terminal pickup state.
+Later pickups cannot overtake a head in =ready=, =rebinding=, =delivering=, =accepted=, or =cancelling=.
+Every terminal state in the pickup table releases the FIFO; =uncertain= does so only after recording its visible ordering-gap tombstone, so later input can proceed without concealing the unknown outcome.
+
+*** Harness delivery phases
+
+"Running" is not a sufficient state.
+Only =accepting= means the active turn still has a future provider-request boundary at which steering can be consumed.
+
+| Harness/session phase | =inject= | =queue= |
+|-----------------------+----------+---------|
+| =idle= | Commit an inbox item and schedule its turn immediately | Commit an inbox item and schedule the same single idle drain |
+| =accepting= | Commit pending steering for the next safe provider boundary | Commit an inbox item for a later turn |
+| =settling= | Commit an inbox item for the next turn; never steer | Same |
+| =retry-wait= | Commit an inbox item for the next turn; never mutate the already-built retry | Same |
+| =aborting= | Commit to the post-abort inbox and start only after abort cleanup | Same |
+| =resetting= | Return a retryable transition with no receipt or input mutation; retry the same id after reset | Same |
+| generation changed before mutation | Return a retryable stale result with no receipt; board runtime re-resolves/reconciles | Same |
+| =closed=, revoked, or mismatched board | Permanent rejection with no input mutation | Same |
+
+Every immutable logical delivery envelope stores =delivery-id=, =board-id=, target =participant-id=, notification or message id, event sequence range, mode, requester actor, and cause metadata, but no endpoint token or generation.
+Its replaceable physical-attempt record alone stores the selected endpoint token/composite generation.
+After acceptance, the concrete inbox/steering item and receipt store that accepted generation together with the logical fields.
+=e-harness-deliver-input= deduplicates on =delivery-id= inside the same mutation and returns the prior receipt on retry.
+It rejects a board id that differs from the session attachment before selecting a lane; a mismatched delivery cannot wait inside or mutate that session.
+Receipt state is monotonic: =accepted= means the harness owns the item, =consumed= means it appears in exactly one turn transcript, and =discarded= records an explicit reset/close/cancellation boundary without permitting reinsertion.
+The board-owned delivery ledger is authoritative across endpoint generations; the harness ledger is the local index that proves one concrete inbox/transcript mutation.
+Before calling a harness, the board record commits the attempted physical endpoint and generation.
+Rebind/close/detach must fence that endpoint and reconcile every =accepted= delivery to =consumed= or =discarded= before publishing a replacement or closing.
+If a call may have committed but the old endpoint cannot return a receipt, the delivery becomes visible terminal =uncertain= and is never submitted to a new generation.
+Only a delivery proven never submitted may wait for rebind and use the same id on the replacement endpoint.
+
+Accepted receipts/items are pinned regardless of age until consumed, discarded, or uncertain.
+Terminal harness receipt tombstones remain at least through the board's retry/cancellation lifetime; if a hard dedupe limit would be exceeded, the runtime refuses the old id visibly rather than treating it as new.
+Presentation subscriber failures are isolated after mutation and cannot turn a committed delivery into an apparent failure.
+
+An idle delivery starts at most one turn even when several callers retry.
+The transition from =accepting= to =settling= sweeps unconsumed steering items to the inbox before the final same-turn boundary disappears.
+The turn's first user message stores =:board-id= and =:caused-by= metadata; the turn work projection mirrors it in memory.
+This is the first-version turn-cause representation, rather than inventing a separate durable turn record.
+
+*** Observation and retention
+
+The current-state view is a projection independent of retained event history.
+Each terminal work record keeps a bounded stable snapshot containing state, kind, poster, terminal sequence, intent summary, and either a usable result reference or an explicit expired-result tombstone.
+Active work is never evicted.
+
+A pending, delivering, or accepted notification pins its bounded snapshots or receipt ownership until it reaches a terminal rule state.
+Log compaction may replace payloads with tombstones but may not skip an unread cursor or invalidate a result reference silently.
+Inline tool-result delivery, successful =await=, and consumed notification delivery mark the corresponding participant as having observed the terminal work.
+Resource reads do not mutate observation implicitly; an explicit action may mark work observed.
 
 ** Choosing when to notify and what to say
 
 Built-in policies decide when a rule is ready and build its message without a model call.
-The common one-work rule sends one message when the work finishes or fails.
+The common one-work rule sends one message when the work finishes, fails, or is cancelled.
 Advanced policies can wait for all watched work, keep only the latest event, or wait for a quiet period.
 Message builders can include a full summary or only ids and states.
 
@@ -245,14 +497,14 @@ The runtime does not silently choose a different policy.
 
 ** Delivering a notification
 
-The board resolves the rule's =:session= value when the notification is ready.
+The registry parses and authorizes the rule's =:target= before any lazy-fork side effect, then resolves/revalidates the concrete participant and reads result content only for the authorized builder.
 It then calls one harness service, =e-harness-deliver-input=.
-=inject= adds the message to a running turn at its next safe point or starts a turn when idle.
-=queue= stores the message in the session inbox until the session is idle.
+=inject= adds the message only to an =accepting= turn at its next safe point or uses the inbox in every other live phase.
+=queue= always stores the message in the session inbox until the session is idle.
 The board does not fork a session or start a turn itself.
 
 Delivery to a session outside the board is refused and recorded as a fault.
-Every delivery records which session requested it.
+Every delivery records which participant requested it.
 
 ** Consumption: broadcast facts and claimable offers
 
@@ -260,15 +512,18 @@ Two classes, no broker vocabulary:
 
 - *Broadcast facts.*  A lifecycle event is a fact about a work package.
   Every matching notification rule sees it; nothing is consumed.
-  Everything that exists today is this.
+  Everything implemented by this feature is this.
 - *Claimable offers.*  A work package posted with no executor, claimed by exactly one consumer.
-  The only place exactly-once matters, and only for multi-agent hand-off.
+  This is a distinct hand-off state machine and is follow-up work, not part of this plan's implementation slices.
 
 No exchange types, routing keys, ack/nack, or dead-letter queues.
 
 ** Turn cause
 
-A turn started by the board records =:caused-by (:notification-id N :event-seqs [...] :policy SYM :message-builder SYM)= in turn metadata, and its first message names the notification and events.
+Every consumed board input stores =:board-id=, =:participant-id=, accepted endpoint generation, =:delivery-id=, and its typed cause on that transcript message.
+A chat pickup cause is =(:message-id M :posted-seq S)=; a work-notification cause is =(:notification-id N :event-seqs [...] :policy SYM :message-builder SYM)=.
+The active turn work metadata accumulates the ordered delivery/message causes consumed since the preceding assistant response, rather than retaining only the turn's first cause.
+The idempotent board output copies that ordered set into =reply-to-message-ids= and =caused-by-delivery-ids=.
 Shells show it; the session resource exposes it.
 
 ** The one-call shortcut stays
@@ -286,24 +541,166 @@ Use =:notify= for work meant to outlive the call or whose follow-up belongs in a
 
 * The scope above sessions
 
-The board is an identity above the session: it owns the work packages, the event log, the notification rules, and the wake budget, and its participants are sessions that may belong to different harness instances.
-It is a first-level runtime concept alongside harness, session, and turn, and it needs a name that is not "session" and not "queue".
+The board is the top-level live interaction model.
+It owns the message stream, event sequence, observed work, notification rules, wake budget, authorized clients, and the participant set through which sessions interact.
+A live session is attached to exactly one active board through exactly one participant record; there are no standalone or multi-board live sessions and no turn or input without that board id.
+Harnesses remain execution hosts for session state, turns, providers, and transcripts, but they do not define the outer interaction scope.
+
+Stored session history may be dormant without a live runtime attachment.
+Loading or reading a persisted session does not make it live.
+The board runtime owns an explicit attachment record whose state is =active=, =detaching=, or =dormant=; accepting inbox input, holding an active turn, or being addressable as a delivery endpoint requires =active= attachment and membership.
+Creating, resuming, forking, or spawning a live session must create its board attachment atomically before that session can accept input.
+Removing or moving that attachment first enters =detaching=, rejects new input, and fences or drains its active turn, inbox items, and receipts before making the session dormant or atomically attaching it to the replacement board.
+Durable transcript history is never deleted merely because the live attachment becomes dormant.
 
 Recommendation: *board*.
-It is plain, unused in the codebase, and carries both halves of the model without extra vocabulary: facts are posted on it for anyone watching, and claimable work sits on it until someone takes it.
-Sessions join a board; =board://= is its resource; a work package lives on a board.
+It is plain, unused in the codebase, and names the shared interaction place without transport vocabulary: clients post messages, sessions pick them up, and executable work remains visible there.
+Sessions participate in a board; =board://<board-id>/= is the top-level resource; a work package and every live turn belong to a board.
 Alternatives considered: =arena= (collides with allocator jargon), =commons= (vaguer about what it holds), =ensemble= (names the participants, not the shared state).
 
-Two properties to get right from the start:
+** Board identity contract
 
-- A board's id defaults to the root session's id, so today's single-agent case has no extra ceremony, but it is a distinct identity from day one.
-  Assuming board == root session would have to be unwound later, when a board outlives every session that created it or spans harness instances with no root.
-- Board membership is explicit.
-  A session joins a board; it does not inherit one from its parent by accident.
-  A subagent joins its parent's board by default and can be spawned onto a different one.
+A =board-id= is an opaque, collision-resistant id with a recognizable =brd_= prefix, generated from a neutral ULID/UUID service.
+It is never copied from, defaulted to, or treated as an alias for a session or harness id.
+The id generator is injectable for deterministic tests, and the registry collision-checks every generated id before publication.
+Production generation makes cross-restart collision probability negligible and never intentionally reuses an id; live/retained collisions are rejected.
+Durable metadata may retain a historical board id even though the process-local board no longer exists, and lookup of an absent historical id fails rather than manufacturing or aliasing a board.
+Board clients and session participants receive separate board-local =cli_= and =ptc_= ids from the same injectable service.
+Both are opaque, collision-checked, never aliases for a session id, and unique within their board.
+A participant id is stable across an authorized endpoint rebind; a client id identifies one shell connection attachment and may change on reconnect.
+A stable trusted =principal-id= (local user/profile in the first version) owns client authorization independently of any connection lifetime.
+It is issued by the host identity adapter in its own namespace and is never accepted from an untrusted client payload or generated by the board from a display name.
+
+A board event is identified by =(board-id, seq)=, where =seq= is monotonic and never reused within that board.
+A notification is identified by =(board-id, notification-id)=.
+A board client is identified by =(board-id, client-id, connection-generation)= and maps to an authenticated =principal-id=; it is not a session.
+A participant is identified by =(board-id, participant-id)=; its registry record has a stable posting epoch and maps to a stable =session-attachment-key= plus the current =instance-id=, =harness-id=, opaque composite generation, and delivery =endpoint-token=.
+The posting epoch survives authorized endpoint rebind while the composite delivery generation does not.
+=instance-id= is the logical catalog id from =e-harness-instances=, while =harness-id= is the concrete =e-harness-registry= key selected by that instance.
+The composite generation is =(instance-catalog-generation, harness-object-generation)=.
+=session-attachment-key= is =(session-store-id, session-id)=; =session-store-id= is an opaque stable identity owned by/configured with the session store and shared by every harness exposing that store.
+The generation-specific endpoint token is based on =(harness-id, harness-object-generation, session-attachment-key)= and is used only for delivery/reconciliation.
+Raw session ids are therefore never sufficient cross-harness destination identities.
+The registry reverse index permits at most one active board participant record for a stable session attachment key across all boards, so two harness objects over the same store/session and later replacement generations cannot attach it twice.
+
+The canonical stored notification target is =participant:<participant-id>=.
+A bare participant reference is valid only inside an already-resolved board record and never triggers a global registry search; external resources use =board://<board-id>/participants/<participant-id>=.
+A qualified =session:<instance-id>/<session-id>= reference may be accepted only while adding or locating a participant and is normalized before a rule is stored; the registry resolves that logical instance to a concrete harness id and generation.
+A lazy fork target is =fork:<participant-id>@<session-entry-id>=; resolving it creates the fork and its membership atomically, then stores the resulting participant id.
+
+** Process-level board registry
+
+=e-board-registry= is the process-level authority for board identity and lifetime.
+It maps each =board-id= to one entry containing the board core, lifecycle state, principal grants, client attachments, participant/grant records, runtime-adapter generation, timestamps, and retention pins.
+Board state is not owned by a root session, by one harness instance, or by a dynamic variable.
+
+The registry exposes narrow application operations: =create=, =get=, =list=, =authorize-principal=, =revoke-principal=, =attach-client=, =detach-client=, =add-participant=, =remove-participant=, =move-participant=, =rebind-participant=, =grant-participant-access=, =revoke-participant-access=, and =close=.
+Board creation is a host/runtime operation with an authenticated owner principal; it publishes a valid top-level board and may have no session participants.
+A convenience operation may create its first participant too, but a participant failure leaves either the already-valid board or rolls the whole request back according to the caller's explicit transaction; it never exposes a standalone live session.
+Session create/resume/fork/subagent paths always register participant membership before making the session live.
+They use a prepare/commit attachment boundary; if current session storage has already persisted a new record when attachment fails, that record remains explicitly dormant and is never published as a live endpoint.
+
+The pure registry stores ids and board state but does not require =e-harness=.
+=e-board-runtime= is the composition adapter: it supplies qualified session lookup, create/close/rebind, input delivery, fork, clock, and scheduler ports backed by harness services.
+It is composed only after the board registry and harness registry exist, keeping the board core independent of the concrete session runtime.
+
+Configured =e-harness-instance= records gain a stable =session-store-id=, a read-only =session-catalog= port, and a narrow optimistic =session-access-store= mutation port, all usable without invoking the harness factory.
+The catalog lists/reads dormant session summaries and access records; the access-store port supports only expected-version create/legacy-migrate/grant/revoke/transfer operations on those records and exposes no transcript or live-session mutation.
+Several instances may expose the same store.
+Registrations that share a =session-store-id= must expose compatible catalog/access-store identities or are rejected; the host catalog deduplicates them and returns each dormant =(session-store-id, session-id)= once with its explicit =eligible-instance-ids=.
+Each session access record contains a durable controlling principal, discover/resume principal ACLs, and an optimistic version; resume implies discovery.
+New-session creation stores it atomically with the session metadata.
+The controller may grant/revoke discover/resume access, and may transfer control only while the session is dormant through an expected-version store operation; transfer revokes the old controller's implicit rights and never silently rewrites board-local private grants.
+Resume names one eligible instance and the destination board; ownership/resume authorization, dormant state, access-record version, store identity, and instance eligibility are checked before any factory invocation, after which the activation service may invoke only that instance's factory and atomically attach the session.
+Catalog reads themselves never call =get-or-create=, and rejected direct resume calls create no harness, grant, or attachment even when the caller supplies a hidden/stale session id.
+Instances without the required catalog/access-store ports do not participate in dormant discovery/resume, and target lookup never substitutes catalog activation for an absent live endpoint.
+
+*** Clients, participants, and authorization
+
+Every authorized principal or participant membership has an =owner= or =member= role.
+Client attachments inherit their authenticated principal's role and carry a connection generation/state.
+Participant records additionally have a controlling principal, private =inspect-transcript= /=subscribe-presentation= /=control-session= grants, an endpoint generation, attachment state =active=/=detaching=/=stale=/=dormant=/=revoked=, an =active= or =muted= input subscription, and a =message-next-seq= cursor.
+The creating principal/requester is an owner; a board may have several principal or participant owners.
+
+- Owners may authorize/revoke principals, add or remove participants, issue cross-participant notification grants, rebind a stale endpoint after an intentional harness replacement, and close the board.
+- Client members may post/read board messages and board-visible state but never receive session input or read/control participant-private state solely from board membership.
+- Participant members may post/read board-visible work and notify themselves.
+- Waking another participant requires owner authority or an explicit grant stored on the target participant.
+- Session-private work is visible and notifiable only to its poster; a cross-participant notification is not an implicit visibility grant.
+- Authorization and target freshness are checked before a message builder reads result content.
+
+For a new session, the creating principal becomes its controlling principal and that identity is persisted in session metadata by the store.
+Resume reads the existing controller through the trusted catalog port and requires that controller or an explicit catalog authorization; the resuming caller never replaces ownership merely by naming a dormant session id.
+The participant record copies that controller and initially grants it all three private rights for the new board attachment.
+That controller may grant/revoke them for other principals; board ownership alone permits detach/close but does not reveal the transcript or confer session control.
+=inspect-transcript= permits bounded transcript reads, =subscribe-presentation= permits live read-only transcript/provider/tool presentation, and =control-session= permits rename, model, reasoning effort, output mode, compact, abort, and reset through generation-checked runtime operations.
+Revocation fences new reads/calls immediately and closes active diagnostic subscriptions before their next event; it does not roll back a control mutation that already committed.
+Board-local private grants expire with the participant/board; the durable controller does not.
+Legacy dormant sessions receive a synthesized access record only through the trusted local migration policy of their configured catalog, never from a client-supplied owner id.
+Listing remains read-only; the first authorized explicit resume persists that access record before any harness factory runs.
+
+The requester identity comes from a generation-checked authenticated client/principal context or participant attachment token and is never accepted as an arbitrary model-supplied id.
+The board id is an address, not a credential.
+
+Subagent, fork, and resumed-session creation use these same registry operations.
+"Joins the parent's board by default" means that the spawning application service explicitly creates membership and grants as part of its transaction; it is not hidden inheritance in =e-session=.
+An agent-originated child/fork inherits the source participant's controlling principal as part of that explicit transaction; it does not inherit arbitrary third-party private grants.
+
+*** Registry and board lifecycle
+
+| State | Accepts | Rejects | Exit condition |
+|-------+---------+---------+----------------|
+| =active= | Clients, participants, messages, work enrollment, events, rules, and delivery | Stale-generation endpoints | Explicit owner close or process shutdown |
+| =closing= | Receipts/terminal events plus retry, finalizer, and descendant-work enrollment whose =root-work-id= was enrolled before close | New clients, participants, messages, unrelated root work, rules, wakes, and ordinary input | Every accepted delivery is reconciled and pre-close roots settle, or the close deadline aborts their board-bound turns and ends observation |
+| =closed= | Bounded diagnostic tombstone reads | All mutation and delivery | Registry removes the entry after the tombstone retention window |
+
+A board may outlive every client connection and participant session because owner grants belong to stable principals; it may temporarily have neither kind of live attachment.
+An empty active board remains reconnectable by an authorized principal and is subject to a bounded idle-expiry policy rather than silent immediate destruction.
+Explicit close expires pending message pickups and notification rules with a visible reason, stops wake/delivery timers, fences new delivery, and detaches notification subscriptions.
+Operation observers for roots enrolled before close remain attached until those roots settle or the close deadline ends observation.
+It does not cancel domain work by default; force-cancelling work is a separate authorized operation.
+Operation start context therefore carries =root-work-id= into every retry, policy stage, and finalizer.
+During =closing=, only descendants of roots enrolled before =board-closing= may enroll, which lets an already-running pipeline settle without admitting new work.
+The configured close deadline prevents nonterminating observed work from blocking forever: at the deadline the runtime aborts remaining board-bound participant turns/owned graphs, records =observation-ended= tombstones, and detaches their observers.
+Already-started detached/domain work is not cancelled by that abort and may finish unobserved; force-cancelling it remains a separate operation.
+A board cannot become =closed= while any accepted delivery is unresolved; each must become consumed, discarded with harness acknowledgement, or uncertain if its old endpoint vanished.
+
+The first version is process-local and is not restored across Emacs restarts.
+A dormant persisted session becomes live only by joining a newly created or explicitly selected live board.
+Within one process, compatible code reload keeps board registry state.
+=e-harness-instances= owns a monotonic generation for logical instance-to-harness mapping; =e-harness-registry= owns a separate monotonic generation for each concrete live harness object.
+Re-registering the identical startup mapping/object or synchronizing metadata in place preserves the relevant generation, while remap, replacement, or clear bumps it and emits synchronous invalidation.
+The board registry stores only the composite snapshot; =e-board-runtime= resolves and compares it.
+Board timers and callbacks also carry a board-runtime generation; reload installs one fresh scheduler/subscription set and old-generation callbacks become no-ops.
+Target resolution uses a non-creating live lookup and never calls a lazy get-or-create path for a missing harness or session.
+Invalidation moves the attachment through =stale= /=detaching=, fences new ingress, and reconciles active turns/inbox receipts.
+Explicit authorized rebind captures the new endpoint generation only after quiescence; there is no immediate silent takeover of a still-live old endpoint.
+
+** Board binding and session invariants
+
+Every ingress message/fact, turn, work enrollment, action context, and logical delivery carries =board-id=; participant-bound records also carry =participant-id=.
+Only a physical delivery attempt and the accepted inbox/turn/action state copied from it carry an endpoint-generation snapshot; the logical envelope remains generation-free across a proven-uncommitted rebind.
+The caused turn uses that board for dynamic context and for unqualified work references, and the runtime revalidates that it matches the session's sole active attachment.
+The board runtime is the only public activation/prompt service.
+On attach it installs an opaque attachment token in the harness's runtime attachment map; private harness start/delivery methods require that token and copy board, participant, and composite generation into the active entry, tool/action context, first message, and work projection.
+=e-harness= validates the supplied token locally and never depends on or looks up the board registry.
+=board://<board-id>/...= and board actions accept an explicit board id.
+A participant turn/action may omit it because its attachment is unique; a client action may omit it only when its connection context names one board.
+There is no creation-order fallback.
+
+A live session cannot participate in several boards because that would splice independent board threads into one transcript.
+Moving a dormant session, or atomically detaching and reattaching a quiescent live session, changes the binding for future turns without rewriting historical turn causes.
+The transcript records the board id on every first user message and turn work metadata.
+Chat shells open a board, post messages with an audience, and render board input/output messages rather than binding their input path to one session.
+Diagnostic/session shells may select a participant transcript inside that board, but cannot prompt it outside board ingress.
+
+Legacy APIs that create or prompt sessions directly are temporary adapters.
+They require an explicit board, use an already-live session's sole attachment, or atomically create a new board for the authenticated caller; they never select by creation order.
+They route input through board ingress during migration, then are removed once every shell and internal caller uses the top-level board path.
 
 Scope rules follow from membership: =session=-scoped work is visible only to its poster, =board=-scoped work to every participant.
-Cross-board delivery is not a thing; a session that needs both joins both.
+Cross-board delivery to a session is not a thing.
+Use a distinct/forked session on the destination board, or an explicitly authorized application service that posts a bounded summary as a new destination-board message.
 
 * Surface
 
@@ -312,102 +709,145 @@ Following the project's action/tool split, cheap synchronous operations are capa
 - Existing tools remain the way to start executable operations.
   Their registration converges on one =:work= contract, and =wait_for= chooses an inline result or a detached reference, and =:notify= requests a later message.
 - =await= remains the model-facing join over work references.
-- New =work-board= actions include =notify= for work that already exists, =cancel-notification=, =notifications=, =events=, =post= for claimable offers or external facts without another producer surface, =claim=, and =join=.
+- Participant turns use the =board= capability actions =close=, =principals=, =authorize-principal=, =revoke-principal=, =add-participant=, =remove-participant=, =move-participant=, =rebind-participant=, =post-message=, =route-message=, =messages=, =notify=, =cancel-notification=, =notifications=, =events=, =mark-observed=, and =post-fact= on their sole board.
+  Membership-changing actions enforce registry roles; there is no unauthenticated self-service =join=.
+- Chat has no harness/action context, so =e-chat= calls authenticated =e-board-runtime= host APIs rather than keeping a harness endpoint.
+  The board API covers create/list/open/close, principal administration, client attach/detach, message post/read, and board subscriptions.
+  A session-catalog API lists principal-owned/granted dormant sessions from configured store ports without activating them, manages controller-owned discover/resume ACLs and dormant ownership transfer, and explicitly resumes/attaches one through a named eligible instance as a participant in the selected board; reading the catalog never lazily creates a live harness/session.
+  Board-scoped participant-control APIs preserve rename, model/reasoning-effort selection, output mode, compact, abort, reset, fork/spawn, and transcript inspection for an authorized selected participant.
+  An authenticated diagnostic presentation subscription may forward that participant's transcript and in-progress provider/tool events to attached clients; it exposes neither a harness object nor an input path, and only the final assistant response becomes the durable board =output=.
+  These surfaces enforce the participant's controller/private grants, delegate to the same registry/application services and trusted actor contract, and never tunnel client identity through =e-actions-call=.
 - The first slices expose only built-in notification policies and message builders.
   Trusted capability-owned registration is deferred.
-- New resource =board://= exposes outstanding work, recent terminal work, events, notification rules, participants, budgets, and per-operation detail.
-- A compact dynamic-context segment shows outstanding work and live notification rules.
+- Resource =board://<board-id>/= exposes lifecycle, messages, outstanding work, recent terminal snapshots, events, notification rules, clients, participants, grants, budgets, and per-operation detail.
+- A compact dynamic-context segment shows the current participant's attached board, outstanding work, and live notification rules.
+- Chat/application entry points create or open a board first and post board messages; session-management entry points create/select participants inside that board.
 
 Model-facing tool count does not grow.
 
 * Ownership and dependency direction
 
+- =lisp/core/e-id.el= owns neutral opaque ULID/UUID generation for board, client, and participant ids; it has no session, harness, or board dependency.
 - =lisp/core/e-work.el= owns the lifecycle and small sequencing helpers.
   It has no knowledge of boards, sessions, tools, turns, task queue, or subagents.
 - Pipeline application services own execution graphs and failure policy.
   They pass an explicit operation observer through start context instead of installing a process-global work hook.
-- =lisp/core/e-work-board.el= owns the event log, current-state view, notification rules, read positions, delivery state, policies, message builders, and wake limits.
+- =lisp/core/e-board.el= owns board messages, the event log, current-state view, notification rules, read positions, delivery state, policies, message builders, and wake limits.
   The board core stores ids and depends on =e-work= only for observed operation state.
-- =lisp/core/e-work-board-runtime.el= owns participant lookup, timers, wake scheduling, waiting-invocation records, and calls into harness delivery.
-  It maps each board participant to its current harness instance and session.
+- =lisp/core/e-board-registry.el= owns generated board/client/participant identity, principal/participant roles and grants, client/participant attachments, lifecycle, endpoint-generation snapshots, and board lookup.
+  It depends on board core and injected ports, not on =e-harness=.
+- =lisp/core/e-board-runtime.el= is the application/composition adapter.
+  It binds the registry to non-creating harness lookup, explicit dormant-session catalog/resume, authenticated participant controls and diagnostic subscriptions, runtime attachment records, atomic live-session attach/detach/move, timers, wake scheduling, waiting-invocation records, forks, and input delivery.
+- =e-harness-instances= retains the logical instance catalog, stable session-store/catalog/access-store ports, eligible-instance mapping, and mapping generation, while =e-harness-registry= retains concrete harness objects and object generations plus replacement/clear invalidation events.
+- =e-session= owns session names and transcript-entry schema and atomically assigns/persists each new assistant entry's monotonic =board-output-seq=; legacy entries remain valid without one and are not retroactively published.
+- The session-store layer exposes a stable opaque =session-store-id= shared by every harness view over that store and persists each session's controller/discover/resume access record plus next-output counter; it does not gain a board dependency.
 - =e-harness= owns active turns, session inboxes, transcript mutation, forks, and provider calls.
-  Its =e-harness-deliver-input= service handles =inject= and =queue= for busy and idle sessions.
-- Producers such as task queue, cron, subagents, chat session, and annotations post facts while keeping their own domain registries and policy.
+  Its private activation/delivery/control/subscription methods require a board-runtime attachment token, and =e-harness-deliver-input= handles the explicit delivery-phase table and local idempotency ledger without a reverse dependency on board modules.
+- Existing capability/session-config owners retain model, reasoning-effort, and output-mode semantics; the board runtime only authorizes and dispatches those controls and does not absorb their policy.
+- Task queue, cron, subagents, and annotation producers post facts, while chat clients post input messages; each domain keeps its own registry and policy.
   Task queue retains FIFO dispatch, retries, persistence, and concurrency control.
   Subagents retain child creation, lineage, reporting, and control.
-- Shells render board state and turn causes without owning runtime state.
+- Chat shells post and render board messages; diagnostic shells may inspect participant transcripts and turn causes without owning runtime state.
 
 Wake budgets belong to the board runtime.
-Notification rules and delivery cursors are in-memory session runtime state in the first version.
-Board membership records the board id, session id, and harness instance id, and it is refreshed or revoked when a harness or session changes.
+Notification rules, delivery cursors, observation sets, and pins belong to the board registry entry in the first version.
+The board registry owns cross-generation delivery state; the harness owns concrete inbox items and its local receipt/tombstone index, with accepted entries pinned until reconciliation.
+Board membership records role, grants, participant id, board id, stable posting epoch/session attachment key, logical/concrete harness ids, delivery endpoint token, and composite generation; it becomes stale/detaching rather than silently rebinding when the endpoint changes.
 
 * Slices
 
-** Slice 0 -- Canonical operation lifecycle and next steps
+** Slice 0 -- Canonical work identity and graph settlement
 
-Make every tool execution work-backed, add a turn work handle, define operation metadata and parent/root ids, and pass the operation observer explicitly.
-Add =then=/=reduce=/=all=/=any=/=recover=/=finally= helpers.
+Land the operation-identity and graph-settlement tables first.
+Make every tool execution work-backed, add a turn work handle, use =work-id= consistently, add parent/root/predecessor/cause relations, and pass the operation observer explicitly.
+Add separate ordered continuation and isolated observer channels, then implement =then=/=reduce=/=all=/=any=/=recover=/=finally= with the declared owned/borrowed cancellation behavior.
+Change the detachable construction seam so its canonical execution child is allocated/exposed before the coordinator runner starts; the legacy coordinator may still settle the tool invocation but cannot hide or rename that child.
 Migrate one complete pre-tool -> tool -> post-tool -> transcript-append pipeline to prove ordered result flow without blocking or board dependence.
-Preserve current tool call/result and =wait_for= behavior.
+Preserve current tool call/result and =wait_for= visible behavior while marking the detachable coordinator as an internal compatibility adapter.
 
-Standalone value: tools, actions, turns, provider requests, policy stages, task attempts, and subagent attempts share one lifecycle and causal ordering model before the board ships.
+Standalone value: tools, turns, provider requests, policy stages, task attempts, and subagent attempts share one lifecycle and causal ordering model before the board ships.
 
-** Slice 1 -- Board log, current-state view, and retention
+** Slice 1 -- Top-level board identity, registry, and current state
 
-Add board state, observed operation records, ordered external-fact events, retention limits, =board://=, and the dynamic current-state segment.
-Set bounds for log entries, completed operations, stored payload size, detached handles, task records, and subagent records.
-No notifications or wakes.
+Add generated ids, =e-board=, the process-level registry, stable principal/client and participant roles, board-local controlling-principal/private-grant records, basic authorization, session-store attachment identity, durable new-session controller/discover/resume access records, delivery endpoint/composite-generation identity, attachment tokens, board input/output message records, observed operation records, ordered external facts, stable terminal snapshots, =board://<board-id>/=, and the dynamic current-state segment.
+Add the minimal configured-harness attachment adapter needed to attach both ordinary and current subagent harness sessions to one board; full cross-target lookup/rebind policy remains Slice 4.
+Add the per-session =board-output-seq= transcript field/counter, legacy-load seeding rule, and atomic append allocation before output publication can ship.
+Introduce the stable store-id, read-only session-catalog, and optimistic session-access-store port contracts for existing resume-capable stores, plus the narrow trusted legacy access-record synthesis/persistence needed by compatibility resume.
+An explicit legacy resume therefore authorizes and persists ownership before its factory runs; general catalog discovery, ACL administration, and multi-store deduplication remain Slice 4.
+Chat/client board creation is valid before any session exists; each live-session attachment is atomic, and the one-session bootstrap convenience already satisfies the invariant that no live session exists outside a board.
+Guard every live-producing create/resume/fork/subagent/prompt/queue/steer path on an attachment token in this slice.
+Legacy public entry points become atomic board adapters rather than bypasses; Slice 5 migrates callers and removes them.
+Add the stable host API contract plus a minimal idempotent single-participant board-message pickup path using stable receipts and the existing idle/queue and accepting/inject lanes, so board ingress preserves current prompt and steering behavior without a bypass.
+Set bounds only for board-owned log entries, terminal snapshots, payloads, tombstones, participants, and pins; domain retention remains with its later owning slice.
+Update =docs/references/runtime_concepts.org= so board is the top-level live interaction scope and session is durable context that becomes live only through participant attachment.
+No work-notification rules, automatic wakes, cross-target delivery, or full reset/rebind phase matrix yet.
 
-Standalone value: outstanding and recently completed work becomes visible without changing turn scheduling.
+Standalone value: one board is a real top-level interaction context that can own chat input and an attached session without any standalone-session path.
 
-** Slice 2 -- Session inbox and one-work notifications
+** Slice 2 -- Waiting invocations and =wait_for= identity
 
-Add =e-harness-deliver-input=, the one-work notification policy, built-in message builders, =created-seq= and =next-seq= cursors, delivery state, batching, a quiet period, wake limits, and turn-cause metadata.
-A delivery moves through =pending=, =delivering=, and =delivered= or =failed=.
-A one-shot notification expires only after successful delivery or its declared terminal failure policy.
-Target only the session that owns the board in this slice.
-
-Standalone value: a session can end a turn and receive one deterministic later wake, including while idle.
-
-** Slice 3 -- Waiting invocations and =wait_for= integration
-
-Record each open tool call by turn id and tool-call id.
+Record each open tool call by turn id and tool-call id and bind it to the preallocated canonical executable =work-id=.
 Keep transcript updates in =e-loop=/=e-tools= and connect completion recording to the board without treating the result as session input.
-A timeout closes the waiting invocation with =work:<id>= and cannot append a second result later.
+A timeout closes only the waiting invocation with =work:<work-id>= and cannot append a second result later.
+Remove the detachable wrapper once all coordinator callers use the explicit waiting-invocation relation.
 
-Standalone value: inline and detached calls share one operation record and completion event while preserving the one-call fast path.
+Standalone value: inline and detached calls share one operation record/completion event and preserve the one-call fast path before notification can target them.
+
+** Slice 3 -- Full inbox state machine and work notifications
+
+Extend the Slice 1 delivery seam with all declared harness phases, cross-generation board ledger, pickup FIFO/caps, accepted/consumed/discarded receipts, accepting-to-settling steering sweep, and reset/abort races.
+Add the complete notification rule/preparation state machine, atomic cheap-work rule binding, built-in policies/builders, cursors, snapshot pins, batching, quiet period, wake limits, observation, and accumulated turn-cause metadata.
+Target one explicitly attached participant first; notification watches the canonical executable work established in Slice 2.
+
+Standalone value: a session can end a turn and receive one deterministic later work wake, while chat input and retries remain idempotent in every harness phase.
 
 ** Slice 4 -- Cross-harness board runtime and target resolution
 
-Track participating sessions and their current harnesses.
-Add =session:= and lazy =fork:= lookups, reject non-members, report stale sessions, cap forks, and return fork summaries to parents.
+Extend Slice 1's minimal configured-harness attachment plumbing into full qualified target resolution and generation reconciliation across harness instances.
+Complete configured-instance coverage for the non-activating session-catalog/session-access-store/store-id ports introduced in Slice 1, reject conflicting shared-store registrations, and deduplicate compatible stores while retaining eligible-instance mappings.
+Add general authenticated optimistic access-record administration/catalog discovery plus the explicit-instance dormant-session resume adapter; the narrow legacy compatibility migration already exists.
+Add private-grant-checked participant controls/diagnostic presentation subscriptions, cross-harness target resolution, cross-target grants, lazy =fork:= resolution, rebind/revoke/move reconciliation, stale/uncertain faults, and fork caps.
 
 Standalone value: an event can wake the session that owns the logical thread across harness instances.
 
-** Slice 5 -- External producers and compatibility-path removal
+** Slice 5 -- Board-first ingress and standalone-session removal
 
-Post user input, cron fires, file-notify triggers, annotation triggers, and domain-operation events to the board.
-Fold prompt queue, follow-up, steering, and background-session callers behind the inbox service.
-Migrate synchronous policy hooks to ordered work stages.
-Remove superseded compatibility paths after all callers move.
+Migrate every caller to the already-enforced board ingress/attachment APIs from Slices 1-4; this slice does not introduce the invariant.
+Migrate =e-chat= to open/render a board, post board input messages, and display participant output messages; it no longer calls a session prompt path.
+Route dormant-session discovery/resume, selected-participant rename/model/reasoning-effort/output-mode/compact/abort/reset controls, and in-progress transcript presentation through the authenticated host APIs, preserving current chat behavior without retaining a harness endpoint.
+Replace remaining session create, resume, fork, subagent spawn, diagnostic shell open, prompt, follow-up, steering, and background-session caller use with direct registry/runtime and inbox-service calls.
+Post each participant's final assistant response back to the originating board message as an =output= without recursively scheduling it as input.
+Remove direct live-session creation/prompt paths and add structural tests that forbid new callers.
 
-Standalone value: external causes and operation completions use one event and delivery path.
+Standalone value: the board is the only top-level interaction model; sessions remain transcript-owning participants but cannot run independently.
 
-** Slice 6 -- Domain integration and claimable hand-off
+** Slice 6 -- External and domain producer integration
 
+Post cron fires, file-notify triggers, annotation triggers, and domain-operation events to an explicitly configured board id.
 Bridge task queue and subagents through their existing push notifications while their registries remain authoritative for domain fields.
 Keep task persistence synchronous with every task mutation even when board delivery is budget-stopped.
-Add claimable offers only for agent-to-agent hand-off, not as a second task scheduler.
 Tune retention, budgets, batching, and fork limits against real sessions.
+
+Standalone value: external causes and authoritative domain changes become board facts without turning the board into another scheduler.
+
+** Slice 7 -- Policy-stage and compatibility cleanup
+
+Migrate the enumerated pre-tool, post-tool, turn-finished, reset, and system-guidance policy hook points to ordered work stages while preserving hook-id order and visible failure semantics.
+Remove =:handler=/=:start= runtime branches after registrations normalize to =:work=, and add structural guards against old input and tool paths; the detachable wrapper already left in Slice 2.
+
+Standalone value: the final runtime has one execution contract and one board-first interaction contract, with compatibility code removed rather than made permanent.
 
 * Non-goals
 
-- No broker semantics: no exchanges, routing keys, ack/nack, redelivery, or dead-letter queues.
+- No general broker semantics: no exchanges, routing keys, competing consumers, ack/nack protocol, provider redelivery, or dead-letter queues.
+  Stable in-process delivery receipts exist only to make board-to-harness mutation idempotent.
 - No durable board across Emacs restarts in the first slices.
+- No standalone or multi-board live session; dormant persisted session history is activated in exactly one board at a time.
+- No claimable-offer or lease state machine in this feature; agent-to-agent claiming is follow-up work after broadcast delivery is proven.
 - No concurrent tool-call execution in =e-loop=.
   Concurrency comes from detached work; sequential tool slots are what keep the transcript readable.
 - No context merging.
-  A fork rejoins by summary message only.
+  A fork reports back only through an explicit addressed board summary message.
 - No replacement for =await=.
   Inline joining stays a tool.
 - No cross-machine or multi-process board.
@@ -418,43 +858,80 @@ The board must be testable with no provider and no UI.
 
 Pure-function level:
 
+- identity :: table-drive every identity row and prove that principal/client, board, participant, message, event, turn, invocation, work, notification, and domain ids never substitute for one another.
+- source keys :: per-kind producer generations and increasing sequences advance atomically with message append; a retained retry returns its existing message, a compacted/late retry returns =source-history-expired=, and neither path appends or advances a pickup cursor twice; a legacy persisted session allocates/persists one new assistant =board-output-seq= and duplicate callbacks reuse it.
 - event filters :: test each built-in filter over synthetic event lists, including progress compaction, all-terminal fan-in, latest-only delivery, and quiet periods.
 - message builders :: stable output for a fixed event list, independent of the session reference that receives it.
+- audience :: an explicit audience and a frozen board audience produce deterministic per-participant pickup ids; no eligible audience produces a visible unrouted message.
+- reducers :: board lifecycle, rule lifecycle, delivery receipts, cursors, pins, and tombstones transition with injected ids, clock, and scheduler; checkpoint-plus-tail replay cuts at every declared nonterminal rule/pickup/attempt/output-pending state reproduce the same projection and next transition.
 
 Execution-graph level:
 
-- non-blocking :: starting an asynchronous graph returns before its long stage finishes, and a timer proves the Emacs event loop remains responsive.
-- sequencing :: no dependent stage starts before every required predecessor succeeds; cheap and asynchronous stages produce the same downstream order.
-- implementation :: graph sequencing uses settlement callbacks and contains no polling, =accept-process-output=, sleep, or interactive wait loop.
-- setup :: a cooperative =:deferred= stage installs its completion source and cancel function before it becomes observable.
-- cancellation :: root cancellation and deadlines reach unfinished descendants while completed stages remain immutable.
-- isolation :: a disabled or failing board observer cannot prevent the next work stage from running.
+- =then=/=reduce= :: factories run at most once, ordered stages pass values, and later stages do not start after unhandled failure or cancellation.
+- =all= :: empty and ordered success, wait-all behavior, deterministic failure precedence, cancellation without failure, and no implicit sibling cancellation.
+- =any= :: first-terminal success/failure/cancellation, leftmost already-terminal tie, invalid empty input, released subscriptions, and an uncancelled observable late loser.
+- =recover=/=finally= :: failure recovery is explicit, cancellation stays sticky, finalization runs after ordinary source settlement but not after a graph-wide fence, successful finalization preserves the original outcome, and finalizer failure reports both outcomes.
+- cancellation :: non-propagating mirrored cancellation differs from =e-work-cancel=; owned work and =:cancel-inputs= are covered, borrowed inputs survive by default, pending factories never start, and late callbacks cannot resettle the graph.
+- causality :: parent/root nesting, multi-predecessor ordering, and multi-event causes survive handle metadata and board projection without timestamp inference.
+- invalid stage :: a signalling factory or non-handle return fails visibly; a stage never returns carrier-internal =:deferred=.
+- ordering/isolation :: predecessor terminal observation precedes successor posting, cheap and asynchronous work have the same callback order, and a throwing observer cannot suppress owner completion or continuation.
+- non-blocking :: controlled callbacks and a fake scheduler prove graph setup returns before long work finishes; structural checks forbid polling, =accept-process-output=, sleep, interactive waits, and wall-clock test thresholds.
 - policy :: a work-backed post-tool stage transforms the result before transcript append.
-- lifecycle :: every tool registration form yields a handle during migration, the final registry rejects =:handler= and =:start=, and a turn handle settles once across all outcomes.
+- lifecycle :: a turn handle settles once across append failure, provider retry success/exhaustion, compaction fallback/failure, tool failure, active abort, delayed abort, reset, and late callbacks.
 
-Board level:
+Board identity, registry, and top-level interaction level:
 
+- identity :: trusted principal identifiers and generated client/board/participant ids occupy distinct namespaces, a board id is never a session alias, collision injection is rejected, compatible reload preserves live ids, and absent historical ids fail instead of resolving to new state.
+- namespace :: equal session ids under distinct store ids remain distinct, multiple harness views over one store/session resolve to one stable attachment key, participant ids survive authorized quiescent endpoint rebind, and duplicate active attachment across boards/generations is rejected.
+- catalog :: listing configured dormant stores invokes no harness factory, compatible duplicate store ports yield one session row with every eligible instance, conflicting same-store port registrations fail, and unauthorized legacy/private sessions are absent; direct resume with a hidden/stale session, wrong store/version, denied principal, active session, or ineligible instance fails before any factory/grant/attachment, while an authorized resume invokes only the named eligible instance and persists any legacy access migration before atomic attachment.
+- catalog access :: the narrow access-store port performs versioned create/migrate/grant/revoke/transfer without activating a harness or exposing transcript mutation; durable controller/discover/resume ACLs survive board removal/restart, ownership transfer is allowed only while dormant, and the old controller loses implicit catalog rights without rewriting expired or unrelated board-local grants.
+- atomicity :: a board may publish with an owner principal and no session; every session create/resume/fork/subagent operation publishes participant membership, attachment token, and live endpoint together or exposes neither.
+- invariant :: loading history stays dormant; every live session has exactly one active attachment; logical envelopes record board/participant but no endpoint generation, while each physical attempt and accepted inbox/turn/action/tool/work projection records the composite generation; detach/move cannot lose queued input, rewrite history, or leave a promptable unbound session.
+- chat boundary :: structural tests forbid =e-chat= from =e-actions-call=, retaining a harness endpoint, or direct session prompting; authenticated host APIs attach a client/principal, open a board, post input, preserve dormant-session discovery/resume plus rename/model/reasoning-effort/output-mode/compact/abort/reset controls, forward read-only in-progress transcript presentation, and render durable output.
+- lifecycle :: an authorized principal can reconnect to an empty board; idle expiry is bounded; closing rejects unrelated roots/input but admits descendants/finalizers of pre-close roots, reconciles accepted receipts, aborts only board-bound turns at its deadline, records observation tombstones for remaining domain work, and cannot close with unresolved acceptance.
+- endpoint :: identical startup registration/sync preserves both generation components; logical remap/concrete clear/replacement bumps the correct component, invalidates callbacks/attachments, fences old receipts, and resolution never lazily creates a session/harness.
+- rebind :: pre-call stale delivery may wait; accepted/consumed/lost-ack cases reconcile on the old endpoint; unknown commit becomes =uncertain= and is never redelivered to the new generation.
+- authorization :: principal/participant owner/member roles, trusted generation-checked requester context, cross-target grants, session-private work, controlling-principal/private grants, and pre-builder authorization prevent unauthorized posting, delivery, transcript/presentation reads, controls, and result/intent leakage; revocation closes subscriptions and rejects the next control without undoing an already-committed mutation.
+- private grants :: a matrix proves =inspect-transcript=, =subscribe-presentation=, and =control-session= authorize only their named surfaces; board ownership alone grants none, selective revoke leaves the other rights intact, and a child/fork copies the controller but no third-party grant.
+- binding :: participant context always resolves its sole board, client context is explicit, a mismatched board delivery is rejected, and moving a session changes only future turn binding.
+- dependency :: board core and registry load/test with fake runtime ports and no harness/provider/UI dependency.
+- restart/reload :: old runtime-generation callbacks cannot deliver twice, historical board ids never resolve to new boards after restart, and resumed persisted sessions attach before becoming live.
+
+Board message, notification, and retention level:
+
+- pickup :: one board input creates one opaque-id delivery per frozen audience member with default =inject= or explicit =queue=; targeted input reaches only its targets, later joins do not replay implicitly, and an unrouted message remains visible.
+- pickup FIFO :: one nonterminal head per participant prevents overtaking, including while rebinding; old-message routing appends =input-routed= with =routed-seq=; ready cancellation, permanent/exhausted failure, accepted discard, consumption, expiry/overflow, and uncertain ordering-gap tombstone each take their declared terminal path and release the FIFO while other participants continue.
+- output :: repeated completion callbacks/runtime reload/board-append retry/render failure still yield one source-keyed output or one visible publication failure without resettling the turn; retry after recent-map eviction returns =source-history-expired= and appends nothing; ordered reply/delivery sets represent several injected inputs, and output creates no pickup or feedback.
 - ordering :: delivery uses =seq= order and a batch never reorders.
 - batching :: N completions during one turn produce one wake with N events.
-- cursors :: =next-seq= prevents duplicate delivery after batching, prompt-building failure, cancellation, and log compaction.
-- lifetime :: one-shot notification fires once after successful delivery; repeating rules respect =max-wakes= and expiry.
+- cheap settlement :: validation/binding precedes runner start; bind failure invokes no runner; cheap finish/fail/cancel creates one envelope only after start unwinds; later observer failure cannot suppress operation/graph completion.
+- existing terminal :: notifying already-terminal work uses its snapshot without rewinding over unrelated history and delivers exactly once.
+- rule states :: every declared pending/preparing/ready/rebinding/delivering/accepted/cancelling/delivered/failed/uncertain/cancelled/expired transition and illegal terminal transition is covered, including repeating delivered-to-pending and budget stop after reconciliation.
+- preparation :: denied targets call the builder zero times, successful builders run once, and every post-ready retry reuses identical target/id/bytes.
+- idempotency :: failures before mutation retry one frozen id; failures after mutation, reentrant calls, interrupted acknowledgement, and old-harness rebind return/reconcile one receipt and create at most one inbox/transcript item.
+- cursors :: =next-seq= classifies every ignored, accumulated, frozen, or terminally failed event exactly once across batching and compaction.
+- lifetime :: one-shot notifications include finished/failed/cancelled work once; repeating rules respect =max-wakes= and expiry.
 - failure :: policy or message-building failure disables the notification and records =notification-failed= without changing semantics.
-- cause :: turn metadata names the notification, event sequences, policy, and message builder.
+- cause :: every consumed input records board/participant/generation and typed cause; turn/output projections preserve the ordered set since the preceding assistant response.
 - budget :: a self-feeding wake cycle stops with a visible reason.
-- orphan :: a dormant session reports unobserved terminal work.
+- orphan :: the board reports unobserved terminal work when its posting participant becomes dormant.
 - scope :: session-private work is hidden from other participants.
-- retention :: log entries, current-state records, detached handles, notification rules, and completed domain records stay within configured limits.
+- retention :: unread events/pickups, accepted receipts, and active work remain pinned; compaction preserves current state and explicit gaps; terminal result references remain usable or become explicit tombstones, never ambiguous nil.
+- replay :: reducers rebuild pickup, notification/cursor/wake, observation, delivery/envelope/attempt, output-pending, source high-watermarks, and current-state projections from a complete typed checkpoint plus transition tail; external facts survive the same replay, and cuts at every nonterminal state do not duplicate the next effect.
+- performance :: a fake-scheduler progress/message storm proves configured bounds for log entries, projection bytes, builder bytes, events per drain, filter calls, pins, wakes, and full-log scans; presentation-local =e-ui-work= is never enrolled.
 
 Target and invocation level:
 
-- inbox :: queued delivery to an idle session starts one turn, while delivery during a running turn waits for settlement.
-- matrix :: =inject= and =queue= dispatch against the owning session and another participant without child/parent/sibling branches.
-- fork :: a lazy fork resolves once at wake time and returns one summary to the parent.
-- rights :: non-members and stale harness records fail visibly and identify the session that requested delivery.
-- pairing :: a waiting call receives only its own result, and a late completion after timeout cannot append another result.
+- phase matrix :: test =inject= and =queue= during idle, accepting, retry-wait, settling/turn-finished hooks, aborting, resetting, closed, stale-generation, and mismatched-board states.
+- phase race :: accepting-to-settling moves unconsumed steering to the inbox; idle retries schedule one drain; reset accepts no new item and an explicit discard remains deduplicated.
+- fork :: a lazy fork uses a typed transcript-entry mark, resolves idempotently by delivery id, creates membership before becoming live, and any return summary is a separately source-keyed addressed board input.
+- rights :: non-members, denied notification/private grants, private work, and stale endpoints fail before payload building/read/control and identify the requester principal or participant.
+- wait matrix :: inline success/failure/cancel, detach, cancel before/after detach, and late completion all use one preallocated canonical executable work id, exactly one transcript tool result, and no enrolled invocation-adapter operation after Slice 2.
 - durability boundary :: task persistence runs on every domain mutation even when board wake delivery is budget-stopped.
 
-Then a scripted end-to-end scenario: two long bash packages, =any= join, a follow-up, and the late second completion, run once targeting the posting session and once targeting a second session, to compare how well the agent's plan survives.
+Then a scripted end-to-end scenario: chat opens a board and posts one input, participant sessions pick it up, one runs two long bash packages with an =any= join, a follow-up, and the late second completion, and participant outputs return to the board.
+Run once with one participant and once with a second addressed participant.
+Prove that chat used no standalone-session path, each participant transcript received one copy, tool pairing stayed exact, the late loser remained visible, outputs did not feed back as input, and no presentation =e-ui-work= remains pending after settlement.
 That question is behavioral and unit tests will not settle it.
 
 * Open questions
@@ -462,37 +939,36 @@ That question is behavioral and unit tests will not settle it.
 - Default behavior for detached work with no =:notify=: show it only in the board's current-state view on the next turn, or queue a message for the session that started it.
   Leaning toward the current-state view only, with a warning when the session becomes idle while completed work remains unread.
 - Whether a fork's mark is the work-start point or the notification-request point when they differ.
-- Whether notification rules persist with the session.
-  Persistence implies re-resolving work references that no longer exist.
-- How much event payload enters context versus staying behind a =board:// read=.
+- Whether and how board messages, notification rules, and memberships become durable after the process-local version proves its lifecycle.
+- How much event payload enters context versus staying behind a =board://<board-id>/...= read.
 - Whether trusted capability-owned notification policies should be added after the built-ins prove sufficient, and how their provenance survives reload.
-- Removing old log entries must not erase the current-state view.
-- Whether =claim= needs a lease and timeout, or whether a claimed-but-abandoned package is just cancelled work.
+- Exact retention, tombstone, retry, audience-size, client reconnect, empty-board idle-expiry, and wake defaults after deterministic stress measurements.
+- Claimable offers, leases, and executor competition belong to a follow-up plan if addressed broadcast messages prove insufficient for agent hand-off.
 
 * Required self-check (design-sensitive)
 
-1. *Better off if stopped here?*  Slice 0 gives tools, turns, policy stages, and other operations one lifecycle and a non-blocking ordering contract.
-   Slice 1 then makes outstanding work visible without changing delivery.
-2. *Final direction?*  =e-work= tracks executable stages, pipeline-owned graphs order dependent work, and the board records facts and delivers selected input between sessions.
-3. *Likely to change vs stable?*  The lifecycle, graph dependency contract, ordered log, and notification cursors are stable.
-   Wake defaults, budget values, retention limits, message size, and the built-in notification policies remain local and reversible.
-4. *Owning component?*  Pipeline services own graphs, board core owns facts and notification rules, board runtime owns cross-harness delivery, harness owns session state and transcripts, and domain services keep their policy.
+1. *Better off if stopped here?*  Slice 0 gives executable work one identity and graph contract.
+   Slice 1 then establishes a real board identity/registry, authenticated chat ingress, and one board-bound session without work notifications.
+2. *Final direction?*  The board is the only top-level live interaction context: chat and producers post there, sessions pick up addressed input, =e-work= tracks executable stages, and participant outputs return to the board.
+3. *Likely to change vs stable?*  Principal/client/board/participant/work/message identity, exactly-one-board attachment, graph settlement, board ownership, receipts, and cursor semantics are stable.
+   Routing defaults, budget values, retention limits, batch size, and built-in message policies remain local and reversible.
+4. *Owning component?*  Pipeline services own graphs; board core owns messages, facts, rules, and projections; registry owns board identity/authorization, attachments, lifecycle, and cross-generation delivery state; session stores own durable dormant-session controller/access records; board runtime owns composition/delivery; harness owns concrete inbox receipts, transcripts, and turns; domain services keep domain policy.
 5. *Coupling?*  =e-work= gains no board dependency.
-   Board core stores ids and observed operation state, while the runtime adapter depends outward on harness delivery.
+   Board core/registry store ids and observed state behind injected ports, while the runtime adapter depends outward on harness delivery.
 6. *Dependency direction?*  Stable lifecycle and board contracts do not depend on tools, shells, task queue, subagents, or provider adapters.
 7. *Side effects outward?*  External execution stays in existing carriers.
-   Graph callbacks perform bounded state changes, board core mutates in-memory state, and harness runtime starts turns or forks.
+   Graph callbacks perform bounded state changes, board core mutates process-local state, and the runtime adapter asks harness services to create sessions, accept input, start turns, or fork.
 8. *State?*  Graph state lives only until settlement.
-   Board history and current state are bounded runtime data, notification cursors and delivery state live with the session runtime, and domain registries remain authoritative.
+   Board registry entries own bounded messages, history, projections, principals/clients/participants, board-local private grants, rules, cursors, pins, and authoritative delivery state; session stores own stable store identity, dormant controller/discover/resume ACLs, and output counters; harnesses own concrete inbox items, local receipts, turns, and transcripts; domain registries remain authoritative.
 9. *Performance?*  Cheap stages may settle inline and the one-call fast path remains.
-   Each operation transition adds a bounded observer update, while notification policies and message builders are built-ins that run on the UI thread.
-10. *Abstractions real?*  =e-work= represents execution, graph edges pass results to next steps, board events represent facts, waiting calls receive their own results, and notifications deliver later input.
+   Terminal transitions are immediate, progress is coalesced, every drain/builder/projection is byte- and event-bounded, and deterministic storm tests justify defaults before rollout.
+10. *Abstractions real?*  =e-work= represents execution, graph edges pass results, board messages represent interaction, board events represent facts, waiting calls receive their own results, and receipts represent input ownership/consumption.
     None of these contracts substitutes for another.
-11. *Compatibility?*  Legacy tool forms and synchronous hooks receive temporary adapters, then leave runtime execution after callers migrate.
-    Existing prompt, follow-up, steering, and background paths fold behind the inbox service before their wrappers are removed.
-12. *Legacy to remove?*  Remove =:handler=/=:start= tool branches, direct synchronous hook reduction, and duplicate session-input paths after migration.
+11. *Compatibility?*  Legacy tool forms, synchronous hooks, and direct session entry points receive temporary adapters, then leave runtime execution after callers migrate.
+    Stored session history remains resumable, but only by attaching it to a board before activation.
+12. *Legacy to remove?*  Remove =:handler=/=:start= tool branches, the detachable wrapper, direct synchronous hook reduction, direct chat/session prompt creation, and duplicate session-input paths after migration.
     Keep task and subagent registries because they own domain state and already push notifications.
-13. *Errors?*  Expected work failures and cancellation settle handles, graph recovery handles declared cases, and delivery faults become board events.
+13. *Errors?*  Expected work failures/cancellation settle handles, graph recovery handles declared cases, board composition rolls back partial publication, and delivery/receipt/discard/uncertain faults become visible board state without duplicate execution.
     Unexpected errors surface through the owning operation or runtime adapter.
-14. *Tests?*  Graph helpers are tested with synthetic handles, notification policies with synthetic events, and delivery with fake harness adapters.
-    End-to-end transcript tests prove invocation pairing and cross-session isolation.
+14. *Tests?*  Graph helpers use synthetic handles; board core/registry use fake ids, clocks, and ports; policies use synthetic events; delivery uses fake harness receipts; structural tests forbid standalone/multi-board session paths.
+    End-to-end board/chat/transcript tests prove message pickup, output projection, invocation pairing, and cross-session isolation.

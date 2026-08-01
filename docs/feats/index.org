@@ -76,7 +76,7 @@ Status values for coding agents:
 | 63 | In-review | 63-org-annotate-answer-loop/ | Org-Annotate Answer Loop |
 | 64 | In-review | 64-wait-for-async-tools/ | wait_for: deadline-raced detach for async tools |
 | 65 | In-review | 65-bayesian-reasoning-capability/ | Bayesian Reasoning Capability |
-| 66 | Planned | 66-work-bus-interaction-model/ | Work Board: Subscription-Driven Turn Model |
+| 66 | Planned | 66-work-bus-interaction-model/ | Board: Top-Level Interaction and Work Coordination |
 | 67 | Done | 67-evidence-traceable-claim-audit/ | Evidence-Traceable Claim Audit |
 | 68 | Done | 68-responsive-persistence-and-projection/ | Responsive Persistence and Scheduled Chat Projection |
 | 69 | Done | 69-source-aware-claim-repair/ | Source-Aware Claim Repair |
