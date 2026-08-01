@@ -83,7 +83,24 @@
                        '("one-main" "one-main-again")))
         ;; A later subscription cannot receive a message whose match set froze.
         (e-board-subscribe board "two" '(:tags (main)) :id "late")
-        (should-not (member "late" (e-board-pickup-subscription-ids one)))))))
+         (should-not (member "late" (e-board-pickup-subscription-ids one)))))))
+
+(ert-deftest e-board-test-condition-selector-matches-author-and-attributes ()
+  "Generic routes conjunctively match immutable author and attributes."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (e-board-subscribe board "one"
+                         '(:tags (main) :author "client:local"
+                           :attributes (:priority high))
+                         :id "condition")
+      (should-not (e-board-publication-pickup-ids
+                   (e-board-post-input board :tags '(main) :author "client:other"
+                                       :attributes '(:priority high))))
+      (should (= (length (e-board-publication-pickup-ids
+                          (e-board-post-input board :tags '(main) :author "client:local"
+                                              :attributes '(:priority high))))
+                 1)))))
 
 (ert-deftest e-board-test-unrouted-inputs-and-monotonic-event-log ()
   "Unmatched input remains inspectable and every mutation advances sequence."

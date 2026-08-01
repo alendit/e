@@ -29,7 +29,7 @@
 (cl-defstruct (e-board-message
                (:constructor e-board-message--create)
                (:conc-name e-board-message-))
-  id board-id seq kind author tags to mode content reference
+  id board-id seq kind author tags attributes to mode content reference
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
   matching-participant-ids pickup-ids unrouted-reason)
 
@@ -399,9 +399,23 @@ inside the board model.  New subscriptions only inspect future inputs."
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
     (and (eq (e-board-message-kind message) 'input)
-         (or (not (plist-member selector :to))
-             (equal (plist-get selector :to) (e-board-message-to message)))
-         (e-board--tags-match-p selector message))))
+          (or (not (plist-member selector :to))
+              (equal (plist-get selector :to) (e-board-message-to message)))
+          (or (not (plist-member selector :author))
+              (equal (plist-get selector :author) (e-board-message-author message)))
+          (cl-every (lambda (pair)
+                      (equal (plist-get (e-board-message-attributes message)
+                                        (car pair))
+                             (cdr pair)))
+                    (let ((attributes (plist-get selector :attributes)))
+                      (cond ((null attributes) nil)
+                            ((and (listp attributes) (keywordp (car attributes)))
+                             (cl-loop for (key value) on attributes by #'cddr
+                                      collect (cons key value)))
+                            ((listp attributes) attributes)
+                            (t (signal 'wrong-type-argument
+                                       (list 'listp attributes))))))
+          (e-board--tags-match-p selector message))))
 
 (defun e-board--eligible-subscription-p (board subscription)
   "Return non-nil when SUBSCRIPTION is active and its participant can receive."
@@ -495,7 +509,7 @@ Return nil when the key is new and may be appended."
       (puthash (list kind producer generation) sequence
                (e-board-source-high-watermarks board)))))
 
-(defun e-board--make-message (board kind id author tags to mode content reference
+(defun e-board--make-message (board kind id author tags attributes to mode content reference
                                      source-input-key source-output-key
                                      reply-to-message-ids caused-by-delivery-ids)
   "Create and record one immutable BOARD message, returning it."
@@ -507,7 +521,8 @@ Return nil when the key is new and may be appended."
          (message
           (e-board-message--create
            :id id :board-id (e-board-id board) :seq (e-board-event-seq event)
-           :kind kind :author author :tags (copy-tree tags) :to to :mode mode
+            :kind kind :author author :tags (copy-tree tags)
+            :attributes (copy-tree attributes) :to to :mode mode
            :content content :reference reference
            :source-input-key (copy-tree source-input-key)
            :source-output-key (copy-tree source-output-key)
@@ -563,7 +578,7 @@ Return nil when the key is new and may be appended."
      :status 'posted :message message :pickup-ids pickup-ids)))
 
 (cl-defun e-board-post-input
-    (board &key id author tags to (mode 'inject) content reference source-input-key)
+    (board &key id author tags attributes to (mode 'inject) content reference source-input-key)
   "Append and route one input message, returning an `e-board-publication'.
 With TO, only its participant's built-in address subscription is considered.
 Without TO, active ordinary tag subscriptions receive one frozen pickup each.
@@ -574,7 +589,7 @@ return status `source-history-expired' without appending or routing again."
   (or (e-board--source-publication board 'input source-input-key)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
-                       board 'input id author tags to mode content reference
+                        board 'input id author tags attributes to mode content reference
                        source-input-key nil nil nil))
              (publication (e-board--route-input board message)))
         (e-board--remember-source board 'input source-input-key message)
@@ -591,7 +606,7 @@ at-most-once.  Outputs never create participant pickups."
   (or (e-board--source-publication board 'output source-output-key)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
-                       board 'output id author tags nil nil content reference nil
+                        board 'output id author tags nil nil nil content reference nil
                        source-output-key reply-to-message-ids
                        caused-by-delivery-ids)))
         (e-board--remember-source board 'output source-output-key message)

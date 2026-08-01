@@ -203,7 +203,7 @@ the conservative idle-only harness delivery port is used."
         (setf (e-board-pickup-state pickup) 'delivered)))))
 
 (cl-defun e-board-runtime-post-input
-    (board-or-id &key id author tags to (mode 'inject) content reference source-input-key)
+    (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)
   "Post one input to BOARD-OR-ID's source board, then deliver its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
 publications only retry pickups that remain pending."
@@ -211,7 +211,7 @@ publications only retry pickups that remain pending."
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
-           :id id :author author :tags tags :to to :mode mode :content content
+            :id id :author author :tags tags :attributes attributes :to to :mode mode :content content
            :reference reference :source-input-key source-input-key)))
     (e-board-runtime--deliver-pickups board
                                       (e-board-publication-pickup-ids publication))
