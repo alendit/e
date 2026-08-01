@@ -48,8 +48,18 @@
                        "board-1"))
         (should (equal (e-board-subscription-id subscription) "subscription-5"))
         (should (e-board-subscription-built-in-p
-                 (car (e-board-subscriptions
-                       (e-board-registry-board-source-board board)))))))))
+                  (car (e-board-subscriptions
+                        (e-board-registry-board-source-board board)))))))))
+
+(ert-deftest e-board-registry-test-default-identities-have-board-local-prefixes ()
+  "Registry fallback identities retain their distinct board-local namespaces."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create))
+           (client (e-board-registry-attach-client board))
+           (participant (e-board-registry-add-participant board)))
+      (should (string-prefix-p "brd_" (e-board-registry-board-id board)))
+      (should (string-prefix-p "cli_" (e-board-registry-client-id client)))
+      (should (string-prefix-p "ptc_" (e-board-registry-participant-id participant))))))
 
 (ert-deftest e-board-registry-test-participants-are-board-local ()
   "A participant record from one board cannot modify another board."

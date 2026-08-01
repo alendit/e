@@ -32,7 +32,18 @@
                         participant)
                        "sub-address"))
         (should-error (e-board-create :id "board-1")
-                      :type 'e-board-id-conflict)))))
+                       :type 'e-board-id-conflict)))))
+
+(ert-deftest e-board-test-default-identities-use-distinct-namespaces ()
+  "Default generated board identities cannot be mistaken for participants."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create))
+           (participant (e-board-add-participant board)))
+      (should (string-prefix-p "brd_" (e-board-id board)))
+      (should (string-prefix-p "ptc_" (e-board-participant-id participant)))
+      (should (string-prefix-p "sub_"
+                             (e-board-participant-create-pickup-subscription-id
+                              participant))))))
 
 (ert-deftest e-board-test-exact-address-ignores-tags ()
   "Addressed input reaches only the built-in subscription of its target."

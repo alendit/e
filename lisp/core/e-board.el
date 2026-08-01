@@ -81,7 +81,16 @@ An injected id function receives KIND.  The fallback is only process-local and
 exists so callers need not supply ids outside deterministic tests."
   (let ((id (if-let ((function (e-board-id-function board)))
                 (funcall function kind)
-              (format "%s-%d" kind (cl-incf e-board--id-sequence)))))
+              (format "%s%d"
+                      (pcase kind
+                        ('board "brd_")
+                        ('client "cli_")
+                        ('participant "ptc_")
+                        ('subscription "sub_")
+                        ('invocation "inv_")
+                        ('message "msg_")
+                        (_ (format "%s_" kind)))
+                      (cl-incf e-board--id-sequence)))))
     (unless id
       (signal 'e-board-error (list "Id generator returned nil" kind)))
     id))
@@ -130,7 +139,7 @@ The board object remains valid for inspection by its holder."
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
 explicit ids to individual operations takes precedence over this generator."
   (let* ((board (e-board--create
-                 :id (or id (format "board-%d" (cl-incf e-board--id-sequence)))
+                  :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
                  :next-seq 0
                  :events nil

@@ -53,8 +53,15 @@
 (defun e-board-registry--next-id (id-function kind)
   "Return an identity for KIND from ID-FUNCTION or the local fallback."
   (let ((id (if id-function
-                (funcall id-function kind)
-              (format "%s-%d" kind (cl-incf e-board-registry--id-sequence)))))
+                 (funcall id-function kind)
+              (format "%s%d"
+                      (pcase kind
+                        ('board "brd_")
+                        ('client "cli_")
+                        ('participant "ptc_")
+                        ('subscription "sub_")
+                        (_ (format "%s_" kind)))
+                      (cl-incf e-board-registry--id-sequence)))))
     (unless id
       (signal 'e-board-registry-error
               (list "Id generator returned nil" kind)))
