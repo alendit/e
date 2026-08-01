@@ -194,10 +194,18 @@ the conservative idle-only harness delivery port is used."
               (lambda (event)
                 (e-board-runtime--handle-harness-event attachment event))
               :session-id session-id))
-       (puthash key attachment e-board-runtime--attachments)
-       (puthash (e-board-runtime--session-key harness session-id) attachment
-                e-board-runtime--session-attachments)
-        (e-harness-set-work-enrollment-function
+        (puthash key attachment e-board-runtime--attachments)
+        (puthash (e-board-runtime--session-key harness session-id) attachment
+                 e-board-runtime--session-attachments)
+        (setf (e-board-effect-scheduler
+               (e-board-registry-board-source-board board))
+              (lambda (effect)
+                (run-at-time
+                 0 nil
+                 (lambda ()
+                   (funcall effect)
+                   (e-board-runtime--deliver-pending-pickups board)))))
+         (e-harness-set-work-enrollment-function
          harness
          (lambda (handle &optional callback)
            (e-board-runtime--enroll-work harness handle callback)))
@@ -223,7 +231,19 @@ the conservative idle-only harness delivery port is used."
                                             (e-board-pickup-message-id pickup))))
         (funcall (e-board-runtime-attachment-delivery-function attachment)
                  attachment pickup message)
-        (setf (e-board-pickup-state pickup) 'delivered)))))
+         (setf (e-board-pickup-state pickup) 'delivered)))))
+
+(defun e-board-runtime--deliver-pending-pickups (board)
+  "Attempt delivery for BOARD's already-frozen pending pickups.
+This runs after a deferred effect commits its input append; the effect succeeds
+at append time, independently of downstream session acceptance."
+  (let (pickup-ids)
+    (maphash
+     (lambda (delivery-id pickup)
+       (when (eq (e-board-pickup-state pickup) 'pending)
+         (push delivery-id pickup-ids)))
+     (e-board-pickups (e-board-registry-board-source-board board)))
+    (e-board-runtime--deliver-pickups board (nreverse pickup-ids))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)
