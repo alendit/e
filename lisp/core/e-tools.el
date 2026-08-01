@@ -239,7 +239,8 @@ other live runtime objects held by `e-tools-current-context'."
   (memq class e-tools-cheap-blocking-classes))
 
 (cl-defun e-tools-register
-    (registry &key name description parameters handler start work metadata blocking-class)
+    (registry &key name description parameters handler start work metadata blocking-class
+              invocation-only)
   "Register tool NAME in REGISTRY.
 DESCRIPTION, PARAMETERS, HANDLER, START, WORK, and METADATA describe the tool.
 BLOCKING-CLASS may be `cheap', `network', `process', `helper', `filesystem',
@@ -260,9 +261,10 @@ lifecycle for migrated tools."
                  :description description
                  :parameters parameters
                  :metadata metadata
-                 :handler handler
-                 :start start
-                 :work work)
+                  :handler handler
+                  :start start
+                  :work work
+                  :invocation-only invocation-only)
            (e-tools-registry-tools registry)))
 
 (defun e-tools--empty-json-object ()
@@ -1053,6 +1055,7 @@ handle after allocation and before its runner may execute."
       (let ((work (plist-get tool :work))
             (start (plist-get tool :start))
             (handler (plist-get tool :handler))
+            (invocation-only (plist-get tool :invocation-only))
             settled
             active-request
             deadline-timer)
@@ -1175,83 +1178,84 @@ handle after allocation and before its runner may execute."
                      (signal 'e-tools-blocking-handler-rejected
                              (list (format "Tool %s is %s-class and must provide :start in interactive execution"
                                            name (e-tools--blocking-class tool)))))
-                    (if (e-work-spec-p work)
+                    (cond
+                     ((and invocation-only (functionp start))
+                      (e-tools--apply-start-with-optional-event
+                       start
+                       (list :arguments (plist-get call :arguments)
+                             :on-done #'finish-ok
+                             :on-error #'finish-error
+                             :on-request-start #'publish-request)
+                       on-event))
+                     ((e-work-spec-p work)
+                      (let* ((handle
+                              (e-work-prepare
+                               work
+                               (plist-get call :arguments)
+                               :context tool-context
+                               :on-done (unless (plist-get tool-context :board-enroll-work)
+                                          #'finish-ok)
+                               :on-error (unless (plist-get tool-context :board-enroll-work)
+                                           #'finish-error)
+                               :on-progress
+                               (lambda (payload)
+                                 (when on-event
+                                   (funcall on-event 'tool-progress payload)))))
+                             request)
+                        (prepare-work handle)
+                        (e-work-start-prepared
+                         handle
+                         :arguments (plist-get call :arguments)
+                         :context tool-context)
+                        ;; Carrier setup can add metadata (for example an
+                        ;; output file) before its request becomes visible.
+                        (setq request (e-tools--work-request handle))
+                        (publish-request request)
+                        request))
+                     ((functionp start)
+                      (let (reported-request request)
                         (let* ((handle
                                 (e-work-prepare
-                                 work
-                                 (plist-get call :arguments)
+                                 (e-tools--compatibility-start-work
+                                  name start on-event
+                                  (lambda (value)
+                                    (setq reported-request value)
+                                    (publish-request value)))
+                                 (list :tool-arguments (plist-get call :arguments))
                                  :context tool-context
                                  :on-done (unless (plist-get tool-context :board-enroll-work)
                                             #'finish-ok)
                                  :on-error (unless (plist-get tool-context :board-enroll-work)
-                                             #'finish-error)
-                                :on-progress
-                                (lambda (payload)
-                                   (when on-event
-                                     (funcall on-event 'tool-progress payload)))))
-                               request)
-                           (prepare-work handle)
+                                             #'finish-error))))
+                          (prepare-work handle)
                           (e-work-start-prepared
                            handle
-                           :arguments (plist-get call :arguments)
+                           :arguments (list :tool-arguments (plist-get call :arguments))
                            :context tool-context)
-                          ;; Carrier setup can add metadata (for example an
-                          ;; output file) before its request becomes visible.
-                          (setq request (e-tools--work-request handle))
-                          (publish-request request)
-                          request)
-                      (if (functionp start)
-                          (let (reported-request request)
-                            (let* ((handle
-                                  (e-work-prepare
-                                   (e-tools--compatibility-start-work
-                                    name start on-event
-                                    (lambda (value)
-                                      (setq reported-request value)
-                                      (publish-request value)))
-                                   (list :tool-arguments
-                                         (plist-get call :arguments))
-                                   :context tool-context
-                                    :on-done (unless (plist-get tool-context :board-enroll-work)
-                                               #'finish-ok)
-                                    :on-error (unless (plist-get tool-context :board-enroll-work)
-                                                #'finish-error))))
-                                (prepare-work handle)
-                               (e-work-start-prepared
-                               handle
-                               :arguments (list :tool-arguments
-                                                (plist-get call :arguments))
-                               :context tool-context)
-                              (setq request (plist-get
-                                             (e-work-handle-arguments handle)
-                                             :request))
-                              (when (and request
-                                         (not (eq request reported-request)))
-                                (publish-request request))
-                              request))
-                        (let* ((handle
-                                (e-work-prepare
-                                 (e-tools--compatibility-handler-work
-                                  name handler tool-context)
-                                 (list :delay 0
-                                       :tool-arguments
-                                       (plist-get call :arguments))
-                                   :context tool-context
-                                    :on-done (unless (plist-get tool-context :board-enroll-work)
-                                               #'finish-ok)
-                                    :on-error (unless (plist-get tool-context :board-enroll-work)
-                                                 #'finish-error)))
-                                request)
-                           (prepare-work handle)
-                          (e-work-start-prepared
-                           handle
-                           :arguments (list :delay 0
-                                            :tool-arguments
-                                            (plist-get call :arguments))
-                           :context tool-context)
-                          (setq request (e-tools--work-request handle))
-                          (publish-request request)
-                          request))))))
+                          (setq request (plist-get (e-work-handle-arguments handle) :request))
+                          (when (and request (not (eq request reported-request)))
+                            (publish-request request))
+                          request)))
+                     (t
+                      (let* ((handle
+                              (e-work-prepare
+                               (e-tools--compatibility-handler-work name handler tool-context)
+                               (list :delay 0 :tool-arguments (plist-get call :arguments))
+                               :context tool-context
+                               :on-done (unless (plist-get tool-context :board-enroll-work)
+                                          #'finish-ok)
+                               :on-error (unless (plist-get tool-context :board-enroll-work)
+                                           #'finish-error)))
+                             request)
+                        (prepare-work handle)
+                        (e-work-start-prepared
+                         handle
+                         :arguments (list :delay 0
+                                          :tool-arguments (plist-get call :arguments))
+                         :context tool-context)
+                        (setq request (e-tools--work-request handle))
+                        (publish-request request)
+                        request))))))
             (quit
              (finish-error err)
              nil)

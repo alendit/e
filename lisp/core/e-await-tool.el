@@ -104,46 +104,30 @@ a mix still waits on the resolvable references."
                  pairs)
          errors)))
 
-(defun e-await-tool--work ()
-  "Return the cooperative work spec for the await tool."
-  (e-work-spec-create
-   :id "await"
-   :description "Wait for referenced work to settle or time out."
-   :execution 'cooperative
-   :interactive-policy 'async
-   :owner 'await
-   :runner
-   (lambda (handle arguments _context)
-     (let* ((refs (plist-get arguments :refs))
-            (mode (e-await-tool--normalize-mode arguments))
-            (timeout (e-await-tool--effective-timeout arguments))
-            (resolved (e-await-tool--resolve-references refs))
-            (pairs (plist-get resolved :pairs))
-            (errors (plist-get resolved :errors))
-            (handles (mapcar #'cdr pairs)))
-       (cond
-        ((null refs)
-         (e-work-finish handle (e-await-tool--report mode 'complete nil errors)))
-        ;; Nothing resolvable: settle now with the per-reference errors rather
-        ;; than waiting on an empty set.
-        ((null handles)
-         (e-work-finish handle (e-await-tool--report mode 'complete nil errors)))
-        (t
-         (let ((cancel
-                (e-work-await-set
-                 handles
-                 :mode mode
-                 :timeout timeout
-                 :on-settle
-                 (lambda (set-report)
-                   (e-work-finish
-                    handle
-                    (e-await-tool--report
-                     mode (plist-get set-report :reason) pairs errors))))))
-           ;; Detach the set wait if the tool call itself is cancelled.
-           (setf (e-work-handle-cancel-function handle)
-                 (lambda (_handle) (funcall cancel) t)))))
-       :deferred))))
+(cl-defun e-await-tool--start (&key arguments on-done on-error &allow-other-keys)
+  "Start invocation-only await aggregation without creating executable work."
+  (condition-case err
+      (let* ((refs (plist-get arguments :refs))
+             (mode (e-await-tool--normalize-mode arguments))
+             (timeout (e-await-tool--effective-timeout arguments))
+             (resolved (e-await-tool--resolve-references refs))
+             (pairs (plist-get resolved :pairs))
+             (errors (plist-get resolved :errors))
+             (handles (mapcar #'cdr pairs)))
+        (cond
+         ((or (null refs) (null handles))
+          (funcall on-done (e-await-tool--report mode 'complete pairs errors)))
+         (t
+          (let ((cancel
+                 (e-work-await-set
+                  handles :mode mode :timeout timeout
+                  :on-settle
+                  (lambda (set-report)
+                    (funcall on-done
+                             (e-await-tool--report
+                              mode (plist-get set-report :reason) pairs errors))))))
+            (e-tools-request-create :cancel (lambda () (funcall cancel) t))))))
+    (error (when on-error (funcall on-error err)) nil)))
 
 (defun e-await-tool-register (registry)
   "Register the model-facing await tool in REGISTRY."
@@ -159,7 +143,8 @@ a mix still waits on the resolvable references."
                          :enum ["all" "any"])
                   :timeout (:type "number"))
                  :required ["refs"])
-   :work (e-await-tool--work)
+    :start #'e-await-tool--start
+    :invocation-only t
    :blocking-class 'unknown))
 
 (provide 'e-await-tool)

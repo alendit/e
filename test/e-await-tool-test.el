@@ -56,6 +56,15 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
     (e-await-tool-register registry)
     (should (gethash "await" (e-tools-registry-tools registry)))))
 
+(ert-deftest e-await-tool-test-is-an-invocation-only-aggregation ()
+  "Await does not create synthetic executable work for its aggregation."
+  (let ((registry (e-tools-registry-create)))
+    (e-await-tool-register registry)
+    (let ((tool (gethash "await" (e-tools-registry-tools registry))))
+      (should (plist-get tool :invocation-only))
+      (should (functionp (plist-get tool :start)))
+      (should-not (plist-get tool :work)))))
+
 (ert-deftest e-await-tool-test-schema-stays-minimal ()
   "Await relies on async action guidance instead of duplicating it in schema."
   (let ((registry (e-tools-registry-create)))
