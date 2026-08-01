@@ -2213,7 +2213,7 @@ New code should prefer the narrower typed metadata helpers."
                      (cl-loop for entry in (plist-get session :messages)
                               maximize (or (plist-get entry :board-output-sequence) 0))
                      0))))
-        (plist-put message :board-output-sequence sequence)
+        (setq message (plist-put message :board-output-sequence sequence))
         (plist-put session :board-output-sequence sequence)))
     (e-session--append-list-item session :messages message)
     (e-session--index-entry store session-id message)
