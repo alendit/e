@@ -27,6 +27,7 @@
 (require 'e-work)
 (require 'e-board)
 (require 'e-board-registry)
+(require 'e-board-runtime)
 (require 'e-store)
 (require 'e-capability-config)
 (require 'e-capabilities)
@@ -67,6 +68,7 @@
         :work t
         :board t
         :board-registry t
+        :board-runtime t
         :store t
         :skills t
         :startup t
