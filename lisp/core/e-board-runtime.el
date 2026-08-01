@@ -32,6 +32,9 @@
 (defvar e-board-runtime--attachments (make-hash-table :test 'equal)
   "Live runtime attachments keyed by board and participant identity.")
 
+(defvar e-board-runtime--session-attachments (make-hash-table :test 'equal)
+  "Live attachments keyed by a concrete harness and session identity.")
+
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
@@ -40,7 +43,30 @@
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
   (list (e-board-registry-board-id board)
-        (e-board-registry-participant-id participant)))
+         (e-board-registry-participant-id participant)))
+
+(defun e-board-runtime--session-key (harness session-id)
+  "Return the runtime attachment key for HARNESS SESSION-ID."
+  (list harness session-id))
+
+(defun e-board-runtime--enroll-work (harness handle callback)
+  "Enroll HANDLE for its attached HARNESS session before runner entry.
+CALLBACK is the private loop result seam for executable tool work; turn work
+has no callback and is observed only."
+  (when-let* ((session-id (plist-get (e-work-handle-context handle) :session-id))
+              (attachment (gethash (e-board-runtime--session-key harness session-id)
+                                   e-board-runtime--session-attachments)))
+    (let* ((board (e-board-registry-board-source-board
+                   (e-board-runtime-attachment-board attachment)))
+           (metadata (e-work-handle-metadata handle)))
+      (e-board-enroll-work board handle :metadata metadata)
+      (when callback
+        (let* ((context (e-work-handle-context handle))
+               (turn-id (plist-get context :turn-id))
+               (tool-call-id (plist-get (plist-get context :tool-call) :id)))
+          (e-board-subscribe-invocation
+           board (e-work-handle-id handle) callback
+           :id (list turn-id tool-call-id)))))))
 
 (defun e-board-runtime--active-board (board-or-id)
   "Return active registry BOARD-OR-ID."
@@ -110,8 +136,14 @@ the conservative idle-only harness delivery port is used."
             :session-id session-id
             :delivery-function (or delivery-function
                                    #'e-board-runtime--deliver-to-harness))))
-      (puthash key attachment e-board-runtime--attachments)
-      attachment)))
+       (puthash key attachment e-board-runtime--attachments)
+       (puthash (e-board-runtime--session-key harness session-id) attachment
+                e-board-runtime--session-attachments)
+       (e-harness-set-work-enrollment-function
+        harness
+        (lambda (handle &optional callback)
+          (e-board-runtime--enroll-work harness handle callback)))
+       attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
   "Deliver BOARD's frozen pending PICKUP-IDS through their attachments."

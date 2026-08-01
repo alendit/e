@@ -15,9 +15,10 @@
   (declare (indent 0) (debug t))
   `(let ((e-board--registry (make-hash-table :test 'equal))
          (e-board--id-sequence 0)
-         (e-board-registry--boards (make-hash-table :test 'equal))
-         (e-board-registry--id-sequence 0)
-         (e-board-runtime--attachments (make-hash-table :test 'equal)))
+          (e-board-registry--boards (make-hash-table :test 'equal))
+          (e-board-registry--id-sequence 0)
+          (e-board-runtime--attachments (make-hash-table :test 'equal))
+          (e-board-runtime--session-attachments (make-hash-table :test 'equal)))
      ,@body))
 
 (ert-deftest e-board-runtime-test-attachment-maps-live-session-and-delivers-exact-and-tags ()
@@ -77,7 +78,28 @@
       (should (equal (plist-get (car (e-harness-queued-prompts harness "session"))
                                 :prompt)
                      "queued input"))
-      (should-not (plist-get (e-harness-state harness "session") :active-turn)))))
+       (should-not (plist-get (e-harness-state harness "session") :active-turn)))))
+
+(ert-deftest e-board-runtime-test-attached-session-enrolls-prepared-work-before-start ()
+  "An attached harness maps turn/tool work to its participant board."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "tool" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done"))
+                      nil
+                      :context
+                      '(:session-id "session" :turn-id "turn" :tool-call (:id "call"))))
+             (source-board (e-board-registry-board-source-board board))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (funcall enroll handle (lambda (&rest _args)))
+        (should (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should (e-board-invocation source-board '("turn" "call")))
+        (should-not (e-work-handle-started-p handle))))))
 
 (provide 'e-board-runtime-test)
 

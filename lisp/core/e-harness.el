@@ -65,10 +65,11 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
   runtime-capability-config
   (sessions (e-session-store-create))
   (enabled-layer-ids nil)
-  (intrinsic-capabilities nil)
-  (subscribers nil)
-  active-turns
-  prompt-queues)
+   (intrinsic-capabilities nil)
+   (subscribers nil)
+   active-turns
+   prompt-queues
+   work-enrollment-function)
 
 (defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
   "Layer change callbacks keyed by harness.")
@@ -106,7 +107,17 @@ turn completion paths; the runner deliberately performs no separate work."
    :execution 'cooperative
    :interactive-policy 'async
    :owner 'harness
-   :runner (lambda (_handle _arguments _context) :deferred)))
+    :runner (lambda (_handle _arguments _context) :deferred)))
+
+(defun e-harness-set-work-enrollment-function (harness function)
+  "Set HARNESS's injected prepared-work enrollment FUNCTION.
+FUNCTION receives a prepared work handle and, for tool work, an optional exact
+invocation callback.  The harness owns no board dependency; the runtime adapter
+may install this port for board-attached sessions."
+  (unless (or (null function) (functionp function))
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (setf (e-harness-work-enrollment-function harness) function)
+  harness)
 
 (defun e-harness-refresh-default-context-strategy (harness)
   "Refresh HARNESS default context strategy, preserving custom strategies."
@@ -2630,8 +2641,9 @@ When a turn produced multiple assistant messages, return the last one."
          :segments (plist-get context :segments)
          :turn-work-handle (plist-get
                             (gethash session-id
-                                     (e-harness-active-turns harness))
-                            :work-handle)
+                             (e-harness-active-turns harness))
+                             :work-handle)
+         :board-enroll-work (e-harness-work-enrollment-function harness)
         :on-event (or on-event
                       (lambda (type payload)
                         (e-harness--emit-turn-event
@@ -2697,14 +2709,14 @@ cancellation.  SESSION-ID identifies the session."
             (gethash session-id (e-harness-active-turns harness)))
        (signal 'e-harness-active-turn-exists (list session-id)))
       (let* ((turn-id (e-harness--next-turn-id))
-             (turn-work
+              (turn-work
               (e-work-prepare
                (e-harness--turn-work-spec)
                nil
                :context (list :session-id session-id
                               :turn-id turn-id
                               :work-kind 'turn
-                              :domain-ref (format "turn:%s" turn-id))))
+                               :domain-ref (format "turn:%s" turn-id))))
              (entry (list :id turn-id
                           :status 'running
                           :work-handle turn-work
@@ -2713,8 +2725,14 @@ cancellation.  SESSION-ID identifies the session."
                          :error-details nil
                          :condition nil
                          :timer nil
-                         :request nil)))
-       (puthash session-id entry (e-harness-active-turns harness))
+                          :request nil)))
+        (when-let ((enroll (e-harness-work-enrollment-function harness)))
+          (condition-case err
+              (funcall enroll turn-work nil)
+            (error
+             (e-work-fail turn-work err)
+             (signal (car err) (cdr err)))))
+        (puthash session-id entry (e-harness-active-turns harness))
        (condition-case err
            (plist-put entry
                       :prompt-message-id
