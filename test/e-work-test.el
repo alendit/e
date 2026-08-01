@@ -863,7 +863,28 @@ is caught."
                 (should (e-work-handle-p (e-work-detached-handle id))))))
         (dolist (id (e-work-detached-handle-ids))
           (when-let ((h (e-work-detached-handle id)))
-            (e-work-cancel h)))))))
+             (e-work-cancel h)))))))
+
+(ert-deftest e-work-test-detachable-spec-enrolls-child-before-runner ()
+  "The detachable child reaches an injected enrollment port before execution."
+  (let (enrolled done)
+    (let ((spec
+           (e-work-detachable-spec
+            (e-work-spec-create
+             :id "enrolled-child" :execution 'cheap :interactive-policy 'cheap
+             :runner (lambda (_arguments _context)
+                       (unless enrolled
+                         (error "Child runner started before enrollment"))
+                       "done"))
+            :default-wait-for nil)))
+      (e-work-start
+       spec nil
+       :context (list :board-enroll-work
+                      (lambda (handle)
+                        (setq enrolled handle)))
+       :on-done (lambda (value) (setq done value)))
+      (should (e-work-handle-p enrolled))
+      (should (equal done "done")))))
 
 (provide 'e-work-test)
 

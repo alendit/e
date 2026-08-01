@@ -636,11 +636,16 @@ detach branch, and the child stays ignorant of detachment entirely."
                (when race-cancel (funcall race-cancel))
                (when (e-work-handle-p child) (e-work-cancel child))
                t))
-       (setq child
-             (e-work-start
-              child-spec arguments
-              :context context
-              :on-progress (lambda (payload) (e-work-progress parent payload))))
+        (setq child
+              (e-work-prepare
+               child-spec arguments
+               :context context
+               :on-progress (lambda (payload) (e-work-progress parent payload))))
+        ;; The detachable wrapper is transitional, but its actual carrier must
+        ;; still be visible to an injected board before it can run.
+        (when-let ((enroll (plist-get context :board-enroll-work)))
+          (funcall enroll child))
+        (e-work-start-prepared child :arguments arguments :context context)
        ;; Surface the child's early metadata (streaming output uri, transport)
        ;; on the parent so a detach ack and progress reads see it at once.
        (setf (e-work-handle-metadata parent)
