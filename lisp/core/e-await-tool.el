@@ -104,7 +104,8 @@ a mix still waits on the resolvable references."
                  pairs)
          errors)))
 
-(cl-defun e-await-tool--start (&key arguments on-done on-error &allow-other-keys)
+(cl-defun e-await-tool--start
+    (&key arguments context on-done on-error &allow-other-keys)
   "Start invocation-only await aggregation without creating executable work."
   (condition-case err
       (let* ((refs (plist-get arguments :refs))
@@ -119,13 +120,19 @@ a mix still waits on the resolvable references."
           (funcall on-done (e-await-tool--report mode 'complete pairs errors)))
          (t
           (let ((cancel
-                 (e-work-await-set
-                  handles :mode mode :timeout timeout
-                  :on-settle
-                  (lambda (set-report)
-                    (funcall on-done
-                             (e-await-tool--report
-                              mode (plist-get set-report :reason) pairs errors))))))
+                 (if-let ((subscribe (plist-get context :board-subscribe-aggregation)))
+                     (funcall subscribe
+                              handles mode timeout
+                              (lambda (reason)
+                                (funcall on-done
+                                         (e-await-tool--report mode reason pairs errors))))
+                   (e-work-await-set
+                    handles :mode mode :timeout timeout
+                    :on-settle
+                    (lambda (set-report)
+                      (funcall on-done
+                               (e-await-tool--report
+                                mode (plist-get set-report :reason) pairs errors)))))))
             (e-tools-request-create :cancel (lambda () (funcall cancel) t))))))
     (error (when on-error (funcall on-error err)) nil)))
 

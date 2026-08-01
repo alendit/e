@@ -69,7 +69,8 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
    (subscribers nil)
    active-turns
    prompt-queues
-   work-enrollment-function)
+   work-enrollment-function
+   board-aggregation-function)
 
 (defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
   "Layer change callbacks keyed by harness.")
@@ -117,6 +118,13 @@ may install this port for board-attached sessions."
   (unless (or (null function) (functionp function))
     (signal 'wrong-type-argument (list 'functionp function)))
   (setf (e-harness-work-enrollment-function harness) function)
+  harness)
+
+(defun e-harness-set-board-aggregation-function (harness function)
+  "Set HARNESS's injected board aggregation subscription FUNCTION."
+  (unless (or (null function) (functionp function))
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (setf (e-harness-board-aggregation-function harness) function)
   harness)
 
 (defun e-harness-refresh-default-context-strategy (harness)
@@ -1775,8 +1783,10 @@ compaction) where exposing tools risks a tool-call instead of a reply."
                                       (e-work-handle-id turn-work))
                  :root-work-id (and (e-work-handle-p turn-work)
                                     (e-work-handle-id turn-work))
-                 :deadline (plist-get turn-options :deadline)
-                :tools tools
+                  :deadline (plist-get turn-options :deadline)
+                  :board-subscribe-aggregation
+                  (e-harness-board-aggregation-function harness)
+                 :tools tools
                 :capabilities (e-harness-active-capabilities harness)
                 :tool-executor
                 (lambda (tool-call options current-context)

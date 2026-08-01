@@ -67,7 +67,25 @@ has no callback and is observed only."
                (tool-call-id (plist-get (plist-get context :tool-call) :id)))
           (e-board-subscribe-invocation
            board (e-work-handle-id handle) callback
-           :id (list turn-id tool-call-id)))))))
+            :id (list turn-id tool-call-id)))))))
+
+(defun e-board-runtime--subscribe-aggregation
+    (harness handles mode timeout callback)
+  "Subscribe attached HARNESS await work through its source board."
+  (when-let* ((context (e-work-handle-context (car handles)))
+              (session-id (plist-get context :session-id))
+              (attachment (gethash (e-board-runtime--session-key harness session-id)
+                                   e-board-runtime--session-attachments)))
+    (let* ((board (e-board-registry-board-source-board
+                   (e-board-runtime-attachment-board attachment)))
+           (call (plist-get context :tool-call))
+           (aggregation
+            (e-board-subscribe-aggregation
+             board (mapcar #'e-work-handle-id handles) mode callback
+             :id (list (plist-get context :turn-id) (plist-get call :id))
+             :timeout timeout)))
+      (lambda ()
+        (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))))))
 
 (defun e-board-runtime--publish-output (attachment turn-id)
   "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
@@ -179,11 +197,16 @@ the conservative idle-only harness delivery port is used."
        (puthash key attachment e-board-runtime--attachments)
        (puthash (e-board-runtime--session-key harness session-id) attachment
                 e-board-runtime--session-attachments)
-       (e-harness-set-work-enrollment-function
-        harness
-        (lambda (handle &optional callback)
-          (e-board-runtime--enroll-work harness handle callback)))
-       attachment)))
+        (e-harness-set-work-enrollment-function
+         harness
+         (lambda (handle &optional callback)
+           (e-board-runtime--enroll-work harness handle callback)))
+        (e-harness-set-board-aggregation-function
+         harness
+         (lambda (handles mode timeout callback)
+           (e-board-runtime--subscribe-aggregation
+            harness handles mode timeout callback)))
+        attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
   "Deliver BOARD's frozen pending PICKUP-IDS through their attachments."

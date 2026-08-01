@@ -65,6 +65,29 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
       (should (functionp (plist-get tool :start)))
       (should-not (plist-get tool :work)))))
 
+(ert-deftest e-await-tool-test-uses-injected-board-aggregation-port ()
+  "Await delegates live aggregation to the injected board subscription port."
+  (let ((handle (e-await-tool-test--pending-handle)))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "a" handle))
+          (let ((registry (e-tools-registry-create))
+                received result)
+            (e-await-tool-register registry)
+            (e-tools-start
+             registry
+             '(:id "c" :name "await" :arguments (:refs ["fake:a"]))
+             :context
+             (list :board-subscribe-aggregation
+                   (lambda (handles mode timeout callback)
+                     (setq received (list handles mode timeout))
+                     (funcall callback 'complete)
+                     (lambda () t)))
+             :on-done (lambda (value) (setq result value)))
+            (should (eq (car (car received)) handle))
+            (should (eq (cadr received) 'all))
+            (should (plist-get (plist-get result :content) :settled))))
+      (e-work-cancel handle))))
+
 (ert-deftest e-await-tool-test-schema-stays-minimal ()
   "Await relies on async action guidance instead of duplicating it in schema."
   (let ((registry (e-tools-registry-create)))

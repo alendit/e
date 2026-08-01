@@ -1183,6 +1183,7 @@ handle after allocation and before its runner may execute."
                       (e-tools--apply-start-with-optional-event
                        start
                        (list :arguments (plist-get call :arguments)
+                             :context tool-context
                              :on-done #'finish-ok
                              :on-error #'finish-error
                              :on-request-start #'publish-request)
