@@ -96,6 +96,18 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
   "Return a new durable turn id."
   (e-session-generate-ulid))
 
+(defun e-harness--turn-work-spec ()
+  "Return the lifecycle-only work spec for one harness turn.
+The harness owns the provider loop and settles this handle from its existing
+turn completion paths; the runner deliberately performs no separate work."
+  (e-work-spec-create
+   :id "agent-turn"
+   :description "Run one agent turn."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'harness
+   :runner (lambda (_handle _arguments _context) :deferred)))
+
 (defun e-harness-refresh-default-context-strategy (harness)
   "Refresh HARNESS default context strategy, preserving custom strategies."
   (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
@@ -1741,11 +1753,18 @@ compaction) where exposing tools risks a tool-call instead of a reply."
   "Return the narrow hook context for a tool lifecycle in HARNESS."
   (let* ((turn-options (ignore-errors
                          (e-harness-turn-options harness session-id)))
-         (context
-          (list :harness harness
-                :session-id session-id
-                :turn-id turn-id
-                :deadline (plist-get turn-options :deadline)
+          (turn-work (plist-get (gethash session-id
+                                          (e-harness-active-turns harness))
+                                :work-handle))
+          (context
+           (list :harness harness
+                 :session-id session-id
+                 :turn-id turn-id
+                 :parent-work-id (and (e-work-handle-p turn-work)
+                                      (e-work-handle-id turn-work))
+                 :root-work-id (and (e-work-handle-p turn-work)
+                                    (e-work-handle-id turn-work))
+                 :deadline (plist-get turn-options :deadline)
                 :tools tools
                 :capabilities (e-harness-active-capabilities harness)
                 :tool-executor
@@ -2598,7 +2617,7 @@ When a turn produced multiple assistant messages, return the last one."
    (lambda ()
      (let ((context (or context
                         (e-harness-turn-context harness session-id turn-id))))
-       (e-loop-start-turn
+        (e-loop-start-turn
         :session-id session-id
         :turn-id turn-id
         :messages (plist-get context :messages)
@@ -2606,7 +2625,11 @@ When a turn produced multiple assistant messages, return the last one."
         :tools (e-harness-tools harness session-id turn-id)
         :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
         :options (plist-get context :options)
-        :segments (plist-get context :segments)
+         :segments (plist-get context :segments)
+         :turn-work-handle (plist-get
+                            (gethash session-id
+                                     (e-harness-active-turns harness))
+                            :work-handle)
         :on-event (or on-event
                       (lambda (type payload)
                         (e-harness--emit-turn-event
@@ -2671,9 +2694,18 @@ cancellation.  SESSION-ID identifies the session."
      (when (e-harness--active-turn-running-p
             (gethash session-id (e-harness-active-turns harness)))
        (signal 'e-harness-active-turn-exists (list session-id)))
-     (let* ((turn-id (e-harness--next-turn-id))
-            (entry (list :id turn-id
-                         :status 'running
+      (let* ((turn-id (e-harness--next-turn-id))
+             (turn-work
+              (e-work-prepare
+               (e-harness--turn-work-spec)
+               nil
+               :context (list :session-id session-id
+                              :turn-id turn-id
+                              :work-kind 'turn
+                              :domain-ref (format "turn:%s" turn-id))))
+             (entry (list :id turn-id
+                          :status 'running
+                          :work-handle turn-work
                          :result nil
                          :error nil
                          :error-details nil
@@ -2688,7 +2720,7 @@ cancellation.  SESSION-ID identifies the session."
                        (e-harness--append-user-message
                         harness session-id turn-id prompt metadata)
                        :id))
-         (error
+          (error
           (let ((message (e-harness--backend-error-message err))
                 (details (e-harness--backend-error-details err)))
             (plist-put entry :status 'error)
@@ -2697,8 +2729,14 @@ cancellation.  SESSION-ID identifies the session."
             (e-harness--emit-turn-failed
              harness session-id turn-id message details)
             (remhash session-id (e-harness-active-turns harness))
-            (signal (car err) (cdr err)))))
-       (cl-labels
+             (signal (car err) (cdr err)))))
+        (e-work-start-prepared turn-work :arguments nil
+                               :context (list :session-id session-id
+                                              :turn-id turn-id
+                                              :work-kind 'turn
+                                              :domain-ref
+                                              (format "turn:%s" turn-id)))
+        (cl-labels
            ((active-entry-p ()
               (eq (gethash session-id (e-harness-active-turns harness))
                   entry))
@@ -2754,8 +2792,9 @@ cancellation.  SESSION-ID identifies the session."
                    (plist-put entry :status 'error)
                    (plist-put entry :condition err)
                    (plist-put entry :error message)
-                   (plist-put entry :error-details details)
-                   (e-harness--emit-turn-failed
+                    (plist-put entry :error-details details)
+                    (e-work-fail turn-work err)
+                    (e-harness--emit-turn-failed
                     harness session-id turn-id message details)
                    (e-harness--schedule-queue-drain
                     harness session-id entry)))))
@@ -2774,6 +2813,7 @@ cancellation.  SESSION-ID identifies the session."
                                (plist-get entry :context))))
 	                 (plist-put entry :result hooked-result)
 	                 (plist-put entry :status 'done)
+	                 (e-work-finish turn-work hooked-result)
 	                 (e-harness--schedule-queue-drain
 	                  harness session-id entry))))
 	            (start-provider
@@ -2946,7 +2986,9 @@ cancellation.  SESSION-ID identifies the session."
           (when-let ((timer (plist-get entry :timer)))
             (cancel-timer timer))
           (plist-put entry :cancelled t)
-          (e-harness--cancel-active-request entry)
+           (e-harness--cancel-active-request entry)
+           (when-let ((turn-work (plist-get entry :work-handle)))
+             (e-work-cancel turn-work))
           (e-harness--append-cancelled-tool-result
            harness session-id turn-id entry)
           (plist-put entry :status 'cancelled)

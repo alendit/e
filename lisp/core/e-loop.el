@@ -249,8 +249,8 @@ CAUSES lists every completed tool call that induced a follow-up request."
 
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-          append-message refresh-messages on-request-start on-done on-error
-          cancelled-p drain-pending-input segments)
+           append-message refresh-messages on-request-start on-done on-error
+           cancelled-p drain-pending-input segments turn-work-handle)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
@@ -260,7 +260,6 @@ cancellation state, and same-turn pending user input.  The provider request is
 started through `e-backend-start'.  Tool execution is started through
 TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
 tool I/O, and turn settlement are callback-driven."
-  (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
         (active-request nil)
@@ -484,11 +483,17 @@ tool I/O, and turn settlement are callback-driven."
                                      (e-tools-start
                                       tools
                                       execution-call
-                                      :context
-                                      (list :session-id session-id
-                                            :turn-id turn-id
-                                            :deadline
-                                            (plist-get options :deadline))
+                                       :context
+                                       (list :session-id session-id
+                                             :turn-id turn-id
+                                             :parent-work-id
+                                             (and (e-work-handle-p turn-work-handle)
+                                                  (e-work-handle-id turn-work-handle))
+                                             :root-work-id
+                                             (and (e-work-handle-p turn-work-handle)
+                                                  (e-work-handle-id turn-work-handle))
+                                             :deadline
+                                             (plist-get options :deadline))
                                       :on-request-start
                                       (lambda (request)
                                         (publish-tool-request
@@ -618,10 +623,16 @@ tool I/O, and turn settlement are callback-driven."
                                   (lambda (_handle item _arguments _context)
                                     (handle-backend-item item)))
                                  nil
-                                 :context (list :session-id session-id
-                                                :turn-id turn-id
-                                                :deadline
-                                                (plist-get options :deadline))
+                                  :context (list :session-id session-id
+                                                 :turn-id turn-id
+                                                 :parent-work-id
+                                                 (and (e-work-handle-p turn-work-handle)
+                                                      (e-work-handle-id turn-work-handle))
+                                                 :root-work-id
+                                                 (and (e-work-handle-p turn-work-handle)
+                                                      (e-work-handle-id turn-work-handle))
+                                                 :deadline
+                                                 (plist-get options :deadline))
                                  :on-done
                                  (lambda (_backend-result)
                                    (unless (or settled (cancelled))
@@ -678,7 +689,7 @@ tool I/O, and turn settlement are callback-driven."
 
 (cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-          append-message refresh-messages on-request-start segments)
+           append-message refresh-messages on-request-start segments turn-work-handle)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -697,7 +708,8 @@ one."
      :backend backend
      :tools tools
      :tool-lifecycle tool-lifecycle
-     :options options
+      :options options
+      :turn-work-handle turn-work-handle
      :segments segments
      :on-event on-event
      :append-message append-message

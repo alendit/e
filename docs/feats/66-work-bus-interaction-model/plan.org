@@ -3,10 +3,10 @@
 
 * Status
 
-Ready
+In-progress
 
 The identity, bus-selector/settlement, board-registry, inbox-delivery, and first-version default contracts have been reviewed together.
-Implementation may start with Slice 0; the explicitly deferred follow-ups below are not blockers.
+Slice 0 is in progress.  The explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
 

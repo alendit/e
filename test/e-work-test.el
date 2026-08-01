@@ -46,7 +46,66 @@
       (should (equal done 42))
       (should (eq (plist-get (e-work-status handle) :state) 'finished))
       (should (equal (plist-get (e-work-status handle) :result) 42))
-      (should (assoc 'finished events)))))
+       (should (assoc 'finished events)))))
+
+(ert-deftest e-work-test-prepared-work-does-not-run-before-start ()
+  "Prepared work has its canonical id before its runner can execute."
+  (let* ((runs 0)
+         (spec (e-work-spec-create
+                :id "prepared"
+                :execution 'cheap
+                :interactive-policy 'cheap
+                :runner (lambda (_arguments _context)
+                          (cl-incf runs)
+                          :done))))
+    (let ((handle (e-work-prepare spec nil)))
+      (should (stringp (e-work-handle-id handle)))
+      (should (= runs 0))
+      (should (eq (plist-get (e-work-status handle) :state) 'created))
+      (e-work-start-prepared handle)
+      (should (= runs 1))
+      (should (eq (plist-get (e-work-status handle) :state) 'finished))
+      (should-error (e-work-start-prepared handle)
+                    :type 'e-work-prepared-start-invalid))))
+
+(ert-deftest e-work-test-cancelled-prepared-work-never-runs ()
+  "Cancellation before start settles the handle without entering its carrier."
+  (let ((runs 0)
+        (handle
+         (e-work-prepare
+          (e-work-spec-create
+           :id "prepared-cancelled"
+           :execution 'cheap
+           :interactive-policy 'cheap
+           :runner (lambda (_arguments _context)
+                     (cl-incf runs)))
+          nil)))
+    (e-work-cancel handle)
+    (should (eq (plist-get (e-work-status handle) :state) 'cancelled))
+    (should (= runs 0))
+    (should-error (e-work-start-prepared handle)
+                  :type 'e-work-prepared-start-invalid)))
+
+(ert-deftest e-work-test-publication-observer-precedes-cleanup-and-callbacks ()
+  "The dedicated publication observer sees terminal work first."
+  (let (events)
+    (e-work-start
+     (e-work-spec-create
+      :id "publication-order"
+      :execution 'cheap
+      :interactive-policy 'cheap
+      :setup (lambda (_arguments _context)
+               (list :cleanup (lambda (_handle) (push 'cleanup events))))
+      :runner (lambda (_arguments _context) :done))
+     nil
+     :publication-observer
+     (lambda (_handle state payload)
+       (push (list 'publication state payload) events))
+     :on-event (lambda (state _payload) (push (list 'event state) events))
+     :on-done (lambda (_payload) (push 'done events)))
+    (should (equal (nreverse events)
+                   '((publication finished :done) cleanup
+                     (event finished) done)))))
 
 (ert-deftest e-work-test-fail-cancel-and-stale-callbacks ()
   "Failures and cancellation settle once; late callbacks are ignored."

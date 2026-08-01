@@ -31,6 +31,8 @@
 (define-error 'e-work-deadline-exceeded "e work deadline exceeded" 'e-work-error)
 (define-error 'e-work-process-failed "e work process failed" 'e-work-error)
 (define-error 'e-work-url-failed "e work URL request failed" 'e-work-error)
+(define-error 'e-work-prepared-start-invalid
+  "Prepared e work cannot be started" 'e-work-error)
 
 (defconst e-work-execution-carriers
   '(cheap process url cooperative render agent-task backend)
@@ -86,9 +88,13 @@
   id
   spec
   lifecycle
-  metadata
-  callbacks
-  cancel-function
+   metadata
+   arguments
+   context
+   callbacks
+   publication-observer
+   started-p
+   cancel-function
   cleanup-function
   result
   error)
@@ -317,8 +323,24 @@ Every spec must declare explicit :execution and :interactive-policy values."
   (e-work--add-cleanup handle cleanup)
   handle)
 
+(defun e-work--publication-observer (handle state payload)
+  "Notify HANDLE's dedicated terminal publication observer.
+The observer is intentionally isolated from work settlement: a publication
+failure is recorded for its owner to reconcile but never changes the settled
+carrier result or suppresses ordinary cleanup/callbacks."
+  (when-let ((observer (e-work-handle-publication-observer handle)))
+    (condition-case err
+        (funcall observer handle state payload)
+      (error
+       (setf (e-work-handle-metadata handle)
+             (append (e-work-handle-metadata handle)
+                     (list :publication-observer-error err)))))))
+
 (defun e-work--terminal-event (handle state payload)
-  "Emit terminal STATE for HANDLE with PAYLOAD."
+  "Publish and emit terminal STATE for HANDLE with PAYLOAD."
+  ;; Board enrollment installs this observer before runner entry.  It must see
+  ;; the immutable terminal state before cleanup or general coordination hooks.
+  (e-work--publication-observer handle state payload)
   (e-work--cleanup handle)
   (e-work--callback handle :on-event state payload))
 
@@ -990,8 +1012,10 @@ detach branch, and the child stays ignorant of detachment entirely."
                          spec
                          raw
                          arguments context))))
-                 (error
-                  (e-work-fail handle err))))))
+                  (error
+                   (e-work-fail handle err))
+                  (quit
+                   (e-work-fail handle '(quit)))))))
     (setf (e-work-handle-metadata handle)
           (append (e-work-handle-metadata handle)
                   (list :transport (e-work-spec-execution spec)
@@ -1131,33 +1155,65 @@ detach branch, and the child stays ignorant of detachment entirely."
                             :harness-instance-id instance-id)
       arguments context))))
 
-(cl-defun e-work-start
-    (spec arguments &key context on-done on-error on-progress on-event)
-  "Start SPEC with ARGUMENTS and return an `e-work-handle'.
-The handle is returned for every carrier.  Cheap work may finish before this
-function returns, but still records the same lifecycle."
+(cl-defun e-work-prepare
+    (spec arguments &key context on-done on-error on-progress on-event
+          publication-observer)
+  "Prepare SPEC with ARGUMENTS and return its unstarted `e-work-handle'.
+Preparation allocates the canonical work identity and installs terminal
+observers without invoking a carrier.  Use `e-work-start-prepared' exactly once
+after any owner enrollment has committed."
   (setq spec (e-work--validate-spec spec))
   (let* ((id (e-work--next-id spec))
-         (metadata (copy-sequence (e-work--call (e-work-spec-metadata spec)
-                                                arguments context)))
+          (metadata (copy-sequence (e-work--call (e-work-spec-metadata spec)
+                                                 arguments context)))
          (lifecycle
           (e-request-lifecycle-create
-           :id id
-           :owner (e-work-spec-owner spec)
-           :parent-id (plist-get context :turn-id)))
-         (handle
-          (e-work-handle--create
-           :id id
-           :spec spec
-           :lifecycle lifecycle
-           :metadata metadata
-           :callbacks (list :on-done on-done
-                            :on-error on-error
-                            :on-progress on-progress
-                            :on-event on-event))))
+            :id id
+            :owner (e-work-spec-owner spec)
+            :parent-id (or (plist-get context :parent-work-id)
+                           (plist-get context :turn-id))))
+          (handle
+           (e-work-handle--create
+            :id id
+            :spec spec
+            :lifecycle lifecycle
+            :arguments arguments
+            :context context
+            :metadata
+            (append metadata
+                    (list :kind (or (plist-get context :work-kind)
+                                    (e-work-spec-id spec))
+                          :parent-work-id (plist-get context :parent-work-id)
+                          :root-work-id (or (plist-get context :root-work-id)
+                                            id)
+                          :domain-ref (plist-get context :domain-ref)
+                          :caused-by-event-seqs
+                          (plist-get context :caused-by-event-seqs)
+                          :caused-by-activation-id
+                          (plist-get context :caused-by-activation-id)))
+            :callbacks (list :on-done on-done
+                             :on-error on-error
+                             :on-progress on-progress
+                             :on-event on-event)
+            :publication-observer publication-observer)))
+    handle))
+
+(cl-defun e-work-start-prepared (handle &key arguments context)
+  "Start prepared HANDLE exactly once and return it.
+HANDLE may be cancelled or failed before this call.  In either that state, or
+after a prior start, no carrier runner is invoked."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (or (e-work-handle-started-p handle)
+            (e-request-terminal-p (e-work-handle-lifecycle handle)))
+    (signal 'e-work-prepared-start-invalid (list handle)))
+  (setf (e-work-handle-started-p handle) t)
+  (setq arguments (or arguments (e-work-handle-arguments handle))
+        context (or context (e-work-handle-context handle)))
+  (let ((spec (e-work-handle-spec handle)))
     (condition-case err
         (progn
-          (e-request-start lifecycle
+          (e-request-start (e-work-handle-lifecycle handle)
                            (list :execution (e-work-spec-execution spec)
                                  :interactive-policy
                                  (e-work-spec-interactive-policy spec)))
@@ -1176,7 +1232,25 @@ function returns, but still records the same lifecycle."
           handle)
       (error
        (e-work-fail handle err)
-       handle))))
+        handle))))
+
+(cl-defun e-work-start
+    (spec arguments &key context on-done on-error on-progress on-event
+          publication-observer)
+  "Prepare then start SPEC with ARGUMENTS and return its `e-work-handle'.
+This compatibility convenience preserves the one-call API.  Owners that must
+enroll work before its runner can settle use `e-work-prepare' followed by
+`e-work-start-prepared'."
+  (e-work-start-prepared
+   (e-work-prepare spec arguments
+                   :context context
+                   :on-done on-done
+                   :on-error on-error
+                   :on-progress on-progress
+                   :on-event on-event
+                   :publication-observer publication-observer)
+   :arguments arguments
+   :context context))
 
 (provide 'e-work)
 
