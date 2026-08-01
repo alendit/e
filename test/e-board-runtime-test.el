@@ -101,6 +101,25 @@
         (should (e-board-invocation source-board '("turn" "call")))
         (should-not (e-work-handle-started-p handle))))))
 
+(ert-deftest e-board-runtime-test-publishes-final-assistant-output-idempotently ()
+  "Repeated completion notifications retain one participant board output."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (let ((attachment (e-board-runtime-attach
+                         board harness "session" :participant-id "participant")))
+        (e-session-append-message
+         (e-harness-sessions harness) "session"
+         '(:id "assistant-1" :role assistant :turn-id "turn" :content "done"))
+        (e-board-runtime--publish-output attachment "turn")
+        (e-board-runtime--publish-output attachment "turn")
+        (let ((messages (e-board-messages
+                         (e-board-registry-board-source-board board))))
+          (should (= (length messages) 1))
+          (should (eq (e-board-message-kind (car messages)) 'output))
+          (should (equal (e-board-message-content (car messages)) "done")))))))
+
 (provide 'e-board-runtime-test)
 
 ;;; e-board-runtime-test.el ends here

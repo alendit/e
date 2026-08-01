@@ -38,7 +38,8 @@
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function)
+  board participant harness session-id delivery-function subscription
+  output-sequences next-output-sequence)
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -67,6 +68,37 @@ has no callback and is observed only."
           (e-board-subscribe-invocation
            board (e-work-handle-id handle) callback
            :id (list turn-id tool-call-id)))))))
+
+(defun e-board-runtime--publish-output (attachment turn-id)
+  "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
+  (let* ((harness (e-board-runtime-attachment-harness attachment))
+         (session-id (e-board-runtime-attachment-session-id attachment))
+         (message (e-harness--turn-assistant-message harness session-id turn-id)))
+    (when message
+      (let* ((entry-id (plist-get message :id))
+             (sequences (e-board-runtime-attachment-output-sequences attachment))
+             (sequence (or (gethash entry-id sequences)
+                           (let ((next (1+ (e-board-runtime-attachment-next-output-sequence
+                                            attachment))))
+                             (setf (e-board-runtime-attachment-next-output-sequence
+                                    attachment) next)
+                             (puthash entry-id next sequences)
+                             next)))
+             (board (e-board-registry-board-source-board
+                     (e-board-runtime-attachment-board attachment)))
+             (participant-id
+              (e-board-registry-participant-id
+               (e-board-runtime-attachment-participant attachment))))
+        (e-board-post-output
+         board
+         :author (format "participant:%s" participant-id)
+         :content (plist-get message :content)
+         :source-output-key (list participant-id 1 sequence))))))
+
+(defun e-board-runtime--handle-harness-event (attachment event)
+  "Publish an attached participant's durable final output from EVENT."
+  (when (eq (e-events-type event) 'turn-finished)
+    (e-board-runtime--publish-output attachment (plist-get event :turn-id))))
 
 (defun e-board-runtime--active-board (board-or-id)
   "Return active registry BOARD-OR-ID."
@@ -132,10 +164,18 @@ the conservative idle-only harness delivery port is used."
            (e-board-runtime-attachment--create
             :board board
             :participant participant
-            :harness harness
-            :session-id session-id
-            :delivery-function (or delivery-function
-                                   #'e-board-runtime--deliver-to-harness))))
+             :harness harness
+             :session-id session-id
+             :delivery-function (or delivery-function
+                                    #'e-board-runtime--deliver-to-harness)
+             :output-sequences (make-hash-table :test 'equal)
+             :next-output-sequence 0)))
+       (setf (e-board-runtime-attachment-subscription attachment)
+             (e-harness-subscribe
+              harness
+              (lambda (event)
+                (e-board-runtime--handle-harness-event attachment event))
+              :session-id session-id))
        (puthash key attachment e-board-runtime--attachments)
        (puthash (e-board-runtime--session-key harness session-id) attachment
                 e-board-runtime--session-attachments)
