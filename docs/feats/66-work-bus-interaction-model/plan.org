@@ -9,7 +9,9 @@ The identity, bus-selector/settlement, board-registry, inbox-delivery, and first
 Slice 0 is complete.  Slice 1 and Slice 2 foundations are in progress: board
 identity/routing, prepared work enrollment, exact invocation replies, attached
 harness work observation, participant output publication, and the board-owned
-ordered aggregation reducer have landed.
+ordered aggregation reducer have landed.  Slice 3 has begun with deferred
+=post-input= effects, bounded derived-message lineage, runtime pickup sweeps,
+and visibly faulted trusted predicates.
 The explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
