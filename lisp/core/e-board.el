@@ -402,7 +402,30 @@ inside the board model.  New subscriptions only inspect future inputs."
                    (e-board-participant board
                                         (e-board-subscription-participant-id
                                          subscription))))
-         (e-board--active-participant-p participant))))
+          (e-board--active-participant-p participant))))
+
+(defun e-board-find-subscription (board subscription-id)
+  "Return BOARD's subscription SUBSCRIPTION-ID, or nil."
+  (cl-find subscription-id (e-board-subscriptions board)
+           :key #'e-board-subscription-id :test #'equal))
+
+(defun e-board-set-subscription-state (board subscription-id state)
+  "Transition an ordinary BOARD subscription to STATE.
+The membership-owned exact address route is not mutable through this API; its
+lifetime belongs to participant membership."
+  (unless (memq state '(active muted cancelled))
+    (signal 'wrong-type-argument (list '(member active muted cancelled) state)))
+  (let ((subscription (e-board-find-subscription board subscription-id)))
+    (unless subscription
+      (signal 'e-board-error (list "Unknown subscription" subscription-id)))
+    (when (e-board-subscription-built-in-p subscription)
+      (signal 'e-board-error (list "Membership-owned subscription" subscription-id)))
+    (when (eq (e-board-subscription-state subscription) 'cancelled)
+      (signal 'e-board-error (list "Cancelled subscription" subscription-id)))
+    (setf (e-board-subscription-state subscription) state)
+    (e-board--append-event board 'subscription-transition
+                           (list :subscription-id subscription-id :state state))
+    subscription))
 
 (defun e-board--matching-subscriptions (board message)
   "Return eligible subscriptions for MESSAGE using its exact/tag route rule."

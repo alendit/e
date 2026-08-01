@@ -209,7 +209,25 @@ board, with its identity supplied by this registry's id generator."
                      (e-board-registry-board-id-function board) 'subscription))))
     (e-board-subscribe (e-board-registry-board-source-board board)
                       (e-board-registry-participant-id participant)
-                      selector :id id :state state :effect effect)))
+                       selector :id id :state state :effect effect)))
+
+(defun e-board-registry-mute-subscription (board-or-id subscription-id)
+  "Mute ordinary SUBSCRIPTION-ID on active BOARD-OR-ID."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-set-subscription-state
+     (e-board-registry-board-source-board board) subscription-id 'muted)))
+
+(defun e-board-registry-resume-subscription (board-or-id subscription-id)
+  "Resume ordinary SUBSCRIPTION-ID on active BOARD-OR-ID for future inputs."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-set-subscription-state
+     (e-board-registry-board-source-board board) subscription-id 'active)))
+
+(defun e-board-registry-cancel-subscription (board-or-id subscription-id)
+  "Cancel ordinary SUBSCRIPTION-ID on active BOARD-OR-ID permanently."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-set-subscription-state
+     (e-board-registry-board-source-board board) subscription-id 'cancelled)))
 
 (defun e-board-registry-close (board-or-id)
   "Close BOARD-OR-ID, disable its routes, and unregister its source board."

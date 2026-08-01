@@ -95,7 +95,29 @@
                   'closed))
       (should (cl-every (lambda (subscription)
                           (eq (e-board-subscription-state subscription) 'inactive))
-                        (e-board-subscriptions source-board))))))
+                         (e-board-subscriptions source-board))))))
+
+(ert-deftest e-board-registry-test-controls-ordinary-subscription-lifecycle ()
+  "Registry lifecycle operations do not expose the membership-owned route."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant board :id "member"))
+           (subscription (e-board-registry-install-subscription
+                          board participant '(:tags (main)) :id "main"))
+           (source (e-board-registry-board-source-board board)))
+      (e-board-registry-mute-subscription board "main")
+      (should (eq (e-board-subscription-state subscription) 'muted))
+      (e-board-registry-resume-subscription board "main")
+      (should (eq (e-board-subscription-state subscription) 'active))
+      (e-board-registry-cancel-subscription board "main")
+      (should (eq (e-board-subscription-state subscription) 'cancelled))
+      (should-error
+       (e-board-registry-mute-subscription
+        board
+        (e-board-participant-create-pickup-subscription-id
+         (e-board-registry-participant-source-participant participant)))
+       :type 'e-board-error)
+      (should (e-board-find-subscription source "main")))))
 
 (provide 'e-board-registry-test)
 

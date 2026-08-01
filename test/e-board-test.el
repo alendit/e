@@ -160,6 +160,29 @@
                        '(posted subscription-added finished activation-prepared
                                 effect-committed)))))))
 
+(ert-deftest e-board-test-ordinary-subscription-lifecycle-preserves-address-route ()
+  "Muting or cancelling an ordinary route cannot alter exact addressing."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "participant"
+                               :create-pickup-subscription-id "address")
+      (e-board-subscribe board "participant" '(:tags (main)) :id "main")
+      (e-board-set-subscription-state board "main" 'muted)
+      (should (eq (e-board-subscription-state
+                   (e-board-find-subscription board "main")) 'muted))
+      (should (eq (e-board-message-unrouted-reason
+                   (e-board-publication-message
+                    (e-board-post-input board :tags '(main))))
+                  'no-matching-subscription))
+      (e-board-set-subscription-state board "main" 'active)
+      (should (= (length (e-board-publication-pickup-ids
+                          (e-board-post-input board :tags '(main)))) 1))
+      (e-board-set-subscription-state board "main" 'cancelled)
+      (should-error (e-board-set-subscription-state board "main" 'active)
+                    :type 'e-board-error)
+      (should-error (e-board-set-subscription-state board "address" 'muted)
+                    :type 'e-board-error))))
+
 (provide 'e-board-test)
 
 ;;; e-board-test.el ends here
