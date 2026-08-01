@@ -186,7 +186,60 @@
                     'committed))
         (should (equal (mapcar #'e-board-event-type (e-board-events board))
                        '(posted subscription-added finished activation-prepared
-                                effect-committed)))))))
+                                 effect-committed)))))))
+
+(ert-deftest e-board-test-aggregation-replies-after-all-observed-work-settles ()
+  "Ordered aggregation waits for every watched terminal board fact."
+  (e-board-test--with-empty-registry
+    (let (effects reasons)
+      (let* ((board (e-board-create :id "board"
+                                    :effect-scheduler
+                                    (lambda (effect) (push effect effects))))
+             (first (e-work-prepare
+                     (e-work-spec-create
+                      :id "first" :execution 'render :interactive-policy 'async
+                      :runner (lambda (_arguments _context) :never)) nil))
+             (second (e-work-prepare
+                      (e-work-spec-create
+                       :id "second" :execution 'render :interactive-policy 'async
+                       :runner (lambda (_arguments _context) :never)) '(:delay 600))))
+        (e-board-enroll-work board first)
+        (e-board-enroll-work board second)
+        (e-board-subscribe-aggregation
+         board (list (e-work-handle-id first) (e-work-handle-id second)) 'all
+         (lambda (reason) (push reason reasons)) :id "turn-1/call-1")
+        (e-work-start-prepared first)
+        (e-work-start-prepared second)
+        (e-work-finish first "one")
+        (should-not effects)
+        (e-work-finish second "two")
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (equal reasons '(complete)))
+        (should (eq (e-board-aggregation-state
+                     (e-board-aggregation board "turn-1/call-1"))
+                    'committed))))))
+
+(ert-deftest e-board-test-aggregation-timeout-does-not-cancel-work ()
+  "Aggregation timeout closes only its deferred reply subscription."
+  (e-board-test--with-empty-registry
+    (let (effects reasons)
+      (let* ((board (e-board-create :id "board"
+                                    :effect-scheduler
+                                    (lambda (effect) (push effect effects))))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "pending" :execution 'render :interactive-policy 'async
+                       :runner (lambda (_arguments _context) :never)) '(:delay 600))))
+        (e-board-enroll-work board handle)
+        (e-board-subscribe-aggregation
+         board (list (e-work-handle-id handle)) 'any
+         (lambda (reason) (push reason reasons)) :timeout 0.01)
+        (e-work-start-prepared handle)
+        (sleep-for 0.05)
+        (funcall (pop effects))
+        (should (equal reasons '(timed-out)))
+        (should (eq (plist-get (e-work-status handle) :state) 'started))))))
 
 (ert-deftest e-board-test-ordinary-subscription-lifecycle-preserves-address-route ()
   "Muting or cancelling an ordinary route cannot alter exact addressing."

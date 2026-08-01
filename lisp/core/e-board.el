@@ -68,11 +68,16 @@
                 (:conc-name e-board-invocation-))
   id work-id state callback activation-id)
 
+(cl-defstruct (e-board-aggregation
+                (:constructor e-board-aggregation--create)
+                (:conc-name e-board-aggregation-))
+  id work-ids mode state callback timer activation-id)
+
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
-  pickups source-high-watermarks source-recent work-table invocations pending-effects
+  pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
   effect-scheduler)
 
 (defun e-board--next-id (board kind)
@@ -150,8 +155,9 @@ explicit ids to individual operations takes precedence over this generator."
                   :pickups (make-hash-table :test 'equal)
                   :source-high-watermarks (make-hash-table :test 'equal)
                   :source-recent (make-hash-table :test 'equal)
-                  :work-table (make-hash-table :test 'equal)
-                  :invocations (make-hash-table :test 'equal)
+                   :work-table (make-hash-table :test 'equal)
+                   :invocations (make-hash-table :test 'equal)
+                   :aggregations (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effect-scheduler effect-scheduler)))
     (when register (e-board-register board))
@@ -190,6 +196,10 @@ explicit ids to individual operations takes precedence over this generator."
 (defun e-board-invocation (board invocation-id)
   "Return BOARD's exact invocation relation for INVOCATION-ID, or nil."
   (gethash invocation-id (e-board-invocations board)))
+
+(defun e-board-aggregation (board aggregation-id)
+  "Return BOARD's aggregation subscription for AGGREGATION-ID, or nil."
+  (gethash aggregation-id (e-board-aggregations board)))
 
 (defun e-board--schedule-effect (board effect)
   "Schedule BOARD EFFECT after the initiating work-start stack unwinds."
@@ -237,7 +247,102 @@ effect records and never synchronously enter a tool or harness callback."
               (setf (e-board-invocation-state invocation) 'failed)
               (e-board--append-event
                board 'effect-failed
+                (list :activation-id activation-id :error err))))))))))
+
+(defun e-board--aggregation-ready-p (board aggregation)
+  "Return non-nil when AGGREGATION's observed work has reached its policy."
+  (let ((work-ids (e-board-aggregation-work-ids aggregation)))
+    (pcase (e-board-aggregation-mode aggregation)
+      ('all (cl-every (lambda (id)
+                        (e-board-work-terminal-seq (e-board-observed-work board id)))
+                      work-ids))
+      ('any (cl-some (lambda (id)
+                       (e-board-work-terminal-seq (e-board-observed-work board id)))
+                     work-ids))
+      (_ (signal 'e-board-error
+                 (list "Unknown aggregation mode" (e-board-aggregation-mode aggregation)))))))
+
+(defun e-board--settle-aggregation (board aggregation reason)
+  "Commit AGGREGATION's deferred reply effect with terminal REASON."
+  (when (eq (e-board-aggregation-state aggregation) 'open)
+    (setf (e-board-aggregation-state aggregation) 'prepared)
+    (when-let ((timer (e-board-aggregation-timer aggregation)))
+      (cancel-timer timer)
+      (setf (e-board-aggregation-timer aggregation) nil))
+    (let ((activation-id
+           (list (e-board-id board) (e-board-aggregation-id aggregation) 1)))
+      (setf (e-board-aggregation-activation-id aggregation) activation-id)
+      (e-board--append-event
+       board 'activation-prepared
+       (list :activation-id activation-id
+             :work-ids (copy-sequence (e-board-aggregation-work-ids aggregation))
+             :effect 'reply-to-invocation))
+      (e-board--schedule-effect
+       board
+       (lambda ()
+         (when (eq (e-board-aggregation-state aggregation) 'prepared)
+           (setf (e-board-aggregation-state aggregation) 'applying)
+           (condition-case err
+               (progn
+                 (funcall (e-board-aggregation-callback aggregation) reason)
+                 (setf (e-board-aggregation-state aggregation) 'committed)
+                 (e-board--append-event
+                  board 'effect-committed
+                  (list :activation-id activation-id :effect 'reply-to-invocation)))
+             (error
+              (setf (e-board-aggregation-state aggregation) 'failed)
+              (e-board--append-event
+               board 'effect-failed
                (list :activation-id activation-id :error err))))))))))
+
+(cl-defun e-board-subscribe-aggregation
+    (board work-ids mode callback &key id timeout)
+  "Install an ordered work aggregation reply subscription on BOARD.
+WORK-IDS must name currently observed work.  MODE is `all' or `any'.  CALLBACK
+is deferred after the board commits the corresponding activation and receives
+the reason `complete' or `timed-out'."
+  (unless (and (listp work-ids) work-ids)
+    (signal 'e-board-error (list "Aggregation requires at least one work id")))
+  (unless (memq mode '(all any))
+    (signal 'e-board-error (list "Unknown aggregation mode" mode)))
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (dolist (work-id work-ids)
+    (unless (e-board-observed-work board work-id)
+      (signal 'e-board-error (list "Unknown board work" work-id))))
+  (let ((id (or id (e-board--next-id board 'invocation))))
+    (when (e-board-aggregation board id)
+      (signal 'e-board-id-conflict (list id)))
+    (let ((aggregation (e-board-aggregation--create
+                        :id id :work-ids (copy-sequence work-ids) :mode mode
+                        :state 'open :callback callback)))
+      (puthash id aggregation (e-board-aggregations board))
+      (e-board--append-event
+       board 'subscription-added
+       (list :subscription-id id :work-ids (copy-sequence work-ids)
+             :readiness (if (eq mode 'all) 'all-terminal 'first-terminal)
+             :effect 'reply-to-invocation))
+      (when timeout
+        (setf (e-board-aggregation-timer aggregation)
+              (run-at-time timeout nil
+                           (lambda ()
+                             (e-board--settle-aggregation board aggregation 'timed-out)))))
+      (when (e-board--aggregation-ready-p board aggregation)
+        (e-board--settle-aggregation board aggregation 'complete))
+      aggregation)))
+
+(defun e-board-cancel-aggregation (board aggregation-id)
+  "Cancel open AGGREGATION-ID on BOARD without affecting watched work."
+  (when-let ((aggregation (e-board-aggregation board aggregation-id)))
+    (when (eq (e-board-aggregation-state aggregation) 'open)
+      (when-let ((timer (e-board-aggregation-timer aggregation)))
+        (cancel-timer timer))
+      (setf (e-board-aggregation-timer aggregation) nil
+            (e-board-aggregation-state aggregation) 'cancelled)
+      (e-board--append-event
+       board 'subscription-cancelled
+       (list :subscription-id aggregation-id))))
+  t)
 
 (defun e-board--observe-work-terminal (board work state payload)
   "Append WORK's terminal fact, then freeze every exact invocation reply."
@@ -249,12 +354,20 @@ effect records and never synchronously enter a tool or harness callback."
       (setf (e-board-work-state work) state
             (e-board-work-terminal-seq work) (e-board-event-seq event)
             (e-board-work-terminal-payload work) payload)
-      (maphash
-       (lambda (_id invocation)
+       (maphash
+        (lambda (_id invocation)
          (when (equal (e-board-invocation-work-id invocation)
                       (e-board-work-id work))
-           (e-board--settle-invocation board invocation state payload)))
-       (e-board-invocations board)))))
+            (e-board--settle-invocation board invocation state payload)))
+        (e-board-invocations board))
+       (maphash
+        (lambda (_id aggregation)
+          (when (and (eq (e-board-aggregation-state aggregation) 'open)
+                     (member (e-board-work-id work)
+                             (e-board-aggregation-work-ids aggregation))
+                     (e-board--aggregation-ready-p board aggregation))
+            (e-board--settle-aggregation board aggregation 'complete)))
+        (e-board-aggregations board)))))
 
 (cl-defun e-board-enroll-work (board handle &key metadata)
   "Enroll prepared HANDLE in BOARD before its runner may start.
