@@ -1024,13 +1024,15 @@ Signal `e-tools-nested-tool-error' when the structured result is an error."
       (signal 'e-tools-nested-tool-error (list result)))))
 
 (cl-defun e-tools-start
-    (registry call &key on-done on-error on-request-start on-event context)
+    (registry call &key on-done on-error on-request-start on-event context
+              on-work-prepared)
   "Start CALL against REGISTRY and report a structured result asynchronously.
 ON-DONE receives the structured result.  ON-ERROR receives unexpected Emacs
 condition lists.  ON-REQUEST-START receives an optional `e-tools-request'.
 ON-EVENT receives tool progress events as TYPE and PAYLOAD.  CONTEXT is
 dynamically visible to tool start functions through
-`e-tools-current-context'."
+`e-tools-current-context'.  ON-WORK-PREPARED receives each canonical work
+handle after allocation and before its runner may execute."
   (let* ((name (plist-get call :name))
          (nested-state (or (plist-get context :nested-tool-state)
                            (list :count 0 :sequence 0)))
@@ -1163,6 +1165,8 @@ dynamically visible to tool start functions through
                                    (when on-event
                                      (funcall on-event 'tool-progress payload)))))
                                request)
+                          (when on-work-prepared
+                            (funcall on-work-prepared handle))
                           (e-work-start-prepared
                            handle
                            :arguments (plist-get call :arguments)
@@ -1186,7 +1190,9 @@ dynamically visible to tool start functions through
                                    :context tool-context
                                    :on-done #'finish-ok
                                    :on-error #'finish-error)))
-                              (e-work-start-prepared
+                               (when on-work-prepared
+                                 (funcall on-work-prepared handle))
+                               (e-work-start-prepared
                                handle
                                :arguments (list :tool-arguments
                                                 (plist-get call :arguments))
@@ -1205,10 +1211,12 @@ dynamically visible to tool start functions through
                                  (list :delay 0
                                        :tool-arguments
                                        (plist-get call :arguments))
-                                  :context tool-context
-                                  :on-done #'finish-ok
-                                  :on-error #'finish-error))
+                                   :context tool-context
+                                   :on-done #'finish-ok
+                                   :on-error #'finish-error))
                                 request)
+                          (when on-work-prepared
+                            (funcall on-work-prepared handle))
                           (e-work-start-prepared
                            handle
                            :arguments (list :delay 0

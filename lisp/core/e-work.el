@@ -323,6 +323,22 @@ Every spec must declare explicit :execution and :interactive-policy values."
   (e-work--add-cleanup handle cleanup)
   handle)
 
+(defun e-work-install-publication-observer (handle observer)
+  "Install HANDLE's dedicated terminal OBSERVER before it starts.
+Board enrollment uses this narrow seam to bind terminal publication without
+giving the work substrate a board dependency.  Replacing an observer or adding
+one after runner entry is rejected because either would change settlement
+ordering after ownership has been established."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (unless (functionp observer)
+    (signal 'wrong-type-argument (list 'functionp observer)))
+  (when (or (e-work-handle-started-p handle)
+            (e-work-handle-publication-observer handle))
+    (signal 'e-work-prepared-start-invalid (list handle)))
+  (setf (e-work-handle-publication-observer handle) observer)
+  handle)
+
 (defun e-work--publication-observer (handle state payload)
   "Notify HANDLE's dedicated terminal publication observer.
 The observer is intentionally isolated from work settlement: a publication
