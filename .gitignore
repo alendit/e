@@ -1,4 +1,5 @@
 .eldev/
+.eask/
 *.elc
 dist/
 ui/modernchat/pkg/
