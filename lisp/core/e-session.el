@@ -1406,7 +1406,13 @@ behavior.  Interactive mutation paths must not call this function."
             timestamp)
            timestamp
            record))
-         (e-session--touch store session timestamp)))
+          (when-let ((sequence
+                      (plist-get (car (plist-get session :messages))
+                                 :board-output-sequence)))
+            (plist-put session :board-output-sequence
+                       (max (or (plist-get session :board-output-sequence) 0)
+                            sequence)))
+          (e-session--touch store session timestamp)))
       ("message-display"
        (when session
          (when-let ((message

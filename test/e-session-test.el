@@ -98,6 +98,23 @@
       (should (= (plist-get first :board-output-sequence) 1))
       (should (= (plist-get second :board-output-sequence) 2)))))
 
+(ert-deftest e-session-test-board-output-sequence-continues-after-replay ()
+  "Reopened sessions allocate past stored assistant output identities."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "output-replay")
+          (e-session-append-message
+           store "output-replay" '(:role assistant :content "first"))
+          (e-session-flush store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (message (e-session-append-message
+                           reopened "output-replay"
+                           '(:role assistant :content "second"))))
+            (should (= (plist-get message :board-output-sequence) 2))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-append-message-stamps-created-at ()
   "Appended messages carry their creation timestamp."
   (let ((store (e-session-store-create)))
