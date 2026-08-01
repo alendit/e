@@ -1,0 +1,133 @@
+;;; e-board-test.el --- Tests for the pure board core -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Code:
+
+(require 'ert)
+(require 'e-board)
+
+(defmacro e-board-test--with-empty-registry (&rest body)
+  "Run BODY with isolated process-local board state."
+  (declare (indent 0))
+  `(let ((e-board--registry (make-hash-table :test 'equal))
+         (e-board--id-sequence 0))
+     ,@body))
+
+(ert-deftest e-board-test-generated-and-injected-identities ()
+  "Board creation and member creation support deterministic identities."
+  (e-board-test--with-empty-registry
+    (let ((ids '("participant-generated" "subscription-generated")))
+      (let* ((board (e-board-create :id "board-1"
+                                    :id-function (lambda (_kind) (pop ids))))
+             (participant (e-board-add-participant
+                           board :create-pickup-subscription-id "sub-address")))
+        (should (eq board (e-board-get "board-1")))
+        (should (equal (e-board-participant-id participant)
+                       "participant-generated"))
+        (should (equal (e-board-participant-create-pickup-subscription-id
+                        participant)
+                       "sub-address"))
+        (should-error (e-board-create :id "board-1")
+                      :type 'e-board-id-conflict)))))
+
+(ert-deftest e-board-test-exact-address-ignores-tags ()
+  "Addressed input reaches only the built-in subscription of its target."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "one-address")
+      (e-board-add-participant board :id "two" :create-pickup-subscription-id "two-address")
+      (e-board-subscribe board "two" '(:tags (main)) :id "two-main")
+      (let* ((publication (e-board-post-input
+                           board :id "message" :to "one" :tags '(main)))
+             (message (e-board-publication-message publication))
+             (pickup (e-board-pickup board (car (e-board-publication-pickup-ids
+                                                 publication)))))
+        (should (eq (e-board-publication-status publication) 'posted))
+        (should (equal (e-board-message-matching-participant-ids message)
+                       '("one")))
+        (should (equal (e-board-pickup-participant-id pickup) "one"))
+        (should (equal (e-board-pickup-subscription-ids pickup)
+                       '("one-address")))))))
+
+(ert-deftest e-board-test-tag-routes-once-per-participant-and-freezes-matches ()
+  "Tag routing broadcasts while coalescing several matching subscriptions."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "one-address")
+      (e-board-add-participant board :id "two" :create-pickup-subscription-id "two-address")
+      (e-board-subscribe board "one" '(:tags (main)) :id "one-main")
+      (e-board-subscribe board "one" '(:tags-all (main)) :id "one-main-again")
+      (e-board-subscribe board "two" '(:tags-any (main other)) :id "two-main")
+      (let* ((publication (e-board-post-input board :id "message" :tags '(main)))
+             (message (e-board-publication-message publication))
+             (one (e-board-pickup board (list "board" "message" "one"))))
+        (should (equal (e-board-message-matching-participant-ids message)
+                       '("one" "two")))
+        (should (= (length (e-board-publication-pickup-ids publication)) 2))
+        (should (equal (e-board-pickup-subscription-ids one)
+                       '("one-main" "one-main-again")))
+        ;; A later subscription cannot receive a message whose match set froze.
+        (e-board-subscribe board "two" '(:tags (main)) :id "late")
+        (should-not (member "late" (e-board-pickup-subscription-ids one)))))))
+
+(ert-deftest e-board-test-unrouted-inputs-and-monotonic-event-log ()
+  "Unmatched input remains inspectable and every mutation advances sequence."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "board"))
+           (publication (e-board-post-input board :id "message" :tags '(main)))
+           (message (e-board-publication-message publication))
+           (events (e-board-events board)))
+      (should (eq (e-board-publication-status publication) 'posted))
+      (should (eq (e-board-message-unrouted-reason message)
+                  'no-matching-subscription))
+      (should (equal (e-board-unrouted-inputs board) (list message)))
+      (should (equal (mapcar #'e-board-event-seq events) '(1 2)))
+      (should (equal (mapcar #'e-board-event-type events)
+                     '(input-posted input-unrouted))))))
+
+(ert-deftest e-board-test-source-key-retries-and-expired-history-do-not-route-twice ()
+  "Retained source keys return their pickup; late keys remain explicit failures."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "one-address")
+      (let* ((first (e-board-post-input
+                     board :id "message" :to "one" :source-input-key '(chat 1 2)))
+             (event-count (length (e-board-events board)))
+             (retry (e-board-post-input
+                     board :id "different-id" :to "one" :source-input-key '(chat 1 2)))
+             (late (e-board-post-input board :to "one" :source-input-key '(chat 1 1))))
+        (should (eq (e-board-publication-status retry) 'duplicate))
+        (should (eq (e-board-publication-message first)
+                    (e-board-publication-message retry)))
+        (should (equal (e-board-publication-pickup-ids first)
+                       (e-board-publication-pickup-ids retry)))
+        (should (= event-count (length (e-board-events board))))
+        (should (eq (e-board-publication-status late) 'source-history-expired))
+        (should (= event-count (length (e-board-events board))))))))
+
+(ert-deftest e-board-test-output-is-idempotent-and-never-routes ()
+  "Output requires a source key and only appends an output event."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (should-error (e-board-post-output board :author "participant:one")
+                    :type 'e-board-invalid-source-key)
+      (let* ((first (e-board-post-output
+                     board :id "output" :author "participant:one"
+                     :source-output-key '(one 1 1)))
+             (retry (e-board-post-output
+                     board :id "other" :author "participant:one"
+                     :source-output-key '(one 1 1)))
+             (message (e-board-publication-message first)))
+        (should (eq (e-board-publication-status retry) 'duplicate))
+        (should (eq (e-board-message-kind message) 'output))
+        (should-not (e-board-message-pickup-ids message))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(output-posted)))))))
+
+(provide 'e-board-test)
+
+;;; e-board-test.el ends here

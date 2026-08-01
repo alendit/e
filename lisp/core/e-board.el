@@ -1,0 +1,429 @@
+;;; e-board.el --- Process-local board routing core for e -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; This is the pure, process-local board model.  It owns no harness endpoint
+;; and performs no delivery; consumers inspect the frozen pickup envelopes.
+
+;;; Code:
+
+(require 'cl-lib)
+
+(define-error 'e-board-error "e board error")
+(define-error 'e-board-id-conflict "e board id conflict" 'e-board-error)
+(define-error 'e-board-missing "e board is not registered" 'e-board-error)
+(define-error 'e-board-invalid-source-key "Invalid board source key" 'e-board-error)
+
+(defvar e-board--id-sequence 0
+  "Process-local fallback sequence for board identities.")
+
+(defvar e-board--registry (make-hash-table :test 'equal)
+  "Live process-local boards keyed by board id.")
+
+(cl-defstruct (e-board-message
+               (:constructor e-board-message--create)
+               (:conc-name e-board-message-))
+  id board-id seq kind author tags to mode content reference
+  source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
+  matching-participant-ids pickup-ids unrouted-reason)
+
+(cl-defstruct (e-board-event
+               (:constructor e-board-event--create)
+               (:conc-name e-board-event-))
+  seq type data)
+
+(cl-defstruct (e-board-participant
+               (:constructor e-board-participant--create)
+               (:conc-name e-board-participant-))
+  id board-id state create-pickup-subscription-id)
+
+(cl-defstruct (e-board-subscription
+               (:constructor e-board-subscription--create)
+               (:conc-name e-board-subscription-))
+  id board-id participant-id selector effect state built-in-p)
+
+(cl-defstruct (e-board-pickup
+               (:constructor e-board-pickup--create)
+               (:conc-name e-board-pickup-))
+  delivery-id board-id message-id participant-id subscription-ids mode state)
+
+(cl-defstruct (e-board-publication
+               (:constructor e-board-publication--create)
+               (:conc-name e-board-publication-))
+  status message pickup-ids)
+
+(cl-defstruct (e-board
+               (:constructor e-board--create)
+               (:conc-name e-board-))
+  id id-function next-seq events messages message-table participants subscriptions
+  pickups source-high-watermarks source-recent)
+
+(defun e-board--next-id (board kind)
+  "Return BOARD's next identity for KIND.
+An injected id function receives KIND.  The fallback is only process-local and
+exists so callers need not supply ids outside deterministic tests."
+  (let ((id (if-let ((function (e-board-id-function board)))
+                (funcall function kind)
+              (format "%s-%d" kind (cl-incf e-board--id-sequence)))))
+    (unless id
+      (signal 'e-board-error (list "Id generator returned nil" kind)))
+    id))
+
+(defun e-board--require-id (id name)
+  "Return ID or signal that required identity NAME is absent."
+  (unless id
+    (signal 'wrong-type-argument (list name id)))
+  id)
+
+(defun e-board-register (board)
+  "Register BOARD in the process-local board registry and return it."
+  (unless (e-board-p board)
+    (signal 'wrong-type-argument (list 'e-board-p board)))
+  (let ((id (e-board-id board)))
+    (when-let ((existing (gethash id e-board--registry)))
+      (unless (eq existing board)
+        (signal 'e-board-id-conflict (list id))))
+    (puthash id board e-board--registry))
+  board)
+
+(defun e-board-get (id)
+  "Return the registered board ID, or signal `e-board-missing'."
+  (or (gethash id e-board--registry)
+      (signal 'e-board-missing (list id))))
+
+(defun e-board-unregister (board-or-id)
+  "Remove BOARD-OR-ID from the process-local registry.
+The board object remains valid for inspection by its holder."
+  (let ((id (if (e-board-p board-or-id)
+                (e-board-id board-or-id)
+              board-or-id)))
+    (remhash id e-board--registry))
+  nil)
+
+(defun e-board-list ()
+  "Return registered boards sorted by printable identity."
+  (let (boards)
+    (maphash (lambda (_id board) (push board boards)) e-board--registry)
+    (sort boards (lambda (left right)
+                   (string< (format "%s" (e-board-id left))
+                            (format "%s" (e-board-id right)))))))
+
+(cl-defun e-board-create (&key id id-function (register t))
+  "Create a process-local board with ID and optional ID-FUNCTION.
+ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
+explicit ids to individual operations takes precedence over this generator."
+  (let* ((board (e-board--create
+                 :id (or id (format "board-%d" (cl-incf e-board--id-sequence)))
+                 :id-function id-function
+                 :next-seq 0
+                 :events nil
+                 :messages nil
+                 :message-table (make-hash-table :test 'equal)
+                 :participants (make-hash-table :test 'equal)
+                 :subscriptions nil
+                 :pickups (make-hash-table :test 'equal)
+                 :source-high-watermarks (make-hash-table :test 'equal)
+                 :source-recent (make-hash-table :test 'equal))))
+    (when register (e-board-register board))
+    board))
+
+(defun e-board--append-event (board type data)
+  "Append TYPE with DATA to BOARD's ordered event log and return the event."
+  (let ((event (e-board-event--create
+                :seq (cl-incf (e-board-next-seq board))
+                :type type
+                :data data)))
+    (setf (e-board-events board) (append (e-board-events board) (list event)))
+    event))
+
+(defun e-board-events-after (board seq)
+  "Return BOARD events whose sequence is strictly greater than SEQ."
+  (cl-remove-if (lambda (event) (<= (e-board-event-seq event) seq))
+                (e-board-events board)))
+
+(defun e-board-message (board message-id)
+  "Return BOARD message MESSAGE-ID, or nil when it is not retained."
+  (gethash message-id (e-board-message-table board)))
+
+(defun e-board-participant (board participant-id)
+  "Return BOARD participant PARTICIPANT-ID, or nil."
+  (gethash participant-id (e-board-participants board)))
+
+(defun e-board-pickup (board delivery-id)
+  "Return BOARD pickup DELIVERY-ID, or nil."
+  (gethash delivery-id (e-board-pickups board)))
+
+(defun e-board--active-participant-p (participant)
+  "Return non-nil when PARTICIPANT can receive a new pickup."
+  (memq (e-board-participant-state participant) '(active dormant stale)))
+
+(cl-defun e-board-add-participant
+    (board &key id (state 'active) create-pickup-subscription-id)
+  "Add participant ID to BOARD and install its built-in exact pickup route.
+The identity subscription is membership-owned: ordinary subscriptions cannot
+replace it, and exact input ignores descriptive tags and other subscriptions."
+  (let* ((id (or id (e-board--next-id board 'participant)))
+         (subscription-id
+          (or create-pickup-subscription-id
+              (e-board--next-id board 'subscription))))
+    (e-board--require-id id 'e-board-participant-id)
+    (when (e-board-participant board id)
+      (signal 'e-board-id-conflict (list id)))
+    (when (cl-find subscription-id (e-board-subscriptions board)
+                   :key #'e-board-subscription-id :test #'equal)
+      (signal 'e-board-id-conflict (list subscription-id)))
+    (let ((participant
+           (e-board-participant--create
+            :id id :board-id (e-board-id board) :state state
+            :create-pickup-subscription-id subscription-id)))
+      (puthash id participant (e-board-participants board))
+      (setf (e-board-subscriptions board)
+            (append (e-board-subscriptions board)
+                    (list (e-board-subscription--create
+                           :id subscription-id
+                           :board-id (e-board-id board)
+                           :participant-id id
+                           :selector (list :to id)
+                           :effect 'create-pickup
+                           :state 'active
+                           :built-in-p t))))
+      (e-board--append-event board 'participant-added
+                             (list :participant-id id
+                                   :subscription-id subscription-id))
+      participant)))
+
+(cl-defun e-board-subscribe
+    (board participant-id selector &key id (state 'active) (effect 'create-pickup))
+  "Install an ordinary immutable input subscription for PARTICIPANT-ID.
+SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
+only effect is `create-pickup', so subscriptions cannot hide delivery callbacks
+inside the board model.  New subscriptions only inspect future inputs."
+  (unless (e-board-participant board participant-id)
+    (signal 'e-board-error (list "Unknown participant" participant-id)))
+  (unless (eq effect 'create-pickup)
+    (signal 'e-board-error (list "Unsupported board effect" effect)))
+  (unless (listp selector)
+    (signal 'wrong-type-argument (list 'listp selector)))
+  (let ((id (or id (e-board--next-id board 'subscription))))
+    (when (cl-find id (e-board-subscriptions board)
+                   :key #'e-board-subscription-id :test #'equal)
+      (signal 'e-board-id-conflict (list id)))
+    (let ((subscription
+           (e-board-subscription--create
+            :id id :board-id (e-board-id board)
+            :participant-id participant-id
+            ;; The matcher is immutable even if the caller later mutates its plist.
+            :selector (copy-tree selector)
+            :effect effect :state state :built-in-p nil)))
+      (setf (e-board-subscriptions board)
+            (append (e-board-subscriptions board) (list subscription)))
+      (e-board--append-event board 'subscription-added
+                             (list :subscription-id id
+                                   :participant-id participant-id))
+      subscription)))
+
+(defun e-board--tags-match-p (selector message)
+  "Return non-nil when SELECTOR's tag clauses match MESSAGE."
+  (let ((tags (e-board-message-tags message))
+        (all (or (plist-get selector :tags-all)
+                 (plist-get selector :tags)))
+        (any (plist-get selector :tags-any)))
+    (and (cl-every (lambda (tag) (member tag tags)) all)
+         (or (null any) (cl-some (lambda (tag) (member tag tags)) any)))))
+
+(defun e-board--selector-matches-p (subscription message)
+  "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
+  (let ((selector (e-board-subscription-selector subscription)))
+    (and (eq (e-board-message-kind message) 'input)
+         (or (not (plist-member selector :to))
+             (equal (plist-get selector :to) (e-board-message-to message)))
+         (e-board--tags-match-p selector message))))
+
+(defun e-board--eligible-subscription-p (board subscription)
+  "Return non-nil when SUBSCRIPTION is active and its participant can receive."
+  (and (eq (e-board-subscription-state subscription) 'active)
+       (eq (e-board-subscription-effect subscription) 'create-pickup)
+       (when-let ((participant
+                   (e-board-participant board
+                                        (e-board-subscription-participant-id
+                                         subscription))))
+         (e-board--active-participant-p participant))))
+
+(defun e-board--matching-subscriptions (board message)
+  "Return eligible subscriptions for MESSAGE using its exact/tag route rule."
+  (if-let ((to (e-board-message-to message)))
+      ;; Addressed input deliberately bypasses ordinary subscriptions and tags.
+      (cl-remove-if-not
+       (lambda (subscription)
+         (and (e-board-subscription-built-in-p subscription)
+              (equal (e-board-subscription-participant-id subscription) to)
+              (e-board--eligible-subscription-p board subscription)))
+       (e-board-subscriptions board))
+    (cl-remove-if-not
+     (lambda (subscription)
+       (and (not (e-board-subscription-built-in-p subscription))
+            (e-board--eligible-subscription-p board subscription)
+            (e-board--selector-matches-p subscription message)))
+     (e-board-subscriptions board))))
+
+(defun e-board--source-key-parts (source-key)
+  "Return SOURCE-KEY as (PRODUCER GENERATION SEQ), or signal.
+Source identities are board-scoped producer/generation/monotonic-sequence
+tuples.  Lists and vectors are accepted to keep adapters representation-neutral."
+  (let ((parts (cond ((listp source-key) source-key)
+                     ((vectorp source-key) (append source-key nil)))))
+    (unless (and (= (length parts) 3)
+                 (nth 0 parts) (nth 1 parts)
+                 (integerp (nth 2 parts)) (>= (nth 2 parts) 0))
+      (signal 'e-board-invalid-source-key (list source-key)))
+    parts))
+
+(defun e-board--source-publication (board kind source-key)
+  "Return existing or expired publication status for BOARD KIND SOURCE-KEY.
+Return nil when the key is new and may be appended."
+  (when source-key
+    (pcase-let* ((`(,producer ,generation ,sequence)
+                  (e-board--source-key-parts source-key))
+                 (recent-key (list kind producer generation sequence))
+                 (watermark-key (list kind producer generation))
+                 (existing (gethash recent-key (e-board-source-recent board)))
+                 (watermark (gethash watermark-key
+                                     (e-board-source-high-watermarks board))))
+      (cond
+       (existing
+        (e-board-publication--create
+         :status 'duplicate :message existing
+         :pickup-ids (e-board-message-pickup-ids existing)))
+       ((and watermark (<= sequence watermark))
+        (e-board-publication--create :status 'source-history-expired))
+       (t nil)))))
+
+(defun e-board--remember-source (board kind source-key message)
+  "Atomically retain SOURCE-KEY's MESSAGE and advance its high watermark."
+  (when source-key
+    (pcase-let ((`(,producer ,generation ,sequence)
+                 (e-board--source-key-parts source-key)))
+      (puthash (list kind producer generation sequence) message
+               (e-board-source-recent board))
+      (puthash (list kind producer generation) sequence
+               (e-board-source-high-watermarks board)))))
+
+(defun e-board--make-message (board kind id author tags to mode content reference
+                                     source-input-key source-output-key
+                                     reply-to-message-ids caused-by-delivery-ids)
+  "Create and record one immutable BOARD message, returning it."
+  (when (e-board-message board id)
+    (signal 'e-board-id-conflict (list id)))
+  (let* ((event (e-board--append-event
+                 board (intern (format "%s-posted" kind))
+                 (list :message-id id)))
+         (message
+          (e-board-message--create
+           :id id :board-id (e-board-id board) :seq (e-board-event-seq event)
+           :kind kind :author author :tags (copy-tree tags) :to to :mode mode
+           :content content :reference reference
+           :source-input-key (copy-tree source-input-key)
+           :source-output-key (copy-tree source-output-key)
+           :reply-to-message-ids (copy-tree reply-to-message-ids)
+           :caused-by-delivery-ids (copy-tree caused-by-delivery-ids))))
+    (puthash id message (e-board-message-table board))
+    (setf (e-board-messages board)
+          (append (e-board-messages board) (list message)))
+    message))
+
+(defun e-board--route-input (board message)
+  "Freeze MESSAGE routing matches and create at most one pickup per participant."
+  (let ((subscriptions (e-board--matching-subscriptions board message))
+        (by-participant (make-hash-table :test 'equal))
+        participant-ids pickup-ids)
+    ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
+    (dolist (subscription subscriptions)
+      (let ((participant-id (e-board-subscription-participant-id subscription)))
+        (puthash participant-id
+                 (append (gethash participant-id by-participant)
+                         (list (e-board-subscription-id subscription)))
+                 by-participant)
+        (unless (member participant-id participant-ids)
+          (setq participant-ids (append participant-ids (list participant-id))))))
+    (if (null participant-ids)
+        (let ((reason (if (e-board-message-to message)
+                          'target-unavailable
+                        'no-matching-subscription)))
+          (setf (e-board-message-unrouted-reason message) reason)
+          (e-board--append-event board 'input-unrouted
+                                 (list :message-id (e-board-message-id message)
+                                       :reason reason)))
+      (dolist (participant-id participant-ids)
+        (let* ((delivery-id (list (e-board-id board)
+                                  (e-board-message-id message)
+                                  participant-id))
+               (pickup
+                (e-board-pickup--create
+                 :delivery-id delivery-id :board-id (e-board-id board)
+                 :message-id (e-board-message-id message)
+                 :participant-id participant-id
+                 :subscription-ids (gethash participant-id by-participant)
+                 :mode (e-board-message-mode message) :state 'pending)))
+          (puthash delivery-id pickup (e-board-pickups board))
+           (setq pickup-ids (append pickup-ids (list delivery-id)))))
+       (setf (e-board-message-matching-participant-ids message) participant-ids
+             (e-board-message-pickup-ids message) pickup-ids)
+       (e-board--append-event board 'input-routed
+                              (list :message-id (e-board-message-id message)
+                                    :participant-ids participant-ids
+                                    :pickup-ids pickup-ids)))
+    (e-board-publication--create
+     :status 'posted :message message :pickup-ids pickup-ids)))
+
+(cl-defun e-board-post-input
+    (board &key id author tags to (mode 'inject) content reference source-input-key)
+  "Append and route one input message, returning an `e-board-publication'.
+With TO, only its participant's built-in address subscription is considered.
+Without TO, active ordinary tag subscriptions receive one frozen pickup each.
+SOURCE-INPUT-KEY retries return the existing message; old or out-of-order keys
+return status `source-history-expired' without appending or routing again."
+  (unless (memq mode '(inject queue))
+    (signal 'wrong-type-argument (list '(member inject queue) mode)))
+  (or (e-board--source-publication board 'input source-input-key)
+      (let* ((id (or id (e-board--next-id board 'message)))
+             (message (e-board--make-message
+                       board 'input id author tags to mode content reference
+                       source-input-key nil nil nil))
+             (publication (e-board--route-input board message)))
+        (e-board--remember-source board 'input source-input-key message)
+        publication)))
+
+(cl-defun e-board-post-output
+    (board &key id author tags content reference source-output-key
+           reply-to-message-ids caused-by-delivery-ids)
+  "Append one non-routable output message and return an `e-board-publication'.
+SOURCE-OUTPUT-KEY is required because output publication retries must be
+at-most-once.  Outputs never create participant pickups."
+  (unless source-output-key
+    (signal 'e-board-invalid-source-key (list source-output-key)))
+  (or (e-board--source-publication board 'output source-output-key)
+      (let* ((id (or id (e-board--next-id board 'message)))
+             (message (e-board--make-message
+                       board 'output id author tags nil nil content reference nil
+                       source-output-key reply-to-message-ids
+                       caused-by-delivery-ids)))
+        (e-board--remember-source board 'output source-output-key message)
+        (e-board-publication--create :status 'posted :message message
+                                     :pickup-ids nil))))
+
+(defun e-board-unrouted-inputs (board)
+  "Return retained BOARD input messages that have a visible unrouted reason."
+  (cl-remove-if-not
+   (lambda (message)
+     (and (eq (e-board-message-kind message) 'input)
+          (e-board-message-unrouted-reason message)))
+   (e-board-messages board)))
+
+(provide 'e-board)
+
+;;; e-board.el ends here

@@ -1,3 +1,0 @@
-[submodule "emacs-egui"]
-	path = emacs-egui
-	url = https://github.com/nohzafk/emacs-egui.git
