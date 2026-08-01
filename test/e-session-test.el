@@ -84,7 +84,19 @@
     (should (equal
              (plist-get (car (e-session-list store))
                         :latest-assistant-marker)
-             "assistant-2"))))
+              "assistant-2"))))
+
+(ert-deftest e-session-test-append-assistant-allocates-board-output-sequence ()
+  "New assistant entries receive a stable session-local board output sequence."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "output-sequence")
+    (e-session-append-message store "output-sequence" '(:role user :content "one"))
+    (let ((first (e-session-append-message
+                  store "output-sequence" '(:role assistant :content "two")))
+          (second (e-session-append-message
+                   store "output-sequence" '(:role assistant :content "three"))))
+      (should (= (plist-get first :board-output-sequence) 1))
+      (should (= (plist-get second :board-output-sequence) 2)))))
 
 (ert-deftest e-session-test-append-message-stamps-created-at ()
   "Appended messages carry their creation timestamp."

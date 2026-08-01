@@ -38,8 +38,7 @@
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function subscription
-  output-sequences next-output-sequence)
+  board participant harness session-id delivery-function subscription)
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -92,17 +91,9 @@ has no callback and is observed only."
   (let* ((harness (e-board-runtime-attachment-harness attachment))
          (session-id (e-board-runtime-attachment-session-id attachment))
          (message (e-harness--turn-assistant-message harness session-id turn-id)))
-    (when message
-      (let* ((entry-id (plist-get message :id))
-             (sequences (e-board-runtime-attachment-output-sequences attachment))
-             (sequence (or (gethash entry-id sequences)
-                           (let ((next (1+ (e-board-runtime-attachment-next-output-sequence
-                                            attachment))))
-                             (setf (e-board-runtime-attachment-next-output-sequence
-                                    attachment) next)
-                             (puthash entry-id next sequences)
-                             next)))
-             (board (e-board-registry-board-source-board
+    (when-let ((sequence (and message
+                              (plist-get message :board-output-sequence))))
+      (let* ((board (e-board-registry-board-source-board
                      (e-board-runtime-attachment-board attachment)))
              (participant-id
               (e-board-registry-participant-id
@@ -184,10 +175,8 @@ the conservative idle-only harness delivery port is used."
             :participant participant
              :harness harness
              :session-id session-id
-             :delivery-function (or delivery-function
-                                    #'e-board-runtime--deliver-to-harness)
-             :output-sequences (make-hash-table :test 'equal)
-             :next-output-sequence 0)))
+              :delivery-function (or delivery-function
+                                     #'e-board-runtime--deliver-to-harness))))
        (setf (e-board-runtime-attachment-subscription attachment)
              (e-harness-subscribe
               harness

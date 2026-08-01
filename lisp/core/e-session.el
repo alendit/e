@@ -1368,7 +1368,8 @@ behavior.  Interactive mutation paths must not call this function."
               (session (list :id session-id
                             :metadata metadata
                             :session-events nil
-                            :messages nil
+                         :messages nil
+                         :board-output-sequence 0
                             :activity-events nil
                             :branch-summaries nil
                             :current-branch nil
@@ -2200,11 +2201,20 @@ New code should prefer the narrower typed metadata helpers."
   "Append MESSAGE to SESSION-ID in STORE."
   (let* ((session (e-session-get store session-id))
          (timestamp (e-session--timestamp))
-         (message (e-session--normalize-entry-from-record
-                   session
-                   'message
-                   (e-session--message-with-created-at message timestamp)
-                   timestamp)))
+          (message (e-session--normalize-entry-from-record
+                    session
+                    'message
+                    (e-session--message-with-created-at message timestamp)
+                    timestamp)))
+    (when (and (eq (plist-get message :role) 'assistant)
+               (not (plist-member message :board-output-sequence)))
+      (let ((sequence
+             (1+ (or (plist-get session :board-output-sequence)
+                     (cl-loop for entry in (plist-get session :messages)
+                              maximize (or (plist-get entry :board-output-sequence) 0))
+                     0))))
+        (plist-put message :board-output-sequence sequence)
+        (plist-put session :board-output-sequence sequence)))
     (e-session--append-list-item session :messages message)
     (e-session--index-entry store session-id message)
     (e-session--touch store session timestamp)
