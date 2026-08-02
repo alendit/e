@@ -172,6 +172,17 @@
                       'consumed))
           (should (equal deliveries '("second"))))))))
 
+(ert-deftest e-board-runtime-test-busy-session-rejects-before-participant-creation ()
+  "A session cannot acquire a second participant through a failed attach."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "first")
+      (should-error (e-board-runtime-attach board harness "session" :participant-id "second")
+                    :type 'e-board-runtime-session-busy)
+      (should-not (gethash "second" (e-board-registry-board-participants board))))))
+
 (ert-deftest e-board-runtime-test-default-queue-delivery-enters-idle-follow-up-queue ()
   "Default queue delivery uses the harness queue without starting a turn."
   (e-board-runtime-test--with-empty-state

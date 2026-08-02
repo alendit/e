@@ -495,6 +495,9 @@ When omitted, the conservative idle-only harness delivery port is used."
   (unless (or (null delivery-function) (functionp delivery-function))
     (signal 'wrong-type-argument (list 'functionp delivery-function)))
   (e-board-runtime--require-live-session harness session-id)
+  (when (gethash (e-board-runtime--session-key harness session-id)
+                 e-board-runtime--session-attachments)
+    (signal 'e-board-runtime-session-busy (list harness session-id)))
   (let* ((board (e-board-runtime--active-board board-or-id))
          (participant (e-board-registry-add-participant
                        board :id participant-id :author author :principal principal))
