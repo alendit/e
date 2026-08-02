@@ -445,6 +445,25 @@ scanning a board-wide delivery table."
     (when (and pickup (eq (e-board-pickup-state pickup) 'ready))
       (e-board-runtime--enqueue-pickups registry-board (list delivery-id)))))
 
+(defun e-board-runtime--event-activity-source-key (attachment event publication-kind)
+  "Return EVENT's stable board source key for PUBLICATION-KIND.
+The durable session activity sequence is the retry identity when available.
+The locally allocated fallback only serves legacy or synthetic events that have
+no durable activity entry.  One source event may publish more than one derived
+row, so its numeric key reserves an adjacent slot for the terminal summary."
+  (let* ((participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant attachment)))
+         (durable-sequence (plist-get event :board-activity-sequence))
+         (sequence
+          (if durable-sequence
+              (+ (* 2 durable-sequence)
+                 (if (eq publication-kind 'turn-summary) 1 0))
+            (cl-incf (e-board-runtime-attachment-activity-sequence attachment)))))
+    (list participant-id
+          (e-board-runtime-attachment-generation attachment)
+          sequence)))
+
 (defun e-board-runtime--publish-terminal-activity (attachment event)
   "Publish EVENT's failure or cancellation as one terminal board activity.
 Successful turns publish their final output through the separate output seam;
@@ -454,8 +473,7 @@ these terminal states have no output to close the board-owned open projection."
          (participant-id (e-board-registry-participant-id
                           (e-board-runtime-attachment-participant attachment)))
          (turn-id (plist-get event :turn-id))
-         (activity-kind (e-events-type event))
-         (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+         (activity-kind (e-events-type event)))
     (when (and turn-id (memq activity-kind '(turn-failed turn-cancelled)))
       (e-board-post-activity
        board :author (format "participant:%s" participant-id)
@@ -465,7 +483,7 @@ these terminal states have no output to close the board-owned open projection."
                                (plist-get event :activity-entry-id)))
                      (list :source-event-id source-event-id))
        :source-activity-key
-       (list participant-id (e-board-runtime-attachment-generation attachment) sequence)))))
+       (e-board-runtime--event-activity-source-key attachment event activity-kind)))))
 
 (defun e-board-runtime--publish-harness-activity (attachment event)
   "Publish EVENT's bounded lifecycle edge without exposing its raw payload."
@@ -477,9 +495,7 @@ these terminal states have no output to close the board-owned open projection."
              (board (e-board-registry-board-source-board registry-board))
              (participant-id
               (e-board-registry-participant-id
-               (e-board-runtime-attachment-participant attachment)))
-             (sequence
-              (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+               (e-board-runtime-attachment-participant attachment))))
         (e-board-post-activity
          board :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id :source-turn-id turn-id
@@ -488,7 +504,7 @@ these terminal states have no output to close the board-owned open projection."
                                  (plist-get event :activity-entry-id)))
                        (list :source-event-id source-event-id))
          :source-activity-key
-         (list participant-id (e-board-runtime-attachment-generation attachment) sequence))))))
+         (e-board-runtime--event-activity-source-key attachment event activity-kind))))))
 
 (defun e-board-runtime--turn-activity (attachment turn-id)
   "Return ATTACHMENT's bounded activity accumulator for TURN-ID."
@@ -522,8 +538,7 @@ these terminal states have no output to close the board-owned open projection."
       (let* ((registry-board (e-board-runtime-attachment-board attachment))
              (board (e-board-registry-board-source-board registry-board))
              (participant-id (e-board-registry-participant-id
-                              (e-board-runtime-attachment-participant attachment)))
-             (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+                              (e-board-runtime-attachment-participant attachment))))
         (e-board-post-activity
          board :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id :source-turn-id turn-id
@@ -539,7 +554,7 @@ these terminal states have no output to close the board-owned open projection."
                              (plist-get event :activity-entry-id)))
                    (list :source-event-id source-event-id)))
          :source-activity-key
-         (list participant-id (e-board-runtime-attachment-generation attachment) sequence))))))
+         (e-board-runtime--event-activity-source-key attachment event 'turn-summary))))))
 
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."

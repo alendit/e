@@ -419,18 +419,24 @@
       (let* ((attachment (e-board-runtime-attach
                           board harness "session" :participant-id participant))
              (source-board (e-board-registry-board-source-board board)))
-        (e-board-runtime--handle-harness-event
-         attachment
-         (e-events-make :type 'provider-request-started :session-id "session"
-                        :turn-id "turn" :payload '(:secret "not-board-content")
-                        :activity-entry-id "provider-event"))
+        (let ((event
+               (e-events-make :type 'provider-request-started :session-id "session"
+                              :turn-id "turn" :payload '(:secret "not-board-content")
+                              :activity-entry-id "provider-event"
+                              :board-activity-sequence 17)))
+          (e-board-runtime--handle-harness-event attachment event)
+          ;; A durable event may be replayed after an interrupted publication.
+          (e-board-runtime--handle-harness-event attachment event))
         (let ((activity (car (last (e-board-messages source-board)))))
+          (should (= (length (e-board-messages source-board)) 1))
           (should (eq (e-board-message-kind activity) 'activity))
           (should (eq (e-board-message-activity-kind activity)
                       'provider-request-started))
           (should-not (e-board-message-content activity))
           (should (equal (e-board-message-attributes activity)
-                         '(:source-event-id "provider-event"))))))))
+                         '(:source-event-id "provider-event")))
+          (should (equal (e-board-message-source-activity-key activity)
+                         '("participant" 1 34))))))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
