@@ -109,6 +109,8 @@ prepared until their attached owning client explicitly accepts the matching
 receipt; retention pins and queued client handoff remain future slices.
 Reverse-history windows are record-bounded before selector filtering, so sparse
 matches cannot turn one client page into an unbounded retained-history scan.
+An accepted history receipt is retry-idempotent, matching the live read-through
+lane without appending a second observer-acceptance event.
 The registry now authorizes client-owned observer replacement and lifecycle
 transitions, delegating the fresh cursor's explicit =start-seq= backfill and
 legal state edges to the board core.

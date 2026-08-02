@@ -514,6 +514,25 @@
           (should (= (e-board-observer-history-before-seq observer)
                      (plist-get page :before-seq))))))))
 
+(ert-deftest e-board-test-observer-history-acceptance-retries-idempotently ()
+  "A repeated history receipt preserves the first accepted reverse cursor."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "fact" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let* ((observer (e-board-observer-subscribe
+                        board "client" '(:tags (main)) :id "observer"
+                        :history-before-seq 2))
+             (page (e-board-observer-prepare-history-page board "observer" :limit 1))
+             (receipt (plist-get page :before-seq)))
+        (e-board-observer-accept-history-page board "observer" receipt)
+        (should (= (e-board-observer-history-before-seq observer) receipt))
+        (e-board-observer-accept-history-page board "observer" receipt)
+        (should (= (e-board-observer-history-before-seq observer) receipt))
+        (should (= (cl-count 'observer-history-page-accepted
+                             (mapcar #'e-board-event-type (e-board-events board)))
+                   1))))))
+
 (ert-deftest e-board-test-observer-history-page-bounds-sparse-filter-inspection ()
   "A sparse history selector advances over one record-bounded page at a time."
   (e-board-test--with-empty-registry

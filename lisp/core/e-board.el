@@ -807,11 +807,24 @@ through the injected invocation effect dispatcher."
       aggregation)))
 
 (defun e-board-cancel-aggregation (board aggregation-id)
-  "Cancel open AGGREGATION-ID on BOARD without affecting watched work."
+  "Cancel open or prepared AGGREGATION-ID without affecting watched work.
+A prepared reply activation is fenced before its later effect callback can
+reach the runtime; an already-applying effect remains outside this local
+cancellation boundary because its commit is no longer provably absent."
   (when-let ((aggregation (e-board-aggregation board aggregation-id)))
-    (when (eq (e-board-aggregation-state aggregation) 'open)
+    (when (memq (e-board-aggregation-state aggregation) '(open prepared))
       (when-let ((timer (e-board-aggregation-timer aggregation)))
         (cancel-timer timer))
+      (when (eq (e-board-aggregation-state aggregation) 'prepared)
+        (when-let ((activation
+                    (e-board-activation board
+                                        (e-board-aggregation-activation-id aggregation))))
+          (when (eq (e-board-activation-state activation) 'prepared)
+            (setf (e-board-activation-state activation) 'cancelled)
+            (e-board--append-event
+             board 'activation-cancelled
+             (list :activation-id (e-board-activation-id activation)
+                   :reason 'aggregation-cancelled)))))
       (setf (e-board-aggregation-timer aggregation) nil
             (e-board-aggregation-state aggregation) 'cancelled)
       (e-board--append-event
@@ -1101,11 +1114,12 @@ Return =:messages= plus a =:before-seq= receipt for
                       (signal 'e-board-observer-missing (list observer-id)))))
     (unless (and (integerp before-seq)
                  (e-board-observer-history-before-seq observer)
-                 (< before-seq (e-board-observer-history-before-seq observer))
+                 (<= before-seq (e-board-observer-history-before-seq observer))
                  (>= before-seq (e-board-observer-history-floor observer)))
       (signal 'e-board-error
               (list "Invalid observer history acceptance" observer-id before-seq)))
-    (when (eq (e-board-observer-state observer) 'active)
+    (when (and (eq (e-board-observer-state observer) 'active)
+               (< before-seq (e-board-observer-history-before-seq observer)))
       (setf (e-board-observer-history-before-seq observer) before-seq)
       (e-board--append-event board 'observer-history-page-accepted
                              (list :observer-id observer-id :before-seq before-seq)))

@@ -267,6 +267,26 @@
         (should (= (e-board-observer-history-before-seq observer)
                    (plist-get page :before-seq)))))))
 
+(ert-deftest e-board-registry-test-client-retries-its-observer-history-acceptance ()
+  "A client can safely retry an acknowledgement after the board committed it."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "observer"
+                      :history-before-seq 3))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-post-fact source-board :id "fact" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let* ((page (e-board-registry-prepare-observer-history-page
+                    board (e-board-registry-client-id client) "observer" :limit 1))
+             (receipt (plist-get page :before-seq)))
+        (e-board-registry-accept-observer-history-page
+         board (e-board-registry-client-id client) "observer" receipt)
+        (e-board-registry-accept-observer-history-page
+         board (e-board-registry-client-id client) "observer" receipt)
+        (should (= (e-board-observer-history-before-seq observer) receipt))))))
+
 (ert-deftest e-board-registry-test-client-replaces-only-its-observer-with-explicit-backfill ()
   "A client may widen its own selector without mutating another cursor."
   (e-board-registry-test--with-empty-registries
