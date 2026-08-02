@@ -68,6 +68,41 @@
       (should-error (e-work-start-prepared handle)
                     :type 'e-work-prepared-start-invalid))))
 
+(ert-deftest e-work-test-unsettled-state-follows-prepare-and-terminal-owner ()
+  "Prepared work counts once and retires on its first terminal transition."
+  (let ((e-work--unsettled-count 0)
+        (e-work--unsettled-generation 0)
+        (e-work--unsettled-change-function nil)
+        snapshots)
+    (setq e-work--unsettled-change-function
+          (lambda (snapshot) (push snapshot snapshots)))
+    (let ((first
+           (e-work-prepare
+            (e-work-spec-create
+             :id "counted-first" :execution 'cooperative
+             :interactive-policy 'async
+             :runner (lambda (&rest _arguments) :deferred))
+            nil))
+          (second
+           (e-work-prepare
+            (e-work-spec-create
+             :id "counted-second" :execution 'cooperative
+             :interactive-policy 'async
+             :runner (lambda (&rest _arguments) :deferred))
+            nil)))
+      (should (equal (e-work-unsettled-state)
+                     '(:generation 2 :work-handles 2)))
+      (e-work-finish first :done)
+      (should (equal (e-work-unsettled-state)
+                     '(:generation 3 :work-handles 1)))
+      (should-not (e-work-fail first '(error "late")))
+      (should (equal (e-work-unsettled-state)
+                     '(:generation 3 :work-handles 1)))
+      (e-work-cancel second)
+      (should (equal (e-work-unsettled-state)
+                     '(:generation 4 :work-handles 0)))
+      (should (= (length snapshots) 4)))))
+
 (ert-deftest e-work-test-cancelled-prepared-work-never-runs ()
   "Cancellation before start settles the handle without entering its carrier."
   (let ((runs 0)

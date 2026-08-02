@@ -110,10 +110,48 @@
    hook-receipts
    hard-hook-count
    started-p
+   unsettled-p
    cancel-function
   cleanup-function
   result
   error)
+
+(defvar e-work--unsettled-count 0
+  "Number of successfully prepared, nonterminal work handles.")
+
+(defvar e-work--unsettled-generation 0
+  "Monotonic generation of process-local work unsettled state.")
+
+(defvar e-work--unsettled-change-function nil
+  "Private hard-bounded callback for work unsettled transitions.")
+
+(defun e-work-unsettled-state ()
+  "Return the constant-time process-local work unsettled snapshot."
+  (list :generation e-work--unsettled-generation
+        :work-handles e-work--unsettled-count))
+
+(defun e-work--unsettled-changed ()
+  "Record and publish one work unsettled transition."
+  (cl-incf e-work--unsettled-generation)
+  (when e-work--unsettled-change-function
+    (funcall e-work--unsettled-change-function (e-work-unsettled-state))))
+
+(defun e-work--admit-unsettled (handle)
+  "Admit successfully prepared HANDLE into unsettled accounting."
+  (setf (e-work-handle-unsettled-p handle) t)
+  (cl-incf e-work--unsettled-count)
+  (e-work--unsettled-changed)
+  handle)
+
+(defun e-work--retire-unsettled (handle)
+  "Retire HANDLE from unsettled accounting exactly once."
+  (when (e-work-handle-unsettled-p handle)
+    (setf (e-work-handle-unsettled-p handle) nil)
+    (cl-decf e-work--unsettled-count)
+    (when (< e-work--unsettled-count 0)
+      (signal 'e-work-error (list "Negative unsettled work count")))
+    (e-work--unsettled-changed))
+  handle)
 
 (defun e-work-error-message (err)
   "Return `error-message-string' for ERR with the printer bounded.
@@ -505,6 +543,7 @@ carrier result or suppresses ordinary cleanup/callbacks."
   "Finish HANDLE with PAYLOAD, ignoring stale late callbacks."
   (when (and (e-work-handle-p handle)
              (e-request-finish (e-work-handle-lifecycle handle) payload))
+    (e-work--retire-unsettled handle)
     (setf (e-work-handle-result handle) payload)
     (e-work--terminal-event handle 'finished payload)
     (e-work--callback handle :on-done payload)
@@ -514,6 +553,7 @@ carrier result or suppresses ordinary cleanup/callbacks."
   "Fail HANDLE with CONDITION, ignoring stale late callbacks."
   (when (and (e-work-handle-p handle)
              (e-request-fail (e-work-handle-lifecycle handle) condition))
+    (e-work--retire-unsettled handle)
     (setf (e-work-handle-error handle) condition)
     (e-work--terminal-event handle 'failed condition)
     (e-work--callback handle :on-error condition)
@@ -530,6 +570,7 @@ carrier result or suppresses ordinary cleanup/callbacks."
                         (list :status 'cancelled :cancel-error cancel-error)
                       '(:status cancelled))))
       (when (e-request-cancel (e-work-handle-lifecycle handle) payload)
+        (e-work--retire-unsettled handle)
         (setf (e-work-handle-error handle) payload)
         (e-work--terminal-event handle 'cancelled payload)
         (when classified
@@ -1359,7 +1400,7 @@ after any owner enrollment has committed."
             :hard-hook-count 0)))
     (when hook-dispatcher
       (e-work-install-hook-dispatcher handle hook-dispatcher hook-policies))
-    handle))
+    (e-work--admit-unsettled handle)))
 
 (cl-defun e-work-start-prepared (handle &key arguments context)
   "Start prepared HANDLE exactly once and return it.

@@ -193,6 +193,13 @@ enqueue, drain, discard, reset, abort, and terminal transitions.  This adds
 fields to the core harness record and therefore belongs to the planned full
 restart boundary, not a mixed live reload.  Board-core, independent =e-work=
 carriers, and persistence remain outside this proof.
+The process-local =e-work= owner now contributes every successfully prepared
+nonterminal handle.  Admission occurs only after preparation and hook
+classification succeed; the first finish, failure, or cancellation retires the
+handle before terminal publication, cleanup, or general callbacks.  Late
+settlement is idempotent and cannot decrement twice.  This fixed counter and
+monotonic notification cover prepared and running carriers without a detached
+registry scan.  Board-core and persistence accounting remain outstanding.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
