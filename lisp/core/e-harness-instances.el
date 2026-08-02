@@ -26,8 +26,22 @@
   "No configured harness instance exposes this session store")
 (define-error 'e-harness-instance-session-catalog-invalid-page
   "Session catalog returned an invalid bounded page")
+(define-error 'e-harness-instance-session-request-stale
+  "Harness instance catalog changed while a session request was pending")
 (define-error 'e-harness-instance-session-catalog-stale
-  "Harness instance catalog changed while a session page was pending")
+  "Harness instance catalog changed while a session page was pending"
+  'e-harness-instance-session-request-stale)
+(define-error 'e-harness-instance-session-access-invalid-operation
+  "Unsupported session access-store operation")
+(define-error 'e-harness-instance-session-access-invalid-result
+  "Session access store returned an invalid current access record")
+(define-error 'e-harness-instance-session-access-stale
+  "Harness instance catalog changed while a session access request was pending"
+  'e-harness-instance-session-request-stale)
+
+(defconst e-harness-instance-session-access-operations
+  '(create grant revoke transfer)
+  "Closed set of optimistic session access-store mutations.")
 
 (cl-defstruct e-harness-instance
   id
@@ -288,6 +302,61 @@ declarative selection metadata; the factory still builds the live harness."
            sessions)
           :next-after (plist-get page :next-after))))
 
+(cl-defun e-harness-instance--session-request-start
+    (entry port-key owner id-prefix arguments normalizer stale-error
+           &key on-done on-error)
+  "Start one generation-fenced asynchronous session-store request.
+ENTRY supplies PORT-KEY.  OWNER and ID-PREFIX identify the lifecycle.
+ARGUMENTS is the immutable port request.  NORMALIZER validates the successful
+adapter result.  STALE-ERROR identifies a completion fenced by reconfiguration."
+  (let ((port (plist-get entry port-key))
+        (generation e-harness-instance--generation)
+        cancel
+        request)
+    (cl-labels
+        ((fail (condition)
+           (when (e-request-fail request condition)
+             (when on-error
+               (funcall on-error condition))))
+         (finish (result)
+           (unless (e-request-terminal-p request)
+             (let (normalized normalized-p)
+               (condition-case condition
+                   (if (/= generation e-harness-instance--generation)
+                       (signal stale-error
+                               (list (plist-get entry :session-store-id)
+                                     generation e-harness-instance--generation))
+                     (setq normalized (funcall normalizer result)
+                           normalized-p t))
+                 (error
+                  (fail condition)))
+               (when (and normalized-p
+                          (e-request-finish request normalized))
+                 (when on-done
+                   (funcall on-done normalized)))))))
+      (setq request
+            (e-request-lifecycle-create
+             :id (format "%s-%d" id-prefix
+                         (cl-incf e-harness-instance--request-sequence))
+             :owner owner
+             :generation generation
+             :state 'created
+             :cancel-function
+             (lambda (_request)
+               (when cancel
+                 (funcall cancel)))))
+      (e-request-start request arguments)
+      (condition-case condition
+          (let ((returned (funcall port arguments #'finish #'fail)))
+            (when (and returned (not (functionp returned)))
+              (signal 'wrong-type-argument (list 'functionp returned)))
+            (setq cancel returned))
+        (error
+         (if (e-request-terminal-p request)
+             (signal (car condition) (cdr condition))
+           (fail condition))))
+      request)))
+
 (cl-defun e-harness-instance-session-catalog-page-start
     (session-store-id &key principal after (limit 32) on-done on-error)
   "Start one asynchronous dormant-session catalog page request.
@@ -299,58 +368,61 @@ and failure callbacks; it may return a cancellation function.  The returned
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let* ((entry (e-harness-instance-session-store session-store-id))
-         (catalog (plist-get entry :session-catalog))
-         (generation e-harness-instance--generation)
          (arguments (list :operation 'list-page
                           :session-store-id session-store-id
                           :principal principal
                           :after after
-                          :limit limit))
-         cancel
-         request)
-    (cl-labels
-        ((fail (condition)
-           (when (e-request-fail request condition)
-             (when on-error
-               (funcall on-error condition))))
-         (finish (page)
-           (unless (e-request-terminal-p request)
-             (let (normalized)
-               (condition-case condition
-                   (if (/= generation e-harness-instance--generation)
-                       (signal 'e-harness-instance-session-catalog-stale
-                               (list session-store-id generation
-                                     e-harness-instance--generation))
-                     (setq normalized
-                           (e-harness-instance--normalize-session-catalog-page
-                            entry page limit)))
-                 (error
-                  (fail condition)))
-               (when (and normalized (e-request-finish request normalized))
-                 (when on-done
-                   (funcall on-done normalized)))))))
-      (setq request
-            (e-request-lifecycle-create
-             :id (format "session-catalog-%d"
-                         (cl-incf e-harness-instance--request-sequence))
-             :owner 'e-harness-instance-session-catalog
-             :generation generation
-             :state 'created
-             :cancel-function
-             (lambda (_request)
-               (when cancel
-                 (funcall cancel)))))
-      (e-request-start request arguments)
-      (condition-case condition
-          (let ((returned (funcall catalog arguments #'finish #'fail)))
-            (when (and returned (not (functionp returned)))
-              (signal 'wrong-type-argument (list 'functionp returned)))
-            (setq cancel returned))
-        (error
-         (if (e-request-terminal-p request)
-             (signal (car condition) (cdr condition))
-           (fail condition))))
-      request)))
+                          :limit limit)))
+    (e-harness-instance--session-request-start
+     entry :session-catalog 'e-harness-instance-session-catalog
+     "session-catalog" arguments
+     (lambda (page)
+       (e-harness-instance--normalize-session-catalog-page entry page limit))
+     'e-harness-instance-session-catalog-stale
+     :on-done on-done :on-error on-error)))
+
+(defun e-harness-instance--normalize-session-access-result (entry result)
+  "Validate and decorate one access-store RESULT for configured store ENTRY."
+  (let ((record (and (listp result) (plist-get result :access-record))))
+    (unless (and (listp result)
+                 (plist-member result :access-record)
+                 (listp record)
+                 (plist-member record :controller)
+                 (plist-get record :controller)
+                 (plist-member record :version))
+      (signal 'e-harness-instance-session-access-invalid-result
+              (list (plist-get entry :session-store-id))))
+    (append (list :session-store-id (plist-get entry :session-store-id))
+            (copy-tree result))))
+
+(cl-defun e-harness-instance-session-access-start
+    (session-store-id operation arguments &key on-done on-error)
+  "Start one optimistic asynchronous session access-store mutation.
+OPERATION is one of `create', `grant', `revoke', or `transfer'.  ARGUMENTS must
+name =:session-id=, a trusted =:requester-principal= resolved by the host, and an
+explicit =:expected-version= (which may be nil for an absent-record create).
+The configured port receives no transcript or live harness object."
+  (unless (memq operation e-harness-instance-session-access-operations)
+    (signal 'e-harness-instance-session-access-invalid-operation
+            (list operation)))
+  (unless (and (listp arguments)
+               (plist-get arguments :session-id)
+               (plist-get arguments :requester-principal)
+               (plist-member arguments :expected-version))
+    (signal 'wrong-type-argument
+            (list 'session-access-arguments arguments)))
+  (let* ((entry (e-harness-instance-session-store session-store-id))
+         (request-arguments
+          (append (list :operation operation
+                        :session-store-id session-store-id)
+                  (copy-tree arguments))))
+    (e-harness-instance--session-request-start
+     entry :session-access-store 'e-harness-instance-session-access
+     "session-access" request-arguments
+     (lambda (result)
+       (e-harness-instance--normalize-session-access-result entry result))
+     'e-harness-instance-session-access-stale
+     :on-done on-done :on-error on-error)))
 
 (cl-defun e-harness-instance-list-subagents (&key visibility)
   "Return spawnable subagent instances, optionally filtered by VISIBILITY.

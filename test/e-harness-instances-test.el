@@ -279,6 +279,64 @@
         (should (eq (car (e-request-lifecycle-terminal-payload request))
                     'e-harness-instance-session-catalog-invalid-page))))))
 
+(ert-deftest e-harness-instances-test-access-store-is-controlled-and-non-activating ()
+  "Optimistic ACL mutation remains pending without activating any harness."
+  (e-harness-instances-test--with-empty-registries
+    (let* (arguments succeed fail
+           (factory-calls 0)
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store
+            (lambda (request on-done on-error)
+              (setq arguments request
+                    succeed on-done
+                    fail on-error)
+              nil)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-harness-instance-session-access-start
+              "store" 'grant
+              '(:session-id "session" :requester-principal "owner"
+                :expected-version 3 :principal "member" :rights (discover resume)))))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (equal (plist-get arguments :operation) 'grant))
+        (should (equal (plist-get arguments :session-store-id) "store"))
+        (should (= (plist-get arguments :expected-version) 3))
+        (should (= factory-calls 0))
+        (should (functionp succeed))
+        (should (functionp fail))
+        (funcall succeed
+                 '(:access-record (:controller "owner" :version 4)))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (let ((result (e-request-lifecycle-terminal-payload request)))
+          (should (equal (plist-get result :session-store-id) "store"))
+          (should (= (plist-get (plist-get result :access-record) :version)
+                     4)))))))
+
+(ert-deftest e-harness-instances-test-access-store-requires-optimistic-auth-inputs ()
+  "Access mutation rejects unsupported or unauthenticated requests before I/O."
+  (e-harness-instances-test--with-empty-registries
+    (let ((calls 0)
+          (catalog (lambda (&rest _arguments) 'pending))
+          (access-store (lambda (&rest _arguments) (cl-incf calls))))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (should-error
+       (e-harness-instance-session-access-start
+        "store" 'delete
+        '(:session-id "session" :requester-principal "owner"
+          :expected-version 1))
+       :type 'e-harness-instance-session-access-invalid-operation)
+      (should-error
+       (e-harness-instance-session-access-start
+        "store" 'grant
+        '(:session-id "session" :requester-principal "owner"))
+       :type 'wrong-type-argument)
+      (should (= calls 0)))))
+
 (ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
   "A declared durable store cannot silently omit a required port."
   (e-harness-instances-test--with-empty-registries
