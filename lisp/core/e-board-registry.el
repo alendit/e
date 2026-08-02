@@ -224,6 +224,35 @@ board, with its identity supplied by this registry's id generator."
     (remhash participant-id (e-board-registry-board-participants board))
     participant))
 
+(defun e-board-registry-set-participant-state
+    (board-or-id participant-or-id state)
+  "Transition a local participant to active, dormant, or stale STATE.
+These nonterminal membership states retain the participant's exact address
+subscription so queued/recoverable delivery can be reconciled by the runtime.
+Removal remains the terminal operation in `e-board-registry-remove-participant'."
+  (unless (memq state '(active dormant stale))
+    (signal 'wrong-type-argument
+            (list '(member active dormant stale) state)))
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (source-board (e-board-registry-board-source-board board))
+         (source-participant
+          (e-board-registry-participant-source-participant participant))
+         (from (e-board-participant-state source-participant)))
+    (when (eq from state)
+      (signal 'e-board-registry-error
+              (list "Participant already in requested state" state)))
+    (setf (e-board-participant-state source-participant) state)
+    (e-board--append-event
+     source-board
+     (pcase state
+       ('active 'participant-rebound)
+       ('dormant 'participant-dormant)
+       ('stale 'participant-stale))
+     (list :participant-id (e-board-registry-participant-id participant)
+           :from from :state state))
+    participant))
+
 (cl-defun e-board-registry-install-subscription
     (board-or-id participant-or-id selector &key id (state 'active)
                 (effect 'create-pickup))

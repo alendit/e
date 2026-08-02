@@ -74,6 +74,32 @@
                     :type 'e-board-registry-participant-board-local)
       (should (e-board-registry-participant one participant)))))
 
+(ert-deftest e-board-registry-test-participant-stale-and-dormant-states-retain-route ()
+  "Recoverable participant states remain routable and record their lifecycle."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant board :id "member"))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-registry-set-participant-state board participant 'dormant)
+      (should (eq (e-board-participant-state
+                   (e-board-registry-participant-source-participant participant))
+                  'dormant))
+      (let ((publication (e-board-post-input source-board :id "dormant" :to "member")))
+        (e-board-drain-input-classifications source-board)
+        (should (equal (e-board-publication-pickup-ids publication)
+                       '(("board" "dormant" "member")))))
+      (e-board-registry-set-participant-state board participant 'stale)
+      (should (eq (e-board-participant-state
+                   (e-board-registry-participant-source-participant participant))
+                  'stale))
+      (should (eq (e-board-event-type (car (last (e-board-events source-board))))
+                  'participant-stale))
+      (e-board-registry-set-participant-state board participant 'active)
+      (should (eq (e-board-event-type (car (last (e-board-events source-board))))
+                  'participant-rebound))
+      (should-error (e-board-registry-set-participant-state board participant 'removed)
+                    :type 'wrong-type-argument))))
+
 (ert-deftest e-board-registry-test-close-prevents-further-mutation ()
   "Closing a board disables routing and leaves registry state unchanged thereafter."
   (e-board-registry-test--with-empty-registries
