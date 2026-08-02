@@ -127,7 +127,7 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
-  activations pickup-queues)
+  activations activation-subscription-index pickup-queues)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -213,6 +213,7 @@ explicit ids to individual operations takes precedence over this generator."
                    :invocations (make-hash-table :test 'equal)
                    :aggregations (make-hash-table :test 'equal)
                   :activations (make-hash-table :test 'equal)
+                  :activation-subscription-index (make-hash-table :test 'equal)
                   :pickup-queues (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effect-scheduler effect-scheduler
@@ -1063,7 +1064,20 @@ Trusted predicates run only here, never from message append or work settlement."
     (e-board--append-event board 'subscription-transition
                            (list :subscription-id (e-board-subscription-id subscription)
                                  :from from :state state))
+    (when (memq state '(muted cancelled))
+      (e-board--cancel-prepared-activations
+       board (e-board-subscription-id subscription) state))
     subscription))
+
+(defun e-board--cancel-prepared-activations (board subscription-id reason)
+  "Fence prepared effects owned by SUBSCRIPTION-ID before they can apply."
+  (dolist (activation-id
+           (gethash subscription-id (e-board-activation-subscription-index board)))
+    (when-let ((activation (e-board-activation board activation-id)))
+      (when (eq (e-board-activation-state activation) 'prepared)
+        (setf (e-board-activation-state activation) 'cancelled)
+        (e-board--append-event board 'activation-cancelled
+                               (list :activation-id activation-id :reason reason))))))
 
 (defun e-board-set-subscription-state (board subscription-id state)
   "Transition an ordinary BOARD subscription to STATE.
@@ -1170,6 +1184,11 @@ This gives post effects a bounded, visible cycle stop without special routing."
          board 'effect-stopped
          (list :activation-id activation-id :reason 'causal-hop-limit))
       (puthash activation-id activation (e-board-activations board))
+      (puthash (e-board-subscription-id subscription)
+               (append (gethash (e-board-subscription-id subscription)
+                                (e-board-activation-subscription-index board))
+                       (list activation-id))
+               (e-board-activation-subscription-index board))
       (e-board--append-event
        board 'activation-prepared
        (list :activation-id activation-id
@@ -1178,39 +1197,40 @@ This gives post effects a bounded, visible cycle stop without special routing."
       (e-board--schedule-effect
        board
        (lambda ()
-         (setf (e-board-activation-state activation) 'applying)
-         (e-board--append-event
-          board 'activation-applying (list :activation-id activation-id))
-         (condition-case err
-             (let ((publication
-                    (e-board-post-input
-                     board
-                     :author (or (plist-get effect :author)
-                                 (format "participant:%s"
-                                         (e-board-subscription-participant-id subscription)))
-                     :tags (copy-tree (plist-get effect :tags))
-                     :attributes
-                     (append attributes
-                             (list :board-subscription-lineage lineage))
-                     :to (plist-get effect :to)
-                     :mode (or (plist-get effect :mode) 'inject)
-                     :content (plist-get effect :content)
-                     :reference (plist-get effect :reference)
-                     :source-input-key
-                     (list (e-board-subscription-id subscription) 1
-                           (e-board-message-seq message)))))
-               (setf (e-board-activation-state activation) 'committed)
-               (e-board--append-event
-                board 'effect-committed
-                (list :activation-id activation-id :effect 'post-input
-                      :message-id (and (e-board-publication-message publication)
-                                       (e-board-message-id
-                                        (e-board-publication-message publication))))))
-           (error
-            (setf (e-board-activation-state activation) 'failed)
-            (e-board--append-event
-             board 'effect-failed
-             (list :activation-id activation-id :error err)))))))))
+         (when (eq (e-board-activation-state activation) 'prepared)
+           (setf (e-board-activation-state activation) 'applying)
+           (e-board--append-event
+            board 'activation-applying (list :activation-id activation-id))
+           (condition-case err
+               (let ((publication
+                      (e-board-post-input
+                       board
+                       :author (or (plist-get effect :author)
+                                   (format "participant:%s"
+                                           (e-board-subscription-participant-id subscription)))
+                       :tags (copy-tree (plist-get effect :tags))
+                       :attributes
+                       (append attributes
+                               (list :board-subscription-lineage lineage))
+                       :to (plist-get effect :to)
+                       :mode (or (plist-get effect :mode) 'inject)
+                       :content (plist-get effect :content)
+                       :reference (plist-get effect :reference)
+                       :source-input-key
+                       (list (e-board-subscription-id subscription) 1
+                             (e-board-message-seq message)))))
+                 (setf (e-board-activation-state activation) 'committed)
+                 (e-board--append-event
+                  board 'effect-committed
+                  (list :activation-id activation-id :effect 'post-input
+                        :message-id (and (e-board-publication-message publication)
+                                         (e-board-message-id
+                                          (e-board-publication-message publication))))))
+             (error
+              (setf (e-board-activation-state activation) 'failed)
+              (e-board--append-event
+               board 'effect-failed
+               (list :activation-id activation-id :error err))))))))))
 
 (defun e-board--source-key-parts (source-key)
   "Return SOURCE-KEY as (PRODUCER GENERATION SEQ), or signal.

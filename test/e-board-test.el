@@ -606,6 +606,40 @@
         (should-not effects)
         (should (= (length (e-board-messages board)) 2))))))
 
+(ert-deftest e-board-test-cancelling-subscription-fences-prepared-post-input ()
+  "A prepared continuation cannot append after its owner is cancelled."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:tags (source)) :id "continuation"
+                           :effect '(:post-input :to "one" :content "derived"))
+        (e-board-post-input board :id "source" :tags '(source))
+        (e-board-set-subscription-state board "continuation" 'cancelled)
+        (funcall (pop effects))
+        (should (= (length (e-board-messages board)) 1))
+        (should (eq (e-board-activation-state
+                    (e-board-activation board '("board" "continuation" "source")))
+                    'cancelled))))))
+
+(ert-deftest e-board-test-muting-subscription-fences-prepared-post-input ()
+  "Muting a continuation fences its prepared post effect too."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:tags (source)) :id "continuation"
+                           :effect '(:post-input :to "one" :content "derived"))
+        (e-board-post-input board :id "source" :tags '(source))
+        (e-board-set-subscription-state board "continuation" 'muted)
+        (funcall (pop effects))
+        (should (= (length (e-board-messages board)) 1))
+        (should (eq (e-board-activation-state
+                     (e-board-activation board '("board" "continuation" "source")))
+                    'cancelled))))))
+
 (provide 'e-board-test)
 
 ;;; e-board-test.el ends here

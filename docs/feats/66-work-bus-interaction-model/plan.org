@@ -17,6 +17,9 @@ and visibly faulted trusted predicates.
 Each deferred =post-input= also has a board-owned activation record that
 advances through =prepared=, =applying=, and terminal =committed=/=failed=
 states alongside its append event.
+Muting or cancelling its subscription fences every still-=prepared= activation,
+so a deferred effect released afterwards becomes a no-op rather than appending
+new input.
 Exact invocation effects now retain only an opaque target in the board; the
 private runtime owns the captured loop completion service and its original
 attachment generation.
