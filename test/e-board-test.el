@@ -995,6 +995,33 @@
                             :firing-limit 1)
          :type 'e-board-error)))))
 
+(ert-deftest e-board-test-subscription-lifetime-queues-a-fenced-expiry-transition ()
+  "A lifetime timer only queues a valid expiry through the board effect drain."
+  (e-board-test--with-empty-registry
+    (let (effects timers)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (effect) (push effect effects))
+                    :subscription-timer-scheduler
+                    (lambda (_seconds callback) (push callback timers) nil))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:tags (source)) :id "expiring"
+                           :lifetime 1)
+        (e-board-set-subscription-state board "expiring" 'muted)
+        (funcall (pop timers))
+        (should (eq (e-board-subscription-state
+                     (e-board-find-subscription board "expiring"))
+                    'muted))
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (eq (e-board-subscription-state
+                     (e-board-find-subscription board "expiring"))
+                    'expired))
+        (should-error
+         (e-board-subscribe board "one" '(:tags (source)) :id "invalid-lifetime"
+                            :lifetime 0)
+         :type 'wrong-type-argument)))))
+
 (ert-deftest e-board-test-batch-deadline-and-quiet-timers-enqueue-fenced-effects ()
   "Timers only enqueue later effects; a stale quiet callback cannot post."
   (e-board-test--with-empty-registry

@@ -52,7 +52,7 @@
                (:conc-name e-board-subscription-))
   id board-id participant-id selector effect state built-in-p
   readiness accumulator readiness-timer readiness-generation firing-number
-  firing-limit)
+  firing-limit lifetime lifetime-timer lifetime-generation)
 
 (defconst e-board--ordinary-subscription-states
   '(active muted completed faulted cancelled expired)
@@ -146,7 +146,7 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
-  continuation-timer-scheduler
+  continuation-timer-scheduler subscription-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
   open-activities closed-activities retention-floor)
 
@@ -213,6 +213,7 @@ The board object remains valid for inspection by its holder."
     (&key id id-function effect-scheduler invocation-effect-dispatcher
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
+          subscription-timer-scheduler
           (pickup-pending-limit e-board-default-pickup-pending-limit)
           (retention-floor 0)
           (register t))
@@ -246,7 +247,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :pickup-pending-limit pickup-pending-limit
                   :open-activities (make-hash-table :test 'equal)
                   :closed-activities (make-hash-table :test 'equal)
-                  :retention-floor retention-floor
+                 :retention-floor retention-floor
                   :pending-effects nil
                   :effects-scheduled nil
                   :effect-scheduler effect-scheduler
@@ -263,7 +264,8 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :aggregation-deadlines nil
                   :aggregation-deadline-scheduled nil
                   :aggregation-deadline-scheduler aggregation-deadline-scheduler
-                  :continuation-timer-scheduler continuation-timer-scheduler)))
+                  :continuation-timer-scheduler continuation-timer-scheduler
+                  :subscription-timer-scheduler subscription-timer-scheduler)))
     (when register (e-board-register board))
     board))
 
@@ -1082,14 +1084,15 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
 
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup)
-           readiness firing-limit)
+           readiness firing-limit lifetime)
   "Install an ordinary immutable subscription for PARTICIPANT-ID.
 SELECTOR supports kind, activity-kind, identity, attribute, and tag clauses.
 Effects are `create-pickup' and declarative `(:post-input ...)'.  A post-input
 continuation may declare READINESS as `(:policy batch :count N :max-delay
 SECONDS)' or `(:policy latest-after-quiet :quiet-period SECONDS)'; otherwise
 every match fires.  FIRING-LIMIT, when non-nil, is the positive number of
-post-input activations permitted before the subscription completes.
+post-input activations permitted before the subscription completes.  LIFETIME,
+when non-nil, is a positive number of seconds before the subscription expires.
 New subscriptions inspect future board records; only `create-pickup' is
 restricted to input records."
   (unless (e-board-participant board participant-id)
@@ -1104,6 +1107,9 @@ restricted to input records."
     (unless (and (listp effect) (eq (car effect) :post-input))
       (signal 'e-board-error
               (list "Firing limit requires post-input effect" firing-limit))))
+  (when lifetime
+    (unless (and (numberp lifetime) (> lifetime 0))
+      (signal 'wrong-type-argument (list 'plusp lifetime))))
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
   (unless (memq state '(active muted))
@@ -1121,13 +1127,21 @@ restricted to input records."
             :effect (copy-tree effect) :state state :built-in-p nil
             :readiness (copy-tree readiness) :accumulator nil
             :readiness-generation 0 :firing-number 0
-            :firing-limit firing-limit)))
+            :firing-limit firing-limit :lifetime lifetime
+            :lifetime-generation 0)))
       (setf (e-board-subscriptions board)
             (append (e-board-subscriptions board) (list subscription)))
       (e-board--append-event board 'subscription-added
                              (list :subscription-id id
                                    :participant-id participant-id
-                                   :firing-limit firing-limit))
+                                   :firing-limit firing-limit :lifetime lifetime))
+      (when lifetime
+        (setf (e-board-subscription-lifetime-timer subscription)
+              (e-board--schedule-subscription-timer
+               board lifetime
+               (lambda ()
+                 (e-board--queue-subscription-expiry
+                  board id (e-board-subscription-lifetime-generation subscription))))))
       subscription)))
 
 (defun e-board--tags-match-p (selector message)
@@ -1474,6 +1488,12 @@ and acknowledge only after their queue accepts the returned page."
             (e-board-subscription-accumulator subscription) nil
             (e-board-subscription-readiness-generation subscription)
             (1+ (e-board-subscription-readiness-generation subscription))))
+    (when (memq state '(completed faulted cancelled expired))
+      (when-let ((timer (e-board-subscription-lifetime-timer subscription)))
+        (cancel-timer timer))
+      (setf (e-board-subscription-lifetime-timer subscription) nil
+            (e-board-subscription-lifetime-generation subscription)
+            (1+ (e-board-subscription-lifetime-generation subscription))))
     (e-board--append-event board 'subscription-transition
                            (list :subscription-id (e-board-subscription-id subscription)
                                  :from from :state state))
@@ -1506,7 +1526,8 @@ lifetime belongs to participant membership."
 (cl-defun e-board-replace-subscription
     (board subscription-id selector &key id (effect nil effect-supplied-p)
            (state 'active) (readiness nil readiness-supplied-p)
-           (firing-limit nil firing-limit-supplied-p))
+           (firing-limit nil firing-limit-supplied-p)
+           (lifetime nil lifetime-supplied-p))
   "Cancel ordinary SUBSCRIPTION-ID and install a future-only replacement.
 The replacement receives a fresh id by default, so captured classifier views
 continue to name the old immutable subscription.  Replacing a terminal
@@ -1531,7 +1552,10 @@ subscription records the relationship without rewriting its terminal state."
                 (e-board-subscription-readiness subscription)))
              (replacement-firing-limit
               (if firing-limit-supplied-p firing-limit
-                (e-board-subscription-firing-limit subscription))))
+                (e-board-subscription-firing-limit subscription)))
+             (replacement-lifetime
+              (if lifetime-supplied-p lifetime
+                (e-board-subscription-lifetime subscription))))
         (unless (or (eq replacement-effect 'create-pickup)
                     (and (listp replacement-effect)
                          (eq (car replacement-effect) :post-input)))
@@ -1549,6 +1573,11 @@ subscription records the relationship without rewriting its terminal state."
             (signal 'e-board-error
                     (list "Firing limit requires post-input effect"
                           replacement-firing-limit))))
+        (when replacement-lifetime
+          (unless (and (numberp replacement-lifetime)
+                       (> replacement-lifetime 0))
+            (signal 'wrong-type-argument
+                    (list 'plusp replacement-lifetime))))
         (unless (memq (e-board-subscription-state subscription)
                       '(completed faulted cancelled expired))
           (e-board--transition-subscription board subscription 'cancelled))
@@ -1557,7 +1586,8 @@ subscription records the relationship without rewriting its terminal state."
                 board (e-board-subscription-participant-id subscription) selector
                 :id replacement-id :state state :effect replacement-effect
                 :readiness replacement-readiness
-                :firing-limit replacement-firing-limit)))
+                :firing-limit replacement-firing-limit
+                :lifetime replacement-lifetime)))
           (e-board--append-event
            board 'subscription-replaced
            (list :subscription-id subscription-id
@@ -1569,6 +1599,23 @@ subscription records the relationship without rewriting its terminal state."
   (if-let ((scheduler (e-board-continuation-timer-scheduler board)))
       (funcall scheduler seconds callback)
     (run-at-time seconds nil callback)))
+
+(defun e-board--schedule-subscription-timer (board seconds callback)
+  "Schedule a subscription lifecycle CALLBACK after SECONDS."
+  (if-let ((scheduler (e-board-subscription-timer-scheduler board)))
+      (funcall scheduler seconds callback)
+    (run-at-time seconds nil callback)))
+
+(defun e-board--queue-subscription-expiry (board subscription-id generation)
+  "Queue one generation-fenced expiry transition outside the timer callback."
+  (e-board--schedule-effect
+   board
+   (lambda ()
+     (when-let ((subscription (e-board-find-subscription board subscription-id)))
+       (when (and (= generation
+                     (e-board-subscription-lifetime-generation subscription))
+                  (memq (e-board-subscription-state subscription) '(active muted)))
+         (e-board--transition-subscription board subscription 'expired))))))
 
 (defun e-board--fire-post-input (board subscription message-or-messages &optional numbered-p)
   "Reserve one post-input firing and schedule it from frozen matched records.
