@@ -699,9 +699,50 @@
                (pickup (e-board-pickup board (car (e-board-message-pickup-ids derived))))
                (activation (e-board-activation board '("board" "continuation" "source"))))
           (should (equal (e-board-message-content derived) "derived"))
-          (should (equal (e-board-message-to derived) "one"))
-          (should (eq (e-board-activation-state activation) 'committed))
+           (should (equal (e-board-message-to derived) "one"))
+           (should (eq (e-board-activation-state activation) 'committed))
            (should (equal (e-board-pickup-participant-id pickup) "one")))))))
+
+(ert-deftest e-board-test-effect-drain-yields-after-its-bounded-page ()
+  "Queued effects retain FIFO order while each scheduler turn stays bounded."
+  (e-board-test--with-empty-registry
+    (let ((e-board-effect-drain-limit 1)
+          drains applied)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (drain) (push drain drains)))))
+        (e-board--schedule-effect board (lambda () (push 'first applied)))
+        (e-board--schedule-effect board (lambda () (push 'second applied)))
+        (e-board--schedule-effect board (lambda () (push 'third applied)))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(first)))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(first second)))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(first second third)))
+        (should-not drains)))))
+
+(ert-deftest e-board-test-effect-drain-keeps-one-successor-when-an-effect-enqueues ()
+  "An effect-created successor reuses the same one scheduled drain token."
+  (e-board-test--with-empty-registry
+    (let ((e-board-effect-drain-limit 1)
+          drains applied)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (drain) (push drain drains)))))
+        (e-board--schedule-effect
+         board
+         (lambda ()
+           (push 'first applied)
+           (e-board--schedule-effect board (lambda () (push 'second applied)))))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(first)))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(first second)))
+        (should-not drains)))))
 
 (ert-deftest e-board-test-post-input-effect-does-not-reenter-its-lineage ()
   "A continuation cannot schedule itself from its own derived input."

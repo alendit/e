@@ -77,6 +77,9 @@
 (defconst e-board-aggregation-deadline-drain-limit 16
   "Maximum aggregation deadline transitions committed per drain.")
 
+(defconst e-board-effect-drain-limit 16
+  "Maximum frozen effects applied in one scheduler turn.")
+
 (defconst e-board-default-pickup-pending-limit 16
   "Maximum FIFO pickups allowed behind one participant's active head.")
 
@@ -124,7 +127,8 @@
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
-  observers pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
+  observers pickups source-high-watermarks source-recent work-table invocations aggregations
+  pending-effects effects-scheduled
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
   terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
   input-classifications input-classification-scheduled input-classification-scheduler
@@ -224,6 +228,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :pickup-queues (make-hash-table :test 'equal)
                   :pickup-pending-limit pickup-pending-limit
                   :pending-effects nil
+                  :effects-scheduled nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
                   :invocation-work-index (make-hash-table :test 'equal)
@@ -518,13 +523,19 @@ uncommitted failure settles that cancellation instead of retrying it."
   "Return BOARD's client observer cursor OBSERVER-ID, or nil."
   (gethash observer-id (e-board-observers board)))
 
+(defun e-board--schedule-effect-drain (board)
+  "Schedule at most one later drain for BOARD's frozen effect FIFO."
+  (unless (e-board-effects-scheduled board)
+    (setf (e-board-effects-scheduled board) t)
+    (if-let ((scheduler (e-board-effect-scheduler board)))
+        (funcall scheduler (lambda () (e-board-drain-effects board)))
+      (run-at-time 0 nil (lambda () (e-board-drain-effects board))))))
+
 (defun e-board--schedule-effect (board effect)
   "Schedule BOARD EFFECT after the initiating work-start stack unwinds."
   (setf (e-board-pending-effects board)
         (append (e-board-pending-effects board) (list effect)))
-  (if-let ((scheduler (e-board-effect-scheduler board)))
-      (funcall scheduler (lambda () (e-board-drain-effects board)))
-    (run-at-time 0 nil (lambda () (e-board-drain-effects board)))))
+  (e-board--schedule-effect-drain board))
 
 (defun e-board--schedule-aggregation-deadline (board)
   "Schedule one later deadline drain for BOARD."
@@ -557,10 +568,15 @@ uncommitted failure settles that cancellation instead of retrying it."
   "Apply BOARD's frozen effects once, in publication order.
 The runtime invokes this through the injected scheduler; reducers only append
 effect records and never synchronously enter a tool or harness callback."
-  (let ((effects (e-board-pending-effects board)))
-    (setf (e-board-pending-effects board) nil)
+  (setf (e-board-effects-scheduled board) nil)
+  (let* ((pending (e-board-pending-effects board))
+         (count (min e-board-effect-drain-limit (length pending)))
+         (effects (cl-subseq pending 0 count)))
+    (setf (e-board-pending-effects board) (nthcdr count pending))
     (dolist (effect effects)
-      (funcall effect))))
+      (funcall effect))
+    (when (e-board-pending-effects board)
+      (e-board--schedule-effect-drain board))))
 
 (defun e-board--index-work-subscription (index work-id subscription-id)
   "Add SUBSCRIPTION-ID to WORK-ID's exact INDEX without scanning its peers."
@@ -1020,12 +1036,15 @@ the returned cursor's advancing `next-seq' for later bounded pages."
                                    :start-seq start-seq))
       observer)))
 
-(cl-defun e-board-observer-read-history-page (board observer-id &key (limit 32))
-  "Read one bounded ascending history page without advancing the live cursor."
+(cl-defun e-board-observer-prepare-history-page (board observer-id &key (limit 32))
+  "Prepare one bounded ascending history page without moving its cursor.
+Return =:messages= plus a =:before-seq= receipt for
+`e-board-observer-accept-history-page'."
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let ((observer (or (e-board-observer board observer-id)
                       (signal 'e-board-observer-missing (list observer-id))))
+        (next-before nil)
         matches)
     (when (and (eq (e-board-observer-state observer) 'active)
                (e-board-observer-history-before-seq observer))
@@ -1035,11 +1054,34 @@ the returned cursor's advancing `next-seq' for later bounded pages."
           (when (and (< (length matches) limit)
                      (< (e-board-message-seq message) before)
                      (>= (e-board-message-seq message) floor))
-            (setf (e-board-observer-history-before-seq observer)
-                  (e-board-message-seq message))
+            (setq next-before (e-board-message-seq message))
             (when (e-board--observer-matches-p board observer message)
               (push message matches))))))
-    matches))
+    (list :messages matches :before-seq next-before)))
+
+(defun e-board-observer-accept-history-page (board observer-id before-seq)
+  "Advance OBSERVER-ID's history cursor after accepted BEFORE-SEQ receipt."
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (unless (and (integerp before-seq)
+                 (e-board-observer-history-before-seq observer)
+                 (< before-seq (e-board-observer-history-before-seq observer))
+                 (>= before-seq (e-board-observer-history-floor observer)))
+      (signal 'e-board-error
+              (list "Invalid observer history acceptance" observer-id before-seq)))
+    (when (eq (e-board-observer-state observer) 'active)
+      (setf (e-board-observer-history-before-seq observer) before-seq)
+      (e-board--append-event board 'observer-history-page-accepted
+                             (list :observer-id observer-id :before-seq before-seq)))
+    observer))
+
+(cl-defun e-board-observer-read-history-page (board observer-id &key (limit 32))
+  "Synchronously prepare and accept one bounded ascending history page."
+  (let* ((page (e-board-observer-prepare-history-page board observer-id :limit limit))
+         (before-seq (plist-get page :before-seq)))
+    (when before-seq
+      (e-board-observer-accept-history-page board observer-id before-seq))
+    (plist-get page :messages)))
 
 (defun e-board--observer-matches-p (board observer message)
   "Return non-nil when OBSERVER can observe MESSAGE, faulting only itself."
