@@ -393,6 +393,48 @@
       (should-error (e-board-set-subscription-state board "address" 'muted)
                      :type 'e-board-error))))
 
+(ert-deftest e-board-test-ordinary-subscription-terminal-states-are-one-way ()
+  "Ordinary subscriptions expose the complete terminal lifecycle."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "participant"
+                               :create-pickup-subscription-id "address")
+      (e-board-subscribe board "participant" '(:tags (main)) :id "expired")
+      (e-board-set-subscription-state board "expired" 'expired)
+      (should (eq (e-board-subscription-state
+                   (e-board-find-subscription board "expired")) 'expired))
+      (should-error (e-board-set-subscription-state board "expired" 'active)
+                    :type 'e-board-error)
+      (e-board-subscribe board "participant" '(:tags (complete)) :id "completed")
+      (e-board-set-subscription-state board "completed" 'completed)
+      (should-error (e-board-set-subscription-state board "completed" 'cancelled)
+                    :type 'e-board-error)
+      (e-board-subscribe board "participant"
+                         '(:tags (fault) :predicate (lambda (_message) (error "bad")))
+                         :id "faulted")
+      (e-board-post-input board :tags '(fault))
+      (should (eq (e-board-subscription-state
+                   (e-board-find-subscription board "faulted")) 'faulted)))))
+
+(ert-deftest e-board-test-replacing-subscription-cancels-old-future-route ()
+  "Changing a matcher installs a new future-only subscription identity."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "participant"
+                               :create-pickup-subscription-id "address")
+      (e-board-subscribe board "participant" '(:tags (old)) :id "old")
+      (let ((replacement (e-board-replace-subscription
+                          board "old" '(:tags (new)) :id "new")))
+        (should (equal (e-board-subscription-id replacement) "new"))
+        (should (eq (e-board-subscription-state
+                     (e-board-find-subscription board "old")) 'cancelled))
+        (should-not (e-board-publication-pickup-ids
+                     (e-board-post-input board :tags '(old))))
+        (should (= (length (e-board-publication-pickup-ids
+                            (e-board-post-input board :tags '(new)))) 1))
+        (should (member 'subscription-replaced
+                        (mapcar #'e-board-event-type (e-board-events board))))))))
+
 (ert-deftest e-board-test-post-input-effect-creates-a-deferred-derived-message ()
   "A matching continuation posts through the board after routing commits."
   (e-board-test--with-empty-registry

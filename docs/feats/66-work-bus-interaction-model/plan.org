@@ -28,6 +28,10 @@ invalid requests install no aggregation subscription.
 Its aggregation effect now also holds only the same runtime-owned opaque
 invocation target as executable-tool completion, never a board-retained
 callback closure.
+Ordinary subscription lifecycle now records the full active/muted/completed/
+faulted/cancelled/expired state set with legal one-way terminal transitions;
+matcher/effect changes cancel the old future route and create a fresh
+subscription identity.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime

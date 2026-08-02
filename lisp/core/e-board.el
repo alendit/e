@@ -52,6 +52,10 @@
                (:conc-name e-board-subscription-))
   id board-id participant-id selector effect state built-in-p)
 
+(defconst e-board--ordinary-subscription-states
+  '(active muted completed faulted cancelled expired)
+  "States available to ordinary orchestration subscriptions.")
+
 (cl-defstruct (e-board-observer
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
@@ -614,6 +618,8 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
     (signal 'e-board-error (list "Unsupported board effect" effect)))
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
+  (unless (memq state '(active muted))
+    (signal 'wrong-type-argument (list '(member active muted) state)))
   (let ((id (or id (e-board--next-id board 'subscription))))
     (when (cl-find id (e-board-subscriptions board)
                    :key #'e-board-subscription-id :test #'equal)
@@ -655,6 +661,18 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
                     (t (signal 'wrong-type-argument
                                (list 'listp attributes)))))))
 
+(defun e-board--fault-subscription (board subscription err)
+  "Record trusted predicate ERR without reviving a changed subscription view."
+  (setf (e-board-subscription-state subscription) 'faulted)
+  (when-let ((current (e-board-find-subscription
+                       board (e-board-subscription-id subscription))))
+    (when (eq (e-board-subscription-state current) 'active)
+      (e-board--transition-subscription board current 'faulted)
+      (e-board--append-event
+       board 'subscription-faulted
+       (list :subscription-id (e-board-subscription-id current)
+             :error err)))))
+
 (defun e-board--selector-matches-p (board subscription message)
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
@@ -669,11 +687,7 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
               (condition-case err
                   (funcall predicate message)
                 (error
-                 (setf (e-board-subscription-state subscription) 'faulted)
-                 (e-board--append-event
-                  board 'subscription-faulted
-                  (list :subscription-id (e-board-subscription-id subscription)
-                        :error err))
+                 (e-board--fault-subscription board subscription err)
                  nil))
             t))))
 
@@ -768,23 +782,79 @@ Trusted predicates run only here, never from message append or work settlement."
   (cl-find subscription-id (e-board-subscriptions board)
            :key #'e-board-subscription-id :test #'equal))
 
+(defun e-board--subscription-transition-allowed-p (from to)
+  "Return non-nil when ordinary subscription state FROM may move to TO."
+  (pcase from
+    ('active (memq to '(muted completed faulted cancelled expired)))
+    ('muted (memq to '(active cancelled expired)))
+    (_ nil)))
+
+(defun e-board--transition-subscription (board subscription state)
+  "Commit SUBSCRIPTION's ordinary lifecycle transition to STATE on BOARD."
+  (let ((from (e-board-subscription-state subscription)))
+    (unless (memq state e-board--ordinary-subscription-states)
+      (signal 'wrong-type-argument
+              (list e-board--ordinary-subscription-states state)))
+    (unless (e-board--subscription-transition-allowed-p from state)
+      (signal 'e-board-error
+              (list "Illegal subscription transition" from state
+                    (e-board-subscription-id subscription))))
+    (setf (e-board-subscription-state subscription) state)
+    (e-board--append-event board 'subscription-transition
+                           (list :subscription-id (e-board-subscription-id subscription)
+                                 :from from :state state))
+    subscription))
+
 (defun e-board-set-subscription-state (board subscription-id state)
   "Transition an ordinary BOARD subscription to STATE.
 The membership-owned exact address route is not mutable through this API; its
 lifetime belongs to participant membership."
-  (unless (memq state '(active muted cancelled))
-    (signal 'wrong-type-argument (list '(member active muted cancelled) state)))
   (let ((subscription (e-board-find-subscription board subscription-id)))
     (unless subscription
       (signal 'e-board-error (list "Unknown subscription" subscription-id)))
     (when (e-board-subscription-built-in-p subscription)
       (signal 'e-board-error (list "Membership-owned subscription" subscription-id)))
-    (when (eq (e-board-subscription-state subscription) 'cancelled)
-      (signal 'e-board-error (list "Cancelled subscription" subscription-id)))
-    (setf (e-board-subscription-state subscription) state)
-    (e-board--append-event board 'subscription-transition
-                           (list :subscription-id subscription-id :state state))
-    subscription))
+    (e-board--transition-subscription board subscription state)))
+
+(cl-defun e-board-replace-subscription
+    (board subscription-id selector &key id (effect nil effect-supplied-p)
+           (state 'active))
+  "Cancel ordinary SUBSCRIPTION-ID and install a future-only replacement.
+The replacement receives a fresh id by default, so captured classifier views
+continue to name the old immutable subscription.  Replacing a terminal
+subscription records the relationship without rewriting its terminal state."
+  (let ((subscription (or (e-board-find-subscription board subscription-id)
+                          (signal 'e-board-error
+                                  (list "Unknown subscription" subscription-id)))))
+    (when (e-board-subscription-built-in-p subscription)
+      (signal 'e-board-error (list "Membership-owned subscription" subscription-id)))
+    (let ((replacement-id (or id (e-board--next-id board 'subscription))))
+      (when (e-board-find-subscription board replacement-id)
+        (signal 'e-board-id-conflict (list replacement-id)))
+      ;; Validate the replacement before changing the old subscription.
+      (unless (listp selector)
+        (signal 'wrong-type-argument (list 'listp selector)))
+      (unless (memq state '(active muted))
+        (signal 'wrong-type-argument (list '(member active muted) state)))
+      (let ((replacement-effect
+             (if effect-supplied-p effect (e-board-subscription-effect subscription))))
+        (unless (or (eq replacement-effect 'create-pickup)
+                    (and (listp replacement-effect)
+                         (eq (car replacement-effect) :post-input)))
+          (signal 'e-board-error
+                  (list "Unsupported board effect" replacement-effect)))
+        (unless (memq (e-board-subscription-state subscription)
+                      '(completed faulted cancelled expired))
+          (e-board--transition-subscription board subscription 'cancelled))
+        (let ((replacement
+               (e-board-subscribe
+                board (e-board-subscription-participant-id subscription) selector
+                :id replacement-id :state state :effect replacement-effect)))
+          (e-board--append-event
+           board 'subscription-replaced
+           (list :subscription-id subscription-id
+                 :replacement-id replacement-id))
+          replacement)))))
 
 (defun e-board--matching-subscriptions (board message)
   "Return eligible subscriptions for MESSAGE using its exact/tag route rule."
@@ -964,12 +1034,6 @@ Return nil when the key is new and may be appended."
                                      :board-subscription-lineage)))
              (and (not (member (e-board-subscription-id subscription) lineage))
                   (e-board--selector-matches-p board subscription message)))))))
-    ;; Predicate faults are visible on the durable subscription rather than
-    ;; only on the frozen classifier copy.
-    (when (eq (e-board-subscription-state subscription) 'faulted)
-      (when-let ((current (e-board-find-subscription
-                           board (e-board-subscription-id subscription))))
-        (setf (e-board-subscription-state current) 'faulted)))
     matches))
 
 (defun e-board--finalize-input-classification
