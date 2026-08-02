@@ -99,9 +99,14 @@
                    (e-board-registry-add-participant board :principal "owner"))
                   'owner))
       (e-board-registry-authorize-principal board "owner" "member" 'member)
-      (should (eq (e-board-registry-participant-role
-                   (e-board-registry-add-participant board :principal "member"))
-                  'member))
+      (let ((participant
+             (e-board-registry-add-participant
+              board :principal "member" :controller "session-owner")))
+        (should (eq (e-board-registry-participant-role participant) 'member))
+        (should (equal (e-board-registry-participant-controller participant)
+                       "session-owner"))
+        (should (e-board-registry-authorize-exact-post
+                 board "session-owner" participant)))
       (should-error (e-board-registry-add-participant board :principal "stranger")
                     :type 'e-board-registry-authorization-denied))))
 

@@ -692,7 +692,7 @@ busy session leaves its pickup pending for an explicit later retry."
 
 (cl-defun e-board-runtime-attach
     (board-or-id harness session-id
-                 &key participant-id author principal delivery-function)
+                 &key participant-id author principal controller delivery-function)
   "Attach existing live HARNESS SESSION-ID to BOARD-OR-ID as one participant.
 
 DELIVERY-FUNCTION is called as (FUNCTION ATTACHMENT PICKUP MESSAGE) for each
@@ -706,11 +706,12 @@ When omitted, the conservative idle-only harness delivery port is used."
   (e-board-runtime--attach-resolved
    board-or-id harness session-id
    :participant-id participant-id :author author :principal principal
+   :controller controller
    :delivery-function delivery-function))
 
 (cl-defun e-board-runtime--attach-resolved
     (board-or-id harness session-id
-                 &key participant-id author principal delivery-function
+                 &key participant-id author principal controller delivery-function
                  instance-id instance-catalog-generation harness-id
                  harness-object-generation session-store-id endpoint-token)
   "Attach one already-resolved endpoint with optional qualified metadata."
@@ -727,7 +728,8 @@ When omitted, the conservative idle-only harness delivery port is used."
       (signal 'e-board-runtime-session-busy (list session-key))))
   (let* ((board (e-board-runtime--active-board board-or-id))
          (participant (e-board-registry-add-participant
-                       board :id participant-id :author author :principal principal))
+                       board :id participant-id :author author :principal principal
+                       :controller controller))
          (key (e-board-runtime--attachment-key board participant)))
     (when (gethash key e-board-runtime--attachments)
       (signal 'e-board-runtime-attachment-exists (list key)))
@@ -743,7 +745,7 @@ When omitted, the conservative idle-only harness delivery port is used."
 
 (cl-defun e-board-runtime-attach-instance
     (board-or-id instance-id session-id
-                 &key participant-id author principal delivery-function)
+                 &key participant-id author principal controller delivery-function)
   "Attach an existing live SESSION-ID through configured INSTANCE-ID.
 This operation never invokes an instance factory or loads dormant history."
   (let* ((instance-generation (e-harness-instance-generation))
@@ -767,6 +769,7 @@ This operation never invokes an instance factory or loads dormant history."
       (e-board-runtime--attach-resolved
        board-or-id harness session-id
        :participant-id participant-id :author author :principal principal
+       :controller controller
        :delivery-function delivery-function
        :instance-id instance-id
        :instance-catalog-generation instance-generation

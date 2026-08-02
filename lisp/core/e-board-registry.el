@@ -62,7 +62,7 @@
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
-  id board-id author principal role access-grants source-participant)
+  id board-id author principal controller role access-grants source-participant)
 
 (defun e-board-registry--next-id (id-function kind)
   "Return an identity for KIND from ID-FUNCTION or the local fallback."
@@ -458,7 +458,7 @@ attached client from muting, resuming, or closing another client's cursor."
      (e-board-registry-board-source-board board) observer-id receipt)))
 
 (cl-defun e-board-registry-add-participant
-    (board-or-id &key id author principal (state 'active))
+    (board-or-id &key id author principal controller (state 'active))
   "Add a board-local participant to active BOARD-OR-ID.
 The participant's built-in exact address subscription is created by the source
 board, with its identity supplied by this registry's id generator."
@@ -482,7 +482,8 @@ board, with its identity supplied by this registry's id generator."
            (participant
             (e-board-registry-participant--create
              :id id :board-id (e-board-registry-board-id board)
-             :author author :principal principal :role role
+             :author author :principal principal
+             :controller (or controller principal) :role role
              :access-grants (make-hash-table :test 'equal)
              :source-participant source-participant)))
       (puthash id participant participants)
@@ -530,7 +531,7 @@ explicit `post' grant."
          (rights (gethash requester
                           (e-board-registry-participant-access-grants participant))))
     (unless (or (eq (e-board-registry-principal-role board requester) 'owner)
-                (equal requester (e-board-registry-participant-principal participant))
+                (equal requester (e-board-registry-participant-controller participant))
                 (memq 'post rights))
       (signal 'e-board-registry-authorization-denied
               (list (e-board-registry-board-id board) requester
