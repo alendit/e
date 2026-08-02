@@ -16,11 +16,18 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-harness-registry)
+(require 'e-request)
 
 (define-error 'e-harness-instance-missing
   "No harness instance is registered for id")
 (define-error 'e-harness-instance-store-conflict
   "Harness instances sharing a session store disagree on its ports")
+(define-error 'e-harness-instance-session-store-missing
+  "No configured harness instance exposes this session store")
+(define-error 'e-harness-instance-session-catalog-invalid-page
+  "Session catalog returned an invalid bounded page")
+(define-error 'e-harness-instance-session-catalog-stale
+  "Harness instance catalog changed while a session page was pending")
 
 (cl-defstruct e-harness-instance
   id
@@ -50,6 +57,9 @@
 
 (defvar e-harness-instance--generation 0
   "Monotonic generation of the configured harness-instance catalog.")
+
+(defvar e-harness-instance--request-sequence 0
+  "Process-local sequence for session catalog request identities.")
 
 (defun e-harness-instance--validate-id (id)
   "Signal when ID is not a valid harness instance id."
@@ -117,6 +127,16 @@ metadata without comparing against its retired record."
                        :eligible-instance-ids
                        (list (e-harness-instance-id instance)))
                  e-harness-instance--session-stores)))))
+
+(defun e-harness-instance--copy-session-store-entry (entry)
+  "Copy mutable metadata in session-store ENTRY while preserving port identity."
+  (list :session-store-id (plist-get entry :session-store-id)
+        :session-catalog (plist-get entry :session-catalog)
+        :session-access-store (plist-get entry :session-access-store)
+        :eligible-instance-ids
+        (sort (copy-sequence (plist-get entry :eligible-instance-ids))
+              (lambda (left right)
+                (string< (symbol-name left) (symbol-name right))))))
 
 (defun e-harness-instance--display-name (id name)
   "Return normalized display NAME for ID."
@@ -218,16 +238,119 @@ declarative selection metadata; the factory still builds the live harness."
   (let (result)
     (maphash
      (lambda (_store-id indexed-entry)
-       (let ((entry (copy-tree indexed-entry)))
-         (plist-put entry :eligible-instance-ids
-                    (sort (plist-get entry :eligible-instance-ids)
-                          (lambda (left right)
-                            (string< (symbol-name left) (symbol-name right)))))
-         (push entry result)))
+       (push (e-harness-instance--copy-session-store-entry indexed-entry)
+             result))
      e-harness-instance--session-stores)
     (sort result (lambda (left right)
                    (string< (plist-get left :session-store-id)
                             (plist-get right :session-store-id))))))
+
+(defun e-harness-instance-session-store (session-store-id)
+  "Return indexed metadata for SESSION-STORE-ID without activating a harness."
+  (unless (stringp session-store-id)
+    (signal 'wrong-type-argument (list 'stringp session-store-id)))
+  (or (when-let ((entry (gethash session-store-id
+                                  e-harness-instance--session-stores)))
+        (e-harness-instance--copy-session-store-entry entry))
+      (signal 'e-harness-instance-session-store-missing
+              (list session-store-id))))
+
+(defun e-harness-instance--normalize-session-catalog-page (entry page limit)
+  "Validate and decorate one bounded catalog PAGE for indexed store ENTRY."
+  (let ((sessions (and (listp page) (plist-get page :sessions))))
+    (unless (and (listp page) (plist-member page :sessions))
+      (signal 'e-harness-instance-session-catalog-invalid-page
+              (list (plist-get entry :session-store-id) limit)))
+    (let ((cursor sessions)
+          (count 0))
+      (while (and (consp cursor) (< count (1+ limit)))
+        (unless (and (listp (car cursor))
+                     (plist-member (car cursor) :session-id))
+          (signal 'e-harness-instance-session-catalog-invalid-page
+                  (list (plist-get entry :session-store-id) limit)))
+        (cl-incf count)
+        (setq cursor (cdr cursor)))
+      (unless (and (null cursor) (<= count limit))
+        (signal 'e-harness-instance-session-catalog-invalid-page
+                (list (plist-get entry :session-store-id) limit))))
+    (list :session-store-id (plist-get entry :session-store-id)
+          :eligible-instance-ids
+          (copy-sequence (plist-get entry :eligible-instance-ids))
+          :sessions
+          (mapcar
+           (lambda (session)
+             (append
+              (list :session-store-id (plist-get entry :session-store-id)
+                    :eligible-instance-ids
+                    (copy-sequence
+                     (plist-get entry :eligible-instance-ids)))
+              (copy-tree session)))
+           sessions)
+          :next-after (plist-get page :next-after))))
+
+(cl-defun e-harness-instance-session-catalog-page-start
+    (session-store-id &key principal after (limit 32) on-done on-error)
+  "Start one asynchronous dormant-session catalog page request.
+SESSION-STORE-ID is resolved through the indexed configured-store map, without
+calling a harness factory.  PRINCIPAL must come from the trusted host identity
+boundary.  The catalog port receives one immutable request plist plus success
+and failure callbacks; it may return a cancellation function.  The returned
+`e-request-lifecycle' remains pending until one callback settles it."
+  (unless (and (integerp limit) (> limit 0))
+    (signal 'wrong-type-argument (list 'plusp limit)))
+  (let* ((entry (e-harness-instance-session-store session-store-id))
+         (catalog (plist-get entry :session-catalog))
+         (generation e-harness-instance--generation)
+         (arguments (list :operation 'list-page
+                          :session-store-id session-store-id
+                          :principal principal
+                          :after after
+                          :limit limit))
+         cancel
+         request)
+    (cl-labels
+        ((fail (condition)
+           (when (e-request-fail request condition)
+             (when on-error
+               (funcall on-error condition))))
+         (finish (page)
+           (unless (e-request-terminal-p request)
+             (let (normalized)
+               (condition-case condition
+                   (if (/= generation e-harness-instance--generation)
+                       (signal 'e-harness-instance-session-catalog-stale
+                               (list session-store-id generation
+                                     e-harness-instance--generation))
+                     (setq normalized
+                           (e-harness-instance--normalize-session-catalog-page
+                            entry page limit)))
+                 (error
+                  (fail condition)))
+               (when (and normalized (e-request-finish request normalized))
+                 (when on-done
+                   (funcall on-done normalized)))))))
+      (setq request
+            (e-request-lifecycle-create
+             :id (format "session-catalog-%d"
+                         (cl-incf e-harness-instance--request-sequence))
+             :owner 'e-harness-instance-session-catalog
+             :generation generation
+             :state 'created
+             :cancel-function
+             (lambda (_request)
+               (when cancel
+                 (funcall cancel)))))
+      (e-request-start request arguments)
+      (condition-case condition
+          (let ((returned (funcall catalog arguments #'finish #'fail)))
+            (when (and returned (not (functionp returned)))
+              (signal 'wrong-type-argument (list 'functionp returned)))
+            (setq cancel returned))
+        (error
+         (if (e-request-terminal-p request)
+             (signal (car condition) (cdr condition))
+           (fail condition))))
+      request)))
 
 (cl-defun e-harness-instance-list-subagents (&key visibility)
   "Return spawnable subagent instances, optionally filtered by VISIBILITY.

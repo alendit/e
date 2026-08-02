@@ -25,7 +25,8 @@
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
          (e-harness-instance--session-stores (make-hash-table :test 'equal))
-         (e-harness-instance--generation 0))
+         (e-harness-instance--generation 0)
+         (e-harness-instance--request-sequence 0))
      ,@body))
 
 (ert-deftest e-harness-instances-test-registers-and-lists-by-kind ()
@@ -179,6 +180,104 @@
                        '("new")))
         (should (equal (plist-get (car stores) :eligible-instance-ids)
                        '(:instance)))))))
+
+(ert-deftest e-harness-instances-test-catalog-page-is-pending-and-non-activating ()
+  "A held store leaves one bounded request pending without invoking a factory."
+  (e-harness-instances-test--with-empty-registries
+    (let* (arguments succeed fail
+           (factory-calls 0)
+           (catalog (lambda (request on-done on-error)
+                      (setq arguments request
+                            succeed on-done
+                            fail on-error)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (dolist (id '(:second :first))
+        (e-harness-instance-register
+         :id id :kind 'chat :session-store-id "store"
+         :session-catalog catalog :session-access-store access-store
+         :factory (lambda () (cl-incf factory-calls) (e-harness-create))))
+      (let ((request (e-harness-instance-session-catalog-page-start
+                      "store" :principal "owner" :after "cursor" :limit 2)))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (equal (plist-get arguments :operation) 'list-page))
+        (should (equal (plist-get arguments :principal) "owner"))
+        (should (equal (plist-get arguments :after) "cursor"))
+        (should (= factory-calls 0))
+        (should (functionp succeed))
+        (should (functionp fail))
+        (funcall succeed
+                 '(:sessions ((:session-id "session" :state dormant))
+                   :next-after "next"))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (let* ((page (e-request-lifecycle-terminal-payload request))
+               (session (car (plist-get page :sessions))))
+          (should (equal (plist-get page :session-store-id) "store"))
+          (should (equal (plist-get page :eligible-instance-ids)
+                         '(:first :second)))
+          (should (equal (plist-get session :session-id) "session"))
+          (should (equal (plist-get session :eligible-instance-ids)
+                         '(:first :second))))))))
+
+(ert-deftest e-harness-instances-test-catalog-page-fences-stale-mapping ()
+  "A delayed page cannot commit after configured instance metadata changes."
+  (e-harness-instances-test--with-empty-registries
+    (let* (succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :first :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (let ((request
+             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
+        (e-harness-instance-register :id :unrelated :kind 'chat)
+        (funcall succeed '(:sessions nil))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-harness-instance-session-catalog-stale))))))
+
+(ert-deftest e-harness-instances-test-catalog-page-cancellation-fences-late-success ()
+  "Cancelling a held page reaches its adapter and prevents later resettlement."
+  (e-harness-instances-test--with-empty-registries
+    (let* (succeed
+           (cancel-calls 0)
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      (lambda () (cl-incf cancel-calls))))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (let ((request
+             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
+        (e-request-cancel request 'user-cancelled)
+        (should (= cancel-calls 1))
+        (should (eq (e-request-lifecycle-state request) 'cancelled))
+        (funcall succeed '(:sessions ((:session-id "late"))))
+        (should (eq (e-request-lifecycle-state request) 'cancelled))
+        (should (eq (e-request-lifecycle-terminal-payload request)
+                    'user-cancelled))))))
+
+(ert-deftest e-harness-instances-test-catalog-page-rejects-over-limit-result ()
+  "A catalog adapter cannot settle a request with more rows than requested."
+  (e-harness-instances-test--with-empty-registries
+    (let* (succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (let ((request
+             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
+        (funcall succeed
+                 '(:sessions ((:session-id "first") (:session-id "second"))))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-harness-instance-session-catalog-invalid-page))))))
 
 (ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
   "A declared durable store cannot silently omit a required port."
