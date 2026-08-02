@@ -33,6 +33,8 @@
 (define-error 'e-harness-instance-session-catalog-stale
   "Harness instance catalog changed while a session page was pending"
   'e-harness-instance-session-request-stale)
+(define-error 'e-harness-instance-session-catalog-preflight-cycle
+  "Session catalog preflight returned a repeated continuation cursor")
 (define-error 'e-harness-instance-session-access-invalid-operation
   "Unsupported session access-store operation")
 (define-error 'e-harness-instance-session-access-invalid-result
@@ -51,6 +53,9 @@
 (defconst e-harness-instance-session-access-operations
   '(create grant revoke transfer)
   "Closed set of optimistic session access-store mutations.")
+
+(defconst e-harness-instance-session-preflight-page-limit 32
+  "Maximum dormant rows validated by one cutover-preflight page.")
 
 (cl-defstruct e-harness-instance
   id
@@ -443,6 +448,122 @@ and failure callbacks; it may return a cancellation function.  The returned
        (e-harness-instance--normalize-session-catalog-page entry page limit))
      'e-harness-instance-session-catalog-stale
      :on-done on-done :on-error on-error)))
+
+(cl-defun e-harness-instance-session-catalog-preflight-start
+    (&key (limit e-harness-instance-session-preflight-page-limit)
+          on-done on-error)
+  "Validate every configured dormant catalog row without activating a harness.
+LIMIT bounds each =preflight-page= request.  The returned lifecycle advances
+one store page per scheduled step, rejects repeated cursors or qualified session
+ids, and fails if the configured instance generation changes.  ON-DONE receives
+only a bounded summary; validated rows are not retained in that result."
+  (unless (and (integerp limit) (> limit 0)
+               (<= limit e-harness-instance-session-preflight-page-limit))
+    (signal 'wrong-type-argument
+            (list `(integer 1 ,e-harness-instance-session-preflight-page-limit)
+                  limit)))
+  (let* ((generation e-harness-instance--generation)
+         (stores (e-harness-instance-session-stores))
+         (remaining stores)
+         (seen-sessions (make-hash-table :test 'equal))
+         (seen-cursors (make-hash-table :test 'equal))
+         (session-count 0)
+         after active-child scheduled request)
+    (cl-labels
+        ((fail (condition)
+           (unless (e-request-terminal-p request)
+             (when (e-request-fail request condition)
+               (when on-error (funcall on-error condition)))))
+         (schedule ()
+           (unless (or scheduled (e-request-terminal-p request))
+             (setq scheduled
+                   (run-at-time
+                    0 nil
+                    (lambda ()
+                      (setq scheduled nil)
+                      (condition-case condition
+                          (step)
+                        (error (fail condition))))))))
+         (finish ()
+           (let ((summary
+                  (list :generation generation
+                        :session-store-count (length stores)
+                        :session-count session-count)))
+             (when (e-request-finish request summary)
+               (when on-done (funcall on-done summary)))))
+         (accept-page (store page)
+           (unless (e-request-terminal-p request)
+             (dolist (row (plist-get page :sessions))
+               (let ((key (list (plist-get store :session-store-id)
+                                (plist-get row :session-id))))
+                 (when (gethash key seen-sessions)
+                   (signal 'e-harness-instance-session-catalog-invalid-row key))
+                 (puthash key t seen-sessions)
+                 (cl-incf session-count)))
+             (let ((next (plist-get page :next-after))
+                   (store-id (plist-get store :session-store-id)))
+               (if next
+                   (let ((cursor-key (list store-id next)))
+                     (when (or (equal next after)
+                               (gethash cursor-key seen-cursors))
+                       (signal 'e-harness-instance-session-catalog-preflight-cycle
+                               cursor-key))
+                     (puthash cursor-key t seen-cursors)
+                     (setq after next))
+                 (setq remaining (cdr remaining)
+                       after nil)))
+             (e-request-progress
+              request
+              (list :phase 'validating-catalogs
+                    :session-store-id (plist-get store :session-store-id)
+                    :session-count session-count))
+             (schedule)))
+         (step ()
+           (cond
+            ((/= generation e-harness-instance--generation)
+             (signal 'e-harness-instance-session-catalog-stale
+                     (list generation e-harness-instance--generation)))
+            ((null remaining) (finish))
+            (t
+             (let* ((store (car remaining))
+                    (arguments
+                     (list :operation 'preflight-page
+                           :session-store-id
+                           (plist-get store :session-store-id)
+                           :after after :limit limit)))
+               (setq active-child
+                     (e-harness-instance--session-request-start
+                      store :session-catalog
+                      'e-harness-instance-session-catalog-preflight
+                      "session-catalog-preflight-page" arguments
+                      (lambda (page)
+                        (e-harness-instance--normalize-session-catalog-page
+                         store page limit))
+                      'e-harness-instance-session-catalog-stale
+                      :on-done
+                      (lambda (page)
+                        (condition-case condition
+                            (accept-page store page)
+                          (error (fail condition))))
+                      :on-error #'fail)))))))
+      (setq request
+            (e-request-lifecycle-create
+             :id (format "session-catalog-preflight-%d"
+                         (cl-incf e-harness-instance--request-sequence))
+             :owner 'e-harness-instance-session-catalog-preflight
+             :generation generation
+             :state 'created
+             :cancel-function
+             (lambda (_request)
+               (when (timerp scheduled) (cancel-timer scheduled))
+               (setq scheduled nil)
+               (when (and active-child
+                          (not (e-request-terminal-p active-child)))
+                 (e-request-cancel active-child 'catalog-preflight-cancelled)))))
+      (e-request-start
+       request (list :phase 'scheduled :session-store-count (length stores)))
+      (schedule)
+      request)))
 
 (cl-defun e-harness-instance-session-catalog-read-start
     (session-store-id session-id &key principal on-done on-error)

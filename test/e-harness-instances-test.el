@@ -339,6 +339,124 @@
         (should (eq (car (e-request-lifecycle-terminal-payload request))
                     'e-harness-instance-session-catalog-invalid-page))))))
 
+(ert-deftest e-harness-instances-test-catalog-preflight-pages-all-stores ()
+  "Global preflight validates current rows without retaining them or activating."
+  (e-harness-instances-test--with-empty-registries
+    (let (scheduled calls
+          (factory-calls 0)
+          (access-store (lambda (&rest _arguments) 'pending)))
+      (dolist (store-id '("second" "first"))
+        (e-harness-instance-register
+         :id (intern (concat ":" store-id)) :kind 'chat
+         :session-store-id store-id
+         :session-catalog
+         (lambda (arguments on-done on-error)
+           (setq calls (append calls (list (list arguments on-done on-error))))
+           nil)
+         :session-access-store access-store
+         :factory (lambda () (cl-incf factory-calls) (e-harness-create))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((request
+               (e-harness-instance-session-catalog-preflight-start :limit 1)))
+          (should (eq (e-request-lifecycle-state request) 'started))
+          (should (= (length scheduled) 1))
+          (funcall (pop scheduled))
+          (let* ((call (pop calls))
+                 (arguments (car call)))
+            (should (eq (plist-get arguments :operation) 'preflight-page))
+            (should (equal (plist-get arguments :session-store-id) "first"))
+            (funcall
+             (cadr call)
+             '(:sessions
+               ((:session-id "one" :state dormant
+                 :access-record
+                 (:controller "owner" :version 0
+                  :discover-principals nil :resume-principals nil)
+                 :board-output-sequence 0 :board-activity-sequence 0))
+               :next-after "next")))
+          (funcall (pop scheduled))
+          (let* ((call (pop calls))
+                 (arguments (car call)))
+            (should (equal (plist-get arguments :after) "next"))
+            (funcall (cadr call) '(:sessions nil)))
+          (funcall (pop scheduled))
+          (let ((call (pop calls)))
+            (should (equal (plist-get (car call) :session-store-id) "second"))
+            (funcall
+             (cadr call)
+             '(:sessions
+               ((:session-id "two" :state dormant
+                 :access-record
+                 (:controller "owner" :version 1
+                  :discover-principals nil :resume-principals nil)
+                 :board-output-sequence 3 :board-activity-sequence 4)))))
+          (funcall (pop scheduled))
+          (should (eq (e-request-lifecycle-state request) 'finished))
+          (should (= factory-calls 0))
+          (should (equal (e-request-lifecycle-terminal-payload request)
+                         '(:generation 2 :session-store-count 2
+                           :session-count 2))))))))
+
+(ert-deftest e-harness-instances-test-catalog-preflight-rejects-cursor-cycle ()
+  "A repeated opaque continuation fails instead of looping over a store."
+  (e-harness-instances-test--with-empty-registries
+    (let (scheduled calls)
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog
+       (lambda (_arguments on-done _on-error)
+         (setq calls (append calls (list on-done)))
+         nil)
+       :session-access-store (lambda (&rest _arguments) 'pending))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((request
+               (e-harness-instance-session-catalog-preflight-start :limit 1)))
+          (funcall (pop scheduled))
+          (funcall (pop calls) '(:sessions nil :next-after "same"))
+          (funcall (pop scheduled))
+          (funcall (pop calls) '(:sessions nil :next-after "same"))
+          (should (eq (e-request-lifecycle-state request) 'failed))
+          (should (eq (car (e-request-lifecycle-terminal-payload request))
+                      'e-harness-instance-session-catalog-preflight-cycle))
+          (should-not scheduled))))))
+
+(ert-deftest e-harness-instances-test-catalog-preflight-cancellation-fences-child ()
+  "Cancelling global validation cancels its sole page and ignores late success."
+  (e-harness-instances-test--with-empty-registries
+    (let (scheduled succeed
+          (cancel-calls 0))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog
+       (lambda (_arguments on-done _on-error)
+         (setq succeed on-done)
+         (lambda () (cl-incf cancel-calls)))
+       :session-access-store (lambda (&rest _arguments) 'pending))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((request
+               (e-harness-instance-session-catalog-preflight-start :limit 1)))
+          (funcall (pop scheduled))
+          (e-request-cancel request 'user-cancelled)
+          (should (= cancel-calls 1))
+          (funcall succeed '(:sessions nil))
+          (should (eq (e-request-lifecycle-state request) 'cancelled))
+          (should-not scheduled))))))
+
 (ert-deftest e-harness-instances-test-access-store-is-controlled-and-non-activating ()
   "Optimistic ACL mutation remains pending without activating any harness."
   (e-harness-instances-test--with-empty-registries

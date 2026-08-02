@@ -157,6 +157,13 @@ the ordinary writer shares the same catalog reducer and exposes the resulting
 dormant access/counter rows.  The command has not been run on user data and
 still requires Slice 5's external quiescence and exclusive-store boundary; see
 =cutover-preparation.org= for the manifest, invocation, and recovery contract.
+Configured-store catalog preflight is now one controlled request.  It issues one
+bounded =preflight-page= at a time across the generation-frozen store set,
+retains only qualified ids and counters needed to detect duplicates, rejects a
+repeated continuation cursor, and returns a bounded count summary.  Cancellation
+reaches the sole active child page, a registry remap fences later completion,
+and no harness factory is consulted.  This validates prepared catalog schema;
+Slice 5's separate runtime-quiescence preflight remains outstanding.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
