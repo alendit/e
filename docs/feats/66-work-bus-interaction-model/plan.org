@@ -46,6 +46,10 @@ Pending or ready pickup cancellation now records a =cancelled= tombstone and
 releases only the affected FIFO position.  Accepted/delivering cancellation
 first fences the attempt as =cancelling=: a consumption receipt wins, while a
 proven unconsumed discard records =cancelled= and releases its successor.
+The board core also bounds each participant's pending tail and records excess
+as =overflowed=; explicit pending/ready expiry records =expired= and promotes
+only the affected head's successor.  Scheduled expiry/rebind reconciliation
+remains in the delivery-ledger slice.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.

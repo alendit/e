@@ -77,6 +77,9 @@
 (defconst e-board-aggregation-deadline-drain-limit 16
   "Maximum aggregation deadline transitions committed per drain.")
 
+(defconst e-board-default-pickup-pending-limit 16
+  "Maximum FIFO pickups allowed behind one participant's active head.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -127,7 +130,7 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
-  activations activation-subscription-index pickup-queues)
+  activations activation-subscription-index pickup-queues pickup-pending-limit)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -192,10 +195,14 @@ The board object remains valid for inspection by its holder."
     (&key id id-function effect-scheduler invocation-effect-dispatcher
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler
+          (pickup-pending-limit e-board-default-pickup-pending-limit)
           (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
-explicit ids to individual operations takes precedence over this generator."
+explicit ids to individual operations takes precedence over this generator.
+PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
+  (unless (and (integerp pickup-pending-limit) (>= pickup-pending-limit 0))
+    (signal 'wrong-type-argument (list 'natnump pickup-pending-limit)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -215,6 +222,7 @@ explicit ids to individual operations takes precedence over this generator."
                   :activations (make-hash-table :test 'equal)
                   :activation-subscription-index (make-hash-table :test 'equal)
                   :pickup-queues (make-hash-table :test 'equal)
+                  :pickup-pending-limit pickup-pending-limit
                   :pending-effects nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
@@ -267,10 +275,18 @@ explicit ids to individual operations takes precedence over this generator."
   "Append PICKUP to its participant FIFO and return its initial state."
   (let* ((participant-id (e-board-pickup-participant-id pickup))
          (queue (e-board--pickup-queue board participant-id)))
-    (puthash participant-id
-             (append queue (list (e-board-pickup-delivery-id pickup)))
-             (e-board-pickup-queues board))
-    (setf (e-board-pickup-state pickup) (if queue 'pending 'ready))
+    (if (and queue
+             (>= (length (cdr queue)) (e-board-pickup-pending-limit board)))
+        (progn
+          (setf (e-board-pickup-state pickup) 'overflowed)
+          (e-board--append-event
+           board 'pickup-overflowed
+           (list :delivery-id (e-board-pickup-delivery-id pickup)
+                 :pending-limit (e-board-pickup-pending-limit board))))
+      (puthash participant-id
+               (append queue (list (e-board-pickup-delivery-id pickup)))
+               (e-board-pickup-queues board))
+      (setf (e-board-pickup-state pickup) (if queue 'pending 'ready)))
     (e-board-pickup-state pickup)))
 
 (defun e-board-pickup-start-delivery (board delivery-id)
@@ -401,6 +417,31 @@ call releases the FIFO head."
               (e-board--append-event board 'pickup-ready
                                      (list :delivery-id next-id))
               next-id)))))))
+
+(defun e-board-expire-pickup (board delivery-id &optional reason)
+  "Expire pending or ready DELIVERY-ID and release its FIFO successor.
+Expiry is a visible terminal tombstone.  It never retries or silently drops a
+stalled logical pickup, and an expired head releases only that participant's
+next FIFO record."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (memq (e-board-pickup-state pickup) '(pending ready))
+      (signal 'e-board-error
+              (list "Pickup expiry requires pending or ready state" delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id))
+           (head-p (equal (car queue) delivery-id)))
+      (setf (e-board-pickup-state pickup) 'expired)
+      (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
+      (e-board--append-event board 'pickup-expired
+                             (list :delivery-id delivery-id :reason reason))
+      (when head-p
+        (when-let ((next-id (car (e-board--pickup-queue board participant-id))))
+          (let ((next (e-board-pickup board next-id)))
+            (setf (e-board-pickup-state next) 'ready)
+            (e-board--append-event board 'pickup-ready
+                                   (list :delivery-id next-id))
+            next-id))))))
 
 (defun e-board-pickup-return-ready (board delivery-id err)
   "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR.

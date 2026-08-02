@@ -378,6 +378,38 @@
         (should (eq (e-board-pickup-state (e-board-pickup board first)) 'cancelled))
         (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))))))
 
+(ert-deftest e-board-test-pickup-pending-cap-overflows-without-blocking-head ()
+  "A participant's bounded pending tail becomes an explicit tombstone."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board" :pickup-pending-limit 1)))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "first" :to "one"))))
+             (second (car (e-board-publication-pickup-ids
+                           (e-board-post-input board :id "second" :to "one"))))
+             (third (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "third" :to "one")))))
+        (should (eq (e-board-pickup-state (e-board-pickup board first)) 'ready))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'pending))
+        (should (eq (e-board-pickup-state (e-board-pickup board third)) 'overflowed))
+        (should (equal (e-board--pickup-queue board "one") (list first second)))
+        (e-board-pickup-start-delivery board first)
+        (should (equal (e-board-pickup-complete-delivery board first) second))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))))))
+
+(ert-deftest e-board-test-expiring-ready-pickup-releases-fifo-successor ()
+  "Expiry is a visible head tombstone that promotes exactly one successor."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "first" :to "one"))))
+             (second (car (e-board-publication-pickup-ids
+                           (e-board-post-input board :id "second" :to "one")))))
+        (should (equal (e-board-expire-pickup board first 'deadline) second))
+        (should (eq (e-board-pickup-state (e-board-pickup board first)) 'expired))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))))))
+
 (ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
   "Observer muting, terminal states, and replacement never route input."
   (e-board-test--with-empty-registry
