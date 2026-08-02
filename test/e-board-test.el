@@ -929,13 +929,13 @@
          :effect '(:post-input :to "one" :content "derived"))
         (e-board-post-input board :id "source" :tags '(source) :content "original")
         (should (= (length effects) 1))
-        (let ((activation (e-board-activation board '("board" "continuation" "source"))))
+        (let ((activation (e-board-activation board '("board" "continuation" continuation 1))))
           (should activation)
           (should (eq (e-board-activation-state activation) 'prepared)))
         (funcall (pop effects))
         (let* ((derived (car (last (e-board-messages board))))
                (pickup (e-board-pickup board (car (e-board-message-pickup-ids derived))))
-               (activation (e-board-activation board '("board" "continuation" "source"))))
+               (activation (e-board-activation board '("board" "continuation" continuation 1))))
           (should (equal (e-board-message-content derived) "derived"))
            (should (equal (e-board-message-to derived) "one"))
            (should (eq (e-board-activation-state activation) 'committed))
@@ -1128,9 +1128,9 @@
             (should-not (e-board-message-routing-state
                          (e-board-publication-message publication))))
           (funcall (pop effects))
-          (should (e-board-activation board '("board" "continuation" "output")))
-          (should (e-board-activation board '("board" "continuation" "activity")))
-          (should (e-board-activation board '("board" "continuation" "fact")))
+          (should (e-board-activation board '("board" "continuation" continuation 1)))
+          (should (e-board-activation board '("board" "continuation" continuation 2)))
+          (should (e-board-activation board '("board" "continuation" continuation 3)))
           (should (equal (mapcar #'e-board-message-kind (e-board-messages board))
                          '(output activity fact input input input))))))))
 
@@ -1162,7 +1162,7 @@
              :subject-participant-id "two" :source-turn-id "turn"
              :activity-kind 'tool-started :source-activity-key '(two 1 1))
             (should (= (length effects) 1))
-            (should (e-board-activation board '("board" "continuation" "started")))
+            (should (e-board-activation board '("board" "continuation" continuation 1)))
             (should (equal (mapcar #'e-board-message-id
                                    (e-board-observer-read-page board "observer"))
                            '("started")))))))))
@@ -1258,7 +1258,7 @@
         (funcall (pop effects))
         (should (= (length (e-board-messages board)) 1))
         (should (eq (e-board-activation-state
-                    (e-board-activation board '("board" "continuation" "source")))
+                    (e-board-activation board '("board" "continuation" continuation 1)))
                     'cancelled))))))
 
 (ert-deftest e-board-test-muting-subscription-fences-prepared-post-input ()
@@ -1275,7 +1275,7 @@
         (funcall (pop effects))
         (should (= (length (e-board-messages board)) 1))
         (should (eq (e-board-activation-state
-                     (e-board-activation board '("board" "continuation" "source")))
+                     (e-board-activation board '("board" "continuation" continuation 1)))
                     'cancelled))))))
 
 (provide 'e-board-test)

@@ -1617,7 +1617,7 @@ subscription records the relationship without rewriting its terminal state."
                   (memq (e-board-subscription-state subscription) '(active muted)))
          (e-board--transition-subscription board subscription 'expired))))))
 
-(defun e-board--fire-post-input (board subscription message-or-messages &optional numbered-p)
+(defun e-board--fire-post-input (board subscription message-or-messages)
   "Reserve one post-input firing and schedule it from frozen matched records.
 The firing reservation is part of the board reducer, so a bounded
 FIRING-LIMIT fences later classifier work before it can create another effect."
@@ -1628,7 +1628,7 @@ FIRING-LIMIT fences later classifier work before it can create another effect."
                     (e-board-subscription-firing-limit subscription)))
         (setf (e-board-subscription-firing-number subscription) firing-number)
         (e-board--schedule-post-input board subscription message-or-messages
-                                      (and numbered-p firing-number))
+                                      firing-number)
         (when (and (e-board-subscription-firing-limit subscription)
                    (= firing-number
                       (e-board-subscription-firing-limit subscription)))
@@ -1650,8 +1650,7 @@ FIRING-LIMIT fences later classifier work before it can create another effect."
               (1+ (e-board-subscription-readiness-generation subscription)))
         (e-board--fire-post-input
          board subscription
-         (mapcar (lambda (message-id) (e-board-message board message-id)) message-ids)
-         t)))))
+         (mapcar (lambda (message-id) (e-board-message board message-id)) message-ids))))))
 
 (defun e-board--queue-continuation-accumulator-flush
     (board subscription-id generation)

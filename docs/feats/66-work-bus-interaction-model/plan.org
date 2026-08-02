@@ -34,6 +34,8 @@ which freeze one causally attributed derived input.
 An optional bounded =post-input= firing limit reserves the final activation
 before completing its subscription: that prepared effect still commits, while
 all later matching records are fenced without a second activation.
+Every post-input firing now has the canonical =(board-id, subscription-id,
+continuation, firing-number)= activation identity, including unbatched matches.
 Ordinary subscriptions may also declare a bounded lifetime; its timer only
 queues a generation-fenced later board drain, where the legal =expired=
 transition is committed even if the subscription was muted in the interim.
