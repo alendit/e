@@ -89,7 +89,13 @@
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function subscription activity-sequence generation)
+  board participant harness session-id delivery-function subscription activity-sequence generation
+  turn-activity)
+
+(cl-defstruct (e-board-runtime-turn-activity
+               (:constructor e-board-runtime-turn-activity--create)
+               (:conc-name e-board-runtime-turn-activity-))
+  provider-seen tool-count action-count)
 
 (cl-defstruct (e-board-runtime-invocation
                (:constructor e-board-runtime-invocation--create)
@@ -450,16 +456,59 @@ these terminal states have no output to close the board-owned open projection."
        :source-activity-key
        (list participant-id (e-board-runtime-attachment-generation attachment) sequence)))))
 
+(defun e-board-runtime--turn-activity (attachment turn-id)
+  "Return ATTACHMENT's bounded activity accumulator for TURN-ID."
+  (or (gethash turn-id (e-board-runtime-attachment-turn-activity attachment))
+      (let ((state (e-board-runtime-turn-activity--create
+                    :tool-count 0 :action-count 0)))
+        (puthash turn-id state (e-board-runtime-attachment-turn-activity attachment))
+        state)))
+
+(defun e-board-runtime--observe-turn-activity (attachment event)
+  "Record the narrow summary fields exposed by one attached harness EVENT."
+  (when-let ((turn-id (plist-get event :turn-id)))
+    (let ((state (e-board-runtime--turn-activity attachment turn-id)))
+      (pcase (e-events-type event)
+        ('provider-request-started
+         (setf (e-board-runtime-turn-activity-provider-seen state) t))
+        ('tool-started
+         (cl-incf (e-board-runtime-turn-activity-tool-count state)))
+        ('action-started
+         (cl-incf (e-board-runtime-turn-activity-action-count state)))))))
+
+(defun e-board-runtime--publish-turn-summary (attachment turn-id status)
+  "Publish one terminal summary for provider-active TURN-ID, then release state."
+  (when-let ((state (gethash turn-id (e-board-runtime-attachment-turn-activity attachment))))
+    (remhash turn-id (e-board-runtime-attachment-turn-activity attachment))
+    (when (e-board-runtime-turn-activity-provider-seen state)
+      (let* ((registry-board (e-board-runtime-attachment-board attachment))
+             (board (e-board-registry-board-source-board registry-board))
+             (participant-id (e-board-registry-participant-id
+                              (e-board-runtime-attachment-participant attachment)))
+             (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+        (e-board-post-activity
+         board :author (format "participant:%s" participant-id)
+         :subject-participant-id participant-id :source-turn-id turn-id
+         :activity-kind 'turn-summary
+         :attributes (list :status status
+                           :tool-count (e-board-runtime-turn-activity-tool-count state)
+                           :action-count (e-board-runtime-turn-activity-action-count state))
+         :source-activity-key
+         (list participant-id (e-board-runtime-attachment-generation attachment) sequence))))))
+
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
   (when (e-board-runtime--current-attachment-p attachment)
     (let ((type (e-events-type event)))
+    (e-board-runtime--observe-turn-activity attachment event)
     (cond
      ((eq type 'turn-finished)
      (e-board-runtime--publish-output attachment (plist-get event :turn-id))
+      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) 'finished)
       (e-board-runtime--enqueue-ready-participant-pickup attachment))
      ((memq type '(turn-failed turn-cancelled))
-      (e-board-runtime--publish-terminal-activity attachment event))
+      (e-board-runtime--publish-terminal-activity attachment event)
+      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) type))
      ((eq type 'input-consumed)
       (let* ((payload (plist-get event :payload))
              (delivery-id (plist-get payload :delivery-id))
@@ -560,6 +609,7 @@ When omitted, the conservative idle-only harness delivery port is used."
   (e-board-runtime-attachment--create
    :board board :participant participant :harness harness :session-id session-id
    :activity-sequence 0 :generation generation
+   :turn-activity (make-hash-table :test 'equal)
    :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)))
 
 (defun e-board-runtime--configure-attachment (attachment)

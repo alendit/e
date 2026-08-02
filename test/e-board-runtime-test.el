@@ -360,6 +360,30 @@
         (should (eq (e-board-message-activity-kind (car (last (e-board-messages source-board))) )
                     'turn-cancelled))))))
 
+(ert-deftest e-board-runtime-test-provider-active-turn-publishes-one-bounded-summary ()
+  "Provider event edges produce one structured summary without transcript scans."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (participant "participant"))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment (e-board-runtime-attach
+                          board harness "session" :participant-id participant))
+             (source-board (e-board-registry-board-source-board board)))
+        (dolist (type '(provider-request-started tool-started action-started))
+          (e-board-runtime--handle-harness-event
+           attachment (e-events-make :type type :session-id "session" :turn-id "turn")))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'turn-finished :session-id "session" :turn-id "turn"))
+        (let ((summary (car (last (e-board-messages source-board)))))
+          (should (eq (e-board-message-activity-kind summary) 'turn-summary))
+          (should (equal (e-board-message-attributes summary)
+                         '(:status finished :tool-count 1 :action-count 1))))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'turn-finished :session-id "session"
+                                   :turn-id "no-provider"))
+        (should (= (length (e-board-messages source-board)) 1))))))
+
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
   (e-board-runtime-test--with-empty-state
