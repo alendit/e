@@ -463,8 +463,11 @@ busy session leaves its pickup pending for an explicit later retry."
 
 DELIVERY-FUNCTION is called as (FUNCTION ATTACHMENT PICKUP MESSAGE) for each
 frozen pending pickup addressed to the participant.  It must perform one
-delivery or signal; normal return marks that pickup delivered.  When omitted,
-the conservative idle-only harness delivery port is used."
+delivery or signal; normal return marks that pickup delivered.  Returning
+=(:accepted RECEIPT)= waits for a later consumption receipt; returning
+=(:uncertain REASON)= records an ambiguous original-endpoint attempt without
+retrying it.  When omitted, the conservative idle-only harness delivery port
+is used."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
   (unless (or (null delivery-function) (functionp delivery-function))
@@ -539,11 +542,18 @@ the conservative idle-only harness delivery port is used."
         (condition-case err
             (let ((result (funcall (e-board-runtime-attachment-delivery-function attachment)
                                    attachment pickup message)))
-              (if (eq (car-safe result) :accepted)
-                  (e-board-pickup-accept-delivery source-board delivery-id)
-                (when-let ((next-id (e-board-pickup-complete-delivery
-                                     source-board delivery-id)))
-                  (e-board-runtime--enqueue-pickups board (list next-id)))))
+              (pcase (car-safe result)
+                (:accepted
+                 (e-board-pickup-accept-delivery source-board delivery-id))
+                (:uncertain
+                 (when-let ((next-id
+                             (e-board-pickup-mark-uncertain
+                              source-board delivery-id (or (cadr result) 'delivery-uncertain))))
+                   (e-board-runtime--enqueue-pickups board (list next-id))))
+                (_
+                 (when-let ((next-id (e-board-pickup-complete-delivery
+                                      source-board delivery-id)))
+                   (e-board-runtime--enqueue-pickups board (list next-id))))))
           (error
            (e-board-pickup-return-ready source-board delivery-id err)
            (signal (car err) (cdr err))))))))

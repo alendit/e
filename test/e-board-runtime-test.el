@@ -128,6 +128,36 @@
                    'consumed))
        (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
 
+(ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
+  "An adapter can tombstone an ambiguous attempt and advance the FIFO."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (deliveries nil)
+           (delivery
+            (lambda (_attachment _pickup message)
+              (push (e-board-message-content message) deliveries)
+              (when (equal (e-board-message-content message) "first")
+                '(:uncertain lost-ack)))))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session"
+                              :participant-id "participant" :delivery-function delivery)
+      (let* ((first (e-board-runtime-post-input board :id "first" :to "participant"
+                                                :content "first"))
+             (second (e-board-runtime-post-input board :id "second" :to "participant"
+                                                 :content "second"))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (e-board-runtime--drain-pickups)
+        (let ((first-id (car (e-board-publication-pickup-ids first)))
+              (second-id (car (e-board-publication-pickup-ids second))))
+          (should (equal (nreverse deliveries) '("first" "second")))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board first-id))
+                      'uncertain))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board second-id))
+                      'consumed)))))))
+
 (ert-deftest e-board-runtime-test-session-reset-discards-accepted-queue-pickup ()
   "Resetting a queued harness item releases its accepted board pickup."
   (e-board-runtime-test--with-empty-state
