@@ -116,6 +116,10 @@
        :type 'e-board-registry-authorization-denied)
       (e-board-registry-grant-participant-access
        board "owner" target "member" '(post control))
+      (should (e-board-registry-authorize-exact-post board "owner" target))
+      (should (e-board-registry-authorize-exact-post board "member" target))
+      (should-error (e-board-registry-authorize-exact-post board "stranger" target)
+                    :type 'e-board-registry-authorization-denied)
       (let ((rights (e-board-registry-participant-access-rights
                      board target "member")))
         (should (equal rights '(post control)))

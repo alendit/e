@@ -436,6 +436,24 @@ board, with its identity supplied by this registry's id generator."
     (copy-sequence
      (gethash principal (e-board-registry-participant-access-grants participant)))))
 
+(defun e-board-registry-authorize-exact-post
+    (board-or-id requester participant-or-id)
+  "Authorize REQUESTER to post exactly to PARTICIPANT-OR-ID.
+Owners may address every participant.  A participant's own controlling
+principal may address itself; all other exact posts require the target's
+explicit `post' grant."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (rights (gethash requester
+                          (e-board-registry-participant-access-grants participant))))
+    (unless (or (eq (e-board-registry-principal-role board requester) 'owner)
+                (equal requester (e-board-registry-participant-principal participant))
+                (memq 'post rights))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) requester
+                    (e-board-registry-participant-id participant) 'post)))
+    t))
+
 (defun e-board-registry-remove-participant (board-or-id participant-or-id)
   "Remove PARTICIPANT-OR-ID from active BOARD-OR-ID and disable its routes."
   (let* ((board (e-board-registry--require-active board-or-id))
