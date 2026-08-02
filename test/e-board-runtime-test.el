@@ -334,6 +334,32 @@
           (should (eq (e-board-pickup-state (e-board-pickup source-board delivery-id))
                       'consumed)))))))
 
+(ert-deftest e-board-runtime-test-terminal-turn-events-close-open-activity ()
+  "Failed and cancelled turns publish terminal activity without an output."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (participant "participant"))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment (e-board-runtime-attach
+                          board harness "session" :participant-id participant))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-post-activity
+         source-board :id "progress" :author "participant:participant"
+         :subject-participant-id participant :source-turn-id "failed-turn"
+         :activity-kind 'work-progress :source-activity-key '(participant 0 1))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'turn-failed :session-id "session"
+                                   :turn-id "failed-turn"))
+        (should-not (e-board-open-activity source-board participant "failed-turn"))
+        (should (eq (e-board-message-activity-kind (car (last (e-board-messages source-board))) )
+                    'turn-failed))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'turn-cancelled :session-id "session"
+                                   :turn-id "cancelled-turn"))
+        (should (eq (e-board-message-activity-kind (car (last (e-board-messages source-board))) )
+                    'turn-cancelled))))))
+
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
   (e-board-runtime-test--with-empty-state

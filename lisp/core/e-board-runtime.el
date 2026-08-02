@@ -431,14 +431,35 @@ scanning a board-wide delivery table."
     (when (and pickup (eq (e-board-pickup-state pickup) 'ready))
       (e-board-runtime--enqueue-pickups registry-board (list delivery-id)))))
 
+(defun e-board-runtime--publish-terminal-activity (attachment event)
+  "Publish EVENT's failure or cancellation as one terminal board activity.
+Successful turns publish their final output through the separate output seam;
+these terminal states have no output to close the board-owned open projection."
+  (let* ((registry-board (e-board-runtime-attachment-board attachment))
+         (board (e-board-registry-board-source-board registry-board))
+         (participant-id (e-board-registry-participant-id
+                          (e-board-runtime-attachment-participant attachment)))
+         (turn-id (plist-get event :turn-id))
+         (activity-kind (e-events-type event))
+         (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+    (when (and turn-id (memq activity-kind '(turn-failed turn-cancelled)))
+      (e-board-post-activity
+       board :author (format "participant:%s" participant-id)
+       :subject-participant-id participant-id :source-turn-id turn-id
+       :activity-kind activity-kind
+       :source-activity-key
+       (list participant-id (e-board-runtime-attachment-generation attachment) sequence)))))
+
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
   (when (e-board-runtime--current-attachment-p attachment)
     (let ((type (e-events-type event)))
     (cond
      ((eq type 'turn-finished)
-      (e-board-runtime--publish-output attachment (plist-get event :turn-id))
+     (e-board-runtime--publish-output attachment (plist-get event :turn-id))
       (e-board-runtime--enqueue-ready-participant-pickup attachment))
+     ((memq type '(turn-failed turn-cancelled))
+      (e-board-runtime--publish-terminal-activity attachment event))
      ((eq type 'input-consumed)
       (let* ((payload (plist-get event :payload))
              (delivery-id (plist-get payload :delivery-id))

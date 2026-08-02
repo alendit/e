@@ -111,6 +111,8 @@ records carry the corresponding participant and source-turn identity.
 The board now owns the latest open-activity projection per participant/turn;
 terminal activity or output closes it, and a later stale progress record cannot
 reopen the visible state while remaining retained for audit.
+The runtime now publishes source-keyed =turn-failed= and =turn-cancelled=
+activity for no-output terminal turns, closing the same projection.
 The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/
