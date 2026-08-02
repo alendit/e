@@ -59,6 +59,25 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-chat-test-buffer-owns-explicit-board-client-observer-identity ()
+  "A chat buffer exposes its public board context, not only private session id."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (buffer (e-chat-open :harness harness :session-id "board-context")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((binding (e-chat-service-binding harness e-chat-session-id)))
+            (should (equal e-chat-board-id
+                           (e-board-registry-board-id
+                            (e-chat-service-binding-board binding))))
+            (should (equal e-chat-client-id
+                           (e-board-registry-client-id
+                            (e-chat-service-binding-client binding))))
+            (should (equal e-chat-observer-id
+                           (e-board-observer-id
+                            (e-chat-service-binding-observer binding))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (defun e-chat-test--buffer (&optional items session-id)
   "Return a chat buffer backed by fake backend ITEMS and SESSION-ID.
 The returned buffer is not displayed in a window, so redraw gating would

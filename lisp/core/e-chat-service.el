@@ -398,6 +398,13 @@
    :observer-selector (or observer-selector '(:tags (main)))
    :default-tags (or default-tags '(main)) :default-to default-to))
 
+(cl-defun e-chat-service-list-boards-page (&key after limit)
+  "Return one bounded registry board page after AFTER.
+LIMIT defaults to the registry's fixed page bound."
+  (if limit
+      (e-board-registry-list-page :after after :limit limit)
+    (e-board-registry-list-page :after after)))
+
 (cl-defun e-chat-service-create-participant
     (board harness &key metadata id participant-id pickup-selector
            observer-selector default-tags default-to)
@@ -416,7 +423,13 @@
              (or observer-selector '(:tags (main))))
            :default-tags default-tags
            :default-to (if (eq default-to :self) participant-id default-to))))
-    (ignore binding)
+    (when-let ((controller
+                (e-session-store-persistence-controller
+                 (e-harness-sessions harness))))
+      (e-session-persistence-declare-board-state
+       controller session-id
+       (e-board-registry-board-principal
+        (e-chat-service-binding-board binding))))
     session))
 
 (defun e-chat-service--harness-has-capability-p (harness capability-id)

@@ -212,6 +212,21 @@ messages so the transcript reads as one clean answer."
                        (e-board-message source unrouted))
                       'unrouted)))))))
 
+(ert-deftest e-chat-service-test-board-list-is-bounded-and-continuable ()
+  "The shell-neutral service exposes bounded public board navigation."
+  (let ((e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index (avl-tree-create
+                                        (lambda (left right)
+                                          (string< (car left) (car right))))))
+    (e-board-registry-create :id "board-a")
+    (e-board-registry-create :id "board-b")
+    (let* ((first (e-chat-service-list-boards-page :limit 1))
+           (second (e-chat-service-list-boards-page
+                    :after (plist-get first :next-after) :limit 1)))
+      (should (= (length (plist-get first :boards)) 1))
+      (should (= (length (plist-get second :boards)) 1))
+      (should-not (plist-get second :next-after)))))
+
 (ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
   "Subscriber failure cannot advance another client's cursor or lose identity."
   (let ((e-board--registry (make-hash-table :test 'equal))

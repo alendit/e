@@ -559,6 +559,15 @@ is enabled as a word-wrap fallback."
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defvar-local e-chat-board-id nil
+  "Board id owned by the current chat buffer's public interaction context.")
+
+(defvar-local e-chat-client-id nil
+  "Registry client id used by the current chat buffer's board binding.")
+
+(defvar-local e-chat-observer-id nil
+  "Observer id used by the current chat buffer's board binding.")
+
 (defvar-local e-chat--preview-buffer nil
   "Non-nil when this buffer is a transient chat preview, not a session shell.")
 
@@ -8363,12 +8372,45 @@ HARNESS are internal test seams."
       (e-chat--pop-to-buffer buffer))
     buffer))
 
+(cl-defun e-chat-open-board
+    (board &key harness session-id metadata participant-id pickup-selector
+           observer-selector default-tags default-to display instance-id)
+  "Open BOARD as the public interaction context for one chat participant.
+When SESSION-ID is nil, create a private execution session for the participant."
+  (let* ((harness (or harness (e-chat--default-harness)))
+         (binding
+          (if session-id
+              (e-chat-service-open-board
+               board harness session-id
+               :participant-id participant-id
+               :pickup-selector pickup-selector
+               :observer-selector observer-selector
+               :default-tags default-tags :default-to default-to)
+            (let ((session
+                   (e-chat-service-create-participant
+                    board harness :metadata metadata
+                    :participant-id participant-id
+                    :pickup-selector pickup-selector
+                    :observer-selector observer-selector
+                    :default-tags default-tags :default-to default-to)))
+              (e-chat-service-ensure-binding harness (plist-get session :id)))))
+         (buffer
+          (e-chat-open-session
+           harness (e-chat-service-binding-session-id binding)
+           display instance-id)))
+    buffer))
+
+(cl-defun e-chat-list-boards-page (&key after limit)
+  "Return one bounded page of public board interaction contexts."
+  (e-chat-service-list-boards-page :after after :limit limit))
+
 (defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
   "Attach BUFFER to HARNESS and SESSION-ID."
-  (let ((unloaded-session (e-chat--unloaded-index-session harness session-id)))
+  (let ((unloaded-session (e-chat--unloaded-index-session harness session-id))
+        binding)
     (unless unloaded-session
       (e-chat--ensure-session harness session-id instance-id)
-      (e-chat-service-ensure-binding harness session-id))
+      (setq binding (e-chat-service-ensure-binding harness session-id)))
   (with-current-buffer buffer
     (let* ((same-session
             (and (eq e-chat-harness harness)
@@ -8395,6 +8437,18 @@ HARNESS are internal test seams."
       (setq-local e-chat-harness harness)
       (setq-local e-chat-harness-instance-id instance-id)
       (setq-local e-chat-session-id session-id)
+      (setq-local e-chat-board-id
+                  (and binding
+                       (e-board-registry-board-id
+                        (e-chat-service-binding-board binding))))
+      (setq-local e-chat-client-id
+                  (and binding
+                       (e-board-registry-client-id
+                        (e-chat-service-binding-client binding))))
+      (setq-local e-chat-observer-id
+                  (and binding
+                       (e-board-observer-id
+                        (e-chat-service-binding-observer binding))))
       (setq-local e-chat--preview-buffer nil)
       (when e-chat--surface-composition-enabled
         (when (and (buffer-live-p previous-surface-composer)

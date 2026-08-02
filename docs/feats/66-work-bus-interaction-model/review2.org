@@ -309,7 +309,7 @@ must not remain live interaction roots.
 - Closing board admission prevents every new root, including custom capability
   and internal service paths.
 
-** TODO High: Chat is still session-first and cannot operate the top-level board model
+** DONE High: Chat is still session-first and cannot operate the top-level board model
 
 *** Expected
 
@@ -356,16 +356,30 @@ Exercise opening an empty board, reconnecting to an existing board, default
 unrouted state, two matching participants, and widening the same chat observer
 to a subagent stream.
 
-*** Current remediation note
+*** Resolution
 
-The application service now exposes board-first create/open, participant
-creation, generic tagged and exact posting, and selector replacement APIs.
-Each subscription owns an independently attached registry client and observer;
-subscriber failure faults that lane without advancing its cursor.  Focused
-tests cover opening one existing board with two participants, generic and exact
-routing, visible zero-match state, independent clients, and selector widening
-with backfill.  The finding remains open until shell-local identity and replay
-are board-owned rather than session-owned compatibility projections.
+The application service exposes board-first create/open, bounded list,
+participant creation, generic tagged and exact posting, and selector
+replacement APIs.  Each subscription owns an independently attached registry
+client and observer; subscriber failure faults that lane without advancing its
+cursor.  The chat shell can now open an existing board, create its private
+participant session when needed, list boards through the bounded registry page,
+and retains the board, client, and observer identities as explicit buffer-local
+public interaction context.  Session identity remains the private execution
+attachment rather than the shell's only product identity.
+
+*** Evidence
+
+- =e-chat-service-test-opens-existing-board-and-routes-generic-posts= covers
+  reconnecting two participants, tagged routing, exact routing, and visible
+  zero-match state.
+- =e-chat-service-test-board-list-is-bounded-and-continuable= covers bounded
+  navigation without registry materialization.
+- =e-chat-service-test-independent-observers-preserve-board-identity= and the
+  selector replacement test cover independent clients, failure isolation, and
+  widening with backfill.
+- =e-chat-test-buffer-owns-explicit-board-client-observer-identity= proves the
+  product buffer retains its board-facing identities.
 
 ** TODO High: Chat observation and replay are not board-faithful or causally safe
 
@@ -1136,7 +1150,7 @@ new service names.
 
 * Unresolved
 
-- Ten High findings and one Medium finding remain open.
+- Three High findings and one Medium finding remain open.
 - The feature must stay =In-review= in =docs/feats/index.org=.
 - The previous =review.org= remains historical evidence for fixes that are
   genuinely complete, but its final =Done= conclusion is superseded by this
