@@ -222,24 +222,17 @@ task-queue layer, and stay idempotent afterward."
       (put 'e-task-queue-actions-default-queue 'loaded nil)
       (delete-directory dir t))))
 
-(ert-deftest e-task-queue-actions-test-ensure-loaded-reconciles-live-queue ()
-  "Ensuring an already-loaded queue repairs old task-session markers."
+(ert-deftest e-task-queue-actions-test-ensure-loaded-does-not-reload-live-queue ()
+  "Ensuring an already-loaded queue is an idempotent no-op."
   (let ((e-task-queue-actions-default-queue
-         (e-task-queue-actions-test--queue))
-        (calls 0))
+         (e-task-queue-actions-test--queue)))
     (put 'e-task-queue-actions-default-queue 'loaded t)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-task-queue--reconcile-session-metadata)
-                   (lambda (queue)
-                     (should (eq queue e-task-queue-actions-default-queue))
-                     (setq calls (1+ calls))
-                     queue))
-                  ((symbol-function 'e-task-queue-load)
+        (cl-letf (((symbol-function 'e-task-queue-load)
                    (lambda (&rest _args)
                      (ert-fail "An already-loaded queue must not reload"))))
           (should (eq (e-task-queue-actions-ensure-loaded)
-                      e-task-queue-actions-default-queue))
-          (should (= calls 1)))
+                      e-task-queue-actions-default-queue)))
       (put 'e-task-queue-actions-default-queue 'loaded nil))))
 
 (provide 'e-task-queue-actions-test)

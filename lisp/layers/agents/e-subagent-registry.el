@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-board-runtime)
 
 (defvar e-subagent-registry-change-functions nil
   "Functions run with a registry after any subagent record changes.
@@ -31,6 +32,21 @@ List buffers hook onto this to track live subagent status.")
 (defun e-subagent-registry--notify (registry)
   "Run change hooks for REGISTRY."
   (run-hook-with-args 'e-subagent-registry-change-functions registry))
+
+(defun e-subagent-registry--publish-change (record)
+  "Publish RECORD's normalized lifecycle change through its producer binding."
+  (when-let ((binding (plist-get record :producer-binding)))
+    (e-board-runtime-producer-publish-fact
+     binding
+     :tags (list 'change (plist-get record :status))
+     :attributes (list :subagent-id (plist-get record :subagent-id)
+                       :status (plist-get record :status)
+                       :type (plist-get record :type)
+                       :parent-session-id (plist-get record :parent-session-id)
+                       :session-id (plist-get record :session-id))
+     :content (format "Subagent %s is %s"
+                      (plist-get record :subagent-id)
+                      (plist-get record :status)))))
 
 (defun e-subagent-registry--next-id (registry)
   "Return the next stable subagent id from REGISTRY."
@@ -60,11 +76,14 @@ List buffers hook onto this to track live subagent status.")
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness)
+              child-harness producer-binding)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
 internally so steer/read reach the child session on its own harness."
+  (unless (e-board-runtime-producer-binding-live-p producer-binding)
+    (signal 'e-board-runtime-producer-disabled
+            (list 'subagent-registry 'missing-live-binding)))
   (let* ((subagent-id (e-subagent-registry--next-id registry))
          (record (list :subagent-id subagent-id
                        :type type
@@ -75,6 +94,7 @@ internally so steer/read reach the child session on its own harness."
                        :label label
                        :schedule schedule
                        :child-harness child-harness
+                       :producer-binding producer-binding
                        :work-handle nil
                        :result-summary nil
                        :outputs nil
@@ -87,6 +107,7 @@ internally so steer/read reach the child session on its own harness."
     (puthash subagent-id record (e-subagent-registry-records registry))
     (setf (e-subagent-registry-order registry)
           (append (e-subagent-registry-order registry) (list subagent-id)))
+    (e-subagent-registry--publish-change record)
     (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
 
@@ -97,6 +118,7 @@ internally so steer/read reach the child session on its own harness."
       (let ((key (pop fields)))
         (when fields
           (plist-put record key (pop fields)))))
+    (e-subagent-registry--publish-change record)
     (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
 

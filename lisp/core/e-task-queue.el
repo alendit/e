@@ -8,17 +8,13 @@
 ;;; Commentary:
 
 ;; A durable, bounded-concurrency queue of agent work items.  Each task is a
-;; prompt plus metadata that runs as an ordinary harness turn, carries an
-;; explicit status lifecycle, and collects its outputs.  The queue runs at most
+;; prompt plus metadata with an explicit status lifecycle.  The queue runs at most
 ;; `e-task-queue-max-parallel' tasks concurrently and dispatches FIFO by
 ;; enqueue time.
 ;;
-;; The harness stays unaware of the queue: a task runs through a pluggable
-;; runner that, by default, submits the prompt through `e-harness-prompt-async'
-;; the same way a background session would.  The harness instance a task runs on
-;; is chosen per task and resolved at dispatch time, mirroring how a chat buffer
-;; picks its instance; re-pointing the default or fixing a bad instance id still
-;; affects tasks that are merely queued.
+;; A custom runner remains an application-owned extension seam.  The bundled
+;; default runner requires explicit live producer authority and publishes one
+;; board fact; it never creates or prompts a harness session.
 ;;
 ;; This module depends only on the core harness and the harness-instance
 ;; catalog, never on a UI shell, so the queue runs headless.
@@ -27,6 +23,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-board-runtime)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-work)
@@ -98,6 +95,7 @@ WRITE-TIMER coalesces those writes."
   max-parallel
   default-harness-instance-id
   runner
+  producer-binding
   dispatching
   paused-p
   max-retries
@@ -105,16 +103,18 @@ WRITE-TIMER coalesces those writes."
   write-timer)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
-                                    runner max-retries directory)
+                                    runner producer-binding max-retries directory)
   "Return a new task queue.
 MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, MAX-RETRIES, and RUNNER override the
-module defaults for this queue when non-nil.  DIRECTORY, when non-nil, makes the
-queue durable and stores its records there; without it the queue stays
-in-memory."
+module defaults for this queue when non-nil.  Without RUNNER, PRODUCER-BINDING
+must name current process-local board authority and queued tasks publish facts.
+DIRECTORY, when non-nil, makes the queue durable and stores its records there;
+without it the queue stays in-memory."
   (e-task-queue--create
    :max-parallel max-parallel
    :default-harness-instance-id default-harness-instance-id
    :runner runner
+   :producer-binding producer-binding
    :max-retries max-retries
    :directory directory))
 
@@ -371,22 +371,24 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
     (plist-put record :started-at (e-task-queue--timestamp))
     (e-task-queue--notify queue)
     (let ((harness
-           (condition-case err
-               (if instance-id
-                   (e-harness-instance-get-or-create instance-id)
-                 (signal 'e-task-queue-unknown-task
-                         (list "No harness instance for task")))
-             (error
-              (e-task-queue--settle
-               queue task-id 'failed
-               :error (format "Cannot resolve harness instance %s: %s"
-                              instance-id (e-work-error-message err)))
-              nil))))
+           (if (null (e-task-queue-runner queue))
+               :board-producer
+             (condition-case err
+                 (if instance-id
+                     (e-harness-instance-get-or-create instance-id)
+                   (signal 'e-task-queue-unknown-task
+                           (list "No harness instance for task")))
+               (error
+                (e-task-queue--settle
+                 queue task-id 'failed
+                 :error (format "Cannot resolve harness instance %s: %s"
+                                instance-id (e-work-error-message err)))
+                nil)))))
       (when harness
         (let ((handle
                (funcall (e-task-queue--runner queue)
                         (e-task-queue--normalize record)
-                        harness
+                        (if (e-task-queue-runner queue) harness queue)
                         (lambda (&rest settle-args)
                           (apply #'e-task-queue--settle queue task-id
                                  (or (plist-get settle-args :status) 'done)
@@ -427,6 +429,11 @@ default, resolved at dispatch time.  Dispatch runs before returning, so a task
 may already be running when this returns."
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
+  (when (and (null (e-task-queue-runner queue))
+             (not (e-board-runtime-producer-binding-live-p
+                   (e-task-queue-producer-binding queue))))
+    (signal 'e-board-runtime-producer-disabled
+            (list 'task-queue 'missing-live-binding)))
   (let* ((task-id (e-task-queue--next-id queue))
          (record (list :task-id task-id
                        :status 'queued
@@ -550,62 +557,31 @@ Returns QUEUE."
 
 ;; --- default runner ---------------------------------------------------------
 
-(defun e-task-queue--last-assistant-text (harness session-id)
-  "Return the last assistant message text for SESSION-ID in HARNESS, or nil."
-  (let ((content
-         (cl-some (lambda (message)
-                    (and (eq (plist-get message :role) 'assistant)
-                         (plist-get message :content)))
-                  (reverse (e-harness-messages harness session-id)))))
-    (and (stringp content) content)))
-
 (defun e-task-queue-default-runner (task harness on-settle)
-  "Run TASK on HARNESS by submitting its prompt as one harness turn.
-Settles through ON-SETTLE when the turn finishes, fails, or is cancelled.
-Returns a handle plist carrying the created `:session-id' and a `:cancel'
-function that aborts the active turn."
-  (let* ((session (e-harness-create-session
-                   harness
-                   :metadata (plist-put
-                              (copy-sequence (plist-get task :metadata))
-                              :task-queue-task-id
-                              (plist-get task :task-id))))
-         (session-id (plist-get session :id))
-         (settled nil)
-         subscription)
-    (cl-labels
-        ((finish
-          (status &rest args)
-          (unless settled
-            (setq settled t)
-            (when subscription
-              (e-harness-unsubscribe harness subscription))
-            (apply on-settle :status status args))))
-      (setq subscription
-            (e-harness-subscribe
-             harness
-             (lambda (event)
-               (pcase (plist-get event :type)
-                 ('turn-finished
-                  (finish 'done
-                          :outputs
-                          (when-let ((text (e-task-queue--last-assistant-text
-                                            harness session-id)))
-                            (list (list :kind 'text :value text
-                                        :label "assistant")))))
-                 ('turn-failed
-                  (finish 'failed
-                          :error (or (plist-get (plist-get event :payload) :error)
-                                     "Task turn failed")))
-                 ('turn-cancelled
-                  (finish 'cancelled))))
-             :session-id session-id))
-      (condition-case err
-          (e-harness-prompt-async harness session-id (plist-get task :prompt))
-        (error
-         (finish 'failed :error (e-work-error-message err))))
-      (list :session-id session-id
-            :cancel (lambda () (ignore-errors (e-harness-abort harness session-id)))))))
+  "Publish TASK as a board fact through QUEUE-owned process authority.
+HARNESS is the queue sentinel carrying QUEUE for the default path.  Custom test
+and application runners retain the historical runner signature."
+  (unless (e-task-queue-p harness)
+    (signal 'e-task-queue-error (list "Default runner requires its queue")))
+  (let ((binding (e-task-queue-producer-binding harness)))
+    (unless (e-board-runtime-producer-binding-live-p binding)
+      (signal 'e-board-runtime-producer-disabled
+              (list (plist-get task :task-id) 'missing-live-binding)))
+    (let ((publication
+           (e-board-runtime-producer-publish-fact
+            binding
+            :tags '(task-queue task)
+            :attributes
+            (list :task-id (plist-get task :task-id)
+                  :summary (plist-get task :summary)
+                  :metadata (copy-tree (plist-get task :metadata)))
+            :content (plist-get task :prompt)
+            :reference (format "task:%s" (plist-get task :task-id)))))
+      (funcall on-settle :status 'done
+               :outputs (list (list :kind 'board-fact
+                                    :value (e-board-runtime-producer-publication-source-key
+                                            publication))))
+      (list :publication publication))))
 
 ;; --- persistence ------------------------------------------------------------
 
@@ -695,36 +671,6 @@ is normalized to `queued' for a best-effort re-run."
                      (e-task-queue--work-handle-for-status record)))
     record))
 
-(defun e-task-queue--reconcile-session-metadata (queue)
-  "Stamp live legacy task sessions with their durable task identity.
-QUEUE records are the authoritative historical link from a task to its
-session.  Older sessions predate `:task-queue-task-id', so session core cannot
-classify them as workers until this migration records that fact.  Only already
-live harnesses are inspected; reconciliation neither creates a harness nor
-starts work.  Return QUEUE."
-  (let ((task-ids-by-session (make-hash-table :test 'equal)))
-    (maphash
-     (lambda (task-id record)
-       (when-let ((session-id (plist-get record :session-id)))
-         (puthash session-id task-id task-ids-by-session)))
-     (e-task-queue-records queue))
-    (when (> (hash-table-count task-ids-by-session) 0)
-      (dolist (instance (e-harness-instance-list))
-        (when-let ((harness
-                    (e-harness-registry-get
-                     (e-harness-instance-harness-id instance))))
-          (dolist (session (e-harness-session-list harness))
-            (when-let ((task-id
-                        (gethash (plist-get session :id) task-ids-by-session)))
-              (unless (equal (plist-get (plist-get session :metadata)
-                                        :task-queue-task-id)
-                             task-id)
-                (e-session-set-session-config
-                 (e-harness-sessions harness)
-                 (plist-get session :id)
-                 (list :task-queue-task-id task-id))))))))
-  queue))
-
 (defun e-task-queue-load (queue)
   "Load QUEUE's persisted records from disk and re-dispatch.  Return QUEUE.
 A `running' record loads as `queued'; `paused', terminal, and `queued' states
@@ -743,7 +689,6 @@ load unchanged.  A queue with no directory or no records file is left empty."
         (let ((record (e-task-queue--load-record durable)))
           (puthash (plist-get record :task-id) record
                    (e-task-queue-records queue))))
-      (e-task-queue--reconcile-session-metadata queue)
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue)))
   queue)

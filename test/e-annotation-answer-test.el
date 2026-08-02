@@ -8,9 +8,9 @@
 ;;; Commentary:
 
 ;; ERT tests for the reusable annotation answer operation and the Tier-2 sweep.
-;; The subagent spawn and task-queue enqueue are stubbed so the tests assert the
-;; dispatch decisions (which files get an answerer, prompt content, idempotence,
-;; kill switch, and live-modified defer) without running a real turn.
+;; Optional org-annotate integration tests cover thread decisions.  Board-only
+;; tests below remain runnable without that external package and prove producer
+;; authority, fact publication, and restart fencing.
 
 ;;; Code:
 
@@ -39,6 +39,33 @@
              ,@body)
          (delete-directory dir t)))))
 
+(cl-defmacro e-annotation-answer-test--with-board ((board binding) &body body)
+  "Run BODY with isolated producer authority BINDING on BOARD."
+  (declare (indent 1) (debug ((symbolp symbolp) body)))
+  `(let ((e-board--registry (make-hash-table :test 'equal))
+         (e-board--id-sequence 0)
+         (e-board-registry--boards (make-hash-table :test 'equal))
+         (e-board-registry--id-sequence 0)
+         (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+         (e-board-runtime--producer-epoch 0)
+         (e-board-runtime--producer-head nil)
+         (e-board-runtime--producer-tail nil)
+         (e-board-runtime--producer-drain-scheduled nil)
+         (e-board-runtime--producer-scheduler (lambda (_callback)))
+         (e-board-runtime--admission-open-p t)
+         (e-board-runtime--unsettled-producer-count 0)
+         (e-board-runtime--unsettled-generation 0)
+         (e-annotation-answer-producer-binding nil))
+     (let* ((,board (e-board-registry-create :id "annotation-board"))
+            (,binding (e-board-runtime-producer-bind
+                       'annotation-test ,board :tags '(documents))))
+       ,@body)))
+
+(defconst e-annotation-answer-test--thread
+  '(:id "ann-1" :range-text "A sentence"
+    :messages ((:author "user" :body "Why this?")))
+  "One synthetic actionable annotation thread.")
+
 ;; --- prompt -----------------------------------------------------------------
 
 (ert-deftest e-annotation-answer-test-prompt-lists-actionable-threads ()
@@ -54,22 +81,20 @@
 
 ;; --- Tier 0 dispatch --------------------------------------------------------
 
-(ert-deftest e-annotation-answer-test-dispatch-spawns-when-actionable ()
-  "Dispatch configures the answerer type once and spawns a queued subagent."
+(ert-deftest e-annotation-answer-test-dispatch-publishes-when-actionable ()
+  "Dispatch publishes the actionable prompt through a board producer."
   (e-annotation-answer-test--with-file file
-    (let (configured spawned)
-      (cl-letf (((symbol-function 'e-subagent-configure-type)
-                 (lambda (type &rest args) (push (cons type args) configured)))
-                ((symbol-function 'e-subagent-spawn)
-                 (lambda (_registry _harness _session &rest args)
-                   (setq spawned args)
-                   (list :subagent-id "sub_1"))))
-        (let ((record (e-annotation-answer-dispatch :file file)))
-          (should record)
-          (should configured)
-          (should (equal e-annotation-answer-type (caar configured)))
-          (should (equal 'queue (plist-get spawned :schedule)))
-          (should (string-match-p "Why this?" (plist-get spawned :prompt))))))))
+    (e-annotation-answer-test--with-board (_board binding)
+      (let ((record (e-annotation-answer-dispatch
+                     :file file :producer-binding binding)))
+        (should record)
+        (e-board-runtime-drain-producers)
+        (should (string-match-p
+                 "Why this?"
+                 (e-board-message-content
+                  (e-board-publication-message
+                   (e-board-runtime-producer-publication-publication
+                    record)))))))))
 
 (ert-deftest e-annotation-answer-test-dispatch-noop-without-actionable ()
   "Dispatch spawns nothing when no thread is actionable."
@@ -79,60 +104,104 @@
                                          :threads))
                          :id)))
       (e-annotation-org-reply :file file :id id :body "Answered."))
-    (let (spawned)
-      (cl-letf (((symbol-function 'e-subagent-configure-type) #'ignore)
-                ((symbol-function 'e-subagent-spawn)
-                 (lambda (&rest args) (setq spawned args) (list :subagent-id "x"))))
-        (should-not (e-annotation-answer-dispatch :file file))
-        (should-not spawned)))))
+    (should-not (e-annotation-answer-dispatch :file file))))
 
 ;; --- Tier 2 sweep -----------------------------------------------------------
 
-(ert-deftest e-annotation-answer-test-sweep-enqueues-actionable-files ()
-  "The sweep enqueues one task per Org file with actionable threads."
+(ert-deftest e-annotation-answer-test-sweep-publishes-actionable-files ()
+  "The sweep publishes one fact per Org file with actionable threads."
   (e-annotation-answer-test--with-file file
-    (let (enqueued)
-      (cl-letf (((symbol-function 'e-task-queue-enqueue)
-                 (lambda (_queue &rest args) (push args enqueued)
-                   (list :task-id "t"))))
-        (let ((result (e-annotation-answer-sweep (list file "/tmp/not-org.txt")
-                                                 :queue 'fake)))
-          (should (equal (list file) (plist-get result :dispatched)))
-          (should (member "/tmp/not-org.txt" (plist-get result :skipped)))
-          (should (= 1 (length enqueued)))
-          (should (string-match-p "Why this?"
-                                  (plist-get (car enqueued) :prompt))))))))
+    (e-annotation-answer-test--with-board (_board binding)
+      (let ((result (e-annotation-answer-sweep
+                     (list file "/tmp/not-org.txt")
+                     :producer-binding binding)))
+        (should (equal (list file) (plist-get result :dispatched)))
+        (should (member "/tmp/not-org.txt" (plist-get result :skipped)))
+        (should (= e-board-runtime--unsettled-producer-count 1))))))
 
 (ert-deftest e-annotation-answer-test-sweep-honors-kill-switch ()
   "The sweep dispatches nothing when the kill switch is set."
   (e-annotation-answer-test--with-file file
-    (let ((e-annotation-answer-sweep-inhibit t)
-          enqueued)
-      (cl-letf (((symbol-function 'e-task-queue-enqueue)
-                 (lambda (&rest _args) (push t enqueued) (list :task-id "t"))))
-        (let ((result (e-annotation-answer-sweep (list file) :queue 'fake)))
-          (should (plist-get result :inhibited))
-          (should-not (plist-get result :dispatched))
-          (should-not enqueued))))))
+    (let ((e-annotation-answer-sweep-inhibit t))
+      (let ((result (e-annotation-answer-sweep (list file))))
+        (should (plist-get result :inhibited))
+        (should-not (plist-get result :dispatched))))))
 
 (ert-deftest e-annotation-answer-test-sweep-defers-modified-buffer ()
   "The sweep defers a file whose live buffer has unsaved edits."
   (e-annotation-answer-test--with-file file
-    (let ((buffer (find-file-noselect file))
-          enqueued)
+    (let ((buffer (find-file-noselect file)))
       (unwind-protect
           (progn
             (with-current-buffer buffer
               (goto-char (point-max))
               (insert "dirty\n"))
-            (cl-letf (((symbol-function 'e-task-queue-enqueue)
-                       (lambda (&rest _args) (push t enqueued) (list :task-id "t"))))
-              (let ((result (e-annotation-answer-sweep (list file) :queue 'fake)))
-                (should (equal (list file) (plist-get result :deferred)))
-                (should-not (plist-get result :dispatched))
-                (should-not enqueued))))
+            (let ((result (e-annotation-answer-sweep (list file))))
+              (should (equal (list file) (plist-get result :deferred)))
+              (should-not (plist-get result :dispatched))))
         (with-current-buffer buffer (set-buffer-modified-p nil))
         (kill-buffer buffer)))))
+
+;; --- board-only cutover -----------------------------------------------------
+
+(ert-deftest e-annotation-answer-test-dispatch-requires-producer-binding ()
+  "An actionable dispatch cannot escape through missing board authority."
+  (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-annotation-answer--actionable)
+                   (lambda (_file) (list e-annotation-answer-test--thread))))
+          (should-error (e-annotation-answer-dispatch :file file)
+                        :type 'e-board-runtime-producer-disabled))
+      (delete-file file))))
+
+(ert-deftest e-annotation-answer-test-dispatch-publishes-board-fact ()
+  "An actionable dispatch publishes one fact and creates no participant."
+  (e-annotation-answer-test--with-board (board binding)
+    (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'e-annotation-answer--actionable)
+                     (lambda (_file) (list e-annotation-answer-test--thread))))
+            (let ((item (e-annotation-answer-dispatch
+                         :file file :producer-binding binding)))
+              (should (eq (e-board-runtime-producer-publication-state item)
+                          'queued))
+              (e-board-runtime-drain-producers)
+              (let ((message (e-board-publication-message
+                              (e-board-runtime-producer-publication-publication
+                               item))))
+                (should (eq (e-board-message-kind message) 'fact))
+                (should (equal (e-board-message-tags message)
+                               '(documents annotation answer)))
+                (should (equal (plist-get
+                                (e-board-message-attributes message)
+                                :thread-count)
+                               1))
+                (should (string-match-p "Why this?"
+                                        (e-board-message-content message))))
+              (should (= (hash-table-count
+                          (e-board-registry-board-participants board))
+                         0))))
+        (delete-file file)))))
+
+(ert-deftest e-annotation-answer-test-session-context-path-is-retired ()
+  "The former fork-lite path fails instead of bypassing the board."
+  (should-error
+   (e-annotation-answer-dispatch
+    :file "/tmp/answer.org" :with-session-context t)))
+
+(ert-deftest e-annotation-answer-test-stale-binding-fences-sweep ()
+  "A retained annotation sweep binding cannot publish after restart."
+  (e-annotation-answer-test--with-board (_board binding)
+    (e-board-runtime-producer-disable binding)
+    (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'e-annotation-answer--actionable)
+                     (lambda (_file) (list e-annotation-answer-test--thread))))
+            (should-error
+             (e-annotation-answer-sweep
+              (list file) :producer-binding binding)
+             :type 'e-board-runtime-producer-disabled))
+        (delete-file file)))))
 
 (provide 'e-annotation-answer-test)
 

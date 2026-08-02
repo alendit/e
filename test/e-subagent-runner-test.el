@@ -99,7 +99,20 @@
         (should (equal (mapcar (lambda (m) (plist-get m :content))
                                (e-harness-messages child-harness
                                                    child-session-id))
-                       '("context note")))))))
+                       '("context note")))
+        (e-board-runtime-drain-producers)
+        (let* ((binding (e-chat-service-binding parent "parent-1"))
+               (messages (e-board-messages
+                          (e-board-registry-board-source-board
+                           (e-chat-service-binding-board binding))))
+               (facts (cl-remove-if-not
+                       (lambda (message)
+                         (eq (e-board-message-kind message) 'fact))
+                       messages)))
+          (should (>= (length facts) 2))
+          (let ((tags (mapcar #'e-board-message-tags facts)))
+            (should (member '(subagent change queued) tags))
+            (should (member '(subagent change running) tags))))))))
 
 (ert-deftest e-subagent-runner-test-final-message-is-default-result ()
   "A settle with a summary records it as the compact result."
@@ -293,7 +306,7 @@ turn's result lands."
        :type 'e-subagent-unknown-type))))
 
 (ert-deftest e-subagent-runner-test-steer-and-send-dispatch ()
-  "Steer and send route to the child harness turn control."
+  "Steer and send route through the child board application service."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
@@ -306,9 +319,9 @@ turn's result lands."
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
              (subagent-id (plist-get record :subagent-id)))
-        (cl-letf (((symbol-function 'e-harness-steer-active-turn)
+        (cl-letf (((symbol-function 'e-chat-service-steer-session)
                    (lambda (_h _s prompt &rest _) (setq steered prompt) "turn-1"))
-                  ((symbol-function 'e-harness-queue-prompt)
+                  ((symbol-function 'e-chat-service-queue-session)
                    (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
           (e-subagent-steer registry subagent-id "steer this")
           (e-subagent-send registry subagent-id "follow up")

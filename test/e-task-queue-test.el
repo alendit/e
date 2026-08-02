@@ -90,34 +90,6 @@ tests need a runner whose handle carries one."
                              :status)
                   'running)))))
 
-(ert-deftest e-task-queue-test-load-backfills-legacy-session-marker ()
-  "Loading records marks an existing pre-marker task session as a worker."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((directory (make-temp-file "e-task-queue-test" t)))
-      (unwind-protect
-          (let* ((harness (e-harness-instance-get-or-create :chat-a))
-                 (session (e-harness-create-session harness :id "legacy-task"))
-                 (session-id (plist-get session :id))
-                 (queue (e-task-queue-create
-                         :directory directory
-                         :runner (lambda (_task _harness _on-settle)
-                                   (list :session-id session-id))))
-                 (task (e-task-queue-enqueue queue :prompt "legacy task"))
-                 (task-id (plist-get task :task-id)))
-            (e-task-queue-flush queue)
-            (let ((reloaded (e-task-queue-create :directory directory)))
-              ;; The test concerns historical record repair, not re-dispatch.
-              (setf (e-task-queue-paused-p reloaded) t)
-              (e-task-queue-load reloaded)
-              (let ((loaded (e-session-get (e-harness-sessions harness)
-                                           session-id)))
-                (should (equal (plist-get (plist-get loaded :metadata)
-                                          :task-queue-task-id)
-                               task-id))
-                (should-not (e-session-root-p loaded)))))
-        (delete-directory directory t)))))
-
 (ert-deftest e-task-queue-test-admission-control-under-cap ()
   "With cap 2, a third enqueue waits until a running task settles."
   (e-task-queue-test--with-instances
@@ -310,40 +282,38 @@ tests need a runner whose handle carries one."
             (funcall settle :status 'done)
             (should (> changes before))))))))
 
-(ert-deftest e-task-queue-test-default-runner-runs-real-turn ()
-  "The default runner submits a turn and settles done with assistant output."
-  (e-task-queue-test--with-instances
-    (e-harness-instance-register
-     :id :chat-real
-     :name "Real"
-     :kind 'chat
-     :default t
-     :factory (lambda ()
-                (e-harness-create
-                 :backend (e-backend-fake-create
-                           :items '((:type assistant-message :content "worked")
-                                    (:type done :reason stop))))))
-    (let* ((queue (e-task-queue-create))
-           (task (e-task-queue-enqueue queue :prompt "please work"))
-           (task-id (plist-get task :task-id))
-           (deadline (+ (float-time) 2.0)))
-      (while (and (eq (plist-get (e-task-queue-get queue task-id) :status)
-                      'running)
-                  (< (float-time) deadline))
-        (accept-process-output nil 0.01))
-      (let ((record (e-task-queue-get queue task-id)))
-        (should (eq (plist-get record :status) 'done))
-        (should (plist-get record :session-id))
-        (let* ((harness (e-harness-instance-get-or-create :chat-real))
-               (session (e-session-get
-                         (e-harness-sessions harness)
-                         (plist-get record :session-id))))
-          (should (equal (plist-get (plist-get session :metadata)
-                                    :task-queue-task-id)
-                         task-id))
-          (should-not (e-session-root-p session)))
-        (should (cl-find 'text (plist-get record :outputs)
-                         :key (lambda (o) (plist-get o :kind))))))))
+(ert-deftest e-task-queue-test-default-runner-requires-board-binding ()
+  "The bundled queue cannot fall back to a standalone harness session."
+  (should-error (e-task-queue-enqueue (e-task-queue-create) :prompt "work")
+                :type 'e-board-runtime-producer-disabled))
+
+(ert-deftest e-task-queue-test-default-runner-publishes-board-fact ()
+  "The bundled queue publishes one fact and creates no session or participant."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+        (e-board-runtime--producer-epoch 0)
+        (e-board-runtime--producer-head nil)
+        (e-board-runtime--producer-tail nil)
+        (e-board-runtime--producer-drain-scheduled nil)
+        (e-board-runtime--producer-scheduler (lambda (_callback)))
+        (e-board-runtime--admission-open-p t)
+        (e-board-runtime--unsettled-producer-count 0)
+        (e-board-runtime--unsettled-generation 0))
+    (let* ((board (e-board-registry-create :id "task-board"))
+           (binding (e-board-runtime-producer-bind 'tasks board))
+           (queue (e-task-queue-create :producer-binding binding))
+           (record (e-task-queue-enqueue queue :prompt "please work")))
+      (should (eq (plist-get record :status) 'done))
+      (should-not (plist-get record :session-id))
+      (e-board-runtime-drain-producers)
+      (let ((message (car (e-board-messages
+                           (e-board-registry-board-source-board board)))))
+        (should (eq (e-board-message-kind message) 'fact))
+        (should (equal (e-board-message-content message) "please work")))
+      (should (= (hash-table-count (e-board-registry-board-participants board)) 0)))))
 
 (ert-deftest e-task-queue-test-synchronous-settle-clears-handle ()
   "A runner that settles inside its own call leaves no stale handle."

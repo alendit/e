@@ -22,6 +22,7 @@
 (require 'subr-x)
 (require 'e-harness)
 (require 'e-harness-instances)
+(require 'e-chat-service)
 (require 'e-session)
 (require 'e-subagent-registry)
 (require 'e-work)
@@ -37,8 +38,8 @@ shares the whole lineage root; otherwise the parent's own session id seeds a new
 lineage."
   (or (when (and parent-harness parent-session-id)
         (ignore-errors
-          (when-let* ((store (e-harness-sessions parent-harness))
-                      (session (e-session-get store parent-session-id)))
+          (when-let ((session (e-chat-service-session
+                               parent-harness parent-session-id)))
             (plist-get (plist-get session :metadata) :tmp-lineage-id))))
       parent-session-id))
 
@@ -52,6 +53,25 @@ lineage."
 (defvar e-subagent--configured-harnesses (make-hash-table :test 'eq :weakness 'key)
   "Harnesses whose declaring instance's minimal layers/config were applied.
 Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
+
+(defvar e-subagent--producer-bindings (make-hash-table :test 'equal)
+  "Live board producer bindings keyed by parent harness/session identity.")
+
+(defun e-subagent--producer-binding (parent-harness parent-session-id)
+  "Return current subagent-change producer authority for the parent session."
+  (let* ((key (list parent-harness parent-session-id))
+         (current (gethash key e-subagent--producer-bindings)))
+    (if (e-board-runtime-producer-binding-live-p current)
+        current
+      (let* ((chat-binding
+              (e-chat-service-ensure-binding parent-harness parent-session-id))
+             (board (e-chat-service-binding-board chat-binding))
+             (binding
+              (e-board-runtime-producer-bind
+               (list 'subagent parent-harness parent-session-id)
+               board :tags '(subagent))))
+        (puthash key binding e-subagent--producer-bindings)
+        binding))))
 
 (defcustom e-subagent-child-layer-ids '(subagents-child)
   "Layer ids always added to a spawned child harness.
@@ -99,10 +119,8 @@ the parent applies is never clobbered."
 Each seed is a backend-neutral message plist; the parent chooses exactly what to
 hand over, so nothing leaks that it did not name."
   (dolist (message (append seed-messages nil))
-    (e-session-append-message
-     (e-harness-sessions child-harness)
-     child-session-id
-     (copy-sequence message))))
+    (e-chat-service-append-seed-message
+     child-harness child-session-id message)))
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
                                                seed-messages on-settle)
@@ -118,11 +136,11 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
           (unless settled
             (setq settled t)
             (when subscription
-              (e-harness-unsubscribe child-harness subscription))
+              (e-chat-service-unsubscribe subscription))
             (apply on-settle status args))))
       (setq subscription
-            (e-harness-subscribe
-             child-harness
+            (e-chat-service-subscribe
+             child-harness child-session-id
              (lambda (event)
                (pcase (plist-get event :type)
                  ('turn-finished
@@ -136,15 +154,16 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                                      "Subagent turn failed")))
                  ('turn-cancelled
                   (finish 'cancelled))))
-             :session-id child-session-id))
+             ))
       (condition-case err
-          (e-harness-prompt-async child-harness child-session-id prompt)
+          (e-chat-service-submit-session child-harness child-session-id prompt)
         (error
          (finish 'failed :error (e-work-error-message err))))
       (list :cancel
             (lambda ()
               (ignore-errors
-                (e-harness-abort child-harness child-session-id)))))))
+                (e-chat-service-abort-session
+                 child-harness child-session-id)))))))
 
 (defun e-subagent--last-assistant-text (harness session-id)
   "Return the last assistant message text for SESSION-ID in HARNESS, or nil."
@@ -152,7 +171,7 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
          (cl-some (lambda (message)
                     (and (eq (plist-get message :role) 'assistant)
                          (plist-get message :content)))
-                  (reverse (e-harness-messages harness session-id)))))
+                  (reverse (e-chat-service-messages harness session-id)))))
     (and (stringp content) content)))
 
 (defun e-subagent--work-spec ()
@@ -250,10 +269,12 @@ returns a handle plist carrying `:cancel'."
          (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
          (metadata (e-subagent--child-metadata
                     instance parent-session-id lineage-id label))
-         (child-session (e-harness-create-session
-                         child-harness :metadata metadata))
+         (child-session (e-chat-service-create-session
+                         :harness child-harness :metadata metadata))
          (child-session-id (plist-get child-session :id))
          (schedule (or schedule 'direct))
+         (producer-binding
+          (e-subagent--producer-binding parent-harness parent-session-id))
          (record (e-subagent-registry-register
                   registry
                   :type type
@@ -262,7 +283,8 @@ returns a handle plist carrying `:cancel'."
                   :parent-session-id parent-session-id
                   :label label
                   :schedule schedule
-                  :child-harness child-harness))
+                  :child-harness child-harness
+                  :producer-binding producer-binding))
          (subagent-id (plist-get record :subagent-id)))
     (e-subagent--drive-turn
      registry subagent-id child-harness child-session-id
@@ -433,7 +455,7 @@ communicate mid-flight.  Return the normalized record."
                                :session-id)))
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
-    (e-harness-steer-active-turn harness session-id prompt)
+    (e-chat-service-steer-session harness session-id prompt)
     (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent-send (registry subagent-id prompt)
@@ -441,7 +463,7 @@ communicate mid-flight.  Return the normalized record."
 Unlike `e-subagent-steer', this submits a follow-up turn rather than steering
 the active one, so it needs a running turn to queue behind.  A settled child
 has none, so guard status up front like `e-subagent-resume' rather than let
-`e-harness-queue-prompt' raise the low-level `e-harness-no-active-turn': point a
+the board-bound queue path reject it later: point a
 `failed' or `cancelled' child at resume, refuse a `done' or shut-down child, and
 require a live child harness.  Return the normalized record."
   (let ((status (e-subagent-registry-status registry subagent-id))
@@ -459,7 +481,7 @@ require a live child harness.  Return the normalized record."
                   subagent-id))
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
-    (e-harness-queue-prompt harness session-id prompt)
+    (e-chat-service-queue-session harness session-id prompt)
     (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent-raw-read (registry subagent-id &optional limit)
@@ -472,7 +494,7 @@ demand without the transcript entering its own context."
          (session-id (plist-get record :session-id))
          (limit (or limit 20))
          (messages (and harness
-                        (e-harness-messages harness session-id)))
+                        (e-chat-service-messages harness session-id)))
          (tail (last messages limit)))
     (list :subagent-id subagent-id
           :session-id session-id

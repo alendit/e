@@ -22,24 +22,22 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-board-runtime)
 (require 'e-cron)
 (require 'e-layers)
 (require 'e-skills)
-(require 'e-task-queue)
-(require 'e-task-queue-actions)
-(require 'e-background-session)
 
 (define-error 'e-cron-actions-invalid-action "Invalid cron action spec")
 
 (defconst e-cron-actions-instructions
-  "Use Cron Schedule actions to register cron-like schedules that enqueue a task-queue prompt or wake a background session on a recurrence, list every schedule with its next and last fire, and enable, disable, or remove one at runtime. Read e://cron/skills/cron for the action contract."
+  "Use Cron Schedule actions to publish descriptive facts to an explicitly bound live board on a recurrence. Read e://cron/skills/cron for the action contract."
   "Compact Cron Schedule coordinator guidance.")
 
 (defconst e-cron-actions-skill
   (string-join
    '("# Cron Schedule work actions"
      ""
-     "Schedules run agent work on a recurrence, built on Emacs timers -- no external cron. The engine owns timing only: a fire routes to the task queue or a background session."
+     "Schedules publish board facts on a recurrence, built on Emacs timers -- no external cron. The engine owns timing only."
      ""
      "## Recurrence (`when`)"
      ""
@@ -48,13 +46,7 @@
      ""
      "## Action (`action`)"
      ""
-     "- `(:enqueue (:prompt STRING :harness-instance-id ID :metadata PLIST))`: enqueue a task-queue prompt on each fire."
-     "- `(:wake TRIGGER-ID)`: fire the registered background-session trigger with that id on each fire."
-     "- `(:call SYMBOL)`: call a named zero/one-argument handler on each fire."
-     ""
-     "## Guard"
-     ""
-     "`guard` is an optional zero-argument predicate evaluated at fire time. Non-nil fires the action; nil skips this fire. The guard decides *whether* to fire, never *when*: the schedule re-arms for its next time regardless. It runs synchronously and must be cheap and side-effect free."
+     "- `(:publish (:content STRING :tags LIST :attributes PLIST))`: publish one observation-only fact through the configured runtime producer binding."
      ""
      "## Catch-up"
      ""
@@ -62,7 +54,7 @@
      ""
      "## Actions"
      ""
-     "- `register-schedule`: input `(:id SYMBOL :when PLIST :action PLIST :guard SYMBOL :catch-up SYMBOL :metadata PLIST :enabled BOOLEAN)`. Registers (replacing an existing id) and arms an enabled schedule."
+     "- `register-schedule`: input `(:id SYMBOL :when PLIST :action PLIST :catch-up SYMBOL :metadata PLIST :enabled BOOLEAN)`. Registers (replacing an existing id) and arms an enabled schedule."
      "- `list-schedules`: returns each schedule with its `when`, next and last fire, last guard result, and enabled state."
      "- `schedule-status`: input `(:id SYMBOL)`. Returns one schedule descriptor."
      "- `enable-schedule` / `disable-schedule`: input `(:id SYMBOL)`. Arm or disarm without unregistering."
@@ -70,62 +62,42 @@
    "\n")
   "Detailed Cron Schedule action reference.")
 
-;; --- routing an action spec to an engine closure ----------------------------
+;; --- routing an action spec to one board producer ---------------------------
 
-(defun e-cron-actions--enqueue-action (spec)
-  "Return an engine action that enqueues a task-queue prompt from SPEC."
-  (let ((prompt (plist-get spec :prompt))
-        (instance-id (plist-get spec :harness-instance-id))
-        (metadata (plist-get spec :metadata)))
-    (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
-      (signal 'e-cron-actions-invalid-action (list :enqueue :prompt prompt)))
+(defvar e-cron-actions-producer-binding nil
+  "Explicit process-local producer binding used by cron action registration.")
+
+(defun e-cron-actions-bind-producer (binding)
+  "Install current live board producer BINDING for later cron registrations."
+  (unless (e-board-runtime-producer-binding-live-p binding)
+    (signal 'e-board-runtime-producer-disabled (list 'cron 'missing-live-binding)))
+  (setq e-cron-actions-producer-binding binding))
+
+(defun e-cron-actions--publish-action (binding spec)
+  "Return an engine action that publishes SPEC through BINDING."
+  (let ((content (plist-get spec :content))
+        (tags (plist-get spec :tags))
+        (attributes (plist-get spec :attributes)))
+    (unless (and (stringp content) (not (string-empty-p (string-trim content))))
+      (signal 'e-cron-actions-invalid-action (list :publish :content content)))
     (lambda (_schedule)
-      (e-task-queue-enqueue
-       (e-task-queue-actions-ensure-loaded)
-       :prompt prompt
-       :metadata metadata
-       :harness-instance-id
-       (e-task-queue-actions--instance-id instance-id)))))
+      (e-board-runtime-producer-publish-fact
+       binding :tags (append '(cron) (copy-tree tags))
+       :attributes (copy-tree attributes) :content content))))
 
-(defun e-cron-actions--wake-action (trigger-id)
-  "Return an engine action that fires background-session trigger TRIGGER-ID.
-The trigger is resolved by id at fire time, so re-registering the trigger takes
-effect without touching the schedule."
-  (unless trigger-id
-    (signal 'e-cron-actions-invalid-action (list :wake :trigger nil)))
-  (lambda (_schedule)
-    (if-let ((trigger (e-background-session-get trigger-id)))
-        (e-background-session-fire trigger)
-      (signal 'e-cron-actions-invalid-action
-              (list :wake :unknown-trigger trigger-id)))))
-
-(defun e-cron-actions--call-action (handler)
-  "Return an engine action that calls HANDLER.
-HANDLER is called with the schedule when it accepts one argument."
-  (unless (functionp handler)
-    (signal 'e-cron-actions-invalid-action (list :call handler)))
-  (lambda (schedule)
-    (condition-case nil
-        (funcall handler schedule)
-      (wrong-number-of-arguments (funcall handler)))))
-
-(defun e-cron-actions--build-action (spec)
+(defun e-cron-actions--build-action (binding spec)
   "Return the engine action function for action SPEC.
-SPEC is a plist naming one action kind: `(:enqueue (:prompt ...))',
-`(:wake TRIGGER-ID)', or `(:call HANDLER)'.  A bare function is used directly."
+SPEC must be `(:publish (:content ... :tags ... :attributes ...))'."
   (cond
    ((null spec) (signal 'e-cron-actions-invalid-action (list nil)))
-   ((functionp spec) (lambda (schedule) (funcall spec schedule)))
-   ((plist-member spec :enqueue)
-    (e-cron-actions--enqueue-action (plist-get spec :enqueue)))
-   ((plist-member spec :wake)
-    (e-cron-actions--wake-action (plist-get spec :wake)))
-   ((plist-member spec :call)
-    (e-cron-actions--call-action (plist-get spec :call)))
+   ((not (listp spec))
+    (signal 'e-cron-actions-invalid-action (list spec)))
+   ((plist-member spec :publish)
+    (e-cron-actions--publish-action binding (plist-get spec :publish)))
    (t (signal 'e-cron-actions-invalid-action (list spec)))))
 
-(cl-defun e-cron-actions-register (&key id when action guard (catch-up 'skip)
-                                        metadata (enabled t))
+(cl-defun e-cron-actions-register (&key id when action producer-binding
+                                        (catch-up 'skip) metadata (enabled t))
   "Register a routed schedule and return it.
 ACTION is a declarative action spec routed through
 `e-cron-actions--build-action'.  The remaining keys pass through to
@@ -134,8 +106,14 @@ ACTION is a declarative action spec routed through
   (e-cron-register
    :id id
    :when when
-   :action (e-cron-actions--build-action action)
-   :guard guard
+   :action (e-cron-actions--build-action
+            (let ((binding (or producer-binding
+                               e-cron-actions-producer-binding)))
+              (unless (e-board-runtime-producer-binding-live-p binding)
+                (signal 'e-board-runtime-producer-disabled
+                        (list id 'missing-live-binding)))
+              binding)
+            action)
    :catch-up catch-up
    :metadata (plist-put (copy-sequence metadata) :action-spec action)
    :enabled enabled))
@@ -179,10 +157,6 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
     :id (e-cron-actions--required-id arguments)
     :when (plist-get arguments :when)
     :action (plist-get arguments :action)
-    :guard (let ((guard (plist-get arguments :guard)))
-             (cond ((functionp guard) guard)
-                   ((null guard) nil)
-                   (t (e-cron-actions--symbol guard :guard))))
     :catch-up (or (e-cron-actions--symbol (plist-get arguments :catch-up)
                                           :catch-up)
                   'skip)
@@ -234,10 +208,7 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
       :description "Recurrence: (:every SECONDS) or (:at \"HH:MM\" :on (mon ...)).")
      :action
      (:type "object"
-      :description "Action spec: (:enqueue (:prompt ...)), (:wake TRIGGER-ID), or (:call SYMBOL).")
-     :guard
-     (:type "string"
-      :description "Optional zero-argument predicate symbol gating each fire.")
+      :description "Action spec: (:publish (:content STRING :tags LIST :attributes PLIST)).")
      :catch-up
      (:type "string"
       :description "Missed-fire policy: skip (default) or run.")

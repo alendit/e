@@ -33,7 +33,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'filenotify)
-(require 'e-harness)
+(require 'e-board-runtime)
 
 (defgroup e-background-session nil
   "File/schedule-triggered background agent sessions."
@@ -57,13 +57,11 @@ Each function is called with the trigger that fired.  Intended for observation
 Configuration fields are set at creation; runtime fields track live watches and
 timers and are managed by `e-background-session-start' / `-stop'."
   id
-  harness
-  session-id
+  producer-binding
   prompt
   paths
   schedule-seconds
   debounce-seconds
-  predicate
   metadata
   ;; runtime
   watches
@@ -85,39 +83,34 @@ timers and are managed by `e-background-session-start' / `-stop'."
   (hash-table-values e-background-session--triggers))
 
 (cl-defun e-background-session-register
-    (&key id harness session-id prompt paths schedule-seconds
-          debounce-seconds predicate metadata)
+    (&key id producer-binding prompt paths schedule-seconds
+          debounce-seconds metadata)
   "Create and register a background trigger, returning it.
 
 ID is a unique key (an existing trigger with the same ID is stopped and
-replaced).  HARNESS is the core harness the session runs in.  SESSION-ID names
-the session to reuse; when nil a session is created lazily on the first fire and
-stored back on the trigger so subsequent fires continue the same conversation.
-PROMPT is the text submitted on each fire, or a zero-argument function returning
-that text (returning nil/empty skips the fire -- use this to make the prompt
-itself decide whether there is anything to do).  PATHS is a list of files and/or
+replaced).  PRODUCER-BINDING is explicit process-local board authority; it is
+never reconstructed from a persisted board id.  PROMPT is the fixed fact text
+published on each fire.  PATHS is a list of files and/or
 directories to watch for changes.  SCHEDULE-SECONDS, when non-nil, also fires on
 that periodic interval.  DEBOUNCE-SECONDS overrides
-`e-background-session-default-debounce-seconds'.  PREDICATE, when non-nil, is a
-zero-argument function gating each fire.  METADATA seeds a lazily created
-session (e.g. a `:project-root')."
+`e-background-session-default-debounce-seconds'.  METADATA is published as
+bounded descriptive fact attributes."
   (unless id (user-error "Background trigger requires :id"))
-  (unless (e-harness-p harness) (user-error "Background trigger requires a harness"))
-  (unless (or (functionp prompt)
-              (and (stringp prompt) (not (string-empty-p prompt))))
-    (user-error "Background trigger requires a non-empty :prompt string or a function"))
+  (unless (e-board-runtime-producer-binding-live-p producer-binding)
+    (signal 'e-board-runtime-producer-disabled
+            (list id 'missing-live-binding)))
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Background trigger requires a non-empty :prompt string"))
   (when-let ((existing (e-background-session-get id)))
     (e-background-session-stop existing))
   (let ((trigger (e-background-trigger--create
                   :id id
-                  :harness harness
-                  :session-id session-id
+                  :producer-binding producer-binding
                   :prompt prompt
                   :paths paths
                   :schedule-seconds schedule-seconds
                   :debounce-seconds (or debounce-seconds
                                         e-background-session-default-debounce-seconds)
-                  :predicate predicate
                   :metadata metadata
                   :enabled nil)))
     (puthash id trigger e-background-session--triggers)
@@ -141,6 +134,10 @@ session (e.g. a `:project-root')."
 
 (defun e-background-session-start (trigger)
   "Begin watching paths and scheduling for TRIGGER, then return it."
+  (unless (e-board-runtime-producer-binding-live-p
+           (e-background-trigger-producer-binding trigger))
+    (signal 'e-board-runtime-producer-disabled
+            (list (e-background-trigger-id trigger) 'missing-live-binding)))
   (e-background-session-stop trigger)
   ;; Enable before arming so a watch callback that fires during arming sees a
   ;; live trigger rather than being mistaken for our own teardown.
@@ -206,48 +203,23 @@ events into one fire."
                        (setf (e-background-trigger-debounce-timer trigger) nil)
                        (e-background-session-fire trigger)))))
 
-(defun e-background-session--session-busy-p (trigger)
-  "Return non-nil when TRIGGER's session has a running turn."
-  (when-let ((session-id (e-background-trigger-session-id trigger)))
-    (ignore-errors
-      (plist-get (e-harness-state (e-background-trigger-harness trigger) session-id)
-                 :active-turn))))
-
-(defun e-background-session--ensure-session (trigger)
-  "Return TRIGGER's session id, creating and storing one when absent."
-  (or (e-background-trigger-session-id trigger)
-      (let ((session (e-harness-create-session
-                      (e-background-trigger-harness trigger)
-                      :metadata (e-background-trigger-metadata trigger))))
-        (setf (e-background-trigger-session-id trigger) (plist-get session :id))
-        (e-background-trigger-session-id trigger))))
-
 (defun e-background-session--resolve-prompt (trigger)
-  "Return the prompt text for TRIGGER, or nil when there is nothing to submit."
-  (let* ((prompt (e-background-trigger-prompt trigger))
-         (text (if (functionp prompt) (funcall prompt) prompt)))
-    (and (stringp text) (not (string-empty-p (string-trim text))) text)))
+  "Return TRIGGER's fixed fact text."
+  (e-background-trigger-prompt trigger))
 
 (defun e-background-session-fire (trigger)
-  "Fire TRIGGER now, bypassing debounce, and return the queued turn id or nil.
-
-The fire is skipped (returning nil) when the trigger's predicate declines, the
-prompt resolves to nothing, or the session already has a running turn.  This is
-the single entrypoint the debounce timer, the schedule timer, and manual callers
-all funnel through."
-  (let ((predicate (e-background-trigger-predicate trigger)))
-    (cond
-     ((and predicate (not (funcall predicate))) nil)
-     ((e-background-session--session-busy-p trigger) nil)
-     (t
-      (when-let ((prompt (e-background-session--resolve-prompt trigger)))
-        (let ((session-id (e-background-session--ensure-session trigger))
-              (harness (e-background-trigger-harness trigger)))
-          (condition-case nil
-              (prog1 (e-harness-prompt-async harness session-id prompt)
-                (run-hook-with-args 'e-background-session-fire-functions trigger))
-            ;; A turn started between the busy check and submit; treat as busy.
-            (e-harness-active-turn-exists nil))))))))
+  "Publish TRIGGER's observation-only board fact and return its queued item."
+  (let ((item
+         (e-board-runtime-producer-publish-fact
+          (e-background-trigger-producer-binding trigger)
+          :tags (list 'background 'trigger (e-background-trigger-id trigger))
+          :attributes
+          (append (list :trigger-id (e-background-trigger-id trigger)
+                        :paths (copy-tree (e-background-trigger-paths trigger)))
+                  (copy-tree (e-background-trigger-metadata trigger)))
+          :content (e-background-session--resolve-prompt trigger))))
+    (run-hook-with-args 'e-background-session-fire-functions trigger)
+    item))
 
 (provide 'e-background-session)
 
