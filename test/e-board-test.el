@@ -965,6 +965,36 @@
                          '("one" "two")))
           (should (eq (e-board-activation-state activation) 'committed)))))))
 
+(ert-deftest e-board-test-continuation-firing-limit-completes-after-reserving-final-effect ()
+  "A bounded continuation commits its last reserved effect, then stops matching."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler
+                                   (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:kind fact :tags (source)) :id "limited"
+                           :effect '(:post-input :to "one" :content "derived")
+                           :firing-limit 2)
+        (e-board-post-fact board :id "one" :tags '(source) :source-fact-key '(test 1 1))
+        (e-board-post-fact board :id "two" :tags '(source) :source-fact-key '(test 1 2))
+        (e-board-post-fact board :id "three" :tags '(source) :source-fact-key '(test 1 3))
+        (let ((subscription (e-board-find-subscription board "limited")))
+          (should (eq (e-board-subscription-state subscription) 'completed))
+          (should (= (e-board-subscription-firing-number subscription) 2)))
+        ;; The board schedules one bounded effect drain, which commits both
+        ;; reserved continuations in FIFO order inside its configured page.
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (= (length (cl-remove-if-not
+                            (lambda (message) (eq (e-board-message-kind message) 'input))
+                            (e-board-messages board)))
+                   2))
+        (should-error
+         (e-board-subscribe board "one" '(:tags (source)) :id "invalid-limit"
+                            :firing-limit 1)
+         :type 'e-board-error)))))
+
 (ert-deftest e-board-test-batch-deadline-and-quiet-timers-enqueue-fenced-effects ()
   "Timers only enqueue later effects; a stale quiet callback cannot post."
   (e-board-test--with-empty-registry

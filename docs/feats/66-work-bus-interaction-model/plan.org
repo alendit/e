@@ -31,6 +31,9 @@ Condition continuations now retain their bounded matching source ids in the
 subscription itself for =batch= count/max-delay and =latest-after-quiet=
 policies; timer callbacks only enqueue generation-fenced later effect drains,
 which freeze one causally attributed derived input.
+An optional bounded =post-input= firing limit reserves the final activation
+before completing its subscription: that prepared effect still commits, while
+all later matching records are fenced without a second activation.
 Muting or cancelling its subscription fences every still-=prepared= activation,
 so a deferred effect released afterwards becomes a no-op rather than appending
 new input.
