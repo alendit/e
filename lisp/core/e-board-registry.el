@@ -390,12 +390,12 @@ attached client from muting, resuming, or closing another client's cursor."
      (e-board-registry-board-source-board board) observer-id :limit limit)))
 
 (defun e-board-registry-accept-observer-page
-    (board-or-id client-id observer-id through-seq)
-  "Record attached CLIENT-ID's accepted observer page receipt THROUGH-SEQ."
+    (board-or-id client-id observer-id receipt)
+  "Record attached CLIENT-ID's exact accepted observer page RECEIPT."
   (let ((board (e-board-registry--require-active board-or-id)))
     (e-board-registry--observer-for-client board client-id observer-id)
     (e-board-observer-accept-page
-     (e-board-registry-board-source-board board) observer-id through-seq)))
+     (e-board-registry-board-source-board board) observer-id receipt)))
 
 (cl-defun e-board-registry-prepare-observer-history-page
     (board-or-id client-id observer-id &key (limit 32))
@@ -406,12 +406,12 @@ attached client from muting, resuming, or closing another client's cursor."
      (e-board-registry-board-source-board board) observer-id :limit limit)))
 
 (defun e-board-registry-accept-observer-history-page
-    (board-or-id client-id observer-id before-seq)
-  "Record attached CLIENT-ID's accepted history receipt BEFORE-SEQ."
+    (board-or-id client-id observer-id receipt)
+  "Record attached CLIENT-ID's exact accepted history page RECEIPT."
   (let ((board (e-board-registry--require-active board-or-id)))
     (e-board-registry--observer-for-client board client-id observer-id)
     (e-board-observer-accept-history-page
-     (e-board-registry-board-source-board board) observer-id before-seq)))
+     (e-board-registry-board-source-board board) observer-id receipt)))
 
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal (state 'active))

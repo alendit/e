@@ -21,7 +21,10 @@
   "Run BODY with empty harness registry tables."
   (declare (indent 0))
   `(let ((e-harness-registry--instances (make-hash-table :test 'equal))
-         (e-harness-registry--factories (make-hash-table :test 'equal)))
+         (e-harness-registry--factories (make-hash-table :test 'equal))
+         (e-harness-registry--generations (make-hash-table :test 'equal))
+         (e-harness-registry--invalidation-events
+          (make-hash-table :test 'equal)))
      ,@body))
 
 (ert-deftest e-harness-registry-test-registers-and-retrieves-instance ()
@@ -73,10 +76,39 @@
            (push harness created)
            harness)))
       (let ((first (e-harness-registry-get-or-create :chat-test)))
+        (should (= (e-harness-registry-generation :chat-test) 1))
         (e-harness-registry-clear-instance :chat-test)
+        (should (= (e-harness-registry-generation :chat-test) 2))
         (let ((second (e-harness-registry-get-or-create :chat-test)))
           (should (not (eq first second)))
+          (should (= (e-harness-registry-generation :chat-test) 3))
           (should (= (length created) 2)))))))
+
+(ert-deftest e-harness-registry-test-replacement-and-clear-fence-generations ()
+  "Concrete object replacement and clear invalidate captured generations."
+  (e-harness-registry-test--with-empty-registry
+    (let ((first (e-harness-create))
+          (second (e-harness-create)))
+      (e-harness-registry-register :harness first)
+      (should (= (e-harness-registry-generation :harness) 1))
+      (should (eq (e-harness-registry-resolve :harness 1) first))
+      ;; Re-registering the exact object is not a replacement.
+      (e-harness-registry-register :harness first)
+      (should (= (e-harness-registry-generation :harness) 1))
+      (e-harness-registry-register :harness second)
+      (should (= (e-harness-registry-generation :harness) 2))
+      (should-error (e-harness-registry-resolve :harness 1)
+                    :type 'e-harness-registry-stale-generation)
+      (should (equal (e-harness-registry-invalidation-event :harness)
+                     '(:kind replaced :harness-id :harness
+                       :previous-generation 1 :generation 2)))
+      (e-harness-registry-clear-instance :harness)
+      (should (= (e-harness-registry-generation :harness) 3))
+      (should-error (e-harness-registry-resolve :harness 2)
+                    :type 'e-harness-registry-stale-generation)
+      (should (equal (e-harness-registry-invalidation-event :harness)
+                     '(:kind cleared :harness-id :harness
+                       :previous-generation 2 :generation 3))))))
 
 (ert-deftest e-harness-registry-test-missing-id-signals ()
   "Missing harness ids signal an explicit registry error."

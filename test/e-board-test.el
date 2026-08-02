@@ -389,12 +389,56 @@
           (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
                          '("first")))
           (should (= (e-board-observer-next-seq observer) 0))
-          (e-board-observer-accept-page board "observer" (plist-get page :through-seq))
+          (let ((repeated (e-board-observer-prepare-page
+                           board "observer" :limit 2)))
+            (should-not (eq page repeated))
+            (should (equal (plist-get page :receipt)
+                           (plist-get repeated :receipt)))
+            (should (equal (mapcar #'e-board-message-id
+                                   (plist-get repeated :messages))
+                           '("first")))
+            (setcar (plist-get repeated :receipt) "tampered")
+            (should (equal (plist-get page :receipt)
+                           (plist-get (e-board-observer-prepare-page
+                                       board "observer" :limit 2)
+                                      :receipt))))
+          (should-error
+           (e-board-observer-accept-page board "observer" '(fabricated receipt))
+           :type 'e-board-error)
+          (e-board-observer-accept-page board "observer" (plist-get page :receipt))
+          (e-board-observer-accept-page board "observer" (plist-get page :receipt))
           (should (= (e-board-observer-next-seq observer)
-                     (plist-get page :through-seq))))
+                     (plist-get page :through-seq)))
+          (should (= (cl-count 'observer-page-accepted
+                               (mapcar #'e-board-event-type (e-board-events board)))
+                     1)))
         (should (equal (mapcar #'e-board-message-id
                                (e-board-observer-read-page board "observer"))
                        '("second")))))))
+
+(ert-deftest e-board-test-observer-transition-releases-prepared-page-pins ()
+  "Muting an observer fences and releases its unaccepted live/history pages."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "fact" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let* ((observer (e-board-observer-subscribe
+                        board "client" '(:tags (main)) :id "observer"
+                        :start-seq 0 :history-before-seq 2))
+             (live (e-board-observer-prepare-page board "observer"))
+             (history (e-board-observer-prepare-history-page board "observer")))
+        (should (e-board-observer-prepared-page observer))
+        (should (e-board-observer-prepared-history-page observer))
+        (e-board-set-observer-state board "observer" 'muted)
+        (should-not (e-board-observer-prepared-page observer))
+        (should-not (e-board-observer-prepared-history-page observer))
+        (should-error
+         (e-board-observer-accept-page board "observer" (plist-get live :receipt))
+         :type 'e-board-error)
+        (should-error
+         (e-board-observer-accept-history-page
+          board "observer" (plist-get history :receipt))
+         :type 'e-board-error)))))
 
 (ert-deftest e-board-test-pickups-preserve-participant-fifo-order ()
   "Only a participant's oldest pickup may become deliverable."
@@ -591,7 +635,7 @@
           (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
                          '("two")))
           (e-board-observer-accept-history-page
-           board "observer" (plist-get page :before-seq))
+           board "observer" (plist-get page :receipt))
           (should (= (e-board-observer-history-before-seq observer)
                      (plist-get page :before-seq))))))))
 
@@ -605,11 +649,12 @@
                         board "client" '(:tags (main)) :id "observer"
                         :history-before-seq 2))
              (page (e-board-observer-prepare-history-page board "observer" :limit 1))
-             (receipt (plist-get page :before-seq)))
+             (receipt (plist-get page :receipt))
+             (before-seq (plist-get page :before-seq)))
         (e-board-observer-accept-history-page board "observer" receipt)
-        (should (= (e-board-observer-history-before-seq observer) receipt))
+        (should (= (e-board-observer-history-before-seq observer) before-seq))
         (e-board-observer-accept-history-page board "observer" receipt)
-        (should (= (e-board-observer-history-before-seq observer) receipt))
+        (should (= (e-board-observer-history-before-seq observer) before-seq))
         (should (= (cl-count 'observer-history-page-accepted
                              (mapcar #'e-board-event-type (e-board-events board)))
                    1))))))
@@ -630,7 +675,7 @@
         (should-not (plist-get first :messages))
         (should (= (plist-get first :before-seq) 2))
         (e-board-observer-accept-history-page
-         board "observer" (plist-get first :before-seq))
+         board "observer" (plist-get first :receipt))
         (let ((second (e-board-observer-prepare-history-page
                        board "observer" :limit 1)))
           (should (equal (mapcar #'e-board-message-id (plist-get second :messages))

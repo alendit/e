@@ -400,11 +400,11 @@
         (should-error
          (e-board-registry-accept-observer-page
           board (e-board-registry-client-id other) "observer"
-          (plist-get page :through-seq))
+          (plist-get page :receipt))
          :type 'e-board-registry-error)
         (e-board-registry-accept-observer-page
          board (e-board-registry-client-id client) "observer"
-         (plist-get page :through-seq))
+         (plist-get page :receipt))
         (should (= (e-board-observer-next-seq observer)
                    (plist-get page :through-seq)))))))
 
@@ -428,11 +428,11 @@
         (should-error
          (e-board-registry-accept-observer-history-page
           board (e-board-registry-client-id other) "observer"
-          (plist-get page :before-seq))
+          (plist-get page :receipt))
          :type 'e-board-registry-error)
         (e-board-registry-accept-observer-history-page
          board (e-board-registry-client-id client) "observer"
-         (plist-get page :before-seq))
+         (plist-get page :receipt))
         (should (= (e-board-observer-history-before-seq observer)
                    (plist-get page :before-seq)))))))
 
@@ -449,12 +449,13 @@
                          :source-fact-key '(producer 1 1))
       (let* ((page (e-board-registry-prepare-observer-history-page
                     board (e-board-registry-client-id client) "observer" :limit 1))
-             (receipt (plist-get page :before-seq)))
+             (receipt (plist-get page :receipt))
+             (before-seq (plist-get page :before-seq)))
         (e-board-registry-accept-observer-history-page
          board (e-board-registry-client-id client) "observer" receipt)
         (e-board-registry-accept-observer-history-page
          board (e-board-registry-client-id client) "observer" receipt)
-        (should (= (e-board-observer-history-before-seq observer) receipt))))))
+        (should (= (e-board-observer-history-before-seq observer) before-seq))))))
 
 (ert-deftest e-board-registry-test-client-replaces-only-its-observer-with-explicit-backfill ()
   "A client may widen its own selector without mutating another cursor."

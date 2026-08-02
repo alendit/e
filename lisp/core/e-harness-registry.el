@@ -18,12 +18,20 @@
 
 (define-error 'e-harness-registry-missing
   "No harness instance or factory is registered for id")
+(define-error 'e-harness-registry-stale-generation
+  "Harness registry object generation is no longer current")
 
 (defvar e-harness-registry--instances (make-hash-table :test 'equal)
   "Harness instances keyed by registry id.")
 
 (defvar e-harness-registry--factories (make-hash-table :test 'equal)
   "Harness factories keyed by registry id.")
+
+(defvar e-harness-registry--generations (make-hash-table :test 'equal)
+  "Monotonic concrete-object generations keyed by registry id.")
+
+(defvar e-harness-registry--invalidation-events (make-hash-table :test 'equal)
+  "Latest bounded replacement or clear event keyed by registry id.")
 
 (defun e-harness-registry--validate-id (id)
   "Signal an error when ID is not a valid registry key."
@@ -48,13 +56,46 @@ Replacing the factory does not replace any already cached harness instance."
   (e-harness-registry--validate-id id)
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
-  (puthash id harness e-harness-registry--instances)
+  (let ((previous (gethash id e-harness-registry--instances)))
+    (unless (eq previous harness)
+      (let* ((previous-generation
+              (gethash id e-harness-registry--generations 0))
+             (generation (1+ previous-generation)))
+        (puthash id generation e-harness-registry--generations)
+        (when previous
+          (puthash id
+                   (list :kind 'replaced :harness-id id
+                         :previous-generation previous-generation
+                         :generation generation)
+                   e-harness-registry--invalidation-events))))
+    (puthash id harness e-harness-registry--instances))
   harness)
 
 (defun e-harness-registry-get (id)
   "Return the registered harness instance for ID, or nil."
   (e-harness-registry--validate-id id)
   (gethash id e-harness-registry--instances))
+
+(defun e-harness-registry-generation (id)
+  "Return ID's current concrete-object generation, or zero if never created."
+  (e-harness-registry--validate-id id)
+  (gethash id e-harness-registry--generations 0))
+
+(defun e-harness-registry-resolve (id generation)
+  "Return ID's live harness only when GENERATION is still current."
+  (e-harness-registry--validate-id id)
+  (let ((harness (gethash id e-harness-registry--instances))
+        (current (e-harness-registry-generation id)))
+    (unless (and harness (equal generation current))
+      (signal 'e-harness-registry-stale-generation
+              (list id generation current)))
+    harness))
+
+(defun e-harness-registry-invalidation-event (id)
+  "Return ID's latest bounded replacement/clear invalidation event, if any."
+  (e-harness-registry--validate-id id)
+  (when-let ((event (gethash id e-harness-registry--invalidation-events)))
+    (copy-sequence event)))
 
 (defun e-harness-registry-get-or-create (id)
   "Return the harness instance for ID, lazily creating it when needed.
@@ -84,7 +125,17 @@ factory."
   "Clear the cached harness instance for ID.
 The registered factory, if any, is preserved."
   (e-harness-registry--validate-id id)
-  (remhash id e-harness-registry--instances)
+  (when (gethash id e-harness-registry--instances)
+    (let* ((previous-generation
+            (gethash id e-harness-registry--generations 0))
+           (generation (1+ previous-generation)))
+      (remhash id e-harness-registry--instances)
+      (puthash id generation e-harness-registry--generations)
+      (puthash id
+               (list :kind 'cleared :harness-id id
+                     :previous-generation previous-generation
+                     :generation generation)
+               e-harness-registry--invalidation-events)))
   nil)
 
 (provide 'e-harness-registry)

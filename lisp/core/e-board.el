@@ -66,7 +66,9 @@
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
   id board-id client-id client-generation selector state next-seq
-  history-before-seq history-floor)
+  history-before-seq history-floor
+  prepared-page last-accepted-page-receipt
+  prepared-history-page last-accepted-history-receipt)
 
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
@@ -1272,52 +1274,75 @@ the returned cursor's advancing `next-seq' for later bounded pages."
 
 (cl-defun e-board-observer-prepare-history-page (board observer-id &key (limit 32))
   "Prepare one bounded ascending history page without moving its cursor.
-Return =:messages= plus a =:before-seq= receipt for
+Return =:messages= plus an opaque =:receipt= for
 `e-board-observer-accept-history-page'."
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let ((observer (or (e-board-observer board observer-id)
-                      (signal 'e-board-observer-missing (list observer-id))))
-        (next-before nil)
-        (inspected 0)
-        matches)
-    (when (and (eq (e-board-observer-state observer) 'active)
-               (e-board-observer-history-before-seq observer))
-      (let ((before (e-board-observer-history-before-seq observer))
-            (floor (e-board-observer-history-floor observer)))
-        (dolist (message (reverse (e-board-messages board)))
-          (when (and (< inspected limit)
-                     (< (e-board-message-seq message) before)
-                     (>= (e-board-message-seq message) floor))
-            (cl-incf inspected)
-            (setq next-before (e-board-message-seq message))
-            (when (e-board--observer-matches-p board observer message)
-              (push message matches))))))
-    (list :messages matches :before-seq next-before)))
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (if-let ((prepared (e-board-observer-prepared-history-page observer)))
+        (copy-tree prepared)
+        (let ((next-before nil)
+              (inspected 0)
+              matches)
+          (when (and (eq (e-board-observer-state observer) 'active)
+                     (e-board-observer-history-before-seq observer))
+            (let ((before (e-board-observer-history-before-seq observer))
+                  (floor (e-board-observer-history-floor observer)))
+              (dolist (message (reverse (e-board-messages board)))
+                (when (and (< inspected limit)
+                           (< (e-board-message-seq message) before)
+                           (>= (e-board-message-seq message) floor))
+                  (cl-incf inspected)
+                  (setq next-before (e-board-message-seq message))
+                  (when (e-board--observer-matches-p board observer message)
+                    (push message matches))))))
+          (let* ((receipt
+                  (and next-before
+                       (list (e-board-id board) observer-id 'history
+                             (e-board-observer-history-before-seq observer)
+                             next-before)))
+                 (page (list :messages matches :before-seq next-before
+                             :receipt receipt)))
+            (when receipt
+              (setf (e-board-observer-prepared-history-page observer) page))
+            (copy-tree page))))))
 
-(defun e-board-observer-accept-history-page (board observer-id before-seq)
-  "Advance OBSERVER-ID's history cursor after accepted BEFORE-SEQ receipt."
+(defun e-board-observer-accept-history-page (board observer-id receipt)
+  "Advance OBSERVER-ID's history cursor after its exact prepared RECEIPT."
   (let ((observer (or (e-board-observer board observer-id)
                       (signal 'e-board-observer-missing (list observer-id)))))
-    (unless (and (integerp before-seq)
-                 (e-board-observer-history-before-seq observer)
-                 (<= before-seq (e-board-observer-history-before-seq observer))
-                 (>= before-seq (e-board-observer-history-floor observer)))
-      (signal 'e-board-error
-              (list "Invalid observer history acceptance" observer-id before-seq)))
-    (when (and (eq (e-board-observer-state observer) 'active)
-               (< before-seq (e-board-observer-history-before-seq observer)))
-      (setf (e-board-observer-history-before-seq observer) before-seq)
-      (e-board--append-event board 'observer-history-page-accepted
-                             (list :observer-id observer-id :before-seq before-seq)))
-    observer))
+    (if (and receipt
+             (equal receipt
+                    (e-board-observer-last-accepted-history-receipt observer)))
+        observer
+      (let* ((page (e-board-observer-prepared-history-page observer))
+             (expected (and page (plist-get page :receipt)))
+             (before-seq (and page (plist-get page :before-seq))))
+        (unless (and expected (equal receipt expected))
+          (signal 'e-board-error
+                  (list "Invalid observer history acceptance" observer-id receipt)))
+        (unless (and (eq (e-board-observer-state observer) 'active)
+                     (integerp before-seq)
+                     (e-board-observer-history-before-seq observer)
+                     (< before-seq (e-board-observer-history-before-seq observer))
+                     (>= before-seq (e-board-observer-history-floor observer)))
+          (signal 'e-board-error
+                  (list "Stale observer history acceptance" observer-id receipt)))
+        (setf (e-board-observer-history-before-seq observer) before-seq
+              (e-board-observer-prepared-history-page observer) nil
+              (e-board-observer-last-accepted-history-receipt observer)
+              (copy-tree receipt))
+        (e-board--append-event board 'observer-history-page-accepted
+                               (list :observer-id observer-id :before-seq before-seq))
+        observer))))
 
 (cl-defun e-board-observer-read-history-page (board observer-id &key (limit 32))
   "Synchronously prepare and accept one bounded ascending history page."
   (let* ((page (e-board-observer-prepare-history-page board observer-id :limit limit))
-         (before-seq (plist-get page :before-seq)))
-    (when before-seq
-      (e-board-observer-accept-history-page board observer-id before-seq))
+         (receipt (plist-get page :receipt)))
+    (when receipt
+      (e-board-observer-accept-history-page board observer-id receipt))
     (plist-get page :messages)))
 
 (defun e-board--observer-matches-p (board observer message)
@@ -1361,7 +1386,9 @@ Return =:messages= plus a =:before-seq= receipt for
       (signal 'e-board-error
               (list "Illegal observer transition" from state
                     (e-board-observer-id observer))))
-    (setf (e-board-observer-state observer) state)
+    (setf (e-board-observer-state observer) state
+          (e-board-observer-prepared-page observer) nil
+          (e-board-observer-prepared-history-page observer) nil)
     (e-board--append-event board 'observer-transition
                            (list :observer-id (e-board-observer-id observer)
                                  :from from :state state))
@@ -1411,16 +1438,13 @@ request retained backfill explicitly with a lower START-SEQ."
 
 (cl-defun e-board-observer-prepare-page (board observer-id &key (limit 32))
   "Prepare one bounded observer page without advancing its live cursor.
-Return a plist with =:messages= and an opaque =:through-seq= acceptance
+Return a plist with =:messages=, =:through-seq=, and an opaque =:receipt=
 receipt.  A client queue must call `e-board-observer-accept-page' only after
 it accepts this page.  Trusted predicates run here, never from append."
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let ((observer (or (e-board-observer board observer-id)
                       (signal 'e-board-observer-missing (list observer-id))))
-        (inspected 0)
-        (through-seq nil)
-        matches
         (resnapshot-required nil))
     (when (and (eq (e-board-observer-state observer) 'active)
                (< (e-board-observer-next-seq observer)
@@ -1429,48 +1453,72 @@ it accepts this page.  Trusted predicates run here, never from append."
       (setq resnapshot-required t))
     (when (eq (e-board-observer-state observer) 'expired)
       (setq resnapshot-required t))
-    (when (eq (e-board-observer-state observer) 'active)
-      (dolist (message (e-board-messages board))
-        (when (and (< inspected limit)
-                   (> (e-board-message-seq message)
-                      (e-board-observer-next-seq observer))
-                   (>= (e-board-message-seq message)
-                       (e-board-retention-floor board)))
-          (cl-incf inspected)
-          (setq through-seq (e-board-message-seq message))
-          (when (e-board--observer-matches-p board observer message)
-            (push message matches)))))
-    (list :messages (nreverse matches) :through-seq through-seq
-          :resnapshot-required resnapshot-required)))
+    (if-let ((prepared (e-board-observer-prepared-page observer)))
+        (copy-tree prepared)
+        (let ((inspected 0)
+              (through-seq nil)
+              matches)
+          (when (eq (e-board-observer-state observer) 'active)
+            (dolist (message (e-board-messages board))
+              (when (and (< inspected limit)
+                         (> (e-board-message-seq message)
+                            (e-board-observer-next-seq observer))
+                         (>= (e-board-message-seq message)
+                             (e-board-retention-floor board)))
+                (cl-incf inspected)
+                (setq through-seq (e-board-message-seq message))
+                (when (e-board--observer-matches-p board observer message)
+                  (push message matches)))))
+          (let* ((receipt
+                  (and through-seq
+                       (list (e-board-id board) observer-id 'live
+                             (e-board-observer-next-seq observer) through-seq)))
+                 (page (list :messages (nreverse matches)
+                             :through-seq through-seq
+                             :receipt receipt
+                             :resnapshot-required resnapshot-required)))
+            (when receipt
+              (setf (e-board-observer-prepared-page observer) page))
+            (copy-tree page))))))
 
-(defun e-board-observer-accept-page (board observer-id through-seq)
-  "Advance OBSERVER-ID through accepted page receipt THROUGH-SEQ.
-The receipt may only move the observer forward, so a stale client acceptance
-cannot rewind or consume another observer's cursor."
+(defun e-board-observer-accept-page (board observer-id receipt)
+  "Advance OBSERVER-ID through its exact prepared page RECEIPT.
+Only the pinned page currently owned by the observer may advance its cursor;
+retrying the last committed receipt is idempotent."
   (let ((observer (or (e-board-observer board observer-id)
                       (signal 'e-board-observer-missing (list observer-id)))))
-    (unless (and (integerp through-seq)
-                 (>= through-seq (e-board-observer-next-seq observer)))
-      (signal 'e-board-error
-              (list "Invalid observer page acceptance" observer-id through-seq)))
-    (when (> through-seq (e-board-next-seq board))
-      (signal 'e-board-error
-              (list "Observer receipt exceeds board sequence" observer-id through-seq)))
-    (when (and (eq (e-board-observer-state observer) 'active)
-               (> through-seq (e-board-observer-next-seq observer)))
-      (setf (e-board-observer-next-seq observer) through-seq)
-      (e-board--append-event board 'observer-page-accepted
-                             (list :observer-id observer-id :through-seq through-seq)))
-    observer))
+    (if (and receipt
+             (equal receipt (e-board-observer-last-accepted-page-receipt observer)))
+        observer
+      (let* ((page (e-board-observer-prepared-page observer))
+             (expected (and page (plist-get page :receipt)))
+             (through-seq (and page (plist-get page :through-seq))))
+        (unless (and expected (equal receipt expected))
+          (signal 'e-board-error
+                  (list "Invalid observer page acceptance" observer-id receipt)))
+        (unless (and (eq (e-board-observer-state observer) 'active)
+                     (integerp through-seq)
+                     (> through-seq (e-board-observer-next-seq observer))
+                     (<= through-seq (e-board-next-seq board)))
+          (signal 'e-board-error
+                  (list "Stale observer page acceptance" observer-id receipt)))
+        (setf (e-board-observer-next-seq observer) through-seq
+              (e-board-observer-prepared-page observer) nil
+              (e-board-observer-last-accepted-page-receipt observer)
+              (copy-tree receipt))
+        (e-board--append-event board 'observer-page-accepted
+                               (list :observer-id observer-id
+                                     :through-seq through-seq))
+        observer))))
 
 (cl-defun e-board-observer-read-page (board observer-id &key (limit 32))
   "Synchronously prepare and accept one bounded page for OBSERVER-ID.
 Asynchronous client adapters should instead use `e-board-observer-prepare-page'
 and acknowledge only after their queue accepts the returned page."
   (let* ((page (e-board-observer-prepare-page board observer-id :limit limit))
-         (through-seq (plist-get page :through-seq)))
-    (when through-seq
-      (e-board-observer-accept-page board observer-id through-seq))
+         (receipt (plist-get page :receipt)))
+    (when receipt
+      (e-board-observer-accept-page board observer-id receipt))
     (plist-get page :messages)))
 
 (defun e-board--eligible-subscription-p (board subscription)

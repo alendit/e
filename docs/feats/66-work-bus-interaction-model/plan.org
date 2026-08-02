@@ -173,9 +173,12 @@ forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/
 expired lifecycle and replacement cursor identity are now explicit; reverse
 history has a first independent bounded cursor that returns pages in ascending
-order without moving live =next-seq=.  Both live and history pages now remain
-prepared until their attached owning client explicitly accepts the matching
-receipt; retention pins and queued client handoff remain future slices.
+order without moving live =next-seq=.  Both lanes now freeze and pin at most one
+prepared page behind an opaque cursor-bound receipt; repeated preparation
+returns the same page without rerunning predicates, only the exact owning
+client receipt may advance, receipt retries are idempotent, and lifecycle
+transitions release unaccepted pins.  Queued client handoff remains a future
+slice.
 Reverse-history windows are record-bounded before selector filtering, so sparse
 matches cannot turn one client page into an unbounded retained-history scan.
 An accepted history receipt is retry-idempotent, matching the live read-through
