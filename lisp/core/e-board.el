@@ -1007,10 +1007,11 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
 
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup))
-  "Install an ordinary immutable input subscription for PARTICIPANT-ID.
+  "Install an ordinary immutable subscription for PARTICIPANT-ID.
 SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
    effects are `create-pickup' and declarative `(:post-input ...)'.  New
- subscriptions only inspect future inputs."
+ subscriptions inspect future board records; only `create-pickup' is restricted
+ to input records."
   (unless (e-board-participant board participant-id)
     (signal 'e-board-error (list "Unknown participant" participant-id)))
   (unless (or (eq effect 'create-pickup)
@@ -1076,9 +1077,8 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
 (defun e-board--selector-matches-p (board subscription message)
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
-    (and (eq (e-board-message-kind message) 'input)
-          (or (not (plist-member selector :to))
-              (equal (plist-get selector :to) (e-board-message-to message)))
+    (and (or (not (plist-member selector :to))
+             (equal (plist-get selector :to) (e-board-message-to message)))
           (or (not (plist-member selector :author))
               (equal (plist-get selector :author) (e-board-message-author message)))
           (e-board--selector-attributes-match-p selector message)
@@ -1423,40 +1423,6 @@ subscription records the relationship without rewriting its terminal state."
                  :replacement-id replacement-id))
           replacement)))))
 
-(defun e-board--matching-subscriptions (board message)
-  "Return eligible subscriptions for MESSAGE using its exact/tag route rule."
-  (if-let ((to (e-board-message-to message)))
-      ;; Addressed input deliberately bypasses ordinary subscriptions and tags.
-      (cl-remove-if-not
-       (lambda (subscription)
-         (and (e-board-subscription-built-in-p subscription)
-              (equal (e-board-subscription-participant-id subscription) to)
-              (e-board--eligible-subscription-p board subscription)))
-       (e-board-subscriptions board))
-    (cl-remove-if-not
-     (lambda (subscription)
-       (and (not (e-board-subscription-built-in-p subscription))
-            (e-board--eligible-subscription-p board subscription)
-             (e-board--selector-matches-p board subscription message)))
-      (e-board-subscriptions board))))
-
-(defun e-board--post-input-subscriptions (board message)
-  "Return ordinary post-input subscriptions eligible for MESSAGE.
-Derived messages cannot activate a subscription already in their lineage.
-This gives post effects a bounded, visible cycle stop without special routing."
-  (unless (e-board-message-to message)
-    (let* ((attributes (e-board-message-attributes message))
-           (lineage (plist-get attributes :board-subscription-lineage)))
-      (cl-remove-if-not
-       (lambda (subscription)
-         (and (eq (e-board-subscription-state subscription) 'active)
-              (not (e-board-subscription-built-in-p subscription))
-              (listp (e-board-subscription-effect subscription))
-              (eq (car (e-board-subscription-effect subscription)) :post-input)
-              (not (member (e-board-subscription-id subscription) lineage))
-               (e-board--selector-matches-p board subscription message)))
-       (e-board-subscriptions board)))))
-
 (defun e-board--schedule-post-input (board subscription message)
   "Freeze and schedule SUBSCRIPTION's declarative post from MESSAGE."
   (let* ((effect (cdr (e-board-subscription-effect subscription)))
@@ -1599,12 +1565,16 @@ Return nil when the key is new and may be appended."
           (append (e-board-messages board) (list message)))
     message))
 
-(defun e-board--input-subscription-matches-p (board subscription message)
-  "Classify one frozen SUBSCRIPTION against MESSAGE in a later router turn."
+(defun e-board--message-subscription-matches-p (board subscription message)
+  "Classify one frozen SUBSCRIPTION against MESSAGE in a later router turn.
+Only input records may create pickups.  An explicit `:post-input' continuation
+may instead match any unaddressed board record, including output, activity, and
+fact publications."
   (let ((matches
          (cond
           ((eq (e-board-subscription-effect subscription) 'create-pickup)
-           (and (e-board--eligible-subscription-p board subscription)
+           (and (eq (e-board-message-kind message) 'input)
+                (e-board--eligible-subscription-p board subscription)
                 (if-let ((to (e-board-message-to message)))
                     (and (e-board-subscription-built-in-p subscription)
                          (equal (e-board-subscription-participant-id subscription) to))
@@ -1623,56 +1593,60 @@ Return nil when the key is new and may be appended."
 
 (defun e-board--finalize-input-classification
     (board message publication subscriptions post-subscriptions)
-  "Commit MESSAGE's complete pickup fan-out from frozen SUBSCRIPTIONS."
+  "Commit MESSAGE's deferred pickups and continuation effects.
+Only input records receive a routing projection or create pickups; every
+message kind may schedule its frozen explicit continuation matches."
   (let ((subscriptions (nreverse subscriptions))
         (post-subscriptions (nreverse post-subscriptions))
         (by-participant (make-hash-table :test 'equal))
         participant-ids pickup-ids)
-    ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
-    (dolist (subscription subscriptions)
-      (let ((participant-id (e-board-subscription-participant-id subscription)))
-        (puthash participant-id
-                 (append (gethash participant-id by-participant)
-                         (list (e-board-subscription-id subscription)))
-                 by-participant)
-        (unless (member participant-id participant-ids)
-          (setq participant-ids (append participant-ids (list participant-id))))))
-    (if (null participant-ids)
-        (let ((reason (if (e-board-message-to message)
-                          'target-unavailable
-                        'no-matching-subscription)))
-          (setf (e-board-message-unrouted-reason message) reason
-                (e-board-message-routing-state message) 'unrouted)
-          (e-board--append-event board 'input-unrouted
-                                 (list :message-id (e-board-message-id message)
-                                       :reason reason)))
-      (dolist (participant-id participant-ids)
-        (let* ((delivery-id (list (e-board-id board)
-                                  (e-board-message-id message)
-                                  participant-id))
-               (pickup
-                (e-board-pickup--create
-                 :delivery-id delivery-id :board-id (e-board-id board)
-                 :message-id (e-board-message-id message)
-                 :participant-id participant-id
-                 :subscription-ids (gethash participant-id by-participant)
-                 :mode (e-board-message-mode message))))
-          (puthash delivery-id pickup (e-board-pickups board))
-          (e-board--enqueue-pickup board pickup)
-           (setq pickup-ids (append pickup-ids (list delivery-id)))))
-       (setf (e-board-message-matching-participant-ids message) participant-ids
-             (e-board-message-pickup-ids message) pickup-ids
-             (e-board-message-routing-state message) 'routed)
+    (when (eq (e-board-message-kind message) 'input)
+      ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
+      (dolist (subscription subscriptions)
+        (let ((participant-id (e-board-subscription-participant-id subscription)))
+          (puthash participant-id
+                   (append (gethash participant-id by-participant)
+                           (list (e-board-subscription-id subscription)))
+                   by-participant)
+          (unless (member participant-id participant-ids)
+            (setq participant-ids (append participant-ids (list participant-id))))))
+      (if (null participant-ids)
+          (let ((reason (if (e-board-message-to message)
+                            'target-unavailable
+                          'no-matching-subscription)))
+            (setf (e-board-message-unrouted-reason message) reason
+                  (e-board-message-routing-state message) 'unrouted)
+            (e-board--append-event board 'input-unrouted
+                                   (list :message-id (e-board-message-id message)
+                                         :reason reason)))
+        (dolist (participant-id participant-ids)
+          (let* ((delivery-id (list (e-board-id board)
+                                    (e-board-message-id message)
+                                    participant-id))
+                 (pickup
+                  (e-board-pickup--create
+                   :delivery-id delivery-id :board-id (e-board-id board)
+                   :message-id (e-board-message-id message)
+                   :participant-id participant-id
+                   :subscription-ids (gethash participant-id by-participant)
+                   :mode (e-board-message-mode message))))
+            (puthash delivery-id pickup (e-board-pickups board))
+            (e-board--enqueue-pickup board pickup)
+            (setq pickup-ids (append pickup-ids (list delivery-id)))))
+        (setf (e-board-message-matching-participant-ids message) participant-ids
+              (e-board-message-pickup-ids message) pickup-ids
+              (e-board-message-routing-state message) 'routed)
         (e-board--append-event board 'input-routed
                                (list :message-id (e-board-message-id message)
                                      :participant-ids participant-ids
-                                     :pickup-ids pickup-ids)))
+                                     :pickup-ids pickup-ids))))
     (dolist (subscription post-subscriptions)
       (e-board--schedule-post-input board subscription message))
-    (setf (e-board-routed-pickup-results board)
-          (append (e-board-routed-pickup-results board)
-                  (list (list (e-board-message-id message) pickup-ids)))
-          (e-board-publication-pickup-ids publication) pickup-ids)))
+    (when (eq (e-board-message-kind message) 'input)
+      (setf (e-board-routed-pickup-results board)
+            (append (e-board-routed-pickup-results board)
+                    (list (list (e-board-message-id message) pickup-ids)))
+            (e-board-publication-pickup-ids publication) pickup-ids))))
 
 (defun e-board--schedule-input-classification (board)
   "Schedule BOARD's frozen input classifier once after append returns."
@@ -1683,7 +1657,9 @@ Return nil when the key is new and may be appended."
       (run-at-time 0 nil (lambda () (e-board-drain-input-classifications board))))))
 
 (defun e-board--queue-input-classification (board message publication)
-  "Freeze BOARD's subscription view for MESSAGE without matching on append."
+  "Freeze BOARD's subscription view for MESSAGE without matching on append.
+The legacy name reflects its original pickup-only caller; non-input records use
+the same bounded queue solely to classify explicit continuation subscriptions."
   (let ((subscriptions
          (mapcar #'copy-e-board-subscription (e-board-subscriptions board))))
     (setf (e-board-input-classifications board)
@@ -1697,10 +1673,15 @@ Return nil when the key is new and may be appended."
 (defun e-board--fail-input-classification (board record err)
   "Stop RECORD before pickup commit after a core classifier ERR."
   (let ((message (e-board-input-classification-message record)))
-    (setf (e-board-message-routing-state message) 'routing-failed)
-    (e-board--append-event
-     board 'input-routing-failed
-     (list :message-id (e-board-message-id message) :error err))
+    (if (eq (e-board-message-kind message) 'input)
+        (progn
+          (setf (e-board-message-routing-state message) 'routing-failed)
+          (e-board--append-event
+           board 'input-routing-failed
+           (list :message-id (e-board-message-id message) :error err)))
+      (e-board--append-event
+       board 'continuation-classification-failed
+       (list :message-id (e-board-message-id message) :error err)))
     (setf (e-board-input-classifications board)
           (cdr (e-board-input-classifications board)))))
 
@@ -1717,7 +1698,7 @@ Return nil when the key is new and may be appended."
             (let ((subscription (nth index subscriptions)))
               (setf (e-board-input-classification-index record) (1+ index))
               (condition-case err
-                  (when (e-board--input-subscription-matches-p board subscription message)
+                  (when (e-board--message-subscription-matches-p board subscription message)
                     (if (eq (e-board-subscription-effect subscription) 'create-pickup)
                         (push subscription (e-board-input-classification-matches record))
                       (push subscription
@@ -1785,8 +1766,10 @@ at-most-once.  Outputs never create participant pickups."
         (e-board--remember-source board 'output source-output-key message)
         (e-board--close-open-activity
          board subject-participant-id source-turn-id message)
-        (e-board-publication--create :status 'posted :message message
-                                     :pickup-ids nil))))
+        (let ((publication (e-board-publication--create
+                            :status 'posted :message message :pickup-ids nil)))
+          (e-board--queue-input-classification board message publication)
+          publication))))
 
 (cl-defun e-board-post-activity
     (board &key id author subject-participant-id source-turn-id activity-kind
@@ -1813,8 +1796,10 @@ an activity tag by itself cannot re-enter a participant inbox."
                activity-kind)))
         (e-board--remember-source board 'activity source-activity-key message)
         (e-board--record-open-activity board message)
-        (e-board-publication--create :status 'posted :message message
-                                     :pickup-ids nil))))
+        (let ((publication (e-board-publication--create
+                            :status 'posted :message message :pickup-ids nil)))
+          (e-board--queue-input-classification board message publication)
+          publication))))
 
 (cl-defun e-board-post-fact
     (board &key id author tags attributes content reference source-fact-key)
@@ -1828,8 +1813,10 @@ an activity tag by itself cannot re-enter a participant inbox."
                board 'fact id author tags attributes nil nil content reference
                nil nil nil nil nil source-fact-key nil nil nil)))
         (e-board--remember-source board 'fact source-fact-key message)
-        (e-board-publication--create :status 'posted :message message
-                                     :pickup-ids nil))))
+        (let ((publication (e-board-publication--create
+                            :status 'posted :message message :pickup-ids nil)))
+          (e-board--queue-input-classification board message publication)
+          publication))))
 
 (defun e-board-unrouted-inputs (board)
   "Return retained BOARD input messages that have a visible unrouted reason."

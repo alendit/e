@@ -17,6 +17,9 @@ and visibly faulted trusted predicates.
 Each deferred =post-input= also has a board-owned activation record that
 advances through =prepared=, =applying=, and terminal =committed=/=failed=
 states alongside its append event.
+Explicit =post-input= continuations now classify every unaddressed board record
+(=input=, =output=, =activity=, or =fact=) through the same bounded deferred
+queue; only =input= records can create pickups or receive routing projections.
 Muting or cancelling its subscription fences every still-=prepared= activation,
 so a deferred effect released afterwards becomes a no-op rather than appending
 new input.
