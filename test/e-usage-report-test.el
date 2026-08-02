@@ -18,17 +18,18 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-tools)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-usage-report)
 
 (defun e-usage-report-test--tool-provider (registry)
   "Register sample usage test tools in REGISTRY."
-  (e-tools-register
+  (e-tools-test-register
    registry
    :name "sample_tool"
    :description "Sample counted tool."
    :parameters '(:type "object" :properties nil)
    :handler (lambda (_arguments) "ok"))
-  (e-tools-register
+  (e-tools-test-register
    registry
    :name "idle_tool"
    :description "Sample zero-use tool."

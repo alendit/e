@@ -19,6 +19,7 @@
 (require 'e-context)
 (require 'e-default-harnesses)
 (require 'e-harness)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-agents-std-context)
@@ -644,7 +645,7 @@
                    :tools
                    (list
                     (lambda (registry)
-                      (e-tools-register
+                      (e-tools-test-register
                        registry
                        :name tool-name
                        :description "Root-sensitive test tool."

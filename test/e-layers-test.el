@@ -21,6 +21,7 @@
 (require 'e-layers)
 (require 'e-shells)
 (require 'e-tools)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (defmacro e-layers-test--with-empty-layer-registry (&rest body)
   "Run BODY with an isolated layer registry."
@@ -68,7 +69,7 @@
            :instructions "first instructions"
            :context-providers (list first-provider)
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "first_tool"
                            :description "First capability tool."
@@ -79,7 +80,7 @@
            :instructions "second instructions"
            :context-providers (list second-provider)
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "second_tool"
                            :description "Second capability tool."

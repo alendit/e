@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-tools)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (ert-deftest e-harness-nested-tools-test-rejects-long-nested-tool ()
   "Long nested tools return a structured error instead of blocking."
@@ -25,7 +26,7 @@
          (started-long nil)
          result)
     (e-harness-create-session harness :id "session-1")
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "outer"
      :description "Call long nested tool."
@@ -35,7 +36,7 @@
            (e-tools-call! "long_network_tool" nil)
          (e-tools-nested-tool-error
           (cadr err)))))
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "long_network_tool"
      :description "Long network tool."
@@ -79,7 +80,7 @@
          (started-async nil)
          result)
     (e-harness-create-session harness :id "session-1")
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "outer"
      :description "Call async nested tool."
@@ -89,7 +90,7 @@
            (e-tools-call! "async_tool" nil)
          (e-tools-nested-tool-error
           (cadr err)))))
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "async_tool"
      :description "Async tool."

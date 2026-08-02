@@ -1466,7 +1466,6 @@ this string."
                         (e-mcp-tool-description tool))
    :parameters (e-mcp-tool-input-schema tool)
    :metadata (e-mcp--tool-metadata tool)
-   :handler (e-mcp--tool-handler servers tool)
    :work (e-mcp--tool-work servers tool)
    :blocking-class (e-mcp--tool-blocking-class servers tool)))
 
@@ -1923,7 +1922,6 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
    :description
    "Load full schemas for MCP tools and make them callable for the rest of the session. Pass `server' and optionally `tools' (omit for all). The result returns the full schemas; the named tools become callable on the next turn. Optionally pass `invoke' {tool, arguments} to also call one tool immediately."
    :parameters e-mcp--activate-tool-parameters
-   :handler #'e-mcp--activate-handler
    :work (e-mcp--activate-work)
    :blocking-class 'process
    :metadata '(:kind mcp-activate)))

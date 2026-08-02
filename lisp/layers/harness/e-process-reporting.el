@@ -665,10 +665,12 @@
    :description "Save one task-relative tool or action observation."
    :parameters e-process-reporting--marker-parameters
    :blocking-class 'cheap
-   :handler
-   (lambda (arguments)
-     (e-actions-call 'process-reporting :mark arguments)
-     "ok")))
+   :work
+   (e-tools-cheap-work
+    "tool.process-marker"
+    (lambda (arguments)
+      (e-actions-call 'process-reporting :mark arguments)
+      "ok"))))
 
 (defun e-process-reporting-capability-create ()
   "Create the session-owned process reporting capability."

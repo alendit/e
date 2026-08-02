@@ -22,6 +22,7 @@
 (require 'e-default-harnesses)
 (require 'e-events)
 (require 'e-harness)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layers)
@@ -1632,7 +1633,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
          (harness (e-harness-create :backend backend))
          (target (get-buffer-create "org-canvas-abort-target"))
          (input nil))
-    (e-tools-register
+    (e-tools-test-register
      tools
      :name "held-tool"
      :description "Hold."

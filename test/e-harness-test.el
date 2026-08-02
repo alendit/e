@@ -22,6 +22,7 @@
 (require 'e-capability-config)
 (require 'e-context)
 (require 'e-dev-profile)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-emacs-tools)
 (require 'e-harness)
 (require 'e-layers)
@@ -820,7 +821,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (tools (e-tools-registry-create))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-tools-register
+    (e-tools-test-register
      tools
      :name "slow-tool"
      :description "Runs longer than the retry budget."
@@ -1725,7 +1726,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (tools (e-tools-registry-create))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "held-tool"
                       :description "Hold."
                       :start
@@ -2268,7 +2269,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                            :properties (:path (:type "string"))))
          (tool-provider
           (lambda (registry)
-            (e-tools-register
+            (e-tools-test-register
              registry
              :name "read"
              :description "Read a file."
@@ -2512,7 +2513,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :id 'direct-capability
            :instructions "direct instructions"
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "direct_tool"
                            :description "Direct capability tool."
@@ -2555,7 +2556,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           (e-capability-create
            :id 'tool-capability
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "derived_tool"
                            :description "Derived tool."
@@ -2666,7 +2667,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :id 'echo-tool
            :tools
            (list (lambda (registry)
-                   (e-tools-register
+                   (e-tools-test-register
                     registry
                     :name "echo"
                     :description "Echo text."
@@ -2723,7 +2724,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :id 'echo-tool
            :tools
            (list (lambda (registry)
-                   (e-tools-register
+                   (e-tools-test-register
                     registry
                     :name "echo"
                     :description "Echo text."
@@ -2793,7 +2794,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :tools
            (list
             (lambda (registry)
-              (e-tools-register
+              (e-tools-test-register
                registry
                :name "outer"
                :description "Call inner."
@@ -2801,7 +2802,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                           (e-tools-call
                            "inner" '(:text "raw")
                            '(:metadata (:purpose "chain-test")))))
-              (e-tools-register
+              (e-tools-test-register
                registry
                :name "inner"
                :description "Return text."
@@ -2949,7 +2950,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            (list
             (lambda (registry)
               (e-emacs-tools-register-run-elisp registry)
-              (e-tools-register
+              (e-tools-test-register
                registry
                :name "tag_text"
                :description "Wrap text."
@@ -3040,7 +3041,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            (list
             (lambda (registry)
               (e-emacs-tools-register-run-elisp registry)
-              (e-tools-register
+              (e-tools-test-register
                registry
                :name "fail_tool"
                :description "Fail."
@@ -3094,7 +3095,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :id 'echo-tool
            :tools
            (list (lambda (registry)
-                   (e-tools-register
+                   (e-tools-test-register
                     registry
                     :name "echo"
                     :description "Echo text."
@@ -3675,7 +3676,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           (e-capability-create
            :id 'noop-capability
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "noop"
                            :description "Accept no arguments."
@@ -3719,7 +3720,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           (e-capability-create
            :id 'noop-capability
            :tools (list (lambda (registry)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "noop"
                            :description "Accept no arguments."
@@ -4209,7 +4210,7 @@ an empty summary\"."
           (e-capability-create
            :id 'compaction-tool-capability
            :tools (list (lambda (registry &rest _)
-                          (e-tools-register
+                          (e-tools-test-register
                            registry
                            :name "noop_tool"
                            :description "A tool that should not be offered to compaction."

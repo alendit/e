@@ -1188,8 +1188,6 @@ immediately or a larger value to hold longer."
                                               :items (:type "string"))
                                :include_raw (:type "boolean"))
                   :required ["query"]))
-   :handler (lambda (arguments)
-              (e-web-tools--search arguments))
    :work (e-web-tools-detachable-work (e-web-tools--search-work))
    :blocking-class 'process))
 
@@ -1208,8 +1206,6 @@ immediately or a larger value to hold longer."
                                :max_chars (:type "number")
                                :timeout (:type "number"))
                   :required ["url"]))
-   :handler (lambda (arguments)
-              (e-web-tools--fetch arguments))
    :work (e-web-tools-detachable-work (e-web-tools--fetch-work))
    :blocking-class 'network))
 
@@ -1230,10 +1226,6 @@ immediately or a larger value to hold longer."
                                :path (:type "string")
                                :timeout (:type "number"))
                   :required ["operation"]))
-   :handler (lambda (arguments)
-              (e-web-tools--browser
-               (e-web-tools--argument-string arguments :operation)
-               arguments))
    :work (e-web-tools-detachable-work (e-web-tools--browser-work))
    :blocking-class 'process))
 

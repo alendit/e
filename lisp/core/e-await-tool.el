@@ -142,6 +142,32 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
             (e-tools-request-create :cancel (lambda () (funcall cancel) t))))))
     (error (when on-error (funcall on-error err)) nil)))
 
+(defun e-await-tool--work ()
+  "Return the canonical invocation-subscription work for `await'."
+  (e-work-spec-create
+   :id "tool.await.invocation-subscription"
+   :description "Subscribe one board invocation to a bounded set of work."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'await-tool
+   :runner
+   (lambda (handle arguments context)
+     (let ((request
+            (e-await-tool--start
+             :arguments arguments
+             :context context
+             :on-done (lambda (value) (e-work-finish handle value))
+             :on-error (lambda (err) (e-work-fail handle err)))))
+       (when request
+         (setf (e-work-handle-cancel-function handle)
+               (lambda (_handle)
+                 (e-tools-cancel-request request)
+                 t))
+         (setf (e-work-handle-metadata handle)
+               (append (e-work-handle-metadata handle)
+                       (list :request request))))
+       :deferred))))
+
 (defun e-await-tool-register (registry)
   "Register the model-facing await tool in REGISTRY."
   (e-tools-register
@@ -156,8 +182,7 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
                          :enum ["all" "any"])
                   :timeout (:type "number"))
                  :required ["refs"])
-    :start #'e-await-tool--start
-    :invocation-only t
+   :work (e-await-tool--work)
    :blocking-class 'unknown))
 
 (provide 'e-await-tool)

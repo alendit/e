@@ -239,6 +239,13 @@ publication against the old endpoint's sequence.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.
+Model-facing tool registration is now work-only: =e-tools-register= accepts one
+canonical =e-work-spec= and has no =:handler=, =:start=, or compatibility
+dispatch branch.  Cheap implementations use an explicit cheap work spec,
+callback-backed adapters use an explicit cooperative work spec, and =await=
+uses its named =tool.await.invocation-subscription= work so board enrollment
+still precedes runner entry.  The start-boundary and direct-render structural
+guards both pass without allowlist expansion.
 Its aggregation effect now also holds only the same runtime-owned opaque
 invocation target as executable-tool completion, never a board-retained
 callback closure.

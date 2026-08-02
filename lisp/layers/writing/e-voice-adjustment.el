@@ -227,20 +227,24 @@ front; a new tell is prepended and the store is truncated to
    :description "Record a detected writing tell after correcting it, refreshing the least-recently-used cache used for the next first pass."
    :parameters e-voice-adjustment--record-parameters
    :blocking-class 'cheap
-   :handler
-   (lambda (arguments)
-     (e-voice-adjustment--record
-      (plist-get arguments :label)
-      (plist-get arguments :description))))
+   :work
+   (e-tools-cheap-work
+    "tool.voice-tells-record"
+    (lambda (arguments)
+      (e-voice-adjustment--record
+       (plist-get arguments :label)
+       (plist-get arguments :description)))))
   (e-tools-register
    registry
    :name "voice_tells_list"
    :description "List the cached least-recently-used writing tells to avoid on this draft."
    :parameters '(:type "object" :properties nil)
    :blocking-class 'cheap
-   :handler
-   (lambda (_arguments)
-     (e-voice-adjustment--list))))
+   :work
+   (e-tools-cheap-work
+    "tool.voice-tells-list"
+    (lambda (_arguments)
+      (e-voice-adjustment--list)))))
 
 (defun e-voice-adjustment--action (id parameters runner)
   "Return a cheap voice-adjustment action ID with PARAMETERS and RUNNER."

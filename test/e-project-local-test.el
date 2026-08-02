@@ -22,6 +22,7 @@
 (require 'e-project-local)
 (require 'e-shells)
 (require 'e-store)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-work)
 (require 'e-tools)
 
@@ -52,7 +53,7 @@
        :instructions (format \"Topic rooted at %%s\" directory)
        :tools
        (list (lambda (registry)
-               (e-tools-register
+               (e-tools-test-register
                 registry
                 :name \"topic_new\"
                 :description \"Create a topic.\"
@@ -91,7 +92,7 @@ SOURCE overrides the default capability source."
            :instructions (format \"Topic rooted at %%s\" directory)
            :tools
            (list (lambda (registry)
-                   (e-tools-register
+                   (e-tools-test-register
                     registry
                     :name \"topic_layer_tool\"
                     :description \"Layer tool.\"
@@ -239,7 +240,7 @@ SOURCE overrides the default layer source."
                 :name \"First\"
                 :tools
                 (list (lambda (registry)
-                        (e-tools-register
+                        (e-tools-test-register
                          registry
                          :name \"first_tool\"
                          :description \"First project tool.\"
@@ -255,7 +256,7 @@ SOURCE overrides the default layer source."
                 :name \"Second\"
                 :tools
                 (list (lambda (registry)
-                        (e-tools-register
+                        (e-tools-test-register
                          registry
                          :name \"second_tool\"
                          :description \"Second project tool.\"

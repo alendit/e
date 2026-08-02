@@ -973,7 +973,9 @@ artifacts under `e-dev-perf-run-directory'."
      registry
      :name "fake"
      :description "Fake performance tool."
-     :handler (lambda (_arguments) "ok"))
+     :work (e-tools-cheap-work
+            "tool.perf-fake"
+            (lambda (_arguments) "ok")))
     (e-dev-perf--profile-spans
      (lambda ()
        (e-tools-start

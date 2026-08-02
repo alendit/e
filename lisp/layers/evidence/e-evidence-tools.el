@@ -100,12 +100,14 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
    :parameters '(:type "object"
                  :properties (:offset (:type "integer" :minimum 0)
                               :limit (:type "integer" :minimum 0)))
-   :handler
-   (lambda (arguments)
-     (e-evidence-fetch-messages
-      store session-id
-      :offset (plist-get arguments :offset)
-      :limit (plist-get arguments :limit))))
+   :work
+   (e-tools-cheap-work
+    "tool.evidence-messages"
+    (lambda (arguments)
+      (e-evidence-fetch-messages
+       store session-id
+       :offset (plist-get arguments :offset)
+       :limit (plist-get arguments :limit)))))
   (e-tools-register
    registry
    :name e-evidence-tools--activity-tool
@@ -113,12 +115,14 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
    :parameters '(:type "object"
                  :properties (:offset (:type "integer" :minimum 0)
                               :limit (:type "integer" :minimum 0)))
-   :handler
-   (lambda (arguments)
-     (e-evidence-fetch-activity-events
-      store session-id
-      :offset (plist-get arguments :offset)
-      :limit (plist-get arguments :limit))))
+   :work
+   (e-tools-cheap-work
+    "tool.evidence-activity"
+    (lambda (arguments)
+      (e-evidence-fetch-activity-events
+       store session-id
+       :offset (plist-get arguments :offset)
+       :limit (plist-get arguments :limit)))))
   (e-tools-register
    registry
    :name e-evidence-tools--tool-result-tool
@@ -127,16 +131,18 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
                  :required ["turn_id" "tool_call_id"]
                  :properties (:turn_id (:type "string")
                               :tool_call_id (:type "string")))
-   :handler
-   (lambda (arguments)
-     (or (e-evidence-fetch-tool-result
-          store session-id
-          (plist-get arguments :turn_id)
-          (plist-get arguments :tool_call_id))
-         (list :session-id session-id
-               :turn-id (plist-get arguments :turn_id)
-               :tool-call-id (plist-get arguments :tool_call_id)
-               :result nil)))))
+   :work
+   (e-tools-cheap-work
+    "tool.evidence-result"
+    (lambda (arguments)
+      (or (e-evidence-fetch-tool-result
+           store session-id
+           (plist-get arguments :turn_id)
+           (plist-get arguments :tool_call_id))
+          (list :session-id session-id
+                :turn-id (plist-get arguments :turn_id)
+                :tool-call-id (plist-get arguments :tool_call_id)
+                :result nil))))))
 
 (defun e-evidence-retrieval-capability-create (store session-id)
   "Return a read-only evidence retrieval capability for STORE and SESSION-ID."

@@ -15,6 +15,7 @@
 (require 'json)
 (require 'e)
 (require 'e-tools)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-work)
 (require 'e-board)
 
@@ -44,7 +45,7 @@
 (ert-deftest e-tools-test-register-and-execute ()
   "Registered tools execute through structured calls."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "echo"
                       :description "Return the input text."
                       :handler (lambda (arguments)
@@ -62,7 +63,7 @@
   (let ((registry (e-tools-registry-create))
         request
         result)
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "work_echo"
      :description "Return text through work."
@@ -92,7 +93,7 @@
         (routers nil)
         (callbacks (make-hash-table :test 'equal))
         result)
-    (e-tools-register
+    (e-tools-test-register
      registry :name "board_echo" :description "Return through the board."
      :work (e-work-spec-create
             :id "board_echo" :execution 'cheap :interactive-policy 'cheap
@@ -128,7 +129,7 @@
 (ert-deftest e-tools-test-definitions-are-backend-neutral-function-tools ()
   "Registered tools expose backend-neutral function definitions."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "noop"
                       :description "Accept no arguments."
                       :parameters '(:type "object" :properties nil)
@@ -182,7 +183,7 @@
   (let ((registry (e-tools-registry-create))
         result
         request-started)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "later"
                       :description "Return later."
                       :start
@@ -207,7 +208,8 @@
             '(:id "call-1" :name "later" :arguments (:text "done"))
             :on-done (lambda (value) (setq result value)))))
       (should (e-tools-request-p request))
-      (should (eq request request-started))
+      (should (eq (plist-get (e-tools-request-metadata request) :request)
+                  request-started))
       (should (null result))
       (should (e-tools-test--wait-until (lambda () result)))
       (should (equal result
@@ -222,7 +224,7 @@
   (let ((registry (e-tools-registry-create))
         seen-context
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "context"
                       :description "Capture context."
                       :start
@@ -250,11 +252,11 @@
   "The context summary exposes scalar inspection data without live state."
   (let ((registry (e-tools-registry-create))
         summary)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "alpha"
                       :description "Return ok."
                       :handler (lambda (_arguments) "ok"))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inspect"
                       :description "Capture the safe context summary."
                       :start
@@ -291,7 +293,7 @@
         request
         returned
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "immediate"
                       :description "Finish before returning a request."
                       :start
@@ -319,7 +321,7 @@
   "Async tools can return an already-structured result with metadata."
   (let ((registry (e-tools-registry-create))
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "structured"
                       :description "Return structured."
                       :start
@@ -346,7 +348,7 @@
   "Progress callbacks do not break existing async tools."
   (let ((registry (e-tools-registry-create))
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "legacy"
                       :description "Return without progress support."
                       :start
@@ -371,7 +373,7 @@
 (ert-deftest e-tools-test-execute-batch-waits-for-async-only-tool ()
   "The explicit batch execute wrapper waits for async-only tools."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "later"
                       :description "Return later."
                       :start
@@ -394,12 +396,12 @@
                      :content "done"
                      :metadata nil)))))
 
-(ert-deftest e-tools-test-start-adapts-sync-handler-and-can-cancel-queued ()
-  "Sync handlers can start asynchronously and be cancelled before execution."
+(ert-deftest e-tools-test-cheap-work-settles-through-canonical-lifecycle ()
+  "Cheap work executes synchronously through the canonical work lifecycle."
   (let ((registry (e-tools-registry-create))
         called
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "sync"
                       :description "Return now."
                       :handler (lambda (_arguments)
@@ -411,16 +413,14 @@
             '(:id "call-1" :name "sync" :arguments nil)
             :on-done (lambda (value) (setq result value)))))
       (should (e-tools-request-p request))
-      (should (e-tools-cancel-request request))
-      (accept-process-output nil 0.05)
-      (should (null called))
-      (should (null result)))))
+      (should called)
+      (should (equal (plist-get result :content) "now")))))
 
-(ert-deftest e-tools-test-long-sync-handler-rejected-in-interactive-context ()
-  "Long blocking classes must not enter interactive execution through handlers."
+(ert-deftest e-tools-test-canonical-carrier-not-legacy-class-drives-dispatch ()
+  "A canonical work carrier, not legacy handler inference, drives dispatch."
   (let ((registry (e-tools-registry-create))
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "network-only"
                       :description "Pretend to wait on a network."
                       :blocking-class 'network
@@ -433,14 +433,14 @@
     (should (equal result
                    '(:tool-call-id "call-1"
                      :name "network-only"
-                     :status error
-                     :content "Tool network-only is network-class and must provide :start in interactive execution"
-                     :metadata (:error e-tools-blocking-handler-rejected))))))
+                     :status ok
+                     :content "late"
+                     :metadata nil)))))
 
 (ert-deftest e-tools-test-long-sync-handler-allowed-for-explicit-batch-execute ()
   "Long blocking sync handlers are only available through explicit batch execute."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "batch-network"
                       :description "Pretend batch network work."
                       :blocking-class 'network
@@ -458,7 +458,7 @@
   "Batch execution cannot synchronously wait in hot paths."
   (let ((registry (e-tools-registry-create))
         started)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "async-network"
                       :description "Pretend async network work."
                       :blocking-class 'network
@@ -477,7 +477,7 @@
   "Context-aware sync execution cannot wait for long async tools in hot paths."
   (let ((registry (e-tools-registry-create))
         started)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "async-process"
                       :description "Pretend async process work."
                       :blocking-class 'process
@@ -496,7 +496,7 @@
 (ert-deftest e-tools-test-handler-errors-return-structured-results ()
   "Tool handler errors remain structured tool results."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "boom"
                       :description "Fail."
                       :handler (lambda (_arguments)
@@ -514,7 +514,7 @@
   "Tool handler quits remain structured tool results."
   (let ((registry (e-tools-registry-create))
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "quit"
                       :description "Quit."
                       :handler (lambda (_arguments)
@@ -536,7 +536,7 @@
   (let ((registry (e-tools-registry-create))
         cancelled
         result)
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "stall"
      :description "Never calls back."
@@ -572,13 +572,13 @@
 (ert-deftest e-tools-test-available-lists-active-tools-from-context ()
   "Nested tool code can inspect compact active tool descriptors."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Return available tools."
                       :metadata '(:capability test)
                       :handler (lambda (_arguments)
                                  (e-tools-available)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Inner tool."
                       :parameters '(:type "object"
@@ -606,12 +606,12 @@
 (ert-deftest e-tools-test-call-executes-active-tool-from-context ()
   "Nested tool code can call another active tool and receive its result."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call inner."
                       :handler (lambda (_arguments)
                                  (e-tools-call "inner" '(:text "hi"))))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Return text."
                       :handler (lambda (arguments)
@@ -633,12 +633,12 @@
   "Default nested calls fail fast for long-class tools."
   (let ((registry (e-tools-registry-create))
         started)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call long inner."
                       :handler (lambda (_arguments)
                                  (e-tools-call "inner" nil)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Long async inner."
                       :blocking-class 'process
@@ -664,7 +664,7 @@
 (ert-deftest e-tools-test-call-bang-returns-content-or-signals-tool-error ()
   "The bang variant unwraps ok content and signals structured tool errors."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call inner."
                       :handler
@@ -674,7 +674,7 @@
                                          (e-tools-call! "missing" nil)
                                        (e-tools-nested-tool-error
                                         (cadr err))))))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Return text."
                       :handler (lambda (arguments)
@@ -696,7 +696,7 @@
 (ert-deftest e-tools-test-call-rejects-recursive-self-call-by-default ()
   "Nested calls reject accidental recursion into the current tool."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call itself."
                       :handler (lambda (_arguments)
@@ -715,7 +715,7 @@
 (ert-deftest e-tools-test-call-can-explicitly-allow-recursive-name ()
   "Callers can opt into a same-name nested call for deliberate cases."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call itself when requested."
                       :handler
@@ -741,14 +741,14 @@
 (ert-deftest e-tools-test-call-enforces-default-nested-budget ()
   "Nested tool calls are bounded by the context budget."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call many tools."
                       :handler (lambda (_arguments)
                                  (dotimes (_ 21)
                                    (e-tools-call! "inner" nil))
                                  "unreached"))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Return ok."
                       :handler (lambda (_arguments) "ok"))
@@ -767,12 +767,12 @@
   "Nested calls receive the original harness, session, and turn context."
   (let ((registry (e-tools-registry-create))
         inner-context)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "outer"
                       :description "Call inner."
                       :handler (lambda (_arguments)
                                  (e-tools-call! "inner" nil)))
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "inner"
                       :description "Capture context."
                       :handler (lambda (_arguments)
@@ -846,7 +846,7 @@ error path and reaches `on-done' as a structured error result rather than
 signalling out of the loop."
   (let ((registry (e-tools-registry-create))
         result)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "edit"
                       :description "Reject malformed edits."
                       :parameters '(:type "object"
@@ -881,7 +881,7 @@ signalling out of the loop."
 (ert-deftest e-tools-test-prepare-call-validates-supported-schema-keywords ()
   "Runtime validation covers compact consumer schemas before dispatch."
   (let ((registry (e-tools-registry-create)))
-    (e-tools-register
+    (e-tools-test-register
      registry
      :name "compact"
      :description "Validate compact input."
@@ -925,7 +925,7 @@ signalling out of the loop."
   "Tool handlers receive schema-typed data even from stringifying providers."
   (let ((registry (e-tools-registry-create))
         seen)
-    (e-tools-register registry
+    (e-tools-test-register registry
                       :name "edit"
                       :description "Capture edits."
                       :parameters '(:type "object"

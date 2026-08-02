@@ -792,12 +792,12 @@
                                     (lambda (drain) (push drain routers))))
              (first (e-work-prepare
                      (e-work-spec-create
-                      :id "first" :execution 'render :interactive-policy 'async
-                      :runner (lambda (_arguments _context) :never)) nil))
+                      :id "first" :execution 'cooperative :interactive-policy 'async
+                      :runner (lambda (_handle _arguments _context) :deferred)) nil))
              (second (e-work-prepare
                       (e-work-spec-create
-                       :id "second" :execution 'render :interactive-policy 'async
-                       :runner (lambda (_arguments _context) :never)) '(:delay 600))))
+                       :id "second" :execution 'cooperative :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred)) nil)))
         (e-board-enroll-work board first)
         (e-board-enroll-work board second)
         (e-board-subscribe-aggregation
@@ -836,12 +836,12 @@
                        (push (list target state reason) replies))))
              (successful (e-work-prepare
                           (e-work-spec-create
-                           :id "successful" :execution 'render :interactive-policy 'async
-                           :runner (lambda (_arguments _context) :never)) nil))
+                           :id "successful" :execution 'cooperative :interactive-policy 'async
+                           :runner (lambda (_handle _arguments _context) :deferred)) nil))
              (failed (e-work-prepare
                       (e-work-spec-create
-                       :id "failed" :execution 'render :interactive-policy 'async
-                       :runner (lambda (_arguments _context) :never)) nil)))
+                       :id "failed" :execution 'cooperative :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred)) nil)))
         (e-board-enroll-work board successful)
         (e-board-enroll-work board failed)
         (e-board-subscribe-aggregation board (list (e-work-handle-id successful))
@@ -937,8 +937,8 @@
                                       (push reason reasons))))
              (handle (e-work-prepare
                       (e-work-spec-create
-                       :id "pending" :execution 'render :interactive-policy 'async
-                       :runner (lambda (_arguments _context) :never)) '(:delay 600))))
+                       :id "pending" :execution 'cooperative :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred)) nil)))
         (e-board-enroll-work board handle)
         (e-board-subscribe-aggregation
          board (list (e-work-handle-id handle)) 'any

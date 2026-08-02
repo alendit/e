@@ -19,6 +19,7 @@
 (require 'e-loop)
 (require 'e-request)
 (require 'e-tools)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-work)
 
 (defun e-loop-test--wait-until (predicate &optional timeout)
@@ -284,7 +285,7 @@
                                          '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          (events nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -338,7 +339,7 @@
                 (funcall on-item '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          events)
-    (e-tools-register tools :name "process_marker" :description "mark"
+    (e-tools-test-register tools :name "process_marker" :description "mark"
                       :handler (lambda (_arguments) "ok"))
     (e-loop-run-turn-batch
      :session-id "session-1" :turn-id "turn-1"
@@ -425,7 +426,7 @@
          (tools (e-tools-registry-create))
          events)
     (dolist (name '("process_marker" "echo"))
-      (e-tools-register tools :name name :description name
+      (e-tools-test-register tools :name name :description name
                         :handler (lambda (_arguments) "ok")))
     (e-loop-run-turn-batch
      :session-id "session-1" :turn-id "turn-1"
@@ -473,7 +474,7 @@
          (tools (e-tools-registry-create))
          (appended nil)
          (events nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -563,7 +564,7 @@
                                          '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          (events nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -614,7 +615,7 @@
                                 (funcall on-item
                                          '(:type done :reason stop)))))))
          (tools (e-tools-registry-create)))
-    (e-tools-register
+    (e-tools-test-register
      tools
      :name "refreshing_tool"
      :description "Compact session."
@@ -851,7 +852,7 @@
                                 (funcall on-item '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          (messages nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -907,7 +908,7 @@
                                 (funcall on-item '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          (messages nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -1048,7 +1049,7 @@
          (events nil)
          (messages nil)
          (settled nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
@@ -1118,7 +1119,7 @@
          (events nil)
          (messages nil)
          (settled nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "immediate"
                       :description "Return while starting."
                       :start
@@ -1286,7 +1287,7 @@
          (events nil)
          (messages nil)
          (settled nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "quit-tool"
                       :description "Quit."
                       :handler (lambda (_arguments)
@@ -1355,7 +1356,7 @@
          (events nil)
          (messages nil)
          (settled nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "later"
                       :description "Return later."
                       :start
@@ -1442,7 +1443,7 @@
          (finishers nil)
          (messages nil)
          (settled nil))
-    (e-tools-register tools
+    (e-tools-test-register tools
                       :name "later"
                       :description "Return later."
                       :start

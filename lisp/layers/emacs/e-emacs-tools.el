@@ -713,10 +713,13 @@ live runtime objects while the submitted code runs."
    :description "Return live Emacs buffer names and metadata."
    :parameters '(:type "object"
                  :properties (:visible_only (:type "boolean")))
-   :handler (lambda (arguments)
-              (list :buffers
-                    (e-emacs-tools-buffer-metadata-list
-                     (plist-get arguments :visible_only))))))
+   :work
+   (e-tools-cheap-work
+    "tool.list-buffers"
+    (lambda (arguments)
+      (list :buffers
+            (e-emacs-tools-buffer-metadata-list
+             (plist-get arguments :visible_only)))))))
 
 (defun e-emacs-tools-register-save-buffer (registry)
   "Register a tool to save file-backed Emacs buffers in REGISTRY."
@@ -727,21 +730,23 @@ live runtime objects while the submitted code runs."
    :parameters '(:type "object"
                  :properties (:name (:type "string"))
                  :required ["name"])
-   :handler
-   (lambda (arguments)
-     (let ((name (e-emacs-tools--argument-string arguments :name)))
-       (with-current-buffer (e-emacs-tools--buffer name)
-         (unless buffer-file-name
-           (signal 'e-emacs-tools-save-invalid
-                   (list (format "Buffer %s does not visit a file" name))))
-         ;; Save non-interactively: never prompt the user to choose a coding
-         ;; system.  With the selector disabled `save-buffer' uses the buffer's
-         ;; own coding directly instead of asking.
-         (let ((select-safe-coding-system-function nil))
-           (save-buffer))
-         (list :name name
-               :file buffer-file-name
-               :saved t))))))
+   :work
+   (e-tools-cheap-work
+    "tool.save-buffer"
+    (lambda (arguments)
+      (let ((name (e-emacs-tools--argument-string arguments :name)))
+        (with-current-buffer (e-emacs-tools--buffer name)
+          (unless buffer-file-name
+            (signal 'e-emacs-tools-save-invalid
+                    (list (format "Buffer %s does not visit a file" name))))
+          ;; Save non-interactively: never prompt the user to choose a coding
+          ;; system.  With the selector disabled `save-buffer' uses the buffer's
+          ;; own coding directly instead of asking.
+          (let ((select-safe-coding-system-function nil))
+            (save-buffer))
+          (list :name name
+                :file buffer-file-name
+                :saved t)))))))
 
 (defun e-emacs-tools-register-run-elisp (registry)
   "Register a tool to evaluate explicit Emacs Lisp in REGISTRY."
@@ -778,8 +783,10 @@ live runtime objects while the submitted code runs."
                   (:type "number"
                    :description "Seconds before evaluation is aborted. Overrides the default cap; a value <= 0 disables it for this call. Aborts evals that block or wait; it cannot stop a tight compute loop, so use elisp-job for that."))
                  :required ["code"])
-   :handler
-   (lambda (arguments)
+   :work
+   (e-tools-cheap-work
+    "tool.run-elisp"
+    (lambda (arguments)
      (let* ((code (e-emacs-tools--argument-string arguments :code))
             (forms (e-emacs-tools--read-forms code))
             (blocking (e-emacs-tools--scan-blocking-call forms))
@@ -816,7 +823,7 @@ live runtime objects while the submitted code runs."
                    (e-emacs-tools--eval-forms-with-bounded-printer forms)))
          (setq result
                (e-emacs-tools--eval-forms-with-bounded-printer forms)))
-       (list :result (e-emacs-tools--bounded-result-string result))))))
+       (list :result (e-emacs-tools--bounded-result-string result)))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)
   "Register explicit elisp evaluation tools in REGISTRY."

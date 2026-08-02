@@ -56,14 +56,16 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
     (e-await-tool-register registry)
     (should (gethash "await" (e-tools-registry-tools registry)))))
 
-(ert-deftest e-await-tool-test-is-an-invocation-only-aggregation ()
+(ert-deftest e-await-tool-test-is-an-invocation-subscription-work ()
   "Await does not create synthetic executable work for its aggregation."
   (let ((registry (e-tools-registry-create)))
     (e-await-tool-register registry)
     (let ((tool (gethash "await" (e-tools-registry-tools registry))))
-      (should (plist-get tool :invocation-only))
-      (should (functionp (plist-get tool :start)))
-      (should-not (plist-get tool :work)))))
+      (should-not (plist-get tool :invocation-only))
+      (should-not (plist-get tool :start))
+      (should (e-work-spec-p (plist-get tool :work)))
+      (should (equal (e-work-spec-id (plist-get tool :work))
+                     "tool.await.invocation-subscription")))))
 
 (ert-deftest e-await-tool-test-uses-injected-board-aggregation-port ()
   "Await delegates live aggregation to the injected board subscription port."

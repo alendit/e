@@ -22,6 +22,7 @@
 (require 'e-emacs-base)
 (require 'e-events)
 (require 'e-harness)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layer)
@@ -2858,7 +2859,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
          (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness
                               :session-id "chat-tool-abort")))
-    (e-tools-register
+    (e-tools-test-register
      tools
      :name "held-tool"
      :description "Hold."

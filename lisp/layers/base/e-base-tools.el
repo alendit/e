@@ -1290,11 +1290,13 @@ result plist; otherwise return nil so the caller runs the default backend."
    :parameters '(:type "object"
                  :properties (:uri (:type "string"))
                  :required ["uri"])
-   :handler
-   (lambda (arguments)
-     (let* ((uri-text (e-base-tools--argument-string arguments :uri))
-            (uri (e-resources-parse-uri uri-text)))
-       (e-base-tools--sync-status-for-uri uri directory)))))
+   :work
+   (e-tools-cheap-work
+    "tool.resource-sync-status"
+    (lambda (arguments)
+      (let* ((uri-text (e-base-tools--argument-string arguments :uri))
+             (uri (e-resources-parse-uri uri-text)))
+        (e-base-tools--sync-status-for-uri uri directory))))))
 
 (defun e-base-tools--file-read-method (directory)
   "Return a file read resource method rooted at DIRECTORY."

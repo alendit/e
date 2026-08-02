@@ -159,32 +159,45 @@ other live runtime objects held by `e-tools-current-context'."
                            :work-handle handle)
                      (e-work-handle-metadata handle))))
 
-(defun e-tools--compatibility-start-work (name start on-event on-request-start)
-  "Return a canonical work spec around legacy callback START for NAME."
+(cl-defun e-tools-callback-work (id start &key description (owner 'tools))
+  "Return canonical callback-backed cooperative work ID using START.
+START receives ordinary tool callback keyword arguments.  Registrations use
+this constructor explicitly instead of installing another dispatch protocol
+beside `e-work'."
   (e-work-spec-create
-   :id (format "tool.%s.compatibility-start" name)
-   :description (format "Run legacy callback tool %s." name)
+   :id id
+   :description (or description (format "Run callback-backed tool %s." id))
    :execution 'cooperative
    :interactive-policy 'async
-   :owner 'tools
+   :owner owner
    :runner
    (lambda (handle arguments _context)
-     (let ((request
-            (e-tools--apply-start-with-optional-event
-             start
-             (list :arguments (plist-get arguments :tool-arguments)
-                   :on-done (lambda (value) (e-work-finish handle value))
-                   :on-error (lambda (err) (e-work-fail handle err))
-                   :on-request-start
-                   (lambda (value)
-                      (setq arguments (plist-put arguments :request value))
-                      (when on-request-start
-                        (funcall on-request-start value))))
-              on-event)))
-       (when request
-          (setq arguments (plist-put arguments :request request)))
-        (setf (e-work-handle-arguments handle) arguments)
-        (when-let ((active-request (plist-get arguments :request)))
+     (cl-labels
+         ((adopt-request
+           (request)
+           (when request
+             (setf (e-work-handle-metadata handle)
+                   (append (e-work-handle-metadata handle)
+                           (list :request request)))
+             (when (e-tools-request-p request)
+               (setf (e-tools-request-metadata request)
+                     (append (e-tools-request-metadata request)
+                             (list :work-id (e-work-handle-id handle)
+                                   :work-handle handle))))
+             (setf (e-work-handle-cancel-function handle)
+                   (lambda (_handle)
+                     (e-tools-cancel-request request)
+                     t)))))
+       (let ((request
+              (e-tools--apply-start-with-optional-event
+               start
+               (list :arguments arguments
+                     :on-done (lambda (value) (e-work-finish handle value))
+                     :on-error (lambda (err) (e-work-fail handle err))
+                     :on-request-start #'adopt-request)
+               (lambda (_type payload) (e-work-progress handle payload)))))
+         (adopt-request request)
+         (when-let ((active-request request))
           (when (e-tools-request-p active-request)
             (setf (e-tools-request-metadata active-request)
                   (append (e-tools-request-metadata active-request)
@@ -194,27 +207,22 @@ other live runtime objects held by `e-tools-current-context'."
                (lambda (_handle)
                  (e-tools-cancel-request active-request)
                  t))
-         (setf (e-work-handle-metadata handle)
-               (append (e-work-handle-metadata handle)
-                       (list :compatibility-carrier 'start
-                             :underlying-request-metadata
-                             (and (e-tools-request-p active-request)
-                                  (e-tools-request-metadata active-request))))))
-        :deferred))))
+           (setf (e-work-handle-metadata handle)
+                 (append (e-work-handle-metadata handle)
+                         (list :underlying-request-metadata
+                               (and (e-tools-request-p active-request)
+                                    (e-tools-request-metadata active-request))))))
+         :deferred)))))
 
-(defun e-tools--compatibility-handler-work (name handler tool-context)
-  "Return a canonical work spec around legacy synchronous HANDLER for NAME."
+(cl-defun e-tools-cheap-work (id runner &key description (owner 'tools))
+  "Return canonical cheap work ID that invokes RUNNER with tool arguments."
   (e-work-spec-create
-   :id (format "tool.%s.compatibility-handler" name)
-   :description (format "Run legacy handler tool %s." name)
-   :execution 'render
-   :interactive-policy 'async
-   :owner 'tools
-   :runner (lambda (arguments _context)
-             ;; Render work executes after `e-tools-start' returns, but legacy
-             ;; handlers may call `e-tools-call' through this dynamic context.
-             (let ((e-tools--current-context tool-context))
-               (funcall handler (plist-get arguments :tool-arguments))))))
+   :id id
+   :description (or description (format "Run cheap tool %s." id))
+   :execution 'cheap
+   :interactive-policy 'cheap
+   :owner owner
+   :runner (lambda (arguments _context) (funcall runner arguments))))
 
 (defconst e-tools-cheap-blocking-classes '(nil cheap)
   "Tool blocking classes allowed to run through synchronous handlers.")
@@ -239,18 +247,14 @@ other live runtime objects held by `e-tools-current-context'."
   (memq class e-tools-cheap-blocking-classes))
 
 (cl-defun e-tools-register
-    (registry &key name description parameters handler start work metadata blocking-class
-              invocation-only)
+    (registry &key name description parameters work metadata blocking-class)
   "Register tool NAME in REGISTRY.
-DESCRIPTION, PARAMETERS, HANDLER, START, WORK, and METADATA describe the tool.
+DESCRIPTION, PARAMETERS, WORK, and METADATA describe the tool.
 BLOCKING-CLASS may be `cheap', `network', `process', `helper', `filesystem',
 `render', or `unknown'.
-HANDLER is a synchronous implementation.  START is a callback-driven async
-implementation.  WORK is an `e-work-spec' that supplies the canonical work
-lifecycle for migrated tools."
-  (unless (or (functionp handler) (functionp start) (e-work-spec-p work))
-    (signal 'wrong-type-argument
-            (list '(or functionp e-work-spec-p) (or handler start work))))
+WORK is the canonical `e-work-spec' lifecycle for the tool."
+  (unless (e-work-spec-p work)
+    (signal 'wrong-type-argument (list 'e-work-spec-p work)))
   (when blocking-class
     (setq metadata (plist-put metadata :blocking-class blocking-class)))
   (unless (gethash name (e-tools-registry-tools registry))
@@ -261,10 +265,7 @@ lifecycle for migrated tools."
                  :description description
                  :parameters parameters
                  :metadata metadata
-                  :handler handler
-                  :start start
-                  :work work
-                  :invocation-only invocation-only)
+                  :work work)
            (e-tools-registry-tools registry)))
 
 (defun e-tools--empty-json-object ()
@@ -830,14 +831,6 @@ resource metadata."
       (plist-get context :interactive-p)
       (e-request-hot-path-active-p)))
 
-(defun e-tools--reject-long-sync-handler-p (tool context)
-  "Return non-nil when TOOL must not use a sync handler under CONTEXT."
-  (and (not (or (functionp (plist-get tool :start))
-                (e-work-spec-p (plist-get tool :work))))
-       (functionp (plist-get tool :handler))
-       (e-tools--interactive-context-p context)
-       (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
-
 (defun e-tools--nested-long-tool-result (call tool)
   "Return a structured rejection result for long nested CALL to TOOL."
   (let ((class (or (e-tools--blocking-class tool) 'unknown))
@@ -866,8 +859,7 @@ resource metadata."
 
 (defun e-tools--reject-blocking-execute-p (tool)
   "Return non-nil when TOOL must not use sync batch execution here."
-  (and (or (functionp (plist-get tool :start))
-           (e-work-spec-p (plist-get tool :work)))
+  (and (e-work-spec-p (plist-get tool :work))
        (e-request-hot-path-active-p)
        (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
 
@@ -939,9 +931,7 @@ resource metadata."
                                          :tools registry
                                          :nested-tool-state nested-state)
                                    context))
-             (work (plist-get tool :work))
-             (start (plist-get tool :start))
-             (handler (plist-get tool :handler)))
+             (work (plist-get tool :work)))
         (condition-case err
             (e-request-profile-span
              'tool.nested-cheap
@@ -971,11 +961,6 @@ resource metadata."
                       (t (e-tools--nested-async-tool-result call tool)))))
                   ((e-work-spec-p work)
                    (e-tools--nested-async-tool-result call tool))
-                  ((functionp start)
-                   (e-tools--nested-async-tool-result call tool))
-                  ((functionp handler)
-                   (e-tools--ok-result-from-content
-                    call name (funcall handler (plist-get call :arguments))))
                   (t
                    (e-tools--nested-async-tool-result call tool))))))
           (quit (e-tools--error-result-from-condition call err))
@@ -1053,9 +1038,6 @@ handle after allocation and before its runner may execute."
             (funcall on-done result))
           nil)
       (let ((work (plist-get tool :work))
-            (start (plist-get tool :start))
-            (handler (plist-get tool :handler))
-            (invocation-only (plist-get tool :invocation-only))
             settled
             active-request
             deadline-timer)
@@ -1174,20 +1156,7 @@ handle after allocation and before its runner may execute."
                    ;; a tool-error result rather than aborting the whole turn.
                    (setq call (e-tools--prepare-call-arguments call tool))
                    (arm-deadline)
-                   (when (e-tools--reject-long-sync-handler-p tool tool-context)
-                     (signal 'e-tools-blocking-handler-rejected
-                             (list (format "Tool %s is %s-class and must provide :start in interactive execution"
-                                           name (e-tools--blocking-class tool)))))
-                    (cond
-                     ((and invocation-only (functionp start))
-                      (e-tools--apply-start-with-optional-event
-                       start
-                       (list :arguments (plist-get call :arguments)
-                             :context tool-context
-                             :on-done #'finish-ok
-                             :on-error #'finish-error
-                             :on-request-start #'publish-request)
-                       on-event))
+                   (cond
                      ((e-work-spec-p work)
                       (let* ((handle
                               (e-work-prepare
@@ -1213,50 +1182,10 @@ handle after allocation and before its runner may execute."
                         (setq request (e-tools--work-request handle))
                         (publish-request request)
                         request))
-                     ((functionp start)
-                      (let (reported-request request)
-                        (let* ((handle
-                                (e-work-prepare
-                                 (e-tools--compatibility-start-work
-                                  name start on-event
-                                  (lambda (value)
-                                    (setq reported-request value)
-                                    (publish-request value)))
-                                 (list :tool-arguments (plist-get call :arguments))
-                                 :context tool-context
-                                 :on-done (unless (plist-get tool-context :board-enroll-work)
-                                            #'finish-ok)
-                                 :on-error (unless (plist-get tool-context :board-enroll-work)
-                                             #'finish-error))))
-                          (prepare-work handle)
-                          (e-work-start-prepared
-                           handle
-                           :arguments (list :tool-arguments (plist-get call :arguments))
-                           :context tool-context)
-                          (setq request (plist-get (e-work-handle-arguments handle) :request))
-                          (when (and request (not (eq request reported-request)))
-                            (publish-request request))
-                          request)))
                      (t
-                      (let* ((handle
-                              (e-work-prepare
-                               (e-tools--compatibility-handler-work name handler tool-context)
-                               (list :delay 0 :tool-arguments (plist-get call :arguments))
-                               :context tool-context
-                               :on-done (unless (plist-get tool-context :board-enroll-work)
-                                          #'finish-ok)
-                               :on-error (unless (plist-get tool-context :board-enroll-work)
-                                           #'finish-error)))
-                             request)
-                        (prepare-work handle)
-                        (e-work-start-prepared
-                         handle
-                         :arguments (list :delay 0
-                                          :tool-arguments (plist-get call :arguments))
-                         :context tool-context)
-                        (setq request (e-tools--work-request handle))
-                        (publish-request request)
-                        request))))))
+                      (signal 'e-work-invalid-spec
+                              (list (format "Tool %s has no canonical work spec"
+                                            name))))))))
             (quit
              (finish-error err)
              nil)

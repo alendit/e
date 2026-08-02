@@ -2167,9 +2167,9 @@
       (e-board-runtime-attach board harness "session" :participant-id "participant")
       (let* ((handle (e-work-prepare
                       (e-work-spec-create
-                       :id "stream" :execution 'render :interactive-policy 'async
-                       :runner (lambda (_arguments _context) :never))
-                      '(:delay 600)
+                       :id "stream" :execution 'cooperative :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred))
+                      nil
                       :context '(:session-id "session" :turn-id "turn")))
              (enroll (e-harness-work-enrollment-function harness)))
         (unwind-protect

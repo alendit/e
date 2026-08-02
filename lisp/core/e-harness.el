@@ -554,31 +554,33 @@ available through e:// resources instead of repeating it in every request.")
   "Register OPERATION in REGISTRY as a model-facing tool backed by RESOURCES."
   (let ((dispatch (e-operation-dispatch operation)))
     (when (functionp dispatch)
-      (let ((async-p (e-harness--resource-operation-async-p operation)))
-        (apply
-         #'e-tools-register
+      (let* ((async-p (e-harness--resource-operation-async-p operation))
+             (tool-name (e-operation-tool-name operation))
+             (cheap-runner
+              (lambda (arguments)
+                (funcall dispatch
+                         (lambda (uri &rest operation-arguments)
+                           (e-harness--resource-operation-call
+                            resources operation uri operation-arguments))
+                         arguments))))
+        (e-tools-register
          registry
-         :name (e-operation-tool-name operation)
+         :name tool-name
          :description (e-harness--resource-operation-description resources operation)
          :parameters (if async-p
                          (e-work-detachable-merge-parameters
                           (e-operation-parameters operation))
                        (e-operation-parameters operation))
-         :handler
-         (lambda (arguments)
-           (funcall dispatch
-                    (lambda (uri &rest operation-arguments)
-                      (e-harness--resource-operation-call
-                       resources operation uri operation-arguments))
-                    arguments))
-         (append
-          (when async-p
-            (list
-             :work (e-work-detachable-spec
+         :work (if async-p
+                   (e-work-detachable-spec
                     (e-harness--resource-operation-work resources operation)
-                    :id (format "resource.%s" (e-operation-tool-name operation))
+                    :id (format "resource.%s" tool-name)
                     :owner 'resources)
-             :blocking-class 'process))))))))
+                 (e-tools-cheap-work
+                  (format "resource.%s" tool-name)
+                  cheap-runner
+                  :owner 'resources))
+         :blocking-class (if async-p 'process 'cheap))))))
 
 (defun e-harness--register-resource-operation-tools (registry resources)
   "Register active resource operation tools in REGISTRY backed by RESOURCES."
