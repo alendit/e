@@ -19,6 +19,7 @@
           (e-board-registry--id-sequence 0)
           (e-board-runtime--attachments (make-hash-table :test 'equal))
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+          (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
@@ -242,6 +243,37 @@
           (should (eq (e-board-pickup-state
                        (e-board-pickup source-board delivery-id))
                       'ready)))))))
+
+(ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
+  "Two harness objects cannot attach the same stable store/session identity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((first-board (e-board-registry-create :id "first-board"))
+           (second-board (e-board-registry-create :id "second-board"))
+           (first-harness (e-harness-create))
+           (second-harness (e-harness-create))
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-create-session first-harness :id "session")
+      (e-harness-create-session second-harness :id "session")
+      (e-harness-instance-register
+       :id :first :kind 'chat :harness-id :first-harness
+       :session-store-id "shared-store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-instance-register
+       :id :second :kind 'chat :harness-id :second-harness
+       :session-store-id "shared-store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-registry-register :first-harness first-harness)
+      (e-harness-registry-register :second-harness second-harness)
+      (e-board-runtime-attach-instance
+       first-board :first "session" :participant-id "first")
+      (should-error
+       (e-board-runtime-attach-instance
+        second-board :second "session" :participant-id "second")
+       :type 'e-board-runtime-session-busy)
+      (should (= (hash-table-count
+                  (e-board-registry-board-participants second-board))
+                 0)))))
 
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."

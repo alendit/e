@@ -38,7 +38,10 @@
   "Live runtime attachments keyed by board and participant identity.")
 
 (defvar e-board-runtime--session-attachments (make-hash-table :test 'equal)
-  "Live attachments keyed by a concrete harness and session identity.")
+  "Live attachments keyed by stable session attachment identity.")
+
+(defvar e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
+  "Live attachments keyed by concrete harness object and session identity.")
 
 (defvar e-board-runtime--invocations (make-hash-table :test 'equal)
   "Exact invocation effect targets owned by their original attachment.")
@@ -127,8 +130,22 @@ the board transcript.  Terminal events use their dedicated publisher below.")
          (e-board-registry-participant-id participant)))
 
 (defun e-board-runtime--session-key (harness session-id)
-  "Return the runtime attachment key for HARNESS SESSION-ID."
+  "Return the concrete endpoint lookup key for HARNESS SESSION-ID."
   (list harness session-id))
+
+(defun e-board-runtime--resolved-session-attachment-key
+    (harness session-id session-store-id)
+  "Return stable reverse key for one resolved session endpoint."
+  (if session-store-id
+      (list 'session-store session-store-id session-id)
+    (e-board-runtime--session-key harness session-id)))
+
+(defun e-board-runtime--attachment-session-key (attachment)
+  "Return ATTACHMENT's stable reverse session identity."
+  (e-board-runtime--resolved-session-attachment-key
+   (e-board-runtime-attachment-harness attachment)
+   (e-board-runtime-attachment-session-id attachment)
+   (e-board-runtime-attachment-session-store-id attachment)))
 
 (defun e-board-runtime--invocation-target (attachment turn-id tool-call-id)
   "Return ATTACHMENT's immutable target for TURN-ID and TOOL-CALL-ID."
@@ -159,10 +176,13 @@ the board transcript.  Terminal events use their dedicated publisher below.")
          (eq (gethash (e-board-runtime--attachment-key board participant)
                       e-board-runtime--attachments)
              attachment)
+         (eq (gethash (e-board-runtime--attachment-session-key attachment)
+                      e-board-runtime--session-attachments)
+             attachment)
          (eq (gethash (e-board-runtime--session-key
                        (e-board-runtime-attachment-harness attachment)
                        (e-board-runtime-attachment-session-id attachment))
-                       e-board-runtime--session-attachments)
+                      e-board-runtime--endpoint-attachments)
              attachment))))
 
 (defun e-board-runtime--register-invocation
@@ -384,7 +404,7 @@ CALLBACK is the private loop result seam for executable tool work; turn work
 has no callback and is observed only."
   (when-let* ((session-id (plist-get (e-work-handle-context handle) :session-id))
               (attachment (gethash (e-board-runtime--session-key harness session-id)
-                                   e-board-runtime--session-attachments)))
+                                   e-board-runtime--endpoint-attachments)))
     (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
@@ -411,7 +431,7 @@ has no callback and is observed only."
   "Subscribe attached HARNESS await work through its source board."
   (when-let* ((session-id (plist-get invocation-context :session-id))
               (attachment (gethash (e-board-runtime--session-key harness session-id)
-                                   e-board-runtime--session-attachments)))
+                                   e-board-runtime--endpoint-attachments)))
     (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (call (plist-get invocation-context :tool-call))
@@ -699,9 +719,12 @@ When omitted, the conservative idle-only harness delivery port is used."
   (unless (or (null delivery-function) (functionp delivery-function))
     (signal 'wrong-type-argument (list 'functionp delivery-function)))
   (e-board-runtime--require-live-session harness session-id)
-  (when (gethash (e-board-runtime--session-key harness session-id)
-                 e-board-runtime--session-attachments)
-    (signal 'e-board-runtime-session-busy (list harness session-id)))
+  (let ((session-key (e-board-runtime--resolved-session-attachment-key
+                      harness session-id session-store-id))
+        (endpoint-key (e-board-runtime--session-key harness session-id)))
+    (when (or (gethash session-key e-board-runtime--session-attachments)
+              (gethash endpoint-key e-board-runtime--endpoint-attachments))
+      (signal 'e-board-runtime-session-busy (list session-key))))
   (let* ((board (e-board-runtime--active-board board-or-id))
          (participant (e-board-registry-add-participant
                        board :id participant-id :author author :principal principal))
@@ -799,15 +822,18 @@ This operation never invokes an instance factory or loads dormant history."
          (harness (e-board-runtime-attachment-harness attachment))
          (session-id (e-board-runtime-attachment-session-id attachment))
          (key (e-board-runtime--attachment-key board participant))
-         (session-key (e-board-runtime--session-key harness session-id)))
-    (when (gethash session-key e-board-runtime--session-attachments)
-      (signal 'e-board-runtime-session-busy (list session-key)))
+         (session-key (e-board-runtime--attachment-session-key attachment))
+         (endpoint-key (e-board-runtime--session-key harness session-id)))
+    (when (or (gethash session-key e-board-runtime--session-attachments)
+              (gethash endpoint-key e-board-runtime--endpoint-attachments))
+      (signal 'e-board-runtime-session-busy (list session-key endpoint-key)))
     (setf (e-board-runtime-attachment-subscription attachment)
           (e-harness-subscribe
            harness (lambda (event) (e-board-runtime--handle-harness-event attachment event))
            :session-id session-id))
     (puthash key attachment e-board-runtime--attachments)
     (puthash session-key attachment e-board-runtime--session-attachments)
+    (puthash endpoint-key attachment e-board-runtime--endpoint-attachments)
     (e-board-runtime--configure-attachment attachment)
     attachment))
 
@@ -828,8 +854,10 @@ the new endpoint."
          (old (gethash key e-board-runtime--attachments)))
     (unless old
       (signal 'e-board-runtime-error (list "Participant is not attached" participant-or-id)))
-    (when (gethash (e-board-runtime--session-key harness session-id)
-                   e-board-runtime--session-attachments)
+    (when (or (gethash (e-board-runtime--session-key harness session-id)
+                       e-board-runtime--session-attachments)
+              (gethash (e-board-runtime--session-key harness session-id)
+                       e-board-runtime--endpoint-attachments))
       (signal 'e-board-runtime-session-busy (list harness session-id)))
     (let* ((source-board (e-board-registry-board-source-board board))
            (delivery-id (car (e-board--pickup-queue
@@ -845,10 +873,12 @@ the new endpoint."
         (e-board-pickup-mark-uncertain source-board delivery-id 'endpoint-rebound)))
     (e-harness-unsubscribe (e-board-runtime-attachment-harness old)
                            (e-board-runtime-attachment-subscription old))
+    (remhash (e-board-runtime--attachment-session-key old)
+             e-board-runtime--session-attachments)
     (remhash (e-board-runtime--session-key
               (e-board-runtime-attachment-harness old)
               (e-board-runtime-attachment-session-id old))
-             e-board-runtime--session-attachments)
+             e-board-runtime--endpoint-attachments)
     (cl-incf (e-board-runtime-attachment-generation old))
     (let ((attachment
            (e-board-runtime--make-attachment
