@@ -56,6 +56,10 @@
   '(active muted completed faulted cancelled expired)
   "States available to ordinary orchestration subscriptions.")
 
+(defconst e-board--observer-states
+  '(active muted faulted cancelled expired)
+  "States available to effect-free board observers.")
+
 (cl-defstruct (e-board-observer
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
@@ -736,9 +740,9 @@ messages.  START-SEQ is an explicit retained-history cursor; live callers use
 the returned cursor's advancing `next-seq' for later bounded pages."
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
-  (unless (memq state '(active muted cancelled expired faulted))
+  (unless (memq state e-board--observer-states)
     (signal 'wrong-type-argument
-            (list '(member active muted cancelled expired faulted) state)))
+            (list e-board--observer-states state)))
   (unless (and (integerp start-seq) (>= start-seq 0))
     (signal 'wrong-type-argument (list 'natnump start-seq)))
   (let ((id (or id (e-board--next-id board 'observer))))
@@ -772,12 +776,72 @@ the returned cursor's advancing `next-seq' for later bounded pages."
              (condition-case err
                  (funcall predicate message)
                (error
-                (setf (e-board-observer-state observer) 'faulted)
-                (e-board--append-event
-                 board 'observer-faulted
-                 (list :observer-id (e-board-observer-id observer) :error err))
+                (e-board--fault-observer board observer err)
                 nil))
            t))))
+
+(defun e-board--observer-transition-allowed-p (from to)
+  "Return non-nil when observer state FROM may transition to TO."
+  (pcase from
+    ('active (memq to '(muted faulted cancelled expired)))
+    ('muted (memq to '(active cancelled expired)))
+    (_ nil)))
+
+(defun e-board--transition-observer (board observer state)
+  "Commit OBSERVER's effect-free lifecycle transition to STATE on BOARD."
+  (let ((from (e-board-observer-state observer)))
+    (unless (memq state e-board--observer-states)
+      (signal 'wrong-type-argument (list e-board--observer-states state)))
+    (unless (e-board--observer-transition-allowed-p from state)
+      (signal 'e-board-error
+              (list "Illegal observer transition" from state
+                    (e-board-observer-id observer))))
+    (setf (e-board-observer-state observer) state)
+    (e-board--append-event board 'observer-transition
+                           (list :observer-id (e-board-observer-id observer)
+                                 :from from :state state))
+    observer))
+
+(defun e-board--fault-observer (board observer err)
+  "Record trusted observer predicate ERR without reviving a replaced cursor."
+  (when (eq (e-board-observer-state observer) 'active)
+    (e-board--transition-observer board observer 'faulted)
+    (e-board--append-event
+     board 'observer-faulted
+     (list :observer-id (e-board-observer-id observer) :error err))))
+
+(defun e-board-set-observer-state (board observer-id state)
+  "Transition effect-free OBSERVER-ID to STATE on BOARD."
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (e-board--transition-observer board observer state)))
+
+(cl-defun e-board-replace-observer
+    (board observer-id selector &key id (state 'active) start-seq)
+  "Cancel OBSERVER-ID and install a fresh client-local observer cursor.
+Omitted START-SEQ keeps replacement future-only at the old cursor; callers
+request retained backfill explicitly with a lower START-SEQ."
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (unless (listp selector)
+      (signal 'wrong-type-argument (list 'listp selector)))
+    (unless (memq state '(active muted))
+      (signal 'wrong-type-argument (list '(member active muted) state)))
+    (let ((replacement-id (or id (e-board--next-id board 'observer))))
+      (when (e-board-observer board replacement-id)
+        (signal 'e-board-id-conflict (list replacement-id)))
+      (unless (memq (e-board-observer-state observer)
+                    '(faulted cancelled expired))
+        (e-board--transition-observer board observer 'cancelled))
+      (let ((replacement
+             (e-board-observer-subscribe
+              board (e-board-observer-client-id observer) selector
+              :id replacement-id :state state
+              :start-seq (or start-seq (e-board-observer-next-seq observer)))))
+        (e-board--append-event board 'observer-replaced
+                               (list :observer-id observer-id
+                                     :replacement-id replacement-id))
+        replacement))))
 
 (cl-defun e-board-observer-read-page (board observer-id &key (limit 32))
   "Advance OBSERVER-ID through at most LIMIT records and return matches.

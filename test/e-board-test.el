@@ -262,6 +262,33 @@
                        (e-board-pickup board '("board" "input" "one")))
                       'pending)))))))
 
+(ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
+  "Observer muting, terminal states, and replacement never route input."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (let ((observer (e-board-observer-subscribe
+                       board "client" '(:tags (main)) :id "old")))
+        (e-board-post-fact board :id "first" :tags '(main)
+                           :source-fact-key '(producer 1 1))
+        (should (equal (mapcar #'e-board-message-id
+                               (e-board-observer-read-page board "old"))
+                       '("first")))
+        (e-board-set-observer-state board "old" 'muted)
+        (should-not (e-board-observer-read-page board "old"))
+        (let ((replacement (e-board-replace-observer
+                            board "old" '(:tags (other)) :id "new")))
+          (should (eq (e-board-observer-state observer) 'cancelled))
+          (should (= (e-board-observer-next-seq replacement)
+                     (e-board-observer-next-seq observer)))
+          (e-board-post-fact board :id "second" :tags '(other)
+                             :source-fact-key '(producer 1 2))
+          (should (equal (mapcar #'e-board-message-id
+                                 (e-board-observer-read-page board "new"))
+                         '("second")))
+          (e-board-set-observer-state board "new" 'expired)
+          (should-error (e-board-set-observer-state board "new" 'active)
+                        :type 'e-board-error))))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
