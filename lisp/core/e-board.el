@@ -63,7 +63,7 @@
 (cl-defstruct (e-board-observer
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
-  id board-id client-id selector state next-seq)
+  id board-id client-id selector state next-seq history-before-seq history-floor)
 
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
@@ -806,7 +806,8 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
             t))))
 
 (cl-defun e-board-observer-subscribe
-    (board client-id selector &key id (state 'active) (start-seq 0))
+    (board client-id selector &key id (state 'active) (start-seq 0)
+           history-before-seq (history-floor 0))
   "Create an effect-free client observer cursor over BOARD's message sequence.
 Observers deliberately share selector fields with participant subscriptions,
 but they cannot activate effects, create pickups, alter routedness, or consume
@@ -819,18 +820,47 @@ the returned cursor's advancing `next-seq' for later bounded pages."
             (list e-board--observer-states state)))
   (unless (and (integerp start-seq) (>= start-seq 0))
     (signal 'wrong-type-argument (list 'natnump start-seq)))
+  (unless (and (integerp history-floor) (>= history-floor 0))
+    (signal 'wrong-type-argument (list 'natnump history-floor)))
+  (when history-before-seq
+    (unless (and (integerp history-before-seq)
+                 (>= history-before-seq history-floor))
+      (signal 'wrong-type-argument (list 'natnump history-before-seq))))
   (let ((id (or id (e-board--next-id board 'observer))))
     (when (e-board-observer board id)
       (signal 'e-board-id-conflict (list id)))
     (let ((observer (e-board-observer--create
                      :id id :board-id (e-board-id board) :client-id client-id
                      :selector (copy-tree selector) :state state
-                     :next-seq start-seq)))
+                     :next-seq start-seq
+                     :history-before-seq history-before-seq
+                     :history-floor history-floor)))
       (puthash id observer (e-board-observers board))
       (e-board--append-event board 'observer-added
                              (list :observer-id id :client-id client-id
                                    :start-seq start-seq))
       observer)))
+
+(cl-defun e-board-observer-read-history-page (board observer-id &key (limit 32))
+  "Read one bounded ascending history page without advancing the live cursor."
+  (unless (and (integerp limit) (> limit 0))
+    (signal 'wrong-type-argument (list 'plusp limit)))
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id))))
+        matches)
+    (when (and (eq (e-board-observer-state observer) 'active)
+               (e-board-observer-history-before-seq observer))
+      (let ((before (e-board-observer-history-before-seq observer))
+            (floor (e-board-observer-history-floor observer)))
+        (dolist (message (reverse (e-board-messages board)))
+          (when (and (< (length matches) limit)
+                     (< (e-board-message-seq message) before)
+                     (>= (e-board-message-seq message) floor))
+            (setf (e-board-observer-history-before-seq observer)
+                  (e-board-message-seq message))
+            (when (e-board--observer-matches-p board observer message)
+              (push message matches))))))
+    matches))
 
 (defun e-board--observer-matches-p (board observer message)
   "Return non-nil when OBSERVER can observe MESSAGE, faulting only itself."

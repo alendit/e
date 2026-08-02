@@ -59,7 +59,9 @@ The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/
 expired lifecycle and replacement cursor identity are now explicit; reverse
-history lanes and queued client handoff remain future slices.
+history has a first independent bounded cursor that returns pages in ascending
+order without moving live =next-seq=; retention pins and queued client handoff
+remain future slices.
 Slices 0--4 are private implementation/verification order only.  No board mode,
 feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
 Slice 5 cutover replaces every caller and deletes the superseded interfaces in

@@ -328,6 +328,27 @@
           (should-error (e-board-set-observer-state board "new" 'active)
                         :type 'e-board-error))))))
 
+(ert-deftest e-board-test-observer-history-does-not_advance_live_cursor ()
+  "Reverse history and forward live observation retain independent cursors."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "one" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (e-board-post-fact board :id "two" :tags '(main)
+                         :source-fact-key '(producer 1 2))
+      (e-board-post-fact board :id "three" :tags '(main)
+                         :source-fact-key '(producer 1 3))
+      (let ((observer (e-board-observer-subscribe
+                       board "client" '(:tags (main)) :id "observer"
+                       :start-seq 3 :history-before-seq 4)))
+        (should (equal (mapcar #'e-board-message-id
+                               (e-board-observer-read-history-page board "observer" :limit 2))
+                       '("two" "three")))
+        (should (= (e-board-observer-next-seq observer) 3))
+        (should (equal (mapcar #'e-board-message-id
+                               (e-board-observer-read-page board "observer"))
+                       nil))))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
