@@ -462,6 +462,47 @@
         (should (eq (e-board-pickup-state (e-board-pickup board first-id)) 'consumed))
         (should (eq (e-board-pickup-state (e-board-pickup board second-id)) 'ready))))))
 
+(ert-deftest e-board-test-physical-attempt-binding-is-replaceable-only-after-proof ()
+  "Endpoint binding is outside the logical envelope and obeys commit proof."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((delivery-id
+              (car (e-board-publication-pickup-ids
+                    (e-board-post-input board :id "input" :to "one"
+                                        :content '(immutable bytes)))))
+             (pickup (e-board-pickup board delivery-id))
+             (token (vector 'endpoint "old")))
+        (e-board-pickup-start-delivery board delivery-id token '(3 7))
+        (let ((first (e-board-pickup-attempt pickup)))
+          (should (= (e-board-delivery-attempt-number first) 1))
+          (should (equal (e-board-delivery-attempt-endpoint-token first)
+                         token))
+          (should (equal (e-board-delivery-attempt-composite-generation first)
+                         '(3 7)))
+          (aset token 1 "mutated")
+          (should (equal (e-board-delivery-attempt-endpoint-token first)
+                         [endpoint "old"]))
+          (should (equal (e-board-pickup-content pickup) '(immutable bytes)))
+          (should-error
+           (e-board-pickup-start-delivery board delivery-id [endpoint "new"] '(4 8))
+           :type 'e-board-error)
+          (e-board-pickup-return-ready board delivery-id 'not-submitted)
+          (should (eq (e-board-delivery-attempt-state first)
+                      'proven-uncommitted)))
+        (e-board-pickup-start-delivery board delivery-id [endpoint "new"] '(4 8))
+        (let ((second (e-board-pickup-attempt pickup)))
+          (should (= (e-board-delivery-attempt-number second) 2))
+          (should (equal (e-board-delivery-attempt-endpoint-token second)
+                         [endpoint "new"]))
+          (should (equal (e-board-delivery-attempt-composite-generation second)
+                         '(4 8)))
+          (e-board-pickup-mark-uncertain board delivery-id 'lost-ack)
+          (should (eq (e-board-delivery-attempt-state second) 'uncertain))
+          (should-error
+           (e-board-pickup-start-delivery board delivery-id [endpoint "third"] '(5 9))
+           :type 'e-board-error))))))
+
 (ert-deftest e-board-test-cancelling-pickup-releases-only-its-fifo-position ()
   "Pending cancellation does not overtake work; head cancellation promotes once."
   (e-board-test--with-empty-registry

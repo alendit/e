@@ -95,11 +95,17 @@
   '(all any all-terminal first-terminal on-success on-failure on-terminal)
   "Accepted private aggregation readiness modes.")
 
+(cl-defstruct (e-board-delivery-attempt
+               (:constructor e-board-delivery-attempt--create)
+               (:conc-name e-board-delivery-attempt-))
+  number endpoint-token composite-generation state receipt)
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
   delivery-id board-id participant-id message-id subscription-ids
-  event-seq-range mode requester-actor cause-metadata content reference state)
+  event-seq-range mode requester-actor cause-metadata content reference state
+  attempt)
 
 (cl-defstruct (e-board-publication
                (:constructor e-board-publication--create)
@@ -353,8 +359,21 @@ at which point that page requires a fresh snapshot."
       (setf (e-board-pickup-state pickup) (if queue 'pending 'ready)))
     (e-board-pickup-state pickup)))
 
-(defun e-board-pickup-start-delivery (board delivery-id)
-  "Fence ready DELIVERY-ID as the current participant delivery attempt."
+(defun e-board--set-pickup-attempt-state (pickup state &optional receipt)
+  "Move PICKUP's physical attempt to STATE and optionally retain RECEIPT."
+  (when-let ((attempt (e-board-pickup-attempt pickup)))
+    (setf (e-board-delivery-attempt-state attempt) state)
+    (when receipt
+      (setf (e-board-delivery-attempt-receipt attempt)
+            (e-board--copy-envelope-value receipt))))
+  pickup)
+
+(defun e-board-pickup-start-delivery
+    (board delivery-id &optional endpoint-token composite-generation)
+  "Bind and fence ready DELIVERY-ID as one physical delivery attempt.
+ENDPOINT-TOKEN is opaque to the board.  COMPOSITE-GENERATION identifies the
+selected logical-instance and concrete-harness generations.  A later attempt
+may replace this binding only after the previous call was proven uncommitted."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
     (unless (and (eq (e-board-pickup-state pickup) 'ready)
@@ -362,9 +381,33 @@ at which point that page requires a fresh snapshot."
                               board (e-board-pickup-participant-id pickup)))
                         delivery-id))
       (signal 'e-board-error (list "Pickup is not ready head" delivery-id)))
+    (let* ((previous (e-board-pickup-attempt pickup))
+           (number (if previous
+                       (1+ (e-board-delivery-attempt-number previous))
+                     1)))
+      (when (and previous
+                 (not (eq (e-board-delivery-attempt-state previous)
+                          'proven-uncommitted)))
+        (signal 'e-board-error
+                (list "Pickup attempt is not replaceable" delivery-id)))
+      (setf (e-board-pickup-attempt pickup)
+            (e-board-delivery-attempt--create
+             :number number
+             :endpoint-token (e-board--copy-envelope-value endpoint-token)
+             :composite-generation
+             (e-board--copy-envelope-value composite-generation)
+             :state 'delivering)))
     (setf (e-board-pickup-state pickup) 'delivering)
     (e-board--append-event board 'pickup-delivering
-                           (list :delivery-id delivery-id))
+                           (list :delivery-id delivery-id
+                                 :attempt-number
+                                 (e-board-delivery-attempt-number
+                                  (e-board-pickup-attempt pickup))
+                                 :endpoint-token
+                                 (e-board--copy-envelope-value endpoint-token)
+                                 :composite-generation
+                                 (e-board--copy-envelope-value
+                                  composite-generation)))
     pickup))
 
 (defun e-board-pickup-complete-delivery (board delivery-id)
@@ -380,6 +423,7 @@ Return the newly ready pickup identity, if any."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) 'consumed)
+      (e-board--set-pickup-attempt-state pickup 'consumed)
       (e-board--append-event board 'pickup-consumed
                              (list :delivery-id delivery-id))
       (setq queue (cdr queue))
@@ -391,13 +435,14 @@ Return the newly ready pickup identity, if any."
                                  (list :delivery-id next-id))
           next-id)))))
 
-(defun e-board-pickup-accept-delivery (board delivery-id)
-  "Record that DELIVERY-ID entered the harness but awaits consumption receipt."
+(defun e-board-pickup-accept-delivery (board delivery-id &optional receipt)
+  "Record DELIVERY-ID as harness-owned with optional acceptance RECEIPT."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
     (unless (eq (e-board-pickup-state pickup) 'delivering)
       (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
     (setf (e-board-pickup-state pickup) 'accepted)
+    (e-board--set-pickup-attempt-state pickup 'accepted receipt)
     (e-board--append-event board 'pickup-accepted (list :delivery-id delivery-id))
     pickup))
 
@@ -413,6 +458,8 @@ Return the newly ready pickup identity, if any."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) (if cancelled-p 'cancelled 'discarded))
+      (e-board--set-pickup-attempt-state
+       pickup (if cancelled-p 'cancelled 'discarded) reason)
       (e-board--append-event board (if cancelled-p 'pickup-cancelled 'pickup-discarded)
                              (list :delivery-id delivery-id :reason reason))
       (setq queue (cdr queue))
@@ -438,6 +485,7 @@ original endpoint.  REASON records the reconciliation gap for later inspection."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) 'uncertain)
+      (e-board--set-pickup-attempt-state pickup 'uncertain reason)
       (e-board--append-event board 'pickup-uncertain
                              (list :delivery-id delivery-id :reason reason))
       (setq queue (cdr queue))
@@ -464,6 +512,7 @@ call releases the FIFO head."
     (if (memq (e-board-pickup-state pickup) '(delivering accepted))
         (progn
           (setf (e-board-pickup-state pickup) 'cancelling)
+          (e-board--set-pickup-attempt-state pickup 'cancelling reason)
           (e-board--append-event board 'pickup-cancelling
                                  (list :delivery-id delivery-id :reason reason))
           nil)
@@ -471,6 +520,7 @@ call releases the FIFO head."
              (queue (e-board--pickup-queue board participant-id))
              (head-p (equal (car queue) delivery-id)))
         (setf (e-board-pickup-state pickup) 'cancelled)
+        (e-board--set-pickup-attempt-state pickup 'cancelled reason)
         (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
         (e-board--append-event board 'pickup-cancelled
                                (list :delivery-id delivery-id :reason reason))
@@ -496,6 +546,7 @@ next FIFO record."
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
       (setf (e-board-pickup-state pickup) 'expired)
+      (e-board--set-pickup-attempt-state pickup 'expired reason)
       (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
       (e-board--append-event board 'pickup-expired
                              (list :delivery-id delivery-id :reason reason))
@@ -522,6 +573,7 @@ uses `e-board-pickup-return-ready' instead."
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
       (setf (e-board-pickup-state pickup) 'failed)
+      (e-board--set-pickup-attempt-state pickup 'failed reason)
       (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
       (e-board--append-event board 'pickup-failed
                              (list :delivery-id delivery-id :reason reason))
@@ -547,6 +599,7 @@ uncommitted failure settles that cancellation instead of retrying it."
           (unless (equal (car queue) delivery-id)
             (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
           (setf (e-board-pickup-state pickup) 'cancelled)
+          (e-board--set-pickup-attempt-state pickup 'cancelled err)
           (e-board--append-event board 'pickup-cancelled
                                  (list :delivery-id delivery-id :reason err))
           (setq queue (cdr queue))
@@ -558,6 +611,7 @@ uncommitted failure settles that cancellation instead of retrying it."
                                      (list :delivery-id next-id))
               next-id)))
       (setf (e-board-pickup-state pickup) 'ready)
+      (e-board--set-pickup-attempt-state pickup 'proven-uncommitted)
       (e-board--append-event board 'pickup-delivery-failed
                              (list :delivery-id delivery-id :error err))
       pickup)))

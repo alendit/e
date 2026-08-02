@@ -116,6 +116,13 @@ remains in the delivery-ledger slice.
 Adapters can also record a proven permanent pickup failure as =failed=, which
 tombstones that delivery and advances only its FIFO successor; uncommitted
 transient adapter faults still return the head to =ready= for retry.
+Every started pickup now also commits a board-owned physical-attempt record
+before invoking its delivery adapter.  That record alone freezes the opaque
+endpoint token and =(instance-catalog-generation,
+harness-object-generation)= pair; the logical pickup remains generation
+neutral.  Acceptance and terminal transitions advance the attempt record,
+while only an explicitly proven-uncommitted adapter return permits a later
+attempt to replace its endpoint binding.
 When an attached session is busy, its retryable pickup adapter result likewise
 returns the head to =ready=; the next =turn-finished= event reschedules only
 that participant's head instead of losing the delivery token or polling.
