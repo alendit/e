@@ -173,6 +173,39 @@
         (should (equal (mapcar #'e-board-event-type (e-board-events board))
                         '(output-posted)))))))
 
+(ert-deftest e-board-test-activity-and-fact-are-idempotent-and-never-route ()
+  "Only input messages create pickups; activity and facts stay observable."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((activity
+              (e-board-post-activity
+               board :author "participant:one" :subject-participant-id "one"
+               :source-turn-id "turn" :activity-kind 'thinking :tags '(main)
+               :source-activity-key '(one 1 1)))
+             (activity-retry
+              (e-board-post-activity
+               board :author "participant:one" :subject-participant-id "one"
+               :source-turn-id "turn" :activity-kind 'thinking
+               :source-activity-key '(one 1 1)))
+             (fact (e-board-post-fact board :author "producer:cron"
+                                      :source-fact-key '(cron 1 1))))
+        (should (eq (e-board-publication-status activity-retry) 'duplicate))
+        (should (eq (e-board-message-kind (e-board-publication-message activity))
+                    'activity))
+        (should (equal (e-board-message-source-turn-id
+                        (e-board-publication-message activity))
+                       "turn"))
+        (should (eq (e-board-message-kind (e-board-publication-message fact))
+                    'fact))
+        (should-not (e-board-publication-pickup-ids activity))
+        (should-not (e-board-publication-pickup-ids fact))
+        (should-error (e-board-post-activity
+                       board :author "participant:one" :subject-participant-id "two"
+                       :source-turn-id "turn" :activity-kind 'thinking
+                       :source-activity-key '(one 1 2))
+                      :type 'e-board-invalid-activity)))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry

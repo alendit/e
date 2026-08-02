@@ -19,6 +19,7 @@
 (define-error 'e-board-id-conflict "e board id conflict" 'e-board-error)
 (define-error 'e-board-missing "e board is not registered" 'e-board-error)
 (define-error 'e-board-invalid-source-key "Invalid board source key" 'e-board-error)
+(define-error 'e-board-invalid-activity "Invalid board activity message" 'e-board-error)
 
 (defvar e-board--id-sequence 0
   "Process-local fallback sequence for board identities.")
@@ -31,6 +32,8 @@
                (:conc-name e-board-message-))
   id board-id seq kind author tags attributes to mode content reference
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
+  source-activity-key source-fact-key subject-participant-id source-turn-id
+  activity-kind
   matching-participant-ids pickup-ids unrouted-reason)
 
 (cl-defstruct (e-board-event
@@ -707,7 +710,9 @@ Return nil when the key is new and may be appended."
 
 (defun e-board--make-message (board kind id author tags attributes to mode content reference
                                      source-input-key source-output-key
-                                     reply-to-message-ids caused-by-delivery-ids)
+                                     reply-to-message-ids caused-by-delivery-ids
+                                     &optional source-activity-key source-fact-key
+                                     subject-participant-id source-turn-id activity-kind)
   "Create and record one immutable BOARD message, returning it."
   (when (e-board-message board id)
     (signal 'e-board-id-conflict (list id)))
@@ -723,7 +728,12 @@ Return nil when the key is new and may be appended."
            :source-input-key (copy-tree source-input-key)
            :source-output-key (copy-tree source-output-key)
            :reply-to-message-ids (copy-tree reply-to-message-ids)
-           :caused-by-delivery-ids (copy-tree caused-by-delivery-ids))))
+           :caused-by-delivery-ids (copy-tree caused-by-delivery-ids)
+           :source-activity-key (copy-tree source-activity-key)
+           :source-fact-key (copy-tree source-fact-key)
+           :subject-participant-id subject-participant-id
+           :source-turn-id source-turn-id
+           :activity-kind activity-kind)))
     (puthash id message (e-board-message-table board))
     (setf (e-board-messages board)
           (append (e-board-messages board) (list message)))
@@ -809,6 +819,48 @@ at-most-once.  Outputs never create participant pickups."
                        source-output-key reply-to-message-ids
                        caused-by-delivery-ids)))
         (e-board--remember-source board 'output source-output-key message)
+        (e-board-publication--create :status 'posted :message message
+                                     :pickup-ids nil))))
+
+(cl-defun e-board-post-activity
+    (board &key id author subject-participant-id source-turn-id activity-kind
+           tags attributes content reference source-activity-key
+           reply-to-message-ids caused-by-delivery-ids)
+  "Append one source-keyed, observation-only participant activity message.
+Activity is never pickup-eligible: a later continuation may react to it, but
+an activity tag by itself cannot re-enter a participant inbox."
+  (unless source-activity-key
+    (signal 'e-board-invalid-source-key (list source-activity-key)))
+  (unless (and (stringp subject-participant-id)
+               (equal author (format "participant:%s" subject-participant-id))
+               source-turn-id activity-kind)
+    (signal 'e-board-invalid-activity
+            (list :author author :subject-participant-id subject-participant-id
+                  :source-turn-id source-turn-id :activity-kind activity-kind)))
+  (or (e-board--source-publication board 'activity source-activity-key)
+      (let* ((id (or id (e-board--next-id board 'message)))
+             (message
+              (e-board--make-message
+               board 'activity id author tags attributes nil nil content reference
+               nil nil reply-to-message-ids caused-by-delivery-ids
+               source-activity-key nil subject-participant-id source-turn-id
+               activity-kind)))
+        (e-board--remember-source board 'activity source-activity-key message)
+        (e-board-publication--create :status 'posted :message message
+                                     :pickup-ids nil))))
+
+(cl-defun e-board-post-fact
+    (board &key id author tags attributes content reference source-fact-key)
+  "Append one source-keyed, observation-only board fact message."
+  (unless source-fact-key
+    (signal 'e-board-invalid-source-key (list source-fact-key)))
+  (or (e-board--source-publication board 'fact source-fact-key)
+      (let* ((id (or id (e-board--next-id board 'message)))
+             (message
+              (e-board--make-message
+               board 'fact id author tags attributes nil nil content reference
+               nil nil nil nil nil source-fact-key nil nil nil)))
+        (e-board--remember-source board 'fact source-fact-key message)
         (e-board-publication--create :status 'posted :message message
                                      :pickup-ids nil))))
 
