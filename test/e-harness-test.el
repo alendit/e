@@ -908,7 +908,10 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
 
 (ert-deftest e-harness-test-unsettled-state-follows-turn-and-input-owners ()
   "Harness counts active turns and queued inputs at their exact transitions."
-  (let* ((backend (e-backend-create
+  (let* ((e-harness--aggregate-active-turn-count 0)
+         (e-harness--aggregate-queued-input-count 0)
+         (e-harness--aggregate-unsettled-generation 0)
+         (backend (e-backend-create
                    :name "held"
                    :start (cl-function
                            (lambda (&key messages options on-item on-done
@@ -930,6 +933,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-harness-steer-active-turn harness "session-1" "steer")
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 3 :active-turns 1 :queued-inputs 2)))
+      (should (equal (e-harness-aggregate-unsettled-state)
+                     '(:generation 3 :active-turns 1 :queued-inputs 2)))
       (e-harness-abort harness "session-1")
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 4 :active-turns 1 :queued-inputs 1)))
@@ -939,6 +944,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-harness-abort harness "session-1")
       (funcall (pop scheduled))
       (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 8 :active-turns 0 :queued-inputs 0)))
+      (should (equal (e-harness-aggregate-unsettled-state)
                      '(:generation 8 :active-turns 0 :queued-inputs 0)))
       (should (= (length snapshots) 8)))))
 

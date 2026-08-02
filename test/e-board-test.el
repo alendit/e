@@ -1372,6 +1372,33 @@
         (should (equal (reverse applied) '(first second)))
         (should-not drains)))))
 
+(ert-deftest e-board-test-effect-fifo-publishes-exact-unsettled-transitions ()
+  "Effect ownership is indexed at enqueue and retirement without queue scans."
+  (e-board-test--with-empty-registry
+    (let* ((drains nil)
+           (snapshots nil)
+           (applied nil)
+           (e-board-effect-drain-limit 1)
+           (board
+            (e-board-create
+             :id "board"
+             :effect-scheduler (lambda (drain) (push drain drains))
+             :unsettled-change-function
+             (lambda (_board _class _delta state) (push state snapshots)))))
+      (e-board--schedule-effect board (lambda () (push 'first applied)))
+      (e-board--schedule-effect board (lambda () (push 'second applied)))
+      (should (equal (e-board-unsettled-state board)
+                     '(:generation 2 :pickups 0 :effects 2 :routing 0)))
+      (funcall (pop drains))
+      (should (equal (e-board-unsettled-state board)
+                     '(:generation 3 :pickups 0 :effects 1 :routing 0)))
+      (funcall (pop drains))
+      (should (equal (e-board-unsettled-state board)
+                     '(:generation 4 :pickups 0 :effects 0 :routing 0)))
+      (should-not (e-board-pending-effects-tail board))
+      (should (equal (nreverse applied) '(first second)))
+      (should (= (length snapshots) 4)))))
+
 (ert-deftest e-board-test-effect-drain-contains-one-unexpected-callback-failure ()
   "A failed queued callback records its fault without blocking later FIFO work."
   (e-board-test--with-empty-registry

@@ -20,6 +20,8 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-request)
+(require 'e-session)
+(require 'e-work)
 
 (define-error 'e-board-runtime-error "e board runtime error")
 (define-error 'e-board-runtime-attachment-exists
@@ -46,17 +48,42 @@
 (define-error 'e-board-runtime-admission-closed
   "e board runtime admission is closed"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-quiescence-active
+  "e board runtime quiescence request is already active"
+  'e-board-runtime-error)
+(define-error 'e-board-runtime-producer-disabled
+  "e board runtime producer has no current live binding"
+  'e-board-runtime-error)
 
 (cl-defstruct (e-board-runtime-admission-token
                (:constructor e-board-runtime--admission-token-create))
   "Opaque authority to reopen one exact closed admission epoch."
   epoch)
 
+(cl-defstruct (e-board-runtime-quiescence
+               (:constructor e-board-runtime--quiescence-create))
+  "One controlled process-quiescence request and its admission authority."
+  request admission-token)
+
+(cl-defstruct (e-board-runtime-producer-binding
+               (:constructor e-board-runtime--producer-binding-create))
+  "Runtime-scoped authority for one trusted application producer."
+  id board-id board epoch tags attributes next-sequence state)
+
+(cl-defstruct (e-board-runtime-producer-publication
+               (:constructor e-board-runtime--producer-publication-create))
+  "One source-key-frozen producer publication attempt."
+  binding binding-epoch source-key tags attributes content reference state
+  publication error)
+
 (defvar e-board-runtime--admission-open-p t
   "Non-nil while public board-runtime roots may be admitted.")
 
 (defvar e-board-runtime--admission-epoch 0
   "Monotonic process-local board-runtime admission epoch.")
+
+(defvar e-board-runtime--quiescence-current nil
+  "The one active controlled process-quiescence request, if any.")
 
 (defun e-board-runtime-admission-state ()
   "Return the current bounded board-runtime admission state."
@@ -106,6 +133,20 @@ Operations accepted before this commit may continue to completion."
 
 (defvar e-board-runtime--invocations (make-hash-table :test 'equal)
   "Exact invocation effect targets owned by their original attachment.")
+
+(defvar e-board-runtime--producer-bindings (make-hash-table :test 'equal)
+  "Current runtime-scoped trusted producer bindings by producer id.")
+
+(defvar e-board-runtime--producer-epoch 0
+  "Monotonic process-local producer binding epoch.")
+
+(defvar e-board-runtime--producer-head nil)
+(defvar e-board-runtime--producer-tail nil)
+(defvar e-board-runtime--producer-drain-scheduled nil)
+(defvar e-board-runtime--producer-scheduler nil)
+
+(defconst e-board-runtime-producer-drain-limit 16
+  "Maximum trusted producer facts applied in one scheduled drain.")
 
 (defvar e-board-runtime--control-sequence 0
   "Process-local sequence for board runtime control request identities.")
@@ -206,11 +247,17 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (defvar e-board-runtime--unsettled-deferred-hook-count 0
   "Number of queued deferred carrier hook receipts.")
 
+(defvar e-board-runtime--unsettled-producer-count 0
+  "Number of accepted producer publications not yet applied.")
+
 (defvar e-board-runtime--unsettled-generation 0
   "Monotonic generation of owner-local unsettled runtime state.")
 
 (defvar e-board-runtime--unsettled-change-function nil
   "Private hard-bounded callback for owner-local unsettled transitions.")
+
+(defvar e-board-runtime--unsettled-change-functions nil
+  "Hard-bounded observers of board-runtime unsettled transitions.")
 
 (defun e-board-runtime-unsettled-state ()
   "Return a constant-time snapshot of board-runtime unsettled state."
@@ -218,6 +265,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
         :control-requests e-board-runtime--unsettled-control-count
         :invocations e-board-runtime--unsettled-invocation-count
         :deferred-hooks e-board-runtime--unsettled-deferred-hook-count
+        :producer-items e-board-runtime--unsettled-producer-count
         :activity-mailboxes
         (hash-table-count e-board-runtime--pending-activity-set)
         :pickup-attempts
@@ -228,7 +276,9 @@ the board transcript.  Terminal events use their dedicated publisher below.")
   (cl-incf e-board-runtime--unsettled-generation)
   (when e-board-runtime--unsettled-change-function
     (funcall e-board-runtime--unsettled-change-function
-             (e-board-runtime-unsettled-state))))
+             (e-board-runtime-unsettled-state)))
+  (run-hook-with-args 'e-board-runtime--unsettled-change-functions
+                      (e-board-runtime-unsettled-state)))
 
 (defun e-board-runtime--adjust-unsettled-count (class delta)
   "Adjust runtime unsettled CLASS by DELTA and publish its transition."
@@ -240,6 +290,8 @@ the board transcript.  Terminal events use their dedicated publisher below.")
             (cl-incf e-board-runtime--unsettled-invocation-count delta))
            ('deferred-hook
             (cl-incf e-board-runtime--unsettled-deferred-hook-count delta))
+           ('producer
+            (cl-incf e-board-runtime--unsettled-producer-count delta))
            (_
             (signal 'e-board-runtime-error
                     (list "Unknown unsettled runtime class" class))))))
@@ -248,6 +300,256 @@ the board transcript.  Terminal events use their dedicated publisher below.")
               (list "Negative unsettled runtime count" class value)))
     (e-board-runtime--unsettled-changed)
     value))
+
+(defun e-board-runtime--producer-binding-current-p (binding)
+  "Return non-nil when BINDING still names its exact active board generation."
+  (and (e-board-runtime-producer-binding-p binding)
+       (eq (e-board-runtime-producer-binding-state binding) 'active)
+       (eq (gethash (e-board-runtime-producer-binding-id binding)
+                    e-board-runtime--producer-bindings)
+           binding)
+       (let ((registered
+              (ignore-errors
+                (e-board-registry-get
+                 (e-board-runtime-producer-binding-board-id binding)))))
+         (and (eq registered
+                  (e-board-runtime-producer-binding-board binding))
+              (eq (e-board-registry-board-state registered) 'active)))))
+
+(cl-defun e-board-runtime-producer-bind
+    (producer-id board &key tags attributes)
+  "Explicitly bind trusted PRODUCER-ID to live BOARD for this runtime only.
+Persisting BOARD's id does not recreate this authority after restart; the
+producer remains disabled until an owner supplies the exact live board again."
+  (e-board-runtime--require-admission)
+  (unless (and producer-id (e-board-registry-board-p board)
+               (eq (e-board-registry-board-state board) 'active)
+               (eq (ignore-errors
+                     (e-board-registry-get (e-board-registry-board-id board)))
+                   board))
+    (signal 'e-board-runtime-producer-disabled (list producer-id 'missing-board)))
+  (when-let ((old (gethash producer-id e-board-runtime--producer-bindings)))
+    (setf (e-board-runtime-producer-binding-state old) 'replaced))
+  (let ((binding
+         (e-board-runtime--producer-binding-create
+          :id producer-id
+          :board-id (e-board-registry-board-id board)
+          :board board
+          :epoch (cl-incf e-board-runtime--producer-epoch)
+          :tags (copy-tree tags)
+          :attributes (copy-tree attributes)
+          :next-sequence 0
+          :state 'active)))
+    (puthash producer-id binding e-board-runtime--producer-bindings)
+    binding))
+
+(defun e-board-runtime-producer-disable (binding)
+  "Disable current producer BINDING and reject its later timer callbacks."
+  (when (e-board-runtime-producer-binding-p binding)
+    (when (eq (gethash (e-board-runtime-producer-binding-id binding)
+                       e-board-runtime--producer-bindings)
+              binding)
+      (remhash (e-board-runtime-producer-binding-id binding)
+               e-board-runtime--producer-bindings))
+    (setf (e-board-runtime-producer-binding-state binding) 'disabled))
+  binding)
+
+(defun e-board-runtime--schedule-producer-drain ()
+  "Schedule one bounded producer publication drain."
+  (unless e-board-runtime--producer-drain-scheduled
+    (setq e-board-runtime--producer-drain-scheduled t)
+    (let ((callback #'e-board-runtime-drain-producers))
+      (if e-board-runtime--producer-scheduler
+          (funcall e-board-runtime--producer-scheduler callback)
+        (run-at-time 0 nil callback)))))
+
+(defun e-board-runtime--enqueue-producer-publication (item)
+  "Accept source-key-frozen producer publication ITEM."
+  (let ((cell (list item)))
+    (if e-board-runtime--producer-tail
+        (setcdr e-board-runtime--producer-tail cell)
+      (setq e-board-runtime--producer-head cell))
+    (setq e-board-runtime--producer-tail cell))
+  (setf (e-board-runtime-producer-publication-state item) 'queued)
+  (e-board-runtime--adjust-unsettled-count 'producer 1)
+  (e-board-runtime--schedule-producer-drain)
+  item)
+
+(cl-defun e-board-runtime-producer-publish-fact
+    (binding &key tags attributes content reference)
+  "Accept one observation-only fact from current producer BINDING.
+The returned item freezes its source key before scheduling so a retry is
+idempotent.  Zero matching subscriptions never creates a participant or turn."
+  (e-board-runtime--require-admission)
+  (unless (e-board-runtime--producer-binding-current-p binding)
+    (signal 'e-board-runtime-producer-disabled (list binding 'stale-binding)))
+  (let ((item
+         (e-board-runtime--producer-publication-create
+          :binding binding
+          :binding-epoch (e-board-runtime-producer-binding-epoch binding)
+          :source-key
+          (list (e-board-runtime-producer-binding-id binding)
+                (e-board-runtime-producer-binding-epoch binding)
+                (cl-incf (e-board-runtime-producer-binding-next-sequence binding)))
+          :tags (append (copy-tree (e-board-runtime-producer-binding-tags binding))
+                        (copy-tree tags))
+          :attributes
+          (append (copy-tree (e-board-runtime-producer-binding-attributes binding))
+                  (copy-tree attributes))
+          :content content :reference reference :state 'created)))
+    (e-board-runtime--enqueue-producer-publication item)))
+
+(defun e-board-runtime-producer-retry (item)
+  "Retry failed producer publication ITEM with its original source key."
+  (unless (and (e-board-runtime-producer-publication-p item)
+               (eq (e-board-runtime-producer-publication-state item) 'failed)
+               (e-board-runtime--producer-binding-current-p
+                (e-board-runtime-producer-publication-binding item)))
+    (signal 'e-board-runtime-producer-disabled (list item 'not-retryable)))
+  (setf (e-board-runtime-producer-publication-error item) nil)
+  (e-board-runtime--enqueue-producer-publication item))
+
+(defun e-board-runtime-drain-producers ()
+  "Apply one bounded page of accepted trusted producer facts."
+  (setq e-board-runtime--producer-drain-scheduled nil)
+  (let ((remaining e-board-runtime-producer-drain-limit))
+    (while (and (> remaining 0) e-board-runtime--producer-head)
+      (let ((item (pop e-board-runtime--producer-head)))
+        (unless e-board-runtime--producer-head
+          (setq e-board-runtime--producer-tail nil))
+        (unwind-protect
+            (condition-case err
+                (let ((binding
+                       (e-board-runtime-producer-publication-binding item)))
+                  (unless (and (e-board-runtime--producer-binding-current-p binding)
+                               (= (e-board-runtime-producer-publication-binding-epoch item)
+                                  (e-board-runtime-producer-binding-epoch binding)))
+                    (signal 'e-board-runtime-producer-disabled
+                            (list binding 'stale-drain)))
+                  (setf (e-board-runtime-producer-publication-publication item)
+                        (e-board-post-fact
+                         (e-board-registry-board-source-board
+                          (e-board-runtime-producer-binding-board binding))
+                         :author
+                         (format "producer:%s"
+                                 (e-board-runtime-producer-binding-id binding))
+                         :tags (e-board-runtime-producer-publication-tags item)
+                         :attributes
+                         (e-board-runtime-producer-publication-attributes item)
+                         :content (e-board-runtime-producer-publication-content item)
+                         :reference (e-board-runtime-producer-publication-reference item)
+                         :source-fact-key
+                         (e-board-runtime-producer-publication-source-key item))
+                        (e-board-runtime-producer-publication-state item) 'published))
+              (error
+               (setf (e-board-runtime-producer-publication-error item) err
+                     (e-board-runtime-producer-publication-state item) 'failed)))
+          (e-board-runtime--adjust-unsettled-count 'producer -1)))
+      (cl-decf remaining))
+    (when e-board-runtime--producer-head
+      (e-board-runtime--schedule-producer-drain))))
+
+(defconst e-board-runtime--quiescence-change-hooks
+  '(e-board-runtime--unsettled-change-functions
+    e-harness--aggregate-unsettled-change-functions
+    e-work--unsettled-change-functions
+    e-board-registry--unsettled-change-functions
+    e-session--unsettled-change-functions)
+  "Owner-transition hooks observed by controlled quiescence requests.")
+
+(defun e-board-runtime--quiescence-sources ()
+  "Return all constant-time process-local unsettled source projections."
+  (list :runtime (e-board-runtime-unsettled-state)
+        :harnesses (e-harness-aggregate-unsettled-state)
+        :work (e-work-unsettled-state)
+        :boards (e-board-registry-unsettled-state)
+        :persistence (e-session-persistence-unsettled-state)))
+
+(defun e-board-runtime--quiescence-blockers (sources)
+  "Return the nonzero unsettled counters from SOURCES."
+  (let (blockers)
+    (dolist (source '(:runtime :harnesses :work :boards :persistence))
+      (let ((state (plist-get sources source)))
+        (while state
+          (let ((key (pop state))
+                (value (pop state)))
+            (unless (eq key :generation)
+              (when (and (integerp value) (> value 0))
+                (push (cons (intern (format "%s.%s" source key)) value)
+                      blockers)))))))
+    (nreverse blockers)))
+
+(defun e-board-runtime--quiescence-unsubscribe ()
+  "Remove the controlled quiescence transition observer from all owners."
+  (dolist (hook e-board-runtime--quiescence-change-hooks)
+    (remove-hook hook #'e-board-runtime--quiescence-source-changed)))
+
+(defun e-board-runtime--quiescence-cleanup (quiescence)
+  "Retire transition observation for QUIESCENCE without reopening admission."
+  (when (eq quiescence e-board-runtime--quiescence-current)
+    (setq e-board-runtime--quiescence-current nil)
+    (e-board-runtime--quiescence-unsubscribe)))
+
+(defun e-board-runtime--quiescence-evaluate (quiescence)
+  "Reevaluate QUIESCENCE from bounded owner projections."
+  (when (and (eq quiescence e-board-runtime--quiescence-current)
+             (not e-board-runtime--admission-open-p)
+             (= (e-board-runtime-admission-token-epoch
+                 (e-board-runtime-quiescence-admission-token quiescence))
+                e-board-runtime--admission-epoch))
+    (let* ((request (e-board-runtime-quiescence-request quiescence))
+           (sources (e-board-runtime--quiescence-sources))
+           (blockers (e-board-runtime--quiescence-blockers sources)))
+      (if blockers
+          (setf (e-request-lifecycle-progress request)
+                (list :state 'draining
+                      :epoch e-board-runtime--admission-epoch
+                      :blockers blockers))
+        (e-request-finish
+         request
+         (list :state 'quiescent
+               :epoch e-board-runtime--admission-epoch
+               :sources sources))))))
+
+(defun e-board-runtime--quiescence-source-changed (&rest _ignored)
+  "Reevaluate the current quiescence request after an owner transition."
+  (when e-board-runtime--quiescence-current
+    (e-board-runtime--quiescence-evaluate
+     e-board-runtime--quiescence-current)))
+
+(defun e-board-runtime-request-quiescence ()
+  "Close public-root admission and return a controlled quiescence request.
+The request observes only owner-maintained O(1) counters and settles from their
+transition notifications.  Settlement leaves admission closed; callers must
+retain the returned admission token and reopen it explicitly when appropriate."
+  (when e-board-runtime--quiescence-current
+    (signal 'e-board-runtime-quiescence-active nil))
+  (let* ((token (e-board-runtime-close-admission))
+         quiescence
+         (request
+          (e-request-lifecycle-create
+           :id (format "runtime-quiescence-%d"
+                       (e-board-runtime-admission-token-epoch token))
+           :owner 'e-board-runtime
+           :generation (e-board-runtime-admission-token-epoch token)
+           :state 'created
+           :cancel-function
+           (lambda (_request)
+             (e-board-runtime--quiescence-cleanup quiescence))
+           :cleanup-trigger
+           (lambda (_request)
+             (e-board-runtime--quiescence-cleanup quiescence)))))
+    (setq quiescence
+          (e-board-runtime--quiescence-create
+           :request request :admission-token token))
+    (setq e-board-runtime--quiescence-current quiescence)
+    (dolist (hook e-board-runtime--quiescence-change-hooks)
+      (add-hook hook #'e-board-runtime--quiescence-source-changed))
+    (e-request-start request
+                     (list :epoch
+                           (e-board-runtime-admission-token-epoch token)))
+    (e-board-runtime--quiescence-evaluate quiescence)
+    quiescence))
 
 (defun e-board-runtime--track-control-request (request)
   "Count REQUEST until its first terminal transition."

@@ -50,7 +50,37 @@
   persistence-controller
   (write-queue-generation 0)
   (write-queue-sequence 0)
+  (unsettled-write-count 0)
+  (unsettled-generation 0)
   (sequence 0))
+
+(defvar e-session--unsettled-write-count 0)
+(defvar e-session--unsettled-generation 0)
+(defvar e-session--unsettled-change-function nil)
+(defvar e-session--unsettled-change-functions nil)
+
+(defun e-session-persistence-unsettled-state ()
+  "Return the constant-time aggregate persistence owner projection."
+  (list :generation e-session--unsettled-generation
+        :writes e-session--unsettled-write-count))
+
+(defun e-session--adjust-unsettled-writes (store delta)
+  "Adjust STORE and aggregate writer outbox ownership by DELTA."
+  (let ((store-next (+ (e-session-store-unsettled-write-count store) delta))
+        (global-next (+ e-session--unsettled-write-count delta)))
+    (when (or (< store-next 0) (< global-next 0))
+      (signal 'e-session-error
+              (list "Negative persistence unsettled count" store-next global-next)))
+    (setf (e-session-store-unsettled-write-count store) store-next)
+    (cl-incf (e-session-store-unsettled-generation store))
+    (setq e-session--unsettled-write-count global-next)
+    (cl-incf e-session--unsettled-generation)
+    (when e-session--unsettled-change-function
+      (funcall e-session--unsettled-change-function
+               (e-session-persistence-unsettled-state)))
+    (run-hook-with-args 'e-session--unsettled-change-functions
+                        (e-session-persistence-unsettled-state))
+    store-next))
 
 (defcustom e-session-write-queue-delay 0.05
   "Seconds to wait before flushing queued persistent session writes."
@@ -627,16 +657,22 @@ arrays and sometimes inverted key/value pairs."
 
 (defun e-session--drop-queued-write-entry (store entry)
   "Drop acknowledged queued write ENTRY from STORE."
-  (setf (e-session-store-write-queue store)
-        (delq entry (e-session-store-write-queue store))))
+  (when (memq entry (e-session-store-write-queue store))
+    (setf (e-session-store-write-queue store)
+          (delq entry (e-session-store-write-queue store)))
+    (e-session--adjust-unsettled-writes store -1)))
 
 (defun e-session--drop-stale-queued-write-entries (store)
   "Remove stale-generation queued writes from STORE."
-  (setf (e-session-store-write-queue store)
-        (cl-remove-if-not
-         (lambda (entry)
-           (e-session--queued-entry-current-p store entry))
-         (e-session-store-write-queue store))))
+  (let* ((old (e-session-store-write-queue store))
+         (current (cl-remove-if-not
+                   (lambda (entry)
+                     (e-session--queued-entry-current-p store entry))
+                   old))
+         (dropped (- (length old) (length current))))
+    (setf (e-session-store-write-queue store) current)
+    (when (> dropped 0)
+      (e-session--adjust-unsettled-writes store (- dropped)))))
 
 (defun e-session--queued-entry-critical-p (entry)
   "Return non-nil when queued ENTRY must flush before derived records."
@@ -696,7 +732,9 @@ Return STORE."
        (when (or write-index rebuild-index)
          (e-session--write-index-now store))))
     (setf (e-session-store-write-queue store) nil)
-    (setf (e-session-store-index-write-pending store) nil))
+    (when (e-session-store-index-write-pending store)
+      (setf (e-session-store-index-write-pending store) nil)
+      (e-session--adjust-unsettled-writes store -1)))
   store)
 
 (defun e-session--schedule-write-queue (store)
@@ -729,7 +767,8 @@ Return STORE."
            (progn
              (e-session--schedule-write-queue store)
              (push (e-session--queued-write-entry store session-id record)
-                   (e-session-store-write-queue store)))
+                   (e-session-store-write-queue store))
+             (e-session--adjust-unsettled-writes store 1))
            (e-session--append-record-now store session-id record)))))))
 
 
@@ -1269,6 +1308,8 @@ and RECORD supplies persisted identity fields during replay."
          (if (e-session--queued-writes-p store)
            (progn
              (e-session--schedule-write-queue store)
+             (unless (e-session-store-index-write-pending store)
+               (e-session--adjust-unsettled-writes store 1))
              (setf (e-session-store-index-write-pending store)
                    (e-session--queued-index-entry store)))
            (e-session--write-index-now store)))))))

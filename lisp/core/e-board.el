@@ -140,7 +140,12 @@
 (cl-defstruct (e-board-terminal-classification
                (:constructor e-board-terminal-classification--create)
                (:conc-name e-board-terminal-classification-))
-  work-id invocation-ids aggregation-ids invocation-index aggregation-index)
+  work-id invocation-ids aggregation-ids)
+
+(cl-defstruct (e-board-id-queue
+               (:constructor e-board-id-queue--create)
+               (:conc-name e-board-id-queue-))
+  head tail)
 
 (cl-defstruct (e-board-input-classification
                (:constructor e-board-input-classification--create)
@@ -160,17 +165,46 @@
   participants subscriptions subscriptions-tail subscription-count
   subscription-index-table subscription-id-table
   observers pickups source-high-watermarks source-recent work-table invocations aggregations
-  pending-effects effects-scheduled
+  pending-effects pending-effects-tail effects-scheduled
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
-  terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
+  terminal-classifications terminal-classification-tail
+  terminal-classification-scheduled terminal-classification-scheduler
   input-classifications input-classification-tail
   input-classification-scheduled input-classification-scheduler
-  subscription-replays subscription-replay-scheduled
+  subscription-replays subscription-replay-tail subscription-replay-scheduled
   routed-pickup-results routed-pickup-results-tail
-  aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
+  aggregation-deadlines aggregation-deadline-tail
+  aggregation-deadline-scheduled aggregation-deadline-scheduler
   continuation-timer-scheduler subscription-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
-  open-activities closed-activities retention-floor classification-authorizer)
+  open-activities closed-activities retention-floor classification-authorizer
+  unsettled-pickup-count unsettled-effect-count unsettled-routing-count
+  unsettled-generation unsettled-change-function)
+
+(defun e-board-unsettled-state (board)
+  "Return BOARD's constant-time nonterminal owner projection."
+  (list :generation (e-board-unsettled-generation board)
+        :pickups (e-board-unsettled-pickup-count board)
+        :effects (e-board-unsettled-effect-count board)
+        :routing (e-board-unsettled-routing-count board)))
+
+(defun e-board--adjust-unsettled (board class delta)
+  "Adjust BOARD's unsettled CLASS by DELTA at its owning transition."
+  (let* ((current (pcase class
+                    ('pickups (e-board-unsettled-pickup-count board))
+                    ('effects (e-board-unsettled-effect-count board))
+                    ('routing (e-board-unsettled-routing-count board))))
+         (next (+ current delta)))
+    (when (< next 0)
+      (signal 'e-board-error (list "Negative board unsettled count" class next)))
+    (pcase class
+      ('pickups (setf (e-board-unsettled-pickup-count board) next))
+      ('effects (setf (e-board-unsettled-effect-count board) next))
+      ('routing (setf (e-board-unsettled-routing-count board) next)))
+    (cl-incf (e-board-unsettled-generation board))
+    (when-let ((notify (e-board-unsettled-change-function board)))
+      (funcall notify board class delta (e-board-unsettled-state board)))
+    next))
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -233,7 +267,7 @@ The board object remains valid for inspection by its holder."
 
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
-          classification-authorizer
+          classification-authorizer unsettled-change-function
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
           subscription-timer-scheduler
@@ -251,6 +285,9 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   (unless (or (null classification-authorizer)
               (functionp classification-authorizer))
     (signal 'wrong-type-argument (list 'functionp classification-authorizer)))
+  (unless (or (null unsettled-change-function)
+              (functionp unsettled-change-function))
+    (signal 'wrong-type-argument (list 'functionp unsettled-change-function)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -288,13 +325,20 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :closed-activities (make-hash-table :test 'equal)
                  :retention-floor retention-floor
                   :pending-effects nil
+                  :pending-effects-tail nil
                   :effects-scheduled nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
                   :classification-authorizer classification-authorizer
+                  :unsettled-pickup-count 0
+                  :unsettled-effect-count 0
+                  :unsettled-routing-count 0
+                  :unsettled-generation 0
+                  :unsettled-change-function unsettled-change-function
                   :invocation-work-index (make-hash-table :test 'equal)
                   :aggregation-work-index (make-hash-table :test 'equal)
                   :terminal-classifications nil
+                  :terminal-classification-tail nil
                   :terminal-classification-scheduled nil
                   :terminal-classification-scheduler terminal-classification-scheduler
                   :input-classifications nil
@@ -302,10 +346,12 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :input-classification-scheduled nil
                   :input-classification-scheduler input-classification-scheduler
                   :subscription-replays nil
+                  :subscription-replay-tail nil
                   :subscription-replay-scheduled nil
                   :routed-pickup-results nil
                   :routed-pickup-results-tail nil
                   :aggregation-deadlines nil
+                  :aggregation-deadline-tail nil
                   :aggregation-deadline-scheduled nil
                   :aggregation-deadline-scheduler aggregation-deadline-scheduler
                   :continuation-timer-scheduler continuation-timer-scheduler
@@ -380,7 +426,8 @@ at which point that page requires a fresh snapshot."
       (puthash participant-id
                (append queue (list (e-board-pickup-delivery-id pickup)))
                (e-board-pickup-queues board))
-      (setf (e-board-pickup-state pickup) (if queue 'pending 'ready)))
+      (setf (e-board-pickup-state pickup) (if queue 'pending 'ready))
+      (e-board--adjust-unsettled board 'pickups 1))
     (e-board-pickup-state pickup)))
 
 (defun e-board--set-pickup-attempt-state (pickup state &optional reason)
@@ -447,6 +494,7 @@ Return the newly ready pickup identity, if any."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) 'consumed)
+      (e-board--adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'consumed)
       (e-board--append-event board 'pickup-consumed
                              (list :delivery-id delivery-id))
@@ -485,6 +533,7 @@ Return the newly ready pickup identity, if any."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) (if cancelled-p 'cancelled 'discarded))
+      (e-board--adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state
        pickup (if cancelled-p 'cancelled 'discarded) reason)
       (e-board--append-event board (if cancelled-p 'pickup-cancelled 'pickup-discarded)
@@ -512,6 +561,7 @@ original endpoint.  REASON records the reconciliation gap for later inspection."
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
       (setf (e-board-pickup-state pickup) 'uncertain)
+      (e-board--adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'uncertain reason)
       (e-board--append-event board 'pickup-uncertain
                              (list :delivery-id delivery-id :reason reason))
@@ -547,6 +597,7 @@ call releases the FIFO head."
              (queue (e-board--pickup-queue board participant-id))
              (head-p (equal (car queue) delivery-id)))
         (setf (e-board-pickup-state pickup) 'cancelled)
+        (e-board--adjust-unsettled board 'pickups -1)
         (e-board--set-pickup-attempt-state pickup 'cancelled reason)
         (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
         (e-board--append-event board 'pickup-cancelled
@@ -573,6 +624,7 @@ next FIFO record."
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
       (setf (e-board-pickup-state pickup) 'expired)
+      (e-board--adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'expired reason)
       (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
       (e-board--append-event board 'pickup-expired
@@ -600,6 +652,7 @@ uses `e-board-pickup-return-ready' instead."
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
       (setf (e-board-pickup-state pickup) 'failed)
+      (e-board--adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'failed reason)
       (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
       (e-board--append-event board 'pickup-failed
@@ -626,6 +679,7 @@ uncommitted failure settles that cancellation instead of retrying it."
           (unless (equal (car queue) delivery-id)
             (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
           (setf (e-board-pickup-state pickup) 'cancelled)
+          (e-board--adjust-unsettled board 'pickups -1)
           (e-board--set-pickup-attempt-state pickup 'cancelled err)
           (e-board--append-event board 'pickup-cancelled
                                  (list :delivery-id delivery-id :reason err))
@@ -709,8 +763,12 @@ uncommitted failure settles that cancellation instead of retrying it."
 
 (defun e-board--schedule-effect (board effect)
   "Schedule BOARD EFFECT after the initiating work-start stack unwinds."
-  (setf (e-board-pending-effects board)
-        (append (e-board-pending-effects board) (list effect)))
+  (let ((cell (list effect)))
+    (if-let ((tail (e-board-pending-effects-tail board)))
+        (setcdr tail cell)
+      (setf (e-board-pending-effects board) cell))
+    (setf (e-board-pending-effects-tail board) cell))
+  (e-board--adjust-unsettled board 'effects 1)
   (e-board--schedule-effect-drain board))
 
 (defun e-board--schedule-aggregation-deadline (board)
@@ -723,8 +781,11 @@ uncommitted failure settles that cancellation instead of retrying it."
 
 (defun e-board--queue-aggregation-deadline (board aggregation-id)
   "Record an elapsed aggregation deadline without settling on the timer stack."
-  (setf (e-board-aggregation-deadlines board)
-        (append (e-board-aggregation-deadlines board) (list aggregation-id)))
+  (let ((cell (list aggregation-id)))
+    (if-let ((tail (e-board-aggregation-deadline-tail board)))
+        (setcdr tail cell)
+      (setf (e-board-aggregation-deadlines board) cell))
+    (setf (e-board-aggregation-deadline-tail board) cell))
   (e-board--schedule-aggregation-deadline board))
 
 (defun e-board-drain-aggregation-deadlines (board)
@@ -733,6 +794,8 @@ uncommitted failure settles that cancellation instead of retrying it."
   (let ((remaining e-board-aggregation-deadline-drain-limit))
     (while (and (> remaining 0) (e-board-aggregation-deadlines board))
       (let ((aggregation-id (pop (e-board-aggregation-deadlines board))))
+        (unless (e-board-aggregation-deadlines board)
+          (setf (e-board-aggregation-deadline-tail board) nil))
         (when-let ((aggregation (e-board-aggregation board aggregation-id)))
           (when (eq (e-board-aggregation-state aggregation) 'open)
             (e-board--settle-aggregation board aggregation 'timed-out)))
@@ -745,25 +808,39 @@ uncommitted failure settles that cancellation instead of retrying it."
 The runtime invokes this through the injected scheduler; reducers only append
 effect records and never synchronously enter a tool or harness callback."
   (setf (e-board-effects-scheduled board) nil)
-  (let* ((pending (e-board-pending-effects board))
-         (count (min e-board-effect-drain-limit (length pending)))
-         (effects (cl-subseq pending 0 count)))
-    (setf (e-board-pending-effects board) (nthcdr count pending))
-    (dolist (effect effects)
+  (let ((remaining e-board-effect-drain-limit))
+    (while (and (> remaining 0) (e-board-pending-effects board))
+      (let ((effect (pop (e-board-pending-effects board))))
+        (unless (e-board-pending-effects board)
+          (setf (e-board-pending-effects-tail board) nil))
       ;; Concrete effect closures record their own domain failure state.  This
       ;; outer boundary also contains an unexpected stale or malformed queued
       ;; callback, so one record cannot wedge later FIFO effects.
-      (condition-case err
-          (funcall effect)
-        (error
-         (e-board--append-event board 'effect-drain-failed
-                                (list :error err)))))
+      (unwind-protect
+          (condition-case err
+              (funcall effect)
+            (error
+             (e-board--append-event board 'effect-drain-failed
+                                    (list :error err))))
+        (e-board--adjust-unsettled board 'effects -1)))
+      (cl-decf remaining))
     (when (e-board-pending-effects board)
       (e-board--schedule-effect-drain board))))
 
 (defun e-board--index-work-subscription (index work-id subscription-id)
   "Add SUBSCRIPTION-ID to WORK-ID's exact INDEX without scanning its peers."
-  (puthash work-id (append (gethash work-id index) (list subscription-id)) index))
+  (let* ((queue (or (gethash work-id index)
+                    (puthash work-id (e-board-id-queue--create) index)))
+         (cell (list subscription-id)))
+    (if-let ((tail (e-board-id-queue-tail queue)))
+        (setcdr tail cell)
+      (setf (e-board-id-queue-head queue) cell))
+    (setf (e-board-id-queue-tail queue) cell)))
+
+(defun e-board--indexed-work-subscriptions (index work-id)
+  "Return WORK-ID's stable subscription-id sequence from INDEX."
+  (when-let ((queue (gethash work-id index)))
+    (e-board-id-queue-head queue)))
 
 (defun e-board--schedule-terminal-classification (board)
   "Schedule BOARD's bounded terminal classifier once after settlement returns."
@@ -778,15 +855,23 @@ effect records and never synchronously enter a tool or harness callback."
   "Freeze indexed terminal candidates for WORK-ID and schedule their classifier."
   (let ((record (e-board-terminal-classification--create
                  :work-id work-id
-                 :invocation-ids (copy-sequence
-                                  (or invocation-ids
-                                      (gethash work-id (e-board-invocation-work-index board))))
-                 :aggregation-ids (copy-sequence
-                                   (or aggregation-ids
-                                       (gethash work-id (e-board-aggregation-work-index board))))
-                 :invocation-index 0 :aggregation-index 0)))
-    (setf (e-board-terminal-classifications board)
-          (append (e-board-terminal-classifications board) (list record)))
+                 :invocation-ids
+                 (or invocation-ids
+                     (e-board--indexed-work-subscriptions
+                      (e-board-invocation-work-index board) work-id))
+                 :aggregation-ids
+                 (or aggregation-ids
+                     (e-board--indexed-work-subscriptions
+                      (e-board-aggregation-work-index board) work-id)))))
+    ;; Detach the exact frozen queues.  A later invalid enrollment cannot mutate
+    ;; the terminal record's persistent list tail.
+    (remhash work-id (e-board-invocation-work-index board))
+    (remhash work-id (e-board-aggregation-work-index board))
+    (let ((cell (list record)))
+      (if-let ((tail (e-board-terminal-classification-tail board)))
+          (setcdr tail cell)
+        (setf (e-board-terminal-classifications board) cell))
+      (setf (e-board-terminal-classification-tail board) cell))
     (e-board--schedule-terminal-classification board)))
 
 (defun e-board-drain-terminal-classifications (board)
@@ -800,25 +885,21 @@ effect records and never synchronously enter a tool or harness callback."
              (state (and work (e-board-work-state work)))
              (payload (and work (e-board-work-terminal-payload work))))
         (cond
-         ((< (e-board-terminal-classification-invocation-index record)
-             (length (e-board-terminal-classification-invocation-ids record)))
-          (let* ((index (e-board-terminal-classification-invocation-index record))
-                 (id (nth index (e-board-terminal-classification-invocation-ids record))))
-            (setf (e-board-terminal-classification-invocation-index record) (1+ index))
+         ((e-board-terminal-classification-invocation-ids record)
+          (let ((id (pop (e-board-terminal-classification-invocation-ids record))))
             (when-let ((invocation (e-board-invocation board id)))
               (e-board--settle-invocation board invocation state payload))))
-         ((< (e-board-terminal-classification-aggregation-index record)
-             (length (e-board-terminal-classification-aggregation-ids record)))
-          (let* ((index (e-board-terminal-classification-aggregation-index record))
-                 (id (nth index (e-board-terminal-classification-aggregation-ids record))))
-            (setf (e-board-terminal-classification-aggregation-index record) (1+ index))
+         ((e-board-terminal-classification-aggregation-ids record)
+          (let ((id (pop (e-board-terminal-classification-aggregation-ids record))))
             (when-let ((aggregation (e-board-aggregation board id)))
               (when (and (eq (e-board-aggregation-state aggregation) 'open)
                          (e-board--aggregation-ready-p board aggregation))
                 (e-board--settle-aggregation board aggregation 'complete)))))
          (t
           (setf (e-board-terminal-classifications board)
-                (cdr (e-board-terminal-classifications board)))))
+                (cdr (e-board-terminal-classifications board)))
+          (unless (e-board-terminal-classifications board)
+            (setf (e-board-terminal-classification-tail board) nil))))
         (cl-decf remaining)))
     (when (e-board-terminal-classifications board)
       (e-board--schedule-terminal-classification board))))
@@ -1827,7 +1908,13 @@ ordinary future routing, which retains its existing append-time classifier."
                  :next-seq (1+ start-seq)
                  :through-seq (e-board-next-seq board))))
     (setf (e-board-subscription-replays board)
-          (append (e-board-subscription-replays board) (list record)))
+          (or (e-board-subscription-replays board) (list record)))
+    (if-let ((tail (e-board-subscription-replay-tail board)))
+        (let ((cell (list record)))
+          (setcdr tail cell)
+          (setf (e-board-subscription-replay-tail board) cell))
+      (setf (e-board-subscription-replay-tail board)
+            (e-board-subscription-replays board)))
     (e-board--append-event
      board 'subscription-replay-requested
      (list :subscription-id (e-board-subscription-id subscription)
@@ -1845,6 +1932,8 @@ ordinary future routing, which retains its existing append-time classifier."
             (progn
               (setf (e-board-subscription-replays board)
                     (cdr (e-board-subscription-replays board)))
+              (unless (e-board-subscription-replays board)
+                (setf (e-board-subscription-replay-tail board) nil))
               (e-board--append-event
                board 'subscription-replay-complete
                (list :subscription-id
@@ -2312,6 +2401,7 @@ the same bounded queue solely to classify explicit continuation subscriptions."
         (setcdr (e-board-input-classification-tail board) cell)
       (setf (e-board-input-classifications board) cell))
     (setf (e-board-input-classification-tail board) cell))
+  (e-board--adjust-unsettled board 'routing 1)
   (e-board--schedule-input-classification board))
 
 (defun e-board--fail-input-classification (board record err)
@@ -2328,6 +2418,7 @@ the same bounded queue solely to classify explicit continuation subscriptions."
        (list :message-id (e-board-message-id message) :error err)))
     (setf (e-board-input-classifications board)
           (cdr (e-board-input-classifications board)))
+    (e-board--adjust-unsettled board 'routing -1)
     (unless (e-board-input-classifications board)
       (setf (e-board-input-classification-tail board) nil))))
 
@@ -2361,6 +2452,7 @@ the same bounded queue solely to classify explicit continuation subscriptions."
            (e-board-input-classification-post-subscriptions record))
           (setf (e-board-input-classifications board)
                 (cdr (e-board-input-classifications board)))
+          (e-board--adjust-unsettled board 'routing -1)
           (unless (e-board-input-classifications board)
             (setf (e-board-input-classification-tail board) nil)))
         (cl-decf remaining)))

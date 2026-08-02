@@ -9,6 +9,37 @@
 (require 'e-session)
 (require 'e-session-persistence)
 
+(ert-deftest e-session-persistence-test-unsettled-transfer-has-no-false-zero ()
+  "Checkpoint timer ownership transfers to the writer outbox atomically."
+  (let* ((directory (make-temp-file "e-session-persistence-count-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         callback
+         sent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq callback (lambda () (apply function arguments)))
+                     (timer-create)))
+                  ((symbol-function 'e-session-persistence--ensure)
+                   (lambda (_controller) t))
+                  ((symbol-function 'e-session-persistence--send)
+                   (lambda (_controller request) (push request sent))))
+          (e-session-persistence-request-checkpoint controller)
+          (should (equal (e-session-persistence-unsettled-state)
+                         '(:generation 1 :writes 1)))
+          (funcall callback)
+          (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
+                     1))
+          (let ((request (car sent)))
+            (e-session-persistence--handle-response
+             controller (list :id (plist-get request :id) :ok t)))
+          (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
+                     0)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-writer-commits-journal-and-catalog ()
   "The writer owns durable JSONL and catalog work outside the Emacs mutation path."
   (skip-unless (executable-find e-session-persistence-node-executable))

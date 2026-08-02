@@ -115,7 +115,10 @@
                       (or (plist-get response :error) "Writer rejected command")))
           (e-session-persistence--restart-later controller))
       (when (stringp id)
-        (remhash id (e-session-persistence-outbox controller))
+        (when (gethash id (e-session-persistence-outbox controller))
+          (remhash id (e-session-persistence-outbox controller))
+          (e-session--adjust-unsettled-writes
+           (e-session-persistence-store controller) -1))
         (setf (e-session-persistence-last-error controller) nil)))))
 
 (defun e-session-persistence--consume-output (controller text)
@@ -164,6 +167,8 @@
                                             (e-session-persistence-store controller)))
                           operation)))
     (puthash id request (e-session-persistence-outbox controller))
+    (e-session--adjust-unsettled-writes
+     (e-session-persistence-store controller) 1)
     (condition-case err
         (progn
           (e-session-persistence--ensure controller)
@@ -180,22 +185,31 @@
 
 (defun e-session-persistence-request-checkpoint (controller)
   "Debounce a derived catalog checkpoint for CONTROLLER."
-  (when-let ((timer (e-session-persistence-checkpoint-timer controller)))
-    (cancel-timer timer))
+  (if-let ((timer (e-session-persistence-checkpoint-timer controller)))
+      (cancel-timer timer)
+    (e-session--adjust-unsettled-writes
+     (e-session-persistence-store controller) 1))
   (setf (e-session-persistence-checkpoint-timer controller)
         (run-at-time
          (max 0 e-session-persistence-checkpoint-delay) nil
          (lambda ()
+           ;; Transfer ownership from the timer to the outbox without exposing
+           ;; a false quiescent edge between the two states.
+           (e-session-persistence--submit controller (list :op "checkpoint"))
            (setf (e-session-persistence-checkpoint-timer controller) nil)
-           (e-session-persistence--submit controller (list :op "checkpoint"))))))
+           (e-session--adjust-unsettled-writes
+            (e-session-persistence-store controller) -1)))))
 
 (defun e-session-persistence-flush (controller &optional timeout)
   "Wait for CONTROLLER's current records and a catalog checkpoint.
 This is for controlled durability boundaries, never ordinary interaction."
-  (when-let ((timer (e-session-persistence-checkpoint-timer controller)))
-    (cancel-timer timer)
-    (setf (e-session-persistence-checkpoint-timer controller) nil))
-  (e-session-persistence--submit controller (list :op "checkpoint"))
+  (let ((timer (e-session-persistence-checkpoint-timer controller)))
+    (when timer (cancel-timer timer))
+    (e-session-persistence--submit controller (list :op "checkpoint"))
+    (when timer
+      (setf (e-session-persistence-checkpoint-timer controller) nil)
+      (e-session--adjust-unsettled-writes
+       (e-session-persistence-store controller) -1)))
   (let ((deadline (+ (float-time) (or timeout e-session-persistence-flush-timeout))))
     (while (and (> (hash-table-count (e-session-persistence-outbox controller)) 0)
                 (< (float-time) deadline))

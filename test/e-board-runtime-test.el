@@ -21,13 +21,38 @@
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
           (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
+          (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+          (e-board-runtime--producer-epoch 0)
+          (e-board-runtime--producer-head nil)
+          (e-board-runtime--producer-tail nil)
+          (e-board-runtime--producer-drain-scheduled nil)
+          (e-board-runtime--producer-scheduler nil)
           (e-board-runtime--admission-open-p t)
           (e-board-runtime--admission-epoch 0)
+          (e-board-runtime--quiescence-current nil)
           (e-board-runtime--unsettled-control-count 0)
           (e-board-runtime--unsettled-invocation-count 0)
           (e-board-runtime--unsettled-deferred-hook-count 0)
+          (e-board-runtime--unsettled-producer-count 0)
           (e-board-runtime--unsettled-generation 0)
           (e-board-runtime--unsettled-change-function nil)
+          (e-board-runtime--unsettled-change-functions nil)
+          (e-board-registry--unsettled-pickup-count 0)
+          (e-board-registry--unsettled-effect-count 0)
+          (e-board-registry--unsettled-routing-count 0)
+          (e-board-registry--unsettled-generation 0)
+          (e-board-registry--unsettled-change-function nil)
+          (e-board-registry--unsettled-change-functions nil)
+          (e-harness--aggregate-active-turn-count 0)
+          (e-harness--aggregate-queued-input-count 0)
+          (e-harness--aggregate-unsettled-generation 0)
+          (e-harness--aggregate-unsettled-change-functions nil)
+          (e-work--unsettled-count 0)
+          (e-work--unsettled-generation 0)
+          (e-work--unsettled-change-functions nil)
+          (e-session--unsettled-write-count 0)
+          (e-session--unsettled-generation 0)
+          (e-session--unsettled-change-functions nil)
           (e-board-runtime--control-sequence 0)
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
@@ -178,6 +203,130 @@
       (should
        (e-board-runtime-attach
         board harness "session" :participant-id "participant")))))
+
+(ert-deftest e-board-runtime-test-quiescence-settles-from-owner-notification ()
+  "A controlled request settles after the last indexed owner transition."
+  (e-board-runtime-test--with-empty-state
+    (let* ((scheduled nil)
+           (heartbeat 0)
+           (board (e-board-registry-create :id "board")))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board--schedule-effect
+         (e-board-registry-board-source-board board) #'ignore)
+        (let* ((quiescence (e-board-runtime-request-quiescence))
+               (request (e-board-runtime-quiescence-request quiescence)))
+          (should (eq (e-request-lifecycle-state request) 'started))
+          (should (equal (plist-get (e-request-lifecycle-progress request)
+                                    :state)
+                         'draining))
+          (run-at-time 0 nil (lambda () (cl-incf heartbeat)))
+          ;; The independent callback remains runnable while quiescence waits.
+          (funcall (pop scheduled))
+          (should (= heartbeat 1))
+          (should-not (e-request-terminal-p request))
+          ;; The board owner transition itself wakes and settles the request.
+          (funcall (pop scheduled))
+          (should (eq (e-request-lifecycle-state request) 'finished))
+          (should (equal (plist-get (e-request-lifecycle-terminal-payload request)
+                                    :state)
+                         'quiescent))
+          (should-not e-board-runtime--quiescence-current)
+          (should (equal (e-board-runtime-admission-state)
+                         '(:state closed :epoch 1)))
+          (e-board-runtime-reopen-admission
+           (e-board-runtime-quiescence-admission-token quiescence)))))))
+
+(ert-deftest e-board-runtime-test-cancelled-quiescence-keeps-admission-closed ()
+  "Cancelling observation never silently reopens the fenced admission epoch."
+  (e-board-runtime-test--with-empty-state
+    (let* ((e-work--unsettled-count 1)
+           (quiescence (e-board-runtime-request-quiescence))
+           (request (e-board-runtime-quiescence-request quiescence)))
+      (e-request-cancel request 'stopped)
+      (should (eq (e-request-lifecycle-state request) 'cancelled))
+      (should-not e-board-runtime--quiescence-current)
+      (should (equal (e-board-runtime-admission-state)
+                     '(:state closed :epoch 1)))
+      (e-board-runtime-reopen-admission
+       (e-board-runtime-quiescence-admission-token quiescence)))))
+
+(ert-deftest e-board-runtime-test-producer-requires-explicit-live-binding ()
+  "A producer cannot restore authority from a historical board id alone."
+  (e-board-runtime-test--with-empty-state
+    (should-error (e-board-runtime-producer-bind 'cron "historical-board")
+                  :type 'e-board-runtime-producer-disabled)
+    (let* ((board (e-board-registry-create :id "board"))
+           (binding (e-board-runtime-producer-bind 'cron board)))
+      (e-board-runtime-producer-disable binding)
+      (should-error (e-board-runtime-producer-publish-fact binding :tags '(cron))
+                    :type 'e-board-runtime-producer-disabled))))
+
+(ert-deftest e-board-runtime-test-stale-producer-binding-never-fires-work ()
+  "Replacing a binding fences an already scheduled old-generation fact."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           scheduled
+           (e-board-runtime--producer-scheduler
+            (lambda (drain) (push drain scheduled)))
+           (old (e-board-runtime-producer-bind 'cron board :tags '(cron)))
+           (item (e-board-runtime-producer-publish-fact old :content "fire")))
+      (e-board-runtime-producer-bind 'cron board :tags '(cron replacement))
+      (funcall (pop scheduled))
+      (should (eq (e-board-runtime-producer-publication-state item) 'failed))
+      (should-not (e-board-messages (e-board-registry-board-source-board board)))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :producer-items)
+                 0)))))
+
+(ert-deftest e-board-runtime-test-producer-retry-reuses-source-key ()
+  "A retry after uncertain append resolves as one idempotent board fact."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           scheduled
+           (e-board-runtime--producer-scheduler
+            (lambda (drain) (push drain scheduled)))
+           (binding (e-board-runtime-producer-bind 'cron board :tags '(cron)))
+           (original (symbol-function 'e-board-post-fact))
+           (first t)
+           item)
+      (cl-letf (((symbol-function 'e-board-post-fact)
+                 (lambda (&rest arguments)
+                   (let ((publication (apply original arguments)))
+                     (when first
+                       (setq first nil)
+                       (error "uncertain producer acknowledgement"))
+                     publication))))
+        (setq item
+              (e-board-runtime-producer-publish-fact
+               binding :attributes '(:schedule "daily") :content "fire"))
+        (funcall (pop scheduled))
+        (should (eq (e-board-runtime-producer-publication-state item) 'failed))
+        (e-board-runtime-producer-retry item)
+        (funcall (pop scheduled)))
+      (should (eq (e-board-runtime-producer-publication-state item) 'published))
+      (should (eq (e-board-publication-status
+                   (e-board-runtime-producer-publication-publication item))
+                  'duplicate))
+      (should (= (e-board-message-count
+                  (e-board-registry-board-source-board board))
+                 1)))))
+
+(ert-deftest e-board-runtime-test-producer-zero-match-stays-observation-only ()
+  "A fact with no orchestration match creates no participant, pickup, or turn."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           scheduled
+           (e-board-runtime--producer-scheduler
+            (lambda (drain) (push drain scheduled)))
+           (binding (e-board-runtime-producer-bind 'file-watch board :tags '(file)))
+           (item (e-board-runtime-producer-publish-fact binding :content "changed")))
+      (funcall (pop scheduled))
+      (let ((source (e-board-registry-board-source-board board)))
+        (should (eq (e-board-runtime-producer-publication-state item) 'published))
+        (should (= (hash-table-count (e-board-registry-board-participants board)) 0))
+        (should (= (hash-table-count (e-board-pickups source)) 0))
+        (should (= (e-board-message-count source) 1))))))
 
 (ert-deftest e-board-runtime-test-admitted-resume-finishes-after-close ()
   "Closing admission does not reject a previously accepted resume callback."

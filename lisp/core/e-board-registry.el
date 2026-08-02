@@ -53,6 +53,43 @@
 (defconst e-board-registry-client-revocation-drain-limit 16
   "Maximum client or observer revocation units committed per drain.")
 
+(defvar e-board-registry--unsettled-pickup-count 0)
+(defvar e-board-registry--unsettled-effect-count 0)
+(defvar e-board-registry--unsettled-routing-count 0)
+(defvar e-board-registry--unsettled-generation 0)
+(defvar e-board-registry--unsettled-change-function nil)
+(defvar e-board-registry--unsettled-change-functions nil)
+
+(defun e-board-registry-unsettled-state ()
+  "Return the constant-time aggregate board-core owner projection."
+  (list :generation e-board-registry--unsettled-generation
+        :pickups e-board-registry--unsettled-pickup-count
+        :effects e-board-registry--unsettled-effect-count
+        :routing e-board-registry--unsettled-routing-count))
+
+(defun e-board-registry--board-unsettled-changed (source class delta _state)
+  "Aggregate one SOURCE board CLASS change by DELTA without scanning boards."
+  (let ((registered (gethash (e-board-id source) e-board-registry--boards)))
+    ;; A callback captured by an obsolete test/process registry generation no
+    ;; longer owns aggregate state and must not decrement the current registry.
+    (when (and registered
+               (eq source (e-board-registry-board-source-board registered)))
+      (pcase class
+        ('pickups (cl-incf e-board-registry--unsettled-pickup-count delta))
+        ('effects (cl-incf e-board-registry--unsettled-effect-count delta))
+        ('routing (cl-incf e-board-registry--unsettled-routing-count delta)))
+      (when (or (< e-board-registry--unsettled-pickup-count 0)
+                (< e-board-registry--unsettled-effect-count 0)
+                (< e-board-registry--unsettled-routing-count 0))
+        (signal 'e-board-registry-error
+                (list "Negative board aggregate" class delta)))
+      (cl-incf e-board-registry--unsettled-generation)
+      (when e-board-registry--unsettled-change-function
+        (funcall e-board-registry--unsettled-change-function
+                 (e-board-registry-unsettled-state)))
+      (run-hook-with-args 'e-board-registry--unsettled-change-functions
+                          (e-board-registry-unsettled-state)))))
+
 (cl-defstruct (e-board-registry-board
                 (:constructor e-board-registry-board--create)
                 (:conc-name e-board-registry-board-))
@@ -189,7 +226,11 @@ The source board is registered with `e-board' under the same board identity."
     (when (= (hash-table-count e-board-registry--boards) 0)
       (setq e-board-registry--board-index
             (avl-tree-create
-             (lambda (left right) (string< (car left) (car right))))))
+             (lambda (left right) (string< (car left) (car right))))
+            e-board-registry--unsettled-pickup-count 0
+            e-board-registry--unsettled-effect-count 0
+            e-board-registry--unsettled-routing-count 0
+            e-board-registry--unsettled-generation 0))
     (when (gethash id e-board-registry--boards)
       (signal 'e-board-registry-id-conflict (list id)))
     (let* ((source-board (e-board-create :id id))
@@ -212,6 +253,8 @@ The source board is registered with `e-board' under the same board identity."
             (lambda (subscription message phase)
               (e-board-registry--classification-authorized-p
                board subscription message phase)))
+      (setf (e-board-unsettled-change-function source-board)
+            #'e-board-registry--board-unsettled-changed)
       (puthash id board e-board-registry--boards)
       (avl-tree-enter e-board-registry--board-index
                       (cons (format "%s" id) board))

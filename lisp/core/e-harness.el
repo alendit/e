@@ -1369,6 +1369,43 @@ JSON replay, so both are recognized."
         :active-turns (hash-table-count (e-harness-active-turns harness))
         :queued-inputs (e-harness-queued-input-count harness)))
 
+(defvar e-harness--aggregate-active-turn-count 0
+  "Process-local count of active turns across all harnesses.")
+
+(defvar e-harness--aggregate-queued-input-count 0
+  "Process-local count of queued inputs across all harnesses.")
+
+(defvar e-harness--aggregate-unsettled-generation 0
+  "Monotonic generation of aggregate harness unsettled state.")
+
+(defvar e-harness--aggregate-unsettled-change-functions nil
+  "Hard-bounded observers of aggregate harness unsettled transitions.")
+
+(defun e-harness-aggregate-unsettled-state ()
+  "Return the constant-time process-local harness unsettled snapshot."
+  (list :generation e-harness--aggregate-unsettled-generation
+        :active-turns e-harness--aggregate-active-turn-count
+        :queued-inputs e-harness--aggregate-queued-input-count))
+
+(defun e-harness--adjust-aggregate-unsettled (class delta)
+  "Adjust aggregate harness unsettled CLASS by DELTA."
+  (let ((value
+         (pcase class
+           ('active-turn
+            (cl-incf e-harness--aggregate-active-turn-count delta))
+           ('queued-input
+            (cl-incf e-harness--aggregate-queued-input-count delta))
+           (_
+            (signal 'e-harness-error
+                    (list "Unknown aggregate unsettled class" class))))))
+    (when (< value 0)
+      (signal 'e-harness-error
+              (list "Negative aggregate unsettled count" class value)))
+    (cl-incf e-harness--aggregate-unsettled-generation)
+    (run-hook-with-args 'e-harness--aggregate-unsettled-change-functions
+                        (e-harness-aggregate-unsettled-state))
+    value))
+
 (defun e-harness--unsettled-changed (harness)
   "Record and publish one owner-local unsettled transition in HARNESS."
   (cl-incf (e-harness-unsettled-generation harness))
@@ -1381,6 +1418,7 @@ JSON replay, so both are recognized."
     (when (< count 0)
       (signal 'e-harness-error (list "Negative queued input count" count)))
     (unless (= delta 0)
+      (e-harness--adjust-aggregate-unsettled 'queued-input delta)
       (e-harness--unsettled-changed harness))
     count))
 
@@ -1389,6 +1427,7 @@ JSON replay, so both are recognized."
   (when (gethash session-id (e-harness-active-turns harness))
     (signal 'e-harness-active-turn-exists (list session-id)))
   (puthash session-id entry (e-harness-active-turns harness))
+  (e-harness--adjust-aggregate-unsettled 'active-turn 1)
   (e-harness--unsettled-changed harness)
   entry)
 
@@ -1397,6 +1436,7 @@ JSON replay, so both are recognized."
   (let ((current (gethash session-id (e-harness-active-turns harness))))
     (when (and current (or (null expected) (eq current expected)))
       (remhash session-id (e-harness-active-turns harness))
+      (e-harness--adjust-aggregate-unsettled 'active-turn -1)
       (e-harness--unsettled-changed harness)
       current)))
 

@@ -125,6 +125,9 @@
 (defvar e-work--unsettled-change-function nil
   "Private hard-bounded callback for work unsettled transitions.")
 
+(defvar e-work--unsettled-change-functions nil
+  "Hard-bounded observers of work unsettled transitions.")
+
 (defun e-work-unsettled-state ()
   "Return the constant-time process-local work unsettled snapshot."
   (list :generation e-work--unsettled-generation
@@ -134,7 +137,9 @@
   "Record and publish one work unsettled transition."
   (cl-incf e-work--unsettled-generation)
   (when e-work--unsettled-change-function
-    (funcall e-work--unsettled-change-function (e-work-unsettled-state))))
+    (funcall e-work--unsettled-change-function (e-work-unsettled-state)))
+  (run-hook-with-args 'e-work--unsettled-change-functions
+                      (e-work-unsettled-state)))
 
 (defun e-work--admit-unsettled (handle)
   "Admit successfully prepared HANDLE into unsettled accounting."

@@ -468,6 +468,7 @@
                  store "ordered-critical" '(:type "message"))))
           (setf (e-session-store-write-queue store)
                 (list message-entry derived-entry session-entry))
+          (e-session--adjust-unsettled-writes store 3)
           (cl-letf (((symbol-function 'e-session--append-record-now)
                      (lambda (_store _session-id record)
                        (push (plist-get record :type) order)))
