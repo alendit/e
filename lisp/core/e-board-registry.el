@@ -57,7 +57,7 @@
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
-  id board-id author principal role source-participant)
+  id board-id author principal role access-grants source-participant)
 
 (defun e-board-registry--next-id (id-function kind)
   "Return an identity for KIND from ID-FUNCTION or the local fallback."
@@ -400,9 +400,41 @@ board, with its identity supplied by this registry's id generator."
             (e-board-registry-participant--create
              :id id :board-id (e-board-registry-board-id board)
              :author author :principal principal :role role
+             :access-grants (make-hash-table :test 'equal)
              :source-participant source-participant)))
       (puthash id participant participants)
       participant)))
+
+(defun e-board-registry-grant-participant-access
+    (board-or-id requester participant-or-id principal rights)
+  "Grant PRINCIPAL target PARTICIPANT-OR-ID RIGHTS as a board owner."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id)))
+    (e-board-registry--require-owner board requester)
+    (unless (and principal (listp rights) rights)
+      (signal 'wrong-type-argument (list 'listp rights)))
+    (puthash principal (copy-sequence rights)
+             (e-board-registry-participant-access-grants participant))
+    rights))
+
+(defun e-board-registry-revoke-participant-access
+    (board-or-id requester participant-or-id principal)
+  "Revoke PRINCIPAL's explicit target-participant access as a board owner."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (grants (e-board-registry-participant-access-grants participant))
+         (rights (gethash principal grants)))
+    (e-board-registry--require-owner board requester)
+    (remhash principal grants)
+    rights))
+
+(defun e-board-registry-participant-access-rights
+    (board-or-id participant-or-id principal)
+  "Return PRINCIPAL's explicit immutable access rights for PARTICIPANT-OR-ID."
+  (let* ((board (e-board-registry--resolve board-or-id))
+         (participant (e-board-registry--participant board participant-or-id)))
+    (copy-sequence
+     (gethash principal (e-board-registry-participant-access-grants participant)))))
 
 (defun e-board-registry-remove-participant (board-or-id participant-or-id)
   "Remove PARTICIPANT-OR-ID from active BOARD-OR-ID and disable its routes."

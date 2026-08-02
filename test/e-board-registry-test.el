@@ -105,6 +105,29 @@
       (should-error (e-board-registry-add-participant board :principal "stranger")
                     :type 'e-board-registry-authorization-denied))))
 
+(ert-deftest e-board-registry-test-owner-manages-target-participant-grants ()
+  "Cross-target rights live on the target and revoke immediately."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (target (e-board-registry-add-participant board :id "target")))
+      (should-error
+       (e-board-registry-grant-participant-access
+        board "stranger" target "member" '(post control))
+       :type 'e-board-registry-authorization-denied)
+      (e-board-registry-grant-participant-access
+       board "owner" target "member" '(post control))
+      (let ((rights (e-board-registry-participant-access-rights
+                     board target "member")))
+        (should (equal rights '(post control)))
+        (setcar rights 'mutated))
+      (should (equal (e-board-registry-participant-access-rights
+                      board target "member")
+                     '(post control)))
+      (should (equal (e-board-registry-revoke-participant-access
+                      board "owner" target "member")
+                     '(post control)))
+      (should-not (e-board-registry-participant-access-rights board target "member")))))
+
 (ert-deftest e-board-registry-test-reconnected-client-gets-a-fresh-generation ()
   "Reusing a detached client id never revives its old connection generation."
   (e-board-registry-test--with-empty-registries
