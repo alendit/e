@@ -514,6 +514,29 @@
           (should (= (e-board-observer-history-before-seq observer)
                      (plist-get page :before-seq))))))))
 
+(ert-deftest e-board-test-observer-history-page-bounds-sparse-filter-inspection ()
+  "A sparse history selector advances over one record-bounded page at a time."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "match" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (e-board-post-fact board :id "latest-other" :tags '(other)
+                         :source-fact-key '(producer 1 2))
+      (let* ((observer (e-board-observer-subscribe
+                        board "client" '(:tags (main)) :id "observer"
+                        :history-before-seq 3))
+             (first (e-board-observer-prepare-history-page
+                     board "observer" :limit 1)))
+        (should-not (plist-get first :messages))
+        (should (= (plist-get first :before-seq) 2))
+        (e-board-observer-accept-history-page
+         board "observer" (plist-get first :before-seq))
+        (let ((second (e-board-observer-prepare-history-page
+                       board "observer" :limit 1)))
+          (should (equal (mapcar #'e-board-message-id (plist-get second :messages))
+                         '("match")))
+          (should (= (plist-get second :before-seq) 1)))))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
