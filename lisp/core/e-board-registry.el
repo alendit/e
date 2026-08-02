@@ -177,7 +177,7 @@ The source board is registered with `e-board' under the same board identity."
     client))
 
 (cl-defun e-board-registry-install-observer
-    (board-or-id client-id selector &key id (start-seq 0)
+    (board-or-id client-id selector &key id start-seq
                  history-before-seq (history-floor 0))
   "Install an effect-free board observer owned by attached CLIENT-ID.
 The registry validates board-local client ownership; the source board retains

@@ -194,6 +194,26 @@
                      board "missing" '(:tags (main)))
                     :type 'e-board-registry-client-missing))))
 
+(ert-deftest e-board-registry-test-new-observer-defaults-to-the-live-high-watermark ()
+  "An omitted registry START-SEQ preserves the core's future-only default."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-post-fact source-board :id "before" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let ((observer (e-board-registry-install-observer
+                       board (e-board-registry-client-id client)
+                       '(:tags (main)) :id "observer")))
+        (e-board-post-fact source-board :id "after" :tags '(main)
+                           :source-fact-key '(producer 1 2))
+        (should (equal (mapcar #'e-board-message-id
+                               (plist-get (e-board-registry-prepare-observer-page
+                                           board "client" "observer" :limit 8)
+                                          :messages))
+                       '("after")))
+        (should (= (e-board-observer-next-seq observer) 1))))))
+
 (ert-deftest e-board-registry-test-client-acknowledges-only-its-observer-page ()
   "An attached client explicitly accepts its own prepared observer page."
   (e-board-registry-test--with-empty-registries
