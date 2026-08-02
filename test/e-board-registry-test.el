@@ -110,6 +110,31 @@
       (should-error (e-board-registry-add-participant board :principal "stranger")
                     :type 'e-board-registry-authorization-denied))))
 
+(ert-deftest e-board-registry-test-delivery-authorization-distinguishes-waiting-and-revoke ()
+  "Physical delivery consults current membership state and principal grants."
+  (e-board-registry-test--with-empty-registries
+    (let ((board (e-board-registry-create :id "board" :principal "owner")))
+      (e-board-registry-authorize-principal board "owner" "agent" 'member)
+      (let ((participant
+             (e-board-registry-add-participant
+              board :id "participant" :principal "agent")))
+        (should (eq (e-board-registry-participant-delivery-authorization
+                     board participant)
+                    'authorized))
+        (e-board-registry-set-participant-state board participant 'dormant)
+        (should (eq (e-board-registry-participant-delivery-authorization
+                     board participant)
+                    'waiting))
+        (e-board-registry-set-participant-state board participant 'active)
+        (e-board-registry-revoke-principal board "owner" "agent")
+        (should (eq (e-board-registry-participant-delivery-authorization
+                     board participant)
+                    'revoked))
+        (e-board-registry-remove-participant board participant)
+        (should (eq (e-board-registry-participant-delivery-authorization
+                     board participant)
+                    'revoked))))))
+
 (ert-deftest e-board-registry-test-owner-manages-target-participant-grants ()
   "Cross-target rights live on the target and revoke immediately."
   (e-board-registry-test--with-empty-registries

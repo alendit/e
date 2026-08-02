@@ -620,6 +620,37 @@ explicit `post' grant."
                     (e-board-registry-participant-id participant) 'post)))
     t))
 
+(defun e-board-registry-participant-delivery-authorization
+    (board-or-id participant-or-id)
+  "Return PARTICIPANT-OR-ID's current physical-delivery authorization state.
+`authorized' permits a new endpoint attempt.  `waiting' preserves a dormant or
+stale member's bounded FIFO without calling a harness.  `revoked' requires an
+explicit pickup tombstone and includes removed membership or a missing current
+principal grant."
+  (let* ((board (e-board-registry--resolve board-or-id))
+         (participant
+          (if (e-board-registry-participant-p participant-or-id)
+              participant-or-id
+            (gethash participant-or-id
+                     (e-board-registry-board-participants board))))
+         (current
+          (and participant
+               (gethash (e-board-registry-participant-id participant)
+                        (e-board-registry-board-participants board))))
+         (principal
+          (and participant (e-board-registry-participant-principal participant)))
+         (state
+          (and participant
+               (e-board-participant-state
+                (e-board-registry-participant-source-participant participant)))))
+    (cond
+     ((or (null participant) (not (eq current participant))) 'revoked)
+     ((and principal (null (e-board-registry-principal-role board principal)))
+      'revoked)
+     ((eq state 'active) 'authorized)
+     ((memq state '(dormant stale)) 'waiting)
+     (t 'revoked))))
+
 (defun e-board-registry-remove-participant (board-or-id participant-or-id)
   "Remove PARTICIPANT-OR-ID from active BOARD-OR-ID and disable its routes."
   (let* ((board (e-board-registry--require-active board-or-id))
