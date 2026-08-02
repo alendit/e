@@ -853,60 +853,109 @@
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."
   (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board"))
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
            (old-harness (e-harness-create))
            (new-harness (e-harness-create))
-           (deliveries nil))
+           (deliveries nil)
+           scheduled)
       (e-harness-create-session old-harness :id "old")
       (e-harness-create-session new-harness :id "new")
       (let ((old-attachment
              (e-board-runtime-attach board old-harness "old" :participant-id "participant")))
-      (e-board-runtime-post-input board :id "before-rebind" :to "participant"
-                                  :content "preserved pickup")
-      (e-board-runtime--drain-input-routing
-       board (lambda () (e-board-drain-input-classifications
-                         (e-board-registry-board-source-board board))))
-      (let ((attachment
-             (e-board-runtime-rebind
-              board "participant" new-harness "new"
-              :delivery-function
-              (lambda (_attachment _pickup message)
-                (push (e-board-message-content message) deliveries)))))
-        (should (eq (e-board-runtime-attachment-harness attachment) new-harness))
-        (should-not (e-board-runtime--current-attachment-p old-attachment))
-        (should (e-board-runtime--current-attachment-p attachment))
-        (should-not (gethash (e-board-runtime--session-key old-harness "old")
-                             e-board-runtime--session-attachments))
-        (let ((source-board (e-board-registry-board-source-board board)))
-          (puthash "stale-work"
-                   (list :attachment old-attachment :turn-id "turn"
-                         :payload 'stale :source-key '(participant 1 1))
-                   e-board-runtime--work-activity-mailboxes)
-          (e-board-runtime--enqueue-activity-flush "stale-work")
-          (let ((message-count (length (e-board-messages source-board))))
-            (e-board-runtime--drain-activity-mailboxes)
-            (should (= (length (e-board-messages source-board)) message-count))))
-        (e-board-runtime-post-input board :id "after-rebind" :to "participant"
-                                    :content "new endpoint")
+        (e-board-runtime-post-input board :id "before-rebind" :to "participant"
+                                    :content "preserved pickup")
         (e-board-runtime--drain-input-routing
          board (lambda () (e-board-drain-input-classifications
                            (e-board-registry-board-source-board board))))
-        (e-board-runtime--drain-pickups)
-        (should (equal (nreverse deliveries)
-                       '("preserved pickup" "new endpoint"))))))))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq scheduled
+                           (append scheduled
+                                   (list (lambda ()
+                                           (apply function arguments))))))))
+          (let ((request
+                 (e-board-runtime-rebind-start
+                  board "participant" new-harness "new" "owner"
+                  :delivery-function
+                  (lambda (_attachment _pickup message)
+                    (push (e-board-message-content message) deliveries)))))
+            (should (eq (e-request-lifecycle-state request) 'started))
+            (funcall (pop scheduled))
+            (should (eq (e-board-runtime-attachment-state old-attachment)
+                        'detaching))
+            (funcall (pop scheduled))
+            (should (eq (e-request-lifecycle-state request) 'finished))
+            (let ((attachment (e-request-lifecycle-terminal-payload request)))
+              (should (eq (e-board-runtime-attachment-harness attachment)
+                          new-harness))
+              (should-not (e-board-runtime--current-attachment-p old-attachment))
+              (should (e-board-runtime--current-attachment-p attachment))
+              (should-not
+               (gethash (e-board-runtime--session-key old-harness "old")
+                        e-board-runtime--session-attachments))
+              (let ((source-board (e-board-registry-board-source-board board)))
+                (puthash "stale-work"
+                         (list :attachment old-attachment :turn-id "turn"
+                               :payload 'stale :source-key '(participant 1 1))
+                         e-board-runtime--work-activity-mailboxes)
+                (e-board-runtime--enqueue-activity-flush "stale-work")
+                (let ((message-count (length (e-board-messages source-board))))
+                  (e-board-runtime--drain-activity-mailboxes)
+                  (should (= (length (e-board-messages source-board))
+                             message-count))))
+              (e-board-runtime-post-input
+               board :id "after-rebind" :to "participant"
+               :content "new endpoint")
+              (e-board-runtime--drain-input-routing
+               board (lambda () (e-board-drain-input-classifications
+                                  (e-board-registry-board-source-board board))))
+              (e-board-runtime--drain-pickups)
+              (should (equal (nreverse deliveries)
+                             '("preserved pickup" "new endpoint"))))))))))
 
-(ert-deftest e-board-runtime-test-rebind-tombstones-unresolved-accepted-head ()
-  "A replacement endpoint never receives an old accepted pickup again."
+(ert-deftest e-board-runtime-test-rebind-revalidates-target-before-detach ()
+  "A replacement claimed before commit leaves the old attachment active."
   (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board"))
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
            (old-harness (e-harness-create))
            (new-harness (e-harness-create))
-           deliveries)
+           scheduled)
       (e-harness-create-session old-harness :id "old")
       (e-harness-create-session new-harness :id "new")
-      (e-board-runtime-attach
-       board old-harness "old" :participant-id "participant"
-       :delivery-function (lambda (&rest _arguments) '(:accepted receipt)))
+      (let ((old (e-board-runtime-attach
+                  board old-harness "old" :participant-id "participant")))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq scheduled
+                           (append scheduled
+                                   (list (lambda ()
+                                           (apply function arguments))))))))
+          (let ((request (e-board-runtime-rebind-start
+                          board "participant" new-harness "new" "owner")))
+            (e-board-runtime-attach
+             board new-harness "new" :participant-id "claim")
+            (funcall (pop scheduled))
+            (should (eq (e-request-lifecycle-state request) 'failed))
+            (should (eq (car (e-request-lifecycle-terminal-payload request))
+                        'e-board-runtime-session-busy))
+            (should (eq (e-board-runtime-attachment-state old) 'active))
+            (should (e-board-runtime--current-attachment-p old))
+            (should-not (e-board-runtime-attachment-reconciliation old))))))))
+
+(ert-deftest e-board-runtime-test-rebind-awaits-old-accepted-receipt ()
+  "A replacement endpoint waits for the old accepted pickup's exact receipt."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           deliveries scheduled old-attachment)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (setq old-attachment
+            (e-board-runtime-attach
+             board old-harness "old" :participant-id "participant"
+             :delivery-function (lambda (&rest _arguments)
+                                  '(:accepted receipt))))
       (let* ((first (e-board-runtime-post-input board :id "first" :to "participant"
                                                 :content "first"))
              (second (e-board-runtime-post-input board :id "second" :to "participant"
@@ -919,17 +968,46 @@
               (second-id (car (e-board-publication-pickup-ids second))))
           (should (eq (e-board-pickup-state (e-board-pickup source-board first-id))
                       'accepted))
-          (e-board-runtime-rebind
-           board "participant" new-harness "new"
-           :delivery-function
-           (lambda (_attachment _pickup message)
-             (push (e-board-message-content message) deliveries)))
-          (e-board-runtime--drain-pickups)
-          (should (eq (e-board-pickup-state (e-board-pickup source-board first-id))
-                      'uncertain))
-          (should (eq (e-board-pickup-state (e-board-pickup source-board second-id))
-                      'consumed))
-          (should (equal deliveries '("second"))))))))
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (_seconds _repeat function &rest arguments)
+                       (setq scheduled
+                             (append scheduled
+                                     (list (lambda ()
+                                             (apply function arguments))))))))
+            (let ((request
+                   (e-board-runtime-rebind-start
+                    board "participant" new-harness "new" "owner"
+                    :delivery-function
+                    (lambda (_attachment _pickup message)
+                      (push (e-board-message-content message) deliveries)))))
+              (funcall (pop scheduled))
+              (funcall (pop scheduled))
+              (funcall (pop scheduled))
+              (let* ((pickup (e-board-pickup source-board first-id))
+                     (attempt (e-board-pickup-attempt pickup)))
+                (should (eq (e-board-pickup-state pickup) 'cancelling))
+                (should (eq (e-request-lifecycle-state request) 'progress))
+                (e-board-runtime--handle-harness-event
+                 old-attachment
+                 (e-events-make
+                  :type 'input-consumed :session-id "old" :turn-id "turn"
+                  :payload
+                  (list :delivery-id first-id
+                        :endpoint-token
+                        (e-board-delivery-attempt-endpoint-token attempt)
+                        :endpoint-generation
+                        (e-board-delivery-attempt-composite-generation attempt)))))
+              (funcall (pop scheduled))
+              (funcall (pop scheduled))
+              (should (eq (e-request-lifecycle-state request) 'finished))
+              (funcall (pop scheduled))
+              (should (eq (e-board-pickup-state
+                           (e-board-pickup source-board first-id))
+                          'consumed))
+              (should (eq (e-board-pickup-state
+                           (e-board-pickup source-board second-id))
+                          'consumed))
+              (should (equal deliveries '("second"))))))))))
 
 (ert-deftest e-board-runtime-test-busy-session-rejects-before-participant-creation ()
   "A session cannot acquire a second participant through a failed attach."
@@ -1503,9 +1581,10 @@
 (ert-deftest e-board-runtime-test-rebind-gives-fresh-session-output-a-new-source-generation ()
   "A fresh session after rebind cannot deduplicate a prior endpoint's output."
   (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board"))
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
            (old-harness (e-harness-create))
-           (new-harness (e-harness-create)))
+           (new-harness (e-harness-create))
+           scheduled)
       (e-harness-create-session old-harness :id "old")
       (e-harness-create-session new-harness :id "new")
       (let ((old (e-board-runtime-attach board old-harness "old"
@@ -1514,11 +1593,22 @@
          (e-harness-sessions old-harness) "old"
          '(:id "assistant-old" :role assistant :turn-id "old-turn" :content "old"))
         (e-board-runtime--publish-output old "old-turn")
-        (let ((new (e-board-runtime-rebind board "participant" new-harness "new")))
-          (e-session-append-message
-           (e-harness-sessions new-harness) "new"
-           '(:id "assistant-new" :role assistant :turn-id "new-turn" :content "new"))
-          (e-board-runtime--publish-output new "new-turn"))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq scheduled
+                           (append scheduled
+                                   (list (lambda ()
+                                           (apply function arguments))))))))
+          (let ((request (e-board-runtime-rebind-start
+                          board "participant" new-harness "new" "owner")))
+            (funcall (pop scheduled))
+            (funcall (pop scheduled))
+            (let ((new (e-request-lifecycle-terminal-payload request)))
+              (e-session-append-message
+               (e-harness-sessions new-harness) "new"
+               '(:id "assistant-new" :role assistant :turn-id "new-turn"
+                 :content "new"))
+              (e-board-runtime--publish-output new "new-turn"))))
         (let ((messages (e-board-messages
                          (e-board-registry-board-source-board board))))
           (should (equal (mapcar #'e-board-message-content messages) '("old" "new")))

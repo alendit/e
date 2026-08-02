@@ -131,13 +131,14 @@ consuming the logical pickup.
 When an attached session is busy, its retryable pickup adapter result likewise
 returns the head to =ready=; the next =turn-finished= event reschedules only
 that participant's head instead of losing the delivery token or polling.
-The private cross-harness runtime can now rebind an existing participant without
-changing its logical identity or FIFO: it generation-fences and unsubscribes the
-old endpoint, retries an already-ready pickup through the replacement, and
-ignores old endpoint events or deferred activity mailboxes.
-If its old FIFO head was delivering, accepted, or cancelling, rebind instead
-records that logical delivery as =uncertain= before the replacement is active;
-only the promoted successor may be delivered there.
+Participant rebind now uses the same controlled reconciliation owner as removal.
+Its first scheduled commit revalidates owner authority, replacement-session
+availability, and the exact old attachment before entering =detaching=.
+Undelivered FIFO records keep their logical identities, while an active turn or
+accepted old-endpoint receipt must settle before a prepared replacement
+subscription is published with the next attachment generation in one bounded
+commit.  The immediate rebind path and its uncertain-tombstone shortcut are
+removed; old endpoint events and deferred activity remain generation-fenced.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most

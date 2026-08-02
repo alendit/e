@@ -219,6 +219,14 @@ control grants are deliberately not consulted by this operation."
     (e-board-registry--participant board participant-or-id)
     t))
 
+(defun e-board-registry-authorize-participant-rebind
+    (board-or-id requester participant-or-id)
+  "Authorize REQUESTER to rebind PARTICIPANT-OR-ID on active BOARD-OR-ID."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--require-owner board requester)
+    (e-board-registry--participant board participant-or-id)
+    t))
+
 (defun e-board-registry--owner-count (board)
   "Return the number of current owner grants on BOARD.
 Administrative grant changes may scan this small registry-owned table; hot
