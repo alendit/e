@@ -132,6 +132,89 @@
                      '(post control)))
       (should-not (e-board-registry-participant-access-rights board target "member")))))
 
+(ert-deftest e-board-registry-test-delayed-routing-rechecks-current-grants ()
+  "Revocation fences protected selectors and pickup commit after publication."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (source (e-board-registry-board-source-board board))
+           (predicate-calls 0)
+           scheduled)
+      (e-board-registry-authorize-principal board "owner" "member" 'member)
+      (e-board-registry-authorize-principal board "owner" "target-owner" 'member)
+      (let ((target (e-board-registry-add-participant
+                     board :id "target" :principal "target-owner")))
+        (e-board-registry-install-subscription
+         board target
+         (list :tags '(main)
+               :predicate (lambda (_message) (cl-incf predicate-calls) t))
+         :id "target-main")
+        (setf (e-board-input-classification-scheduler source)
+              (lambda (drain) (push drain scheduled)))
+        (let ((tagged (e-board-post-input
+                       source :id "tagged" :tags '(main)
+                       :requester-actor "member")))
+          (e-board-registry-revoke-principal board "owner" "member")
+          (funcall (pop scheduled))
+          (should (= predicate-calls 0))
+          (should-not (e-board-publication-pickup-ids tagged)))
+        (e-board-registry-authorize-principal board "owner" "member" 'member)
+        (e-board-registry-grant-participant-access
+         board "owner" target "member" '(post))
+        (let* ((exact (e-board-post-input
+                       source :id "exact" :to "target"
+                       :requester-actor "member"))
+               (message (e-board-publication-message exact))
+               (frozen
+                (copy-e-board-subscription
+                 (e-board-find-subscription
+                  source
+                  (e-board-participant-create-pickup-subscription-id
+                   (e-board-registry-participant-source-participant target))))))
+          (e-board-registry-revoke-participant-access
+           board "owner" target "member")
+          (e-board--finalize-input-classification
+           source message exact (list frozen) nil)
+          (should-not (e-board-publication-pickup-ids exact)))
+        (e-board-registry-authorize-principal board "owner" "member" 'member)
+        (e-board-registry-install-subscription
+         board target '(:kind input :tags (follow))
+         :id "target-follow"
+         :effect '(:post-input :tags (derived) :content "derived"))
+        (let* ((before (length (e-board-messages source)))
+               (message
+                (e-board-publication-message
+                 (e-board-post-input source :id "continuation-source"
+                                     :tags '(follow)
+                                     :requester-actor "member")))
+               (frozen
+                (copy-e-board-subscription
+                 (e-board-find-subscription source "target-follow"))))
+          (e-board-registry-revoke-principal board "owner" "member")
+          ;; Classification may have frozen this match already; effect
+          ;; preparation must still consult the current grant state.
+          (e-board--accept-post-input-match source frozen message)
+          (should (= (length (e-board-messages source)) (1+ before)))
+          (should-not (gethash "target-follow"
+                               (e-board-activation-subscription-index source))))
+        (let ((revocations
+               (cl-remove-if-not
+                (lambda (event)
+                  (eq (e-board-event-type event) 'authorization-revoked))
+                (e-board-events source))))
+          (should (>= (length revocations) 4))
+          (should (member 'selector
+                          (mapcar (lambda (event)
+                                    (plist-get (e-board-event-data event) :phase))
+                                  revocations)))
+          (should (member 'pickup-finalization
+                          (mapcar (lambda (event)
+                                    (plist-get (e-board-event-data event) :phase))
+                                  revocations)))
+          (should (member 'effect-preparation
+                          (mapcar (lambda (event)
+                                    (plist-get (e-board-event-data event) :phase))
+                                  revocations))))))))
+
 (ert-deftest e-board-registry-test-reconnected-client-gets-a-fresh-generation ()
   "Reusing a detached client id never revives its old connection generation."
   (e-board-registry-test--with-empty-registries

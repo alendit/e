@@ -63,6 +63,12 @@ participants retain explicit cross-post grants, and generation-fenced client
 requester contexts resolve to principals before exact or tagged runtime ingress
 may append.  Exact cross-target ingress additionally checks the target-owned
 grant before publication.
+The board core now also invokes a narrow registry-owned authorization port at
+each delayed commit boundary: before selectors (and trusted predicates) inspect
+a record, before a frozen match creates a pickup, and before a continuation
+mutates its accumulator or prepares an effect.  An intervening principal or
+target-grant revoke records =authorization-revoked= and suppresses the still
+uncommitted outcome without faulting the source record.
 Configured harness instances now declare stable session-store ids plus complete
 catalog/access-store port pairs.  Registrations sharing one store id must expose
 identical port identities, and the instance catalog deduplicates them into one

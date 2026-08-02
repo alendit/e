@@ -120,6 +120,45 @@ board's participant identity from being used to mutate another board."
       (signal 'e-board-registry-participant-board-local (list id)))
     participant))
 
+(defun e-board-registry--classification-authorized-p
+    (board subscription message _phase)
+  "Return non-nil while SUBSCRIPTION and MESSAGE actors retain board access."
+  (let* ((target (gethash (e-board-subscription-participant-id subscription)
+                          (e-board-registry-board-participants board)))
+         (target-principal
+          (and target (e-board-registry-participant-principal target)))
+         (actor (e-board-message-requester-actor message))
+         requester-principal)
+    (when (and target
+               (memq (e-board-participant-state
+                      (e-board-registry-participant-source-participant target))
+                     '(active dormant stale))
+               (or (null target-principal)
+                   (e-board-registry-principal-role board target-principal)))
+      (setq requester-principal
+            (cond
+             ((null actor) :private-pre-cutover)
+             ((stringp actor)
+              (and (e-board-registry-principal-role board actor) actor))
+             ((and (listp actor) (eq (car actor) 'participant))
+              (when-let ((source
+                          (gethash (cadr actor)
+                                   (e-board-registry-board-participants board))))
+                (let ((principal (e-board-registry-participant-principal source)))
+                  (and (memq (e-board-participant-state
+                              (e-board-registry-participant-source-participant source))
+                             '(active dormant stale))
+                       (or (null principal)
+                           (e-board-registry-principal-role board principal))
+                       (or principal :private-pre-cutover)))))))
+      (and requester-principal
+           (or (null (e-board-message-to message))
+               (eq requester-principal :private-pre-cutover)
+               (condition-case nil
+                   (e-board-registry-authorize-exact-post
+                    board requester-principal target)
+                 (e-board-registry-authorization-denied nil)))))))
+
 (cl-defun e-board-registry-create (&key id id-function author principal)
   "Create and register an active board with stored AUTHOR and PRINCIPAL.
 ID-FUNCTION receives an identity kind and supplies all registry-owned ids.
@@ -127,9 +166,10 @@ The source board is registered with `e-board' under the same board identity."
   (let* ((id (or id (e-board-registry--next-id id-function 'board))))
     (when (gethash id e-board-registry--boards)
       (signal 'e-board-registry-id-conflict (list id)))
-    (let ((board (e-board-registry-board--create
+    (let* ((source-board (e-board-create :id id))
+           (board (e-board-registry-board--create
                   :id id
-                  :source-board (e-board-create :id id)
+                  :source-board source-board
                   :state 'active
                   :author author
                   :principal principal
@@ -140,6 +180,10 @@ The source board is registered with `e-board' under the same board identity."
                   :clients (make-hash-table :test 'equal)
                   :client-generations (make-hash-table :test 'equal)
                   :participants (make-hash-table :test 'equal))))
+      (setf (e-board-classification-authorizer source-board)
+            (lambda (subscription message phase)
+              (e-board-registry--classification-authorized-p
+               board subscription message phase)))
       (puthash id board e-board-registry--boards)
       board)))
 

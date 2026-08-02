@@ -160,7 +160,7 @@
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
   continuation-timer-scheduler subscription-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
-  open-activities closed-activities retention-floor)
+  open-activities closed-activities retention-floor classification-authorizer)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -223,6 +223,7 @@ The board object remains valid for inspection by its holder."
 
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
+          classification-authorizer
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
           subscription-timer-scheduler
@@ -237,6 +238,9 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
     (signal 'wrong-type-argument (list 'natnump pickup-pending-limit)))
   (unless (and (integerp retention-floor) (>= retention-floor 0))
     (signal 'wrong-type-argument (list 'natnump retention-floor)))
+  (unless (or (null classification-authorizer)
+              (functionp classification-authorizer))
+    (signal 'wrong-type-argument (list 'functionp classification-authorizer)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -265,6 +269,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :effects-scheduled nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
+                  :classification-authorizer classification-authorizer
                   :invocation-work-index (make-hash-table :test 'equal)
                   :aggregation-work-index (make-hash-table :test 'equal)
                   :terminal-classifications nil
@@ -1793,7 +1798,9 @@ later mute, replacement, or cancellation before any accumulator mutation."
   (when-let ((subscription
               (e-board-find-subscription board
                                          (e-board-subscription-id frozen-subscription))))
-    (when (eq (e-board-subscription-state subscription) 'active)
+    (when (and (eq (e-board-subscription-state subscription) 'active)
+               (e-board--authorize-classification
+                board subscription message 'effect-preparation))
       (let ((readiness (e-board-subscription-readiness subscription)))
         (if (null readiness)
             (e-board--fire-post-input board subscription message)
@@ -1994,31 +2001,45 @@ Return nil when the key is new and may be appended."
           (append (e-board-messages board) (list message)))
     message))
 
+(defun e-board--authorize-classification (board subscription message phase)
+  "Authorize SUBSCRIPTION's access to MESSAGE at deferred reducer PHASE."
+  (if-let ((authorizer (e-board-classification-authorizer board)))
+      (if (funcall authorizer subscription message phase)
+          t
+        (e-board--append-event
+         board 'authorization-revoked
+         (list :subscription-id (e-board-subscription-id subscription)
+               :message-id (e-board-message-id message) :phase phase))
+        nil)
+    t))
+
 (defun e-board--message-subscription-matches-p (board subscription message)
   "Classify one frozen SUBSCRIPTION against MESSAGE in a later router turn.
 Only input records may create pickups.  An explicit `:post-input' continuation
 may instead match any unaddressed board record, including output, activity, and
 fact publications."
-  (let ((matches
-         (cond
-          ((eq (e-board-subscription-effect subscription) 'create-pickup)
-           (and (eq (e-board-message-kind message) 'input)
-                (e-board--eligible-subscription-p board subscription)
-                (if-let ((to (e-board-message-to message)))
-                    (and (e-board-subscription-built-in-p subscription)
-                         (equal (e-board-subscription-participant-id subscription) to))
-                  (and (not (e-board-subscription-built-in-p subscription))
-                       (e-board--selector-matches-p board subscription message)))))
-          ((and (not (e-board-message-to message))
-                (eq (e-board-subscription-state subscription) 'active)
-                (not (e-board-subscription-built-in-p subscription))
-                (listp (e-board-subscription-effect subscription))
-                (eq (car (e-board-subscription-effect subscription)) :post-input))
-           (let ((lineage (plist-get (e-board-message-attributes message)
-                                     :board-subscription-lineage)))
-             (and (not (member (e-board-subscription-id subscription) lineage))
-                  (e-board--selector-matches-p board subscription message)))))))
-    matches))
+  (cond
+   ((eq (e-board-subscription-effect subscription) 'create-pickup)
+    (and (eq (e-board-message-kind message) 'input)
+         (e-board--eligible-subscription-p board subscription)
+         (e-board--authorize-classification
+          board subscription message 'selector)
+         (if-let ((to (e-board-message-to message)))
+             (and (e-board-subscription-built-in-p subscription)
+                  (equal (e-board-subscription-participant-id subscription) to))
+           (and (not (e-board-subscription-built-in-p subscription))
+                (e-board--selector-matches-p board subscription message)))))
+   ((and (not (e-board-message-to message))
+         (eq (e-board-subscription-state subscription) 'active)
+         (not (e-board-subscription-built-in-p subscription))
+         (listp (e-board-subscription-effect subscription))
+         (eq (car (e-board-subscription-effect subscription)) :post-input))
+    (and (e-board--authorize-classification
+          board subscription message 'selector)
+         (let ((lineage (plist-get (e-board-message-attributes message)
+                                   :board-subscription-lineage)))
+           (and (not (member (e-board-subscription-id subscription) lineage))
+                (e-board--selector-matches-p board subscription message)))))))
 
 (defun e-board--pickup-cause-metadata (message)
   "Return MESSAGE's bounded causal fields for one logical pickup envelope."
@@ -2055,6 +2076,12 @@ message kind may schedule its frozen explicit continuation matches."
         (post-subscriptions (nreverse post-subscriptions))
         (by-participant (make-hash-table :test 'equal))
         participant-ids pickup-ids)
+    (setq subscriptions
+          (cl-remove-if-not
+           (lambda (subscription)
+             (e-board--authorize-classification
+              board subscription message 'pickup-finalization))
+           subscriptions))
     (when (eq (e-board-message-kind message) 'input)
       ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
       (dolist (subscription subscriptions)
