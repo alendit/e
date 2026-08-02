@@ -493,6 +493,27 @@
                                (e-board-observer-read-page board "observer"))
                        nil))))))
 
+(ert-deftest e-board-test-observer-history-page-advances-only-after-acceptance ()
+  "A prepared history page leaves its reverse cursor unchanged until accepted."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "one" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (e-board-post-fact board :id "two" :tags '(main)
+                         :source-fact-key '(producer 1 2))
+      (let ((observer (e-board-observer-subscribe
+                       board "client" '(:tags (main)) :id "observer"
+                       :history-before-seq 3)))
+        (let ((page (e-board-observer-prepare-history-page
+                     board "observer" :limit 1)))
+          (should (= (e-board-observer-history-before-seq observer) 3))
+          (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
+                         '("two")))
+          (e-board-observer-accept-history-page
+           board "observer" (plist-get page :before-seq))
+          (should (= (e-board-observer-history-before-seq observer)
+                     (plist-get page :before-seq))))))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry

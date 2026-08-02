@@ -177,7 +177,8 @@ The source board is registered with `e-board' under the same board identity."
     client))
 
 (cl-defun e-board-registry-install-observer
-    (board-or-id client-id selector &key id (start-seq 0))
+    (board-or-id client-id selector &key id (start-seq 0)
+                 history-before-seq (history-floor 0))
   "Install an effect-free board observer owned by attached CLIENT-ID.
 The registry validates board-local client ownership; the source board retains
 the cursor and selector because it owns ordered message observation."
@@ -189,7 +190,9 @@ the cursor and selector because it owns ordered message observation."
      (e-board-registry-board-source-board board) client-id selector
      :id (or id (e-board-registry--next-id
                  (e-board-registry-board-id-function board) 'observer))
-     :start-seq start-seq)))
+     :start-seq start-seq
+     :history-before-seq history-before-seq
+     :history-floor history-floor)))
 
 (defun e-board-registry--observer-for-client (board client-id observer-id)
   "Return BOARD OBSERVER-ID after validating its attached owning CLIENT-ID."
@@ -218,6 +221,22 @@ the cursor and selector because it owns ordered message observation."
     (e-board-registry--observer-for-client board client-id observer-id)
     (e-board-observer-accept-page
      (e-board-registry-board-source-board board) observer-id through-seq)))
+
+(cl-defun e-board-registry-prepare-observer-history-page
+    (board-or-id client-id observer-id &key (limit 32))
+  "Prepare an attached CLIENT-ID's reverse observer page without advance."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-observer-prepare-history-page
+     (e-board-registry-board-source-board board) observer-id :limit limit)))
+
+(defun e-board-registry-accept-observer-history-page
+    (board-or-id client-id observer-id before-seq)
+  "Record attached CLIENT-ID's accepted history receipt BEFORE-SEQ."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-observer-accept-history-page
+     (e-board-registry-board-source-board board) observer-id before-seq)))
 
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal (state 'active))

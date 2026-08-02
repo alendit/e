@@ -193,6 +193,34 @@
         (should (= (e-board-observer-next-seq observer)
                    (plist-get page :through-seq)))))))
 
+(ert-deftest e-board-registry-test-client-acknowledges-only-its-observer-history-page ()
+  "An attached client explicitly accepts only its own prepared history page."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (other (e-board-registry-attach-client board :id "other"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "observer"
+                      :history-before-seq 3))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-post-fact source-board :id "one" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (e-board-post-fact source-board :id "two" :tags '(main)
+                         :source-fact-key '(producer 1 2))
+      (let ((page (e-board-registry-prepare-observer-history-page
+                   board (e-board-registry-client-id client) "observer" :limit 1)))
+        (should (= (e-board-observer-history-before-seq observer) 3))
+        (should-error
+         (e-board-registry-accept-observer-history-page
+          board (e-board-registry-client-id other) "observer"
+          (plist-get page :before-seq))
+         :type 'e-board-registry-error)
+        (e-board-registry-accept-observer-history-page
+         board (e-board-registry-client-id client) "observer"
+         (plist-get page :before-seq))
+        (should (= (e-board-observer-history-before-seq observer)
+                   (plist-get page :before-seq)))))))
+
 (ert-deftest e-board-registry-test-detach-client-cancels-its-observers ()
   "Disconnecting a client releases every nonterminal cursor it owns."
   (e-board-registry-test--with-empty-registries
