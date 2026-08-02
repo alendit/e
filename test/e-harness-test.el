@@ -310,6 +310,24 @@
       (should (plist-member event :payload))
       (should (plist-get event :created-at)))))
 
+(ert-deftest e-harness-test-durable-activity-provenance-reaches-subscribers ()
+  "A public durable event names the activity entry written before it."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (events nil))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-subscribe harness (lambda (event) (push event events))
+                         :session-id "session-1")
+    (e-harness--emit-turn-event
+     harness "session-1" "turn-1" 'tool-started '(:name "read"))
+    (let* ((event (car events))
+           (activity (car (e-harness-session-activity-events harness "session-1"))))
+      (should (equal (plist-get event :payload) '(:name "read")))
+      (should (equal (plist-get event :activity-entry-id)
+                     (plist-get activity :id)))
+      (should (= (plist-get event :board-activity-sequence)
+                 (plist-get activity :board-activity-sequence))))))
+
 (ert-deftest e-harness-test-unsubscribe-removes-subscription-idempotently ()
   "Unsubscribing removes a subscription record and can be repeated."
   (let* ((harness (e-harness-create

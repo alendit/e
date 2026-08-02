@@ -53,10 +53,12 @@
          (e-context--backend-message
           '(:role user
             :origin harness
+            :board-output-sequence 7
             :content "repair"
             :metadata (:display hidden :input-origin harness)
             :evidence-sources ((:handle "src:ABC"))))))
     (should-not (plist-member message :origin))
+    (should-not (plist-member message :board-output-sequence))
     (should-not (plist-member message :evidence-sources))
     (should-not (plist-member (plist-get message :metadata) :input-origin))
     (should (eq (plist-get (plist-get message :metadata) :display) 'hidden))))

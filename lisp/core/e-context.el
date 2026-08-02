@@ -214,6 +214,7 @@ backend-neutral messages that should appear before the session transcript."
     (cl-remf copy :type)
     (cl-remf copy :parent-id)
     (cl-remf copy :origin)
+    (cl-remf copy :board-output-sequence)
     (cl-remf copy e-context-evidence-sources-key)
     (when-let ((metadata (plist-get copy :metadata)))
       (setq metadata (copy-sequence metadata))

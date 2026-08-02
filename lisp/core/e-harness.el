@@ -1295,31 +1295,36 @@ Apply TRANSFORM when supplied."
          :metadata (list :event-type (and type (symbol-name type))))
    (lambda ()
      (let ((store (e-harness-sessions harness)))
-       (e-session-append-activity-event
-        store
-        session-id
-        turn-id
-        type
-        (e-harness--durable-activity-payload type payload)
-        :write-index nil)
-       (when (e-harness--activity-index-flush-event-p type)
-         (e-session--write-index store))))))
+       (let ((event (e-session-append-activity-event
+                     store
+                     session-id
+                     turn-id
+                     type
+                     (e-harness--durable-activity-payload type payload)
+                     :write-index nil)))
+         (when (e-harness--activity-index-flush-event-p type)
+           (e-session--write-index store))
+         event)))))
 
 (defun e-harness--emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
-  (when (and session-id
-             turn-id
-             (e-harness--durable-activity-event-p type)
-             (ignore-errors
-               (e-session-get (e-harness-sessions harness) session-id)))
-    (e-harness--append-durable-activity-event
-     harness session-id turn-id type payload))
-  (e-harness--emit
-   harness
-   (e-events-make :type type
-                  :session-id session-id
-                  :turn-id turn-id
-                  :payload payload)))
+  (let ((activity-entry
+         (when (and session-id
+                    turn-id
+                    (e-harness--durable-activity-event-p type)
+                    (ignore-errors
+                      (e-session-get (e-harness-sessions harness) session-id)))
+           (e-harness--append-durable-activity-event
+            harness session-id turn-id type payload))))
+    (e-harness--emit
+     harness
+     (e-events-make :type type
+                    :session-id session-id
+                    :turn-id turn-id
+                    :payload payload
+                    :activity-entry-id (plist-get activity-entry :id)
+                    :board-activity-sequence
+                    (plist-get activity-entry :board-activity-sequence)))))
 
 (defun e-harness-messages (harness session-id)
   "Return messages for SESSION-ID in HARNESS."
