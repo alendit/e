@@ -80,10 +80,10 @@
   (concat (file-name-sans-extension bytecode-file) ".el"))
 
 (defun e-dev--stale-bytecode-file-p (bytecode-file)
-  "Return non-nil when BYTECODE-FILE is older than its source file."
+  "Return non-nil when BYTECODE-FILE is orphaned or older than its source."
   (let ((source (e-dev--bytecode-source-file bytecode-file)))
-    (and (file-exists-p source)
-         (file-newer-than-file-p source bytecode-file))))
+    (or (not (file-exists-p source))
+        (file-newer-than-file-p source bytecode-file))))
 
 (defun e-dev--bytecode-candidates (root)
   "Return checkout-local bytecode candidates under ROOT."
@@ -111,8 +111,8 @@ DIRECTORY defaults to `e-dev-source-directory'."
 ;;;###autoload
 (defun e-dev-clean-stale-bytecode (&optional directory)
   "Delete stale byte-compiled e files under DIRECTORY.
-DIRECTORY defaults to `e-dev-source-directory'.  Only `.elc' files whose
-corresponding `.el' source is newer are removed."
+DIRECTORY defaults to `e-dev-source-directory'.  `.elc' files whose source
+is missing or newer are removed."
   (interactive)
   (let ((files (e-dev-stale-bytecode-files directory)))
     (dolist (file files)

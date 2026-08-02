@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | doom-startup-missing-chat-service/ | Doom startup missing chat service |
 | Closed | process-reporting-lockf-float-timeout/ | Process reporting lockf float timeout |
 | Closed | gpt-56-context-window-unknown/ | GPT-5.6 context window unknown to status and autocompaction |
 | Closed | openai-websocket-diagnostic-format-freeze/ | OpenAI WebSocket diagnostic formatting freezes Emacs |

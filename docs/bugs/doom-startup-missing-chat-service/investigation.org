@@ -1,0 +1,41 @@
+#+title: Doom Startup Missing Chat Service Investigation
+#+startup: overview
+
+* Evidence
+
+- The current source is =lisp/core/e-chat-service.el=; no source file remains
+  at =lisp/shells/chat/e-chat-service.el=.
+- The checkout retained an ignored orphan
+  =lisp/shells/chat/e-chat-service.elc=.
+- Doom's generated local-package build retained a dangling
+  =e-chat-service.el= symlink to the old =lisp/shells/chat/= source path.
+- The existing =e-dev-clean-stale-bytecode= only detected bytecode whose
+  corresponding source still existed and was newer.  It could not detect
+  bytecode orphaned by a move or deletion.
+
+* Conclusion
+
+The source move was complete, but generated and ignored artifacts still
+encoded the former location.  Doom resolved the stale package-build link while
+loading the demanded =e= package from the user's config, then reported the
+missing source path after exhausting Emacs load suffixes.
+
+* Fix
+
+- Treat a checkout-local =.elc= whose corresponding =.el= is missing as stale.
+- Extend the bytecode-cleanup regression to cover orphaned as well as older
+  bytecode while preserving fresh bytecode.
+- Run the cleanup against the checkout.
+- Force Doom to rebuild generated package builds without updating packages, so
+  the =e-chat-service.el= link targets =lisp/core/e-chat-service.el=.
+
+* Validation
+
+- The focused cleanup regression passes.
+- Doom's rebuilt =e= package contains no dangling symlinks.
+- Loading =e-chat-service= through the rebuilt package load path succeeds and
+  resolves to the generated link backed by =lisp/core/e-chat-service.el=.
+- The complete Eldev suite passes.
+
+The running Emacs was not reloaded or otherwise changed.  A fresh Emacs start
+uses the rebuilt package state.

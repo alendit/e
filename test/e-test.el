@@ -345,13 +345,14 @@
     (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "j"))
                 'e-chat-response-navigation-next))))
 
-(ert-deftest e-test-dev-clean-stale-bytecode-removes-only-stale-elc ()
-  "Development bytecode cleanup removes stale checkout-local `.elc' files."
+(ert-deftest e-test-dev-clean-stale-bytecode-removes-stale-and-orphan-elc ()
+  "Development bytecode cleanup removes stale and orphaned `.elc' files."
   (require 'e-dev)
   (let* ((root (make-temp-file "e-stale-bytecode-" t))
          (lisp-dir (expand-file-name "lisp/core" root))
          (stale-source (expand-file-name "stale.el" lisp-dir))
          (stale-elc (expand-file-name "stale.elc" lisp-dir))
+         (orphan-elc (expand-file-name "orphan.elc" lisp-dir))
          (fresh-source (expand-file-name "fresh.el" lisp-dir))
          (fresh-elc (expand-file-name "fresh.elc" lisp-dir)))
     (unwind-protect
@@ -359,6 +360,7 @@
           (make-directory lisp-dir t)
           (write-region "(provide 'stale)\n" nil stale-source nil 'silent)
           (write-region "stale bytecode\n" nil stale-elc nil 'silent)
+          (write-region "orphan bytecode\n" nil orphan-elc nil 'silent)
           (write-region "(provide 'fresh)\n" nil fresh-source nil 'silent)
           (write-region "fresh bytecode\n" nil fresh-elc nil 'silent)
           (set-file-times stale-elc (seconds-to-time 1))
@@ -366,10 +368,11 @@
           (set-file-times fresh-source (seconds-to-time 3))
           (set-file-times fresh-elc (seconds-to-time 4))
           (should (equal (e-dev-stale-bytecode-files root)
-                         (list stale-elc)))
+                         (list orphan-elc stale-elc)))
           (should (equal (e-dev-clean-stale-bytecode root)
-                         (list stale-elc)))
+                         (list orphan-elc stale-elc)))
           (should-not (file-exists-p stale-elc))
+          (should-not (file-exists-p orphan-elc))
           (should (file-exists-p fresh-elc)))
       (delete-directory root t))))
 
