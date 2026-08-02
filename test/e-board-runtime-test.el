@@ -350,15 +350,21 @@
          :activity-kind 'work-progress :source-activity-key '(participant 0 1))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-failed :session-id "session"
-                                   :turn-id "failed-turn"))
+                                   :turn-id "failed-turn"
+                                   :activity-entry-id "failed-event"))
         (should-not (e-board-open-activity source-board participant "failed-turn"))
-        (should (eq (e-board-message-activity-kind (car (last (e-board-messages source-board))) )
-                    'turn-failed))
+        (let ((activity (car (last (e-board-messages source-board)))))
+          (should (eq (e-board-message-activity-kind activity) 'turn-failed))
+          (should (equal (e-board-message-attributes activity)
+                         '(:source-event-id "failed-event"))))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-cancelled :session-id "session"
-                                   :turn-id "cancelled-turn"))
-        (should (eq (e-board-message-activity-kind (car (last (e-board-messages source-board))) )
-                    'turn-cancelled))))))
+                                   :turn-id "cancelled-turn"
+                                   :activity-entry-id "cancelled-event"))
+        (let ((activity (car (last (e-board-messages source-board)))))
+          (should (eq (e-board-message-activity-kind activity) 'turn-cancelled))
+          (should (equal (e-board-message-attributes activity)
+                         '(:source-event-id "cancelled-event"))))))))
 
 (ert-deftest e-board-runtime-test-provider-active-turn-publishes-one-bounded-summary ()
   "Provider event edges produce one structured summary without transcript scans."
@@ -376,12 +382,14 @@
                                      :created-at 100)))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-finished :session-id "session" :turn-id "turn"
-                                   :created-at 102.5))
+                                   :created-at 102.5
+                                   :activity-entry-id "finish-activity"))
         (let ((summary (car (last (e-board-messages source-board)))))
           (should (eq (e-board-message-activity-kind summary) 'turn-summary))
           (should (equal (e-board-message-attributes summary)
                          '(:status finished :duration-seconds 2.5
-                           :tool-count 1 :action-count 1))))
+                           :tool-count 1 :action-count 1
+                           :source-event-id "finish-activity"))))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-finished :session-id "session"
                                    :turn-id "no-provider"))
@@ -391,12 +399,14 @@
                                    :turn-id "cancelled" :created-at 200))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-cancelled :session-id "session"
-                                   :turn-id "cancelled" :created-at 203))
+                                   :turn-id "cancelled" :created-at 203
+                                   :activity-entry-id "cancel-activity"))
         (let ((summary (car (last (e-board-messages source-board)))))
           (should (eq (e-board-message-activity-kind summary) 'turn-summary))
           (should (equal (e-board-message-attributes summary)
                          '(:status turn-cancelled :duration-seconds 3
-                           :tool-count 0 :action-count 0))))))))
+                           :tool-count 0 :action-count 0
+                           :source-event-id "cancel-activity"))))))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
