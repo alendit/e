@@ -26,6 +26,8 @@
   "No configured harness instance exposes this session store")
 (define-error 'e-harness-instance-session-catalog-invalid-page
   "Session catalog returned an invalid bounded page")
+(define-error 'e-harness-instance-session-catalog-invalid-row
+  "Session catalog returned a non-dormant or outdated session row")
 (define-error 'e-harness-instance-session-request-stale
   "Harness instance catalog changed while a session request was pending")
 (define-error 'e-harness-instance-session-catalog-stale
@@ -282,8 +284,7 @@ declarative selection metadata; the factory still builds the live harness."
     (let ((cursor sessions)
           (count 0))
       (while (and (consp cursor) (< count (1+ limit)))
-        (unless (and (listp (car cursor))
-                     (plist-member (car cursor) :session-id))
+        (unless (listp (car cursor))
           (signal 'e-harness-instance-session-catalog-invalid-page
                   (list (plist-get entry :session-store-id) limit)))
         (cl-incf count)
@@ -297,14 +298,43 @@ declarative selection metadata; the factory still builds the live harness."
           :sessions
           (mapcar
            (lambda (session)
-             (append
-              (list :session-store-id (plist-get entry :session-store-id)
-                    :eligible-instance-ids
-                    (copy-sequence
-                     (plist-get entry :eligible-instance-ids)))
-              (copy-tree session)))
+             (e-harness-instance--normalize-session-catalog-row
+              entry session))
            sessions)
           :next-after (plist-get page :next-after))))
+
+(defun e-harness-instance--current-session-access-record-p (record)
+  "Return non-nil when RECORD has the required current access identity fields."
+  (and (listp record)
+       (plist-member record :controller)
+       (plist-get record :controller)
+       (plist-member record :version)
+       (integerp (plist-get record :version))
+       (>= (plist-get record :version) 0)))
+
+(defun e-harness-instance--normalize-session-catalog-row
+    (entry row &optional expected-session-id)
+  "Validate and decorate one current dormant catalog ROW from store ENTRY."
+  (let ((session-id (and (listp row) (plist-get row :session-id)))
+        (access-record (and (listp row) (plist-get row :access-record)))
+        (output-sequence (and (listp row)
+                              (plist-get row :board-output-sequence)))
+        (activity-sequence (and (listp row)
+                                (plist-get row :board-activity-sequence))))
+    (unless (and session-id
+                 (or (null expected-session-id)
+                     (equal session-id expected-session-id))
+                 (eq (plist-get row :state) 'dormant)
+                 (e-harness-instance--current-session-access-record-p access-record)
+                 (integerp output-sequence) (>= output-sequence 0)
+                 (integerp activity-sequence) (>= activity-sequence 0))
+      (signal 'e-harness-instance-session-catalog-invalid-row
+              (list (plist-get entry :session-store-id) session-id)))
+    (append
+     (list :session-store-id (plist-get entry :session-store-id)
+           :eligible-instance-ids
+           (copy-sequence (plist-get entry :eligible-instance-ids)))
+     (copy-tree row))))
 
 (cl-defun e-harness-instance--session-request-start
     (entry port-key owner id-prefix arguments normalizer stale-error
@@ -385,15 +415,34 @@ and failure callbacks; it may return a cancellation function.  The returned
      'e-harness-instance-session-catalog-stale
      :on-done on-done :on-error on-error)))
 
+(cl-defun e-harness-instance-session-catalog-read-start
+    (session-store-id session-id &key principal on-done on-error)
+  "Start one exact asynchronous dormant SESSION-ID catalog read.
+The request uses only the configured store port and never invokes a harness
+factory.  Successful completion requires a current dormant row with its
+versioned access record and persisted board publication counters."
+  (unless session-id
+    (signal 'wrong-type-argument (list 'identity session-id)))
+  (let* ((entry (e-harness-instance-session-store session-store-id))
+         (arguments (list :operation 'read
+                          :session-store-id session-store-id
+                          :session-id session-id
+                          :principal principal)))
+    (e-harness-instance--session-request-start
+     entry :session-catalog 'e-harness-instance-session-catalog
+     "session-catalog-read" arguments
+     (lambda (row)
+       (e-harness-instance--normalize-session-catalog-row
+        entry row session-id))
+     'e-harness-instance-session-catalog-stale
+     :on-done on-done :on-error on-error)))
+
 (defun e-harness-instance--normalize-session-access-result (entry result)
   "Validate and decorate one access-store RESULT for configured store ENTRY."
   (let ((record (and (listp result) (plist-get result :access-record))))
     (unless (and (listp result)
                  (plist-member result :access-record)
-                 (listp record)
-                 (plist-member record :controller)
-                 (plist-get record :controller)
-                 (plist-member record :version))
+                 (e-harness-instance--current-session-access-record-p record))
       (signal 'e-harness-instance-session-access-invalid-result
               (list (plist-get entry :session-store-id))))
     (append (list :session-store-id (plist-get entry :session-store-id))

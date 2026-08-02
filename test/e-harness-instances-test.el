@@ -207,7 +207,10 @@
         (should (functionp succeed))
         (should (functionp fail))
         (funcall succeed
-                 '(:sessions ((:session-id "session" :state dormant))
+                 '(:sessions
+                   ((:session-id "session" :state dormant
+                     :access-record (:controller "owner" :version 2)
+                     :board-output-sequence 4 :board-activity-sequence 7))
                    :next-after "next"))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (let* ((page (e-request-lifecycle-terminal-payload request))
@@ -218,6 +221,59 @@
           (should (equal (plist-get session :session-id) "session"))
           (should (equal (plist-get session :eligible-instance-ids)
                          '(:first :second))))))))
+
+(ert-deftest e-harness-instances-test-catalog-read-is-exact-and-current-schema ()
+  "Exact dormant lookup stays pending and accepts only a current persisted row."
+  (e-harness-instances-test--with-empty-registries
+    (let* (arguments succeed
+           (factory-calls 0)
+           (catalog (lambda (request on-done _on-error)
+                      (setq arguments request
+                            succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-harness-instance-session-catalog-read-start
+              "store" "session" :principal "owner")))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (eq (plist-get arguments :operation) 'read))
+        (should (equal (plist-get arguments :session-id) "session"))
+        (should (= factory-calls 0))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record (:controller "owner" :version 3)
+                   :board-output-sequence 8 :board-activity-sequence 13))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (let ((row (e-request-lifecycle-terminal-payload request)))
+          (should (equal (plist-get row :session-store-id) "store"))
+          (should (equal (plist-get row :eligible-instance-ids)
+                         '(:instance)))
+          (should (= (plist-get row :board-activity-sequence) 13)))))))
+
+(ert-deftest e-harness-instances-test-catalog-read-rejects-outdated-row ()
+  "Exact lookup fails instead of synthesizing missing publication counters."
+  (e-harness-instances-test--with-empty-registries
+    (let* (succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (let ((request
+             (e-harness-instance-session-catalog-read-start
+              "store" "session")))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record (:controller "owner" :version 3)))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-harness-instance-session-catalog-invalid-row))))))
 
 (ert-deftest e-harness-instances-test-catalog-page-fences-stale-mapping ()
   "A delayed page cannot commit after configured instance metadata changes."
