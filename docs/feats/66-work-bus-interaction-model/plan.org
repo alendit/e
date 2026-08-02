@@ -25,6 +25,9 @@ runtime drains only the resulting finalized pickup identities later.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.
+Its aggregation effect now also holds only the same runtime-owned opaque
+invocation target as executable-tool completion, never a board-retained
+callback closure.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime

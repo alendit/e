@@ -342,20 +342,28 @@ has no callback and is observed only."
         (e-board-enroll-work board handle :metadata metadata)))))
 
 (defun e-board-runtime--subscribe-aggregation
-    (harness handles mode timeout callback)
+    (harness handles mode timeout callback invocation-context)
   "Subscribe attached HARNESS await work through its source board."
-  (when-let* ((context (e-work-handle-context (car handles)))
-              (session-id (plist-get context :session-id))
+  (when-let* ((session-id (plist-get invocation-context :session-id))
               (attachment (gethash (e-board-runtime--session-key harness session-id)
                                    e-board-runtime--session-attachments)))
     (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
-           (call (plist-get context :tool-call))
-           (aggregation
-            (e-board-subscribe-aggregation
-             board (mapcar #'e-work-handle-id handles) mode callback
-             :id (list (plist-get context :turn-id) (plist-get call :id))
-             :timeout timeout)))
+           (call (plist-get invocation-context :tool-call))
+           (turn-id (plist-get invocation-context :turn-id))
+           (invocation-id (list turn-id (plist-get call :id)))
+           (target (e-board-runtime--register-invocation
+                    attachment turn-id (plist-get call :id)
+                    (lambda (_state reason) (funcall callback reason))))
+           aggregation)
+      (condition-case err
+          (setq aggregation
+                (e-board-subscribe-aggregation
+                 board (mapcar #'e-work-handle-id handles) mode target
+                 :id invocation-id :timeout timeout))
+        (error
+         (remhash target e-board-runtime--invocations)
+         (signal (car err) (cdr err))))
       (lambda ()
         (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))))))
 
@@ -486,9 +494,9 @@ the conservative idle-only harness delivery port is used."
            (e-board-runtime--enroll-work harness handle callback)))
         (e-harness-set-board-aggregation-function
          harness
-         (lambda (handles mode timeout callback)
+         (lambda (handles mode timeout callback invocation-context)
            (e-board-runtime--subscribe-aggregation
-            harness handles mode timeout callback)))
+            harness handles mode timeout callback invocation-context)))
         attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)

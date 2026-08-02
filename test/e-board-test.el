@@ -310,6 +310,11 @@
       (let* ((board (e-board-create :id "board"
                                     :effect-scheduler
                                     (lambda (effect) (push effect effects))
+                                    :invocation-effect-dispatcher
+                                    (lambda (_board target state reason)
+                                      (should (equal target "turn-1/call-1"))
+                                      (should (eq state 'aggregation))
+                                      (push reason reasons))
                                     :terminal-classification-scheduler
                                     (lambda (drain) (push drain routers))))
              (first (e-work-prepare
@@ -324,7 +329,7 @@
         (e-board-enroll-work board second)
         (e-board-subscribe-aggregation
          board (list (e-work-handle-id first) (e-work-handle-id second)) 'all
-         (lambda (reason) (push reason reasons)) :id "turn-1/call-1")
+         "turn-1/call-1" :id "turn-1/call-1")
         (e-work-start-prepared first)
         (e-work-start-prepared second)
         (e-work-finish first "one")
@@ -345,7 +350,12 @@
     (let (effects reasons)
       (let* ((board (e-board-create :id "board"
                                     :effect-scheduler
-                                    (lambda (effect) (push effect effects))))
+                                    (lambda (effect) (push effect effects))
+                                    :invocation-effect-dispatcher
+                                    (lambda (_board target state reason)
+                                      (should (equal target "timeout"))
+                                      (should (eq state 'aggregation))
+                                      (push reason reasons))))
              (handle (e-work-prepare
                       (e-work-spec-create
                        :id "pending" :execution 'render :interactive-policy 'async
@@ -353,7 +363,7 @@
         (e-board-enroll-work board handle)
         (e-board-subscribe-aggregation
          board (list (e-work-handle-id handle)) 'any
-         (lambda (reason) (push reason reasons)) :timeout 0.01)
+         "timeout" :timeout 0.01)
         (e-work-start-prepared handle)
         (sleep-for 0.05)
         (funcall (pop effects))

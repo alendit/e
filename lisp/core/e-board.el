@@ -89,7 +89,7 @@
 (cl-defstruct (e-board-aggregation
                 (:constructor e-board-aggregation--create)
                 (:conc-name e-board-aggregation-))
-  id work-ids mode state callback timer activation-id)
+  id work-ids mode state effect-target timer activation-id)
 
 (cl-defstruct (e-board-terminal-classification
                (:constructor e-board-terminal-classification--create)
@@ -401,7 +401,13 @@ effect records and never synchronously enter a tool or harness callback."
            (setf (e-board-aggregation-state aggregation) 'applying)
            (condition-case err
                (progn
-                 (funcall (e-board-aggregation-callback aggregation) reason)
+                 (let ((dispatcher (e-board-invocation-effect-dispatcher board)))
+                   (unless dispatcher
+                     (signal 'e-board-error
+                             (list "No invocation effect dispatcher" activation-id)))
+                   (funcall dispatcher board
+                            (e-board-aggregation-effect-target aggregation)
+                            'aggregation reason))
                  (setf (e-board-aggregation-state aggregation) 'committed)
                  (e-board--append-event
                   board 'effect-committed
@@ -413,17 +419,17 @@ effect records and never synchronously enter a tool or harness callback."
                (list :activation-id activation-id :error err))))))))))
 
 (cl-defun e-board-subscribe-aggregation
-    (board work-ids mode callback &key id timeout)
+    (board work-ids mode effect-target &key id timeout)
   "Install an ordered work aggregation reply subscription on BOARD.
-WORK-IDS must name currently observed work.  MODE is `all' or `any'.  CALLBACK
-is deferred after the board commits the corresponding activation and receives
-the reason `complete' or `timed-out'."
+WORK-IDS must name currently observed work.  MODE is `all' or `any'.
+EFFECT-TARGET remains opaque to the board and receives a later frozen reason
+through the injected invocation effect dispatcher."
   (unless (and (listp work-ids) work-ids)
     (signal 'e-board-error (list "Aggregation requires at least one work id")))
   (unless (memq mode '(all any))
     (signal 'e-board-error (list "Unknown aggregation mode" mode)))
-  (unless (functionp callback)
-    (signal 'wrong-type-argument (list 'functionp callback)))
+  (unless effect-target
+    (signal 'e-board-error (list "Aggregation effect target is required")))
   (dolist (work-id work-ids)
     (unless (e-board-observed-work board work-id)
       (signal 'e-board-error (list "Unknown board work" work-id))))
@@ -432,7 +438,7 @@ the reason `complete' or `timed-out'."
       (signal 'e-board-id-conflict (list id)))
     (let ((aggregation (e-board-aggregation--create
                         :id id :work-ids (copy-sequence work-ids) :mode mode
-                        :state 'open :callback callback)))
+                        :state 'open :effect-target effect-target)))
       (puthash id aggregation (e-board-aggregations board))
       (dolist (work-id work-ids)
         (e-board--index-work-subscription (e-board-aggregation-work-index board)

@@ -130,7 +130,8 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
                               handles mode timeout
                               (lambda (reason)
                                 (funcall on-done
-                                         (e-await-tool--report mode reason pairs))))
+                                         (e-await-tool--report mode reason pairs)))
+                              context)
                    (e-work-await-set
                     handles :mode mode :timeout timeout
                     :on-settle

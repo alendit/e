@@ -78,8 +78,9 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
              '(:id "c" :name "await" :arguments (:refs ["fake:a"]))
              :context
              (list :board-subscribe-aggregation
-                   (lambda (handles mode timeout callback)
+                   (lambda (handles mode timeout callback &optional context)
                      (setq received (list handles mode timeout))
+                     (should (plist-get context :tool-call))
                      (funcall callback 'complete)
                      (lambda () t)))
              :on-done (lambda (value) (setq result value)))

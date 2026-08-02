@@ -161,6 +161,41 @@
                      (e-board-invocation source-board '("turn" "call")))
                     'committed))))))
 
+(ert-deftest e-board-runtime-test-await-aggregation-uses-opaque-target ()
+  "Await completion uses the captured awaiting call rather than a board closure."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           reply)
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "watched" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done"))
+                      nil :context '(:session-id "session" :turn-id "source"
+                                     :tool-call (:id "source-call"))))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (funcall enroll handle nil)
+        (let ((cancel
+               (e-board-runtime--subscribe-aggregation
+                harness (list handle) 'all 30
+                (lambda (reason) (setq reply reason))
+                '(:session-id "session" :turn-id "await" :tool-call (:id "await-call")))))
+          (unwind-protect
+              (progn
+                (let ((aggregation (e-board-aggregation source-board
+                                                         '("await" "await-call"))))
+                  (should aggregation)
+                  (should-not (functionp
+                               (e-board-aggregation-effect-target aggregation))))
+                (e-work-start-prepared handle)
+                (e-board-drain-terminal-classifications source-board)
+                (e-board-drain-effects source-board)
+                (should (eq reply 'complete)))
+            (funcall cancel)))))))
+
 (ert-deftest e-board-runtime-test-invalid-invocation-rejects-before-enrollment ()
   "An invalid exact invocation leaves its prepared work off the board."
   (e-board-runtime-test--with-empty-state
