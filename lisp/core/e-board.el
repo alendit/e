@@ -1072,6 +1072,13 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
               (let ((quiet-period (plist-get readiness :quiet-period)))
                 (and (numberp quiet-period) (> quiet-period 0))))))))
 
+(defun e-board--validate-continuation-readiness (effect readiness)
+  "Reject a READINESS declaration that cannot belong to EFFECT."
+  (when (and readiness (not (and (listp effect) (eq (car effect) :post-input))))
+    (signal 'e-board-error (list "Readiness requires post-input effect" readiness)))
+  (unless (e-board--valid-continuation-readiness-p readiness)
+    (signal 'e-board-error (list "Invalid continuation readiness" readiness))))
+
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup)
            readiness)
@@ -1088,10 +1095,7 @@ restricted to input records."
   (unless (or (eq effect 'create-pickup)
               (and (listp effect) (eq (car effect) :post-input)))
     (signal 'e-board-error (list "Unsupported board effect" effect)))
-  (when (and readiness (not (and (listp effect) (eq (car effect) :post-input))))
-    (signal 'e-board-error (list "Readiness requires post-input effect" readiness)))
-  (unless (e-board--valid-continuation-readiness-p readiness)
-    (signal 'e-board-error (list "Invalid continuation readiness" readiness)))
+  (e-board--validate-continuation-readiness effect readiness)
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
   (unless (memq state '(active muted))
@@ -1509,13 +1513,18 @@ subscription records the relationship without rewriting its terminal state."
         (signal 'wrong-type-argument (list 'listp selector)))
       (unless (memq state '(active muted))
         (signal 'wrong-type-argument (list '(member active muted) state)))
-      (let ((replacement-effect
-             (if effect-supplied-p effect (e-board-subscription-effect subscription))))
+      (let* ((replacement-effect
+              (if effect-supplied-p effect (e-board-subscription-effect subscription)))
+             (replacement-readiness
+              (if readiness-supplied-p readiness
+                (e-board-subscription-readiness subscription))))
         (unless (or (eq replacement-effect 'create-pickup)
                     (and (listp replacement-effect)
                          (eq (car replacement-effect) :post-input)))
           (signal 'e-board-error
                   (list "Unsupported board effect" replacement-effect)))
+        (e-board--validate-continuation-readiness
+         replacement-effect replacement-readiness)
         (unless (memq (e-board-subscription-state subscription)
                       '(completed faulted cancelled expired))
           (e-board--transition-subscription board subscription 'cancelled))
@@ -1523,8 +1532,7 @@ subscription records the relationship without rewriting its terminal state."
                (e-board-subscribe
                 board (e-board-subscription-participant-id subscription) selector
                 :id replacement-id :state state :effect replacement-effect
-                :readiness (if readiness-supplied-p readiness
-                             (e-board-subscription-readiness subscription)))))
+                :readiness replacement-readiness)))
           (e-board--append-event
            board 'subscription-replaced
            (list :subscription-id subscription-id

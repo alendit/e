@@ -1014,6 +1014,38 @@
                                     :board-subscription-source-message-ids)
                            '("quiet-two")))))))))
 
+(ert-deftest e-board-test-continuation-accumulators-fence-on-mute-and-invalid-replacement ()
+  "Pending continuation state cannot survive a mute or failed replacement."
+  (e-board-test--with-empty-registry
+    (let (drains timers)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (drain) (push drain drains))
+                    :continuation-timer-scheduler
+                    (lambda (_seconds callback) (push callback timers) nil))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:kind fact :tags (source)) :id "continuation"
+                           :effect '(:post-input :to "one" :content "derived")
+                           :readiness '(:policy batch :count 2 :max-delay 1))
+        (e-board-post-fact board :id "source" :tags '(source)
+                           :source-fact-key '(test 1 1))
+        (e-board-set-subscription-state board "continuation" 'muted)
+        (should-not (e-board-subscription-accumulator
+                     (e-board-find-subscription board "continuation")))
+        (funcall (pop timers))
+        (funcall (pop drains))
+        (should-not (cl-find-if (lambda (message)
+                                  (eq (e-board-message-kind message) 'input))
+                                (e-board-messages board)))
+        (should-error
+         (e-board-replace-subscription
+          board "continuation" '(:tags (replacement))
+          :readiness '(:policy batch :count 0))
+         :type 'e-board-error)
+        (should (eq (e-board-subscription-state
+                     (e-board-find-subscription board "continuation"))
+                    'muted))))))
+
 (ert-deftest e-board-test-continuations-classify-output-activity-and-fact ()
   "Explicit continuations can derive input from every non-input board record."
   (e-board-test--with-empty-registry
