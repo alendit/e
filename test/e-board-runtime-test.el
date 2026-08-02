@@ -390,10 +390,11 @@
                          '(:status finished :duration-seconds 2.5
                            :tool-count 1 :action-count 1
                            :source-event-id "finish-activity"))))
-        (e-board-runtime--handle-harness-event
-         attachment (e-events-make :type 'turn-finished :session-id "session"
-                                   :turn-id "no-provider"))
-        (should (= (length (e-board-messages source-board)) 1))
+        (let ((message-count (length (e-board-messages source-board))))
+          (e-board-runtime--handle-harness-event
+           attachment (e-events-make :type 'turn-finished :session-id "session"
+                                     :turn-id "no-provider"))
+          (should (= (length (e-board-messages source-board)) message-count)))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'provider-request-started :session-id "session"
                                    :turn-id "cancelled" :created-at 200))
@@ -407,6 +408,29 @@
                          '(:status turn-cancelled :duration-seconds 3
                            :tool-count 0 :action-count 0
                            :source-event-id "cancel-activity"))))))))
+
+(ert-deftest e-board-runtime-test-harness-lifecycle-activity-is-bounded-and-provenanced ()
+  "Visible lifecycle events expose only their type and durable event identity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (participant "participant"))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment (e-board-runtime-attach
+                          board harness "session" :participant-id participant))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make :type 'provider-request-started :session-id "session"
+                        :turn-id "turn" :payload '(:secret "not-board-content")
+                        :activity-entry-id "provider-event"))
+        (let ((activity (car (last (e-board-messages source-board)))))
+          (should (eq (e-board-message-kind activity) 'activity))
+          (should (eq (e-board-message-activity-kind activity)
+                      'provider-request-started))
+          (should-not (e-board-message-content activity))
+          (should (equal (e-board-message-attributes activity)
+                         '(:source-event-id "provider-event"))))))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."

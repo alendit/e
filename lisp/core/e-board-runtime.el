@@ -74,6 +74,14 @@
 (defconst e-board-runtime-pickup-drain-limit 16
   "Maximum frozen pickup attempts the private runtime starts per drain.")
 
+(defconst e-board-runtime--visible-harness-activity-types
+  '(turn-started provider-request-started provider-request-finished
+    tool-started tool-finished action-started action-finished action-failed
+    turn-steered compaction-started compaction-finished compaction-failed)
+  "Harness lifecycle edges that are safe to expose as board activity.
+Raw event payloads and high-frequency reasoning or progress edges stay outside
+the board transcript.  Terminal events use their dedicated publisher below.")
+
 (defvar e-board-runtime--pending-pickup-head nil
   "Head cell of the FIFO queue of pending board pickup identities.")
 
@@ -459,6 +467,29 @@ these terminal states have no output to close the board-owned open projection."
        :source-activity-key
        (list participant-id (e-board-runtime-attachment-generation attachment) sequence)))))
 
+(defun e-board-runtime--publish-harness-activity (attachment event)
+  "Publish EVENT's bounded lifecycle edge without exposing its raw payload."
+  (let ((activity-kind (e-events-type event))
+        (turn-id (plist-get event :turn-id)))
+    (when (and turn-id
+               (memq activity-kind e-board-runtime--visible-harness-activity-types))
+      (let* ((registry-board (e-board-runtime-attachment-board attachment))
+             (board (e-board-registry-board-source-board registry-board))
+             (participant-id
+              (e-board-registry-participant-id
+               (e-board-runtime-attachment-participant attachment)))
+             (sequence
+              (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+        (e-board-post-activity
+         board :author (format "participant:%s" participant-id)
+         :subject-participant-id participant-id :source-turn-id turn-id
+         :activity-kind activity-kind
+         :attributes (when-let ((source-event-id
+                                 (plist-get event :activity-entry-id)))
+                       (list :source-event-id source-event-id))
+         :source-activity-key
+         (list participant-id (e-board-runtime-attachment-generation attachment) sequence))))))
+
 (defun e-board-runtime--turn-activity (attachment turn-id)
   "Return ATTACHMENT's bounded activity accumulator for TURN-ID."
   (or (gethash turn-id (e-board-runtime-attachment-turn-activity attachment))
@@ -515,6 +546,7 @@ these terminal states have no output to close the board-owned open projection."
   (when (e-board-runtime--current-attachment-p attachment)
     (let ((type (e-events-type event)))
     (e-board-runtime--observe-turn-activity attachment event)
+    (e-board-runtime--publish-harness-activity attachment event)
     (cond
      ((eq type 'turn-finished)
      (e-board-runtime--publish-output attachment (plist-get event :turn-id))
