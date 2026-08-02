@@ -95,22 +95,38 @@
   "Default queue delivery uses the harness queue without starting a turn."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create)))
+           (harness (e-harness-create))
+           attachment)
       (e-harness-create-session harness :id "session")
-      (e-board-runtime-attach board harness "session" :participant-id "participant")
-      (e-board-runtime-post-input board :to "participant" :mode 'queue
-                                  :content "queued input")
+      (setq attachment (e-board-runtime-attach
+                        board harness "session" :participant-id "participant"))
+      (let* ((publication (e-board-runtime-post-input board :to "participant" :mode 'queue
+                                                      :content "queued input"))
+             (pickup-id nil))
       (should-not (e-harness-queued-prompts harness "session"))
       (e-board-runtime--drain-input-routing
        board
        (lambda ()
          (e-board-drain-input-classifications
           (e-board-registry-board-source-board board))))
+      (setq pickup-id
+            (car (e-board-message-pickup-ids
+                  (e-board-publication-message publication))))
       (e-board-runtime--drain-pickups)
       (should (equal (plist-get (car (e-harness-queued-prompts harness "session"))
                                 :prompt)
                      "queued input"))
-       (should-not (plist-get (e-harness-state harness "session") :active-turn)))))
+       (should (eq (e-board-pickup-state
+                    (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
+                   'accepted))
+       (e-board-runtime--handle-harness-event
+        attachment
+        (e-events-make :type 'input-consumed :session-id "session" :turn-id "turn"
+                       :payload (list :delivery-id pickup-id)))
+       (should (eq (e-board-pickup-state
+                    (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
+                   'consumed))
+       (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
 
 (ert-deftest e-board-runtime-test-attached-session-enrolls-prepared-work-before-start ()
   "An attached harness maps turn/tool work to its participant board."

@@ -33,6 +33,9 @@ The board now owns an initial per-participant pickup FIFO: only the head is
 =ready=, delivery atomically fences it, and a synchronous consumed receipt
 promotes its successor; a failed uncommitted adapter attempt restores the head
 to =ready=.  Harness acceptance/consumption reconciliation remains
+partial: queued delivery stays =accepted= until the harness appends its user
+message and emits a correlated =input-consumed= receipt, while inject appends
+and consumes synchronously.  Discard/uncertain/rebind reconciliation remains
 to be generalized in the delivery ledger slice.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;

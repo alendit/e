@@ -291,8 +291,8 @@ explicit ids to individual operations takes precedence over this generator."
 Return the newly ready pickup identity, if any."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (eq (e-board-pickup-state pickup) 'delivering)
-      (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
+    (unless (memq (e-board-pickup-state pickup) '(delivering accepted))
+      (signal 'e-board-error (list "Pickup is not delivering or accepted" delivery-id)))
     (let* ((participant-id (e-board-pickup-participant-id pickup))
            (queue (e-board--pickup-queue board participant-id)))
       (unless (equal (car queue) delivery-id)
@@ -308,6 +308,16 @@ Return the newly ready pickup identity, if any."
           (e-board--append-event board 'pickup-ready
                                  (list :delivery-id next-id))
           next-id)))))
+
+(defun e-board-pickup-accept-delivery (board delivery-id)
+  "Record that DELIVERY-ID entered the harness but awaits consumption receipt."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (eq (e-board-pickup-state pickup) 'delivering)
+      (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
+    (setf (e-board-pickup-state pickup) 'accepted)
+    (e-board--append-event board 'pickup-accepted (list :delivery-id delivery-id))
+    pickup))
 
 (defun e-board-pickup-return-ready (board delivery-id err)
   "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR."

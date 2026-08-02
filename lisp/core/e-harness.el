@@ -2743,8 +2743,8 @@ cancellation.  SESSION-ID identifies the session."
              (e-work-fail turn-work err)
              (signal (car err) (cdr err)))))
         (puthash session-id entry (e-harness-active-turns harness))
-       (condition-case err
-           (plist-put entry
+        (condition-case err
+            (plist-put entry
                       :prompt-message-id
                       (plist-get
                        (e-harness--append-user-message
@@ -2760,6 +2760,13 @@ cancellation.  SESSION-ID identifies the session."
              harness session-id turn-id message details)
             (remhash session-id (e-harness-active-turns harness))
              (signal (car err) (cdr err)))))
+        (when (plist-get metadata :board-delivery-id)
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'input-consumed
+           (list :delivery-id (copy-tree (plist-get metadata :board-delivery-id))
+                 :board-id (plist-get metadata :board-id)
+                 :participant-id (plist-get metadata :board-participant-id)
+                 :message-id (plist-get entry :prompt-message-id))))
         (e-work-start-prepared turn-work :arguments nil
                                :context (list :session-id session-id
                                               :turn-id turn-id

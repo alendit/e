@@ -389,8 +389,19 @@ has no callback and is observed only."
 
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish an attached participant's durable final output from EVENT."
-  (when (eq (e-events-type event) 'turn-finished)
-    (e-board-runtime--publish-output attachment (plist-get event :turn-id))))
+  (pcase (e-events-type event)
+    ('turn-finished
+     (e-board-runtime--publish-output attachment (plist-get event :turn-id)))
+    ('input-consumed
+     (let* ((payload (plist-get event :payload))
+            (delivery-id (plist-get payload :delivery-id))
+            (board (e-board-registry-board-source-board
+                    (e-board-runtime-attachment-board attachment))))
+       (when-let ((pickup (e-board-pickup board delivery-id)))
+         (when (eq (e-board-pickup-state pickup) 'accepted)
+           (when-let ((next-id (e-board-pickup-complete-delivery board delivery-id)))
+             (e-board-runtime--enqueue-pickups
+              (e-board-runtime-attachment-board attachment) (list next-id)))))))))
 
 (defun e-board-runtime--active-board (board-or-id)
   "Return active registry BOARD-OR-ID."
@@ -428,9 +439,11 @@ busy session leaves its pickup pending for an explicit later retry."
       (signal 'e-board-runtime-session-busy (list session-id)))
     (pcase (e-board-pickup-mode pickup)
       ('queue
-       (e-harness-request-follow-up harness session-id prompt :metadata metadata))
+       (list :accepted
+             (e-harness-request-follow-up harness session-id prompt :metadata metadata)))
       ('inject
-       (e-harness-prompt-async harness session-id prompt :metadata metadata)))))
+       (e-harness-prompt-async harness session-id prompt :metadata metadata)
+       :consumed))))
 
 (cl-defun e-board-runtime-attach
     (board-or-id harness session-id
@@ -513,13 +526,13 @@ the conservative idle-only harness delivery port is used."
                                             (e-board-pickup-message-id pickup))))
         (e-board-pickup-start-delivery source-board delivery-id)
         (condition-case err
-            (let ((next-id
-                   (progn
-                     (funcall (e-board-runtime-attachment-delivery-function attachment)
-                              attachment pickup message)
-                     (e-board-pickup-complete-delivery source-board delivery-id))))
-              (when next-id
-                (e-board-runtime--enqueue-pickups board (list next-id))))
+            (let ((result (funcall (e-board-runtime-attachment-delivery-function attachment)
+                                   attachment pickup message)))
+              (if (eq (car-safe result) :accepted)
+                  (e-board-pickup-accept-delivery source-board delivery-id)
+                (when-let ((next-id (e-board-pickup-complete-delivery
+                                     source-board delivery-id)))
+                  (e-board-runtime--enqueue-pickups board (list next-id)))))
           (error
            (e-board-pickup-return-ready source-board delivery-id err)
            (signal (car err) (cdr err))))))))
