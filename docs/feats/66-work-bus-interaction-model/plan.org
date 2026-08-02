@@ -57,6 +57,16 @@ private until the cutover removes superseded interfaces.
 Client attachments now retain an explicit active/detached state and a monotonic
 per-client connection generation across reattachment, supplying the stable
 fence identity for later observer handoff callbacks.
+Registry boards now retain explicit owner/member principal grants; named
+clients and named participants require a current board grant, target
+participants retain explicit cross-post grants, and generation-fenced client
+requester contexts resolve to principals before exact or tagged runtime ingress
+may append.  Exact cross-target ingress additionally checks the target-owned
+grant before publication.
+Configured harness instances now declare stable session-store ids plus complete
+catalog/access-store port pairs.  Registrations sharing one store id must expose
+identical port identities, and the instance catalog deduplicates them into one
+store record with a deterministic eligible-instance set.
 Terminal work publication now freezes indexed invocation/aggregation candidates
 and defers their activation classification to a bounded board drain.
 Input append now freezes a private subscription snapshot and returns before
@@ -73,6 +83,12 @@ generation-fenced or expired entries.
 An unexpected core selector/index fault now terminates that attempt as visible
 =routing-failed= before any pickup-set commit; trusted predicate faults remain
 subscription-local.
+Each routed pickup now freezes its complete logical delivery envelope in the
+board core: message and participant identity, matched subscription ids, source
+event range, mode, frozen requester actor, bounded causal metadata,
+content, and reference.  The private harness adapter delivers those frozen
+bytes and metadata rather than rereading mutable public message state; endpoint
+generation remains runtime-owned.
 The board now owns an initial per-participant pickup FIFO: only the head is
 =ready=, delivery atomically fences it, and a synchronous consumed receipt
 promotes its successor; a failed uncommitted adapter attempt restores the head

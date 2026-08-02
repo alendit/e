@@ -275,30 +275,43 @@
       (let* ((publication (e-board-runtime-post-input board :to "participant" :mode 'queue
                                                       :content "queued input"))
              (pickup-id nil))
-      (should-not (e-harness-queued-prompts harness "session"))
-      (e-board-runtime--drain-input-routing
-       board
-       (lambda ()
-         (e-board-drain-input-classifications
-          (e-board-registry-board-source-board board))))
-      (setq pickup-id
-            (car (e-board-message-pickup-ids
-                  (e-board-publication-message publication))))
-      (e-board-runtime--drain-pickups)
-      (should (equal (plist-get (car (e-harness-queued-prompts harness "session"))
-                                :prompt)
-                     "queued input"))
-       (should (eq (e-board-pickup-state
-                    (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
-                   'accepted))
-       (e-board-runtime--handle-harness-event
-        attachment
-        (e-events-make :type 'input-consumed :session-id "session" :turn-id "turn"
-                       :payload (list :delivery-id pickup-id)))
-       (should (eq (e-board-pickup-state
-                    (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
-                   'consumed))
-       (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
+        (should-not (e-harness-queued-prompts harness "session"))
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (setq pickup-id
+              (car (e-board-message-pickup-ids
+                    (e-board-publication-message publication))))
+        (setf (e-board-message-content (e-board-publication-message publication))
+              "mutated after routing")
+        (e-board-runtime--drain-pickups)
+        (let* ((queued (car (e-harness-queued-prompts harness "session")))
+               (metadata (plist-get queued :metadata)))
+          (should (equal (plist-get queued :prompt) "queued input"))
+          (should (eq (plist-get metadata :board-input-mode) 'queue))
+          (should (equal (plist-get metadata :board-message-id)
+                         (e-board-message-id
+                          (e-board-publication-message publication))))
+          (should (equal (plist-get metadata :board-event-seq-range)
+                         (list (e-board-message-seq
+                                (e-board-publication-message publication))
+                               (e-board-message-seq
+                                (e-board-publication-message publication))))))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup (e-board-registry-board-source-board board)
+                                     pickup-id))
+                    'accepted))
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make :type 'input-consumed :session-id "session" :turn-id "turn"
+                        :payload (list :delivery-id pickup-id)))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup (e-board-registry-board-source-board board)
+                                     pickup-id))
+                    'consumed))
+        (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
 
 (ert-deftest e-board-runtime-test-busy-delivery-retries-after-turn-finished ()
   "A retryable busy adapter result stays ready until the terminal wake edge."
@@ -471,6 +484,26 @@
                                     :content "yes")
         (should (equal (e-board-message-content (car (e-board-messages source-board)))
                        "yes"))))))
+
+(ert-deftest e-board-runtime-test-explicit-tagged-ingress-requires-live-requester ()
+  "Tagged ingress authenticates its client generation before board append."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (_client (e-board-registry-attach-client
+                     board :id "client" :principal "owner"))
+           (context (e-board-registry-client-requester-context board "client"))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-runtime-post-input board :id "allowed" :tags '(main)
+                                  :requester context :content "yes")
+      (should (equal (e-board-message-requester-actor
+                      (car (e-board-messages source-board)))
+                     "owner"))
+      (e-board-registry-detach-client board "client")
+      (should-error
+       (e-board-runtime-post-input board :id "denied" :tags '(main)
+                                   :requester context :content "no")
+       :type 'e-board-registry-authorization-denied)
+      (should (= (length (e-board-messages source-board)) 1)))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."

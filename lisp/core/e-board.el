@@ -31,7 +31,7 @@
 (cl-defstruct (e-board-message
                (:constructor e-board-message--create)
                (:conc-name e-board-message-))
-  id board-id seq kind author tags attributes to mode content reference
+  id board-id seq kind author requester-actor tags attributes to mode content reference
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
   source-activity-key source-fact-key subject-participant-id source-turn-id
   activity-kind
@@ -96,7 +96,8 @@
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
-  delivery-id board-id message-id participant-id subscription-ids mode state)
+  delivery-id board-id participant-id message-id subscription-ids
+  event-seq-range mode requester-actor cause-metadata content reference state)
 
 (cl-defstruct (e-board-publication
                (:constructor e-board-publication--create)
@@ -1839,6 +1840,9 @@ later mute, replacement, or cancellation before any accumulator mutation."
                        :author (or (plist-get effect :author)
                                    (format "participant:%s"
                                            (e-board-subscription-participant-id subscription)))
+                       :requester-actor
+                       (list 'participant
+                             (e-board-subscription-participant-id subscription))
                        :tags (copy-tree (plist-get effect :tags))
                        :attributes
                        (append attributes
@@ -1907,7 +1911,8 @@ Return nil when the key is new and may be appended."
       (puthash (list kind producer generation) sequence
                (e-board-source-high-watermarks board)))))
 
-(defun e-board--make-message (board kind id author tags attributes to mode content reference
+(defun e-board--make-message (board kind id author requester-actor
+                                     tags attributes to mode content reference
                                      source-input-key source-output-key
                                      reply-to-message-ids caused-by-delivery-ids
                                      &optional source-activity-key source-fact-key
@@ -1921,8 +1926,9 @@ Return nil when the key is new and may be appended."
          (message
           (e-board-message--create
            :id id :board-id (e-board-id board) :seq (e-board-event-seq event)
-            :kind kind :author author :tags (copy-tree tags)
-            :attributes (copy-tree attributes) :to to :mode mode
+           :kind kind :author author :requester-actor (copy-tree requester-actor)
+           :tags (copy-tree tags)
+           :attributes (copy-tree attributes) :to to :mode mode
            :content content :reference reference
            :source-input-key (copy-tree source-input-key)
            :source-output-key (copy-tree source-output-key)
@@ -1966,6 +1972,32 @@ fact publications."
                   (e-board--selector-matches-p board subscription message)))))))
     matches))
 
+(defun e-board--pickup-cause-metadata (message)
+  "Return MESSAGE's bounded causal fields for one logical pickup envelope."
+  (let ((attributes (e-board-message-attributes message)))
+    (list :reply-to-message-ids
+          (copy-tree (e-board-message-reply-to-message-ids message))
+          :caused-by-delivery-ids
+          (copy-tree (e-board-message-caused-by-delivery-ids message))
+          :source-input-key
+          (copy-tree (e-board-message-source-input-key message))
+          :subscription-lineage
+          (copy-tree (plist-get attributes :board-subscription-lineage))
+          :source-message-ids
+          (copy-tree
+           (plist-get attributes :board-subscription-source-message-ids)))))
+
+(defun e-board--copy-envelope-value (value)
+  "Recursively copy mutable sequence storage in logical envelope VALUE."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((consp value)
+    (cons (e-board--copy-envelope-value (car value))
+          (e-board--copy-envelope-value (cdr value))))
+   ((vectorp value)
+    (apply #'vector (mapcar #'e-board--copy-envelope-value value)))
+   (t value)))
+
 (defun e-board--finalize-input-classification
     (board message publication subscriptions post-subscriptions)
   "Commit MESSAGE's deferred pickups and continuation effects.
@@ -2001,10 +2033,25 @@ message kind may schedule its frozen explicit continuation matches."
                  (pickup
                   (e-board-pickup--create
                    :delivery-id delivery-id :board-id (e-board-id board)
-                   :message-id (e-board-message-id message)
                    :participant-id participant-id
-                   :subscription-ids (gethash participant-id by-participant)
-                   :mode (e-board-message-mode message))))
+                   :message-id (e-board-message-id message)
+                   :subscription-ids
+                   (copy-sequence (gethash participant-id by-participant))
+                   :event-seq-range (list (e-board-message-seq message)
+                                          (e-board-message-seq message))
+                   :mode (e-board-message-mode message)
+                   :requester-actor
+                   (e-board--copy-envelope-value
+                    (e-board-message-requester-actor message))
+                   :cause-metadata
+                   (e-board--copy-envelope-value
+                    (e-board--pickup-cause-metadata message))
+                   :content
+                   (e-board--copy-envelope-value
+                    (e-board-message-content message))
+                   :reference
+                   (e-board--copy-envelope-value
+                    (e-board-message-reference message)))))
             (puthash delivery-id pickup (e-board-pickups board))
             (e-board--enqueue-pickup board pickup)
             (setq pickup-ids (append pickup-ids (list delivery-id)))))
@@ -2096,7 +2143,8 @@ the same bounded queue solely to classify explicit continuation subscriptions."
     (setf (e-board-routed-pickup-results board) nil)))
 
 (cl-defun e-board-post-input
-    (board &key id author tags attributes to (mode 'inject) content reference source-input-key)
+    (board &key id author requester-actor tags attributes to (mode 'inject)
+           content reference source-input-key)
   "Append one input message and queue its routing, returning a publication.
 With TO, only its participant's built-in address subscription is considered.
 Without TO, active ordinary tag subscriptions receive one frozen pickup each.
@@ -2107,7 +2155,8 @@ return status `source-history-expired' without appending or routing again."
   (or (e-board--source-publication board 'input source-input-key)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
-                        board 'input id author tags attributes to mode content reference
+                        board 'input id author requester-actor
+                        tags attributes to mode content reference
                        source-input-key nil nil nil))
              (publication (e-board-publication--create
                            :status 'posted :message message :pickup-ids nil)))
@@ -2134,7 +2183,7 @@ at-most-once.  Outputs never create participant pickups."
   (or (e-board--source-publication board 'output source-output-key)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
-                        board 'output id author tags nil nil nil content reference nil
+                        board 'output id author nil tags nil nil nil content reference nil
                        source-output-key reply-to-message-ids
                        caused-by-delivery-ids nil nil subject-participant-id
                        source-turn-id nil)))
@@ -2165,7 +2214,7 @@ an activity tag by itself cannot re-enter a participant inbox."
       (let* ((id (or id (e-board--next-id board 'message)))
              (message
               (e-board--make-message
-               board 'activity id author tags attributes nil nil content reference
+               board 'activity id author nil tags attributes nil nil content reference
                nil nil reply-to-message-ids caused-by-delivery-ids
                source-activity-key nil subject-participant-id source-turn-id
                activity-kind)))
@@ -2185,7 +2234,7 @@ an activity tag by itself cannot re-enter a participant inbox."
       (let* ((id (or id (e-board--next-id board 'message)))
              (message
               (e-board--make-message
-               board 'fact id author tags attributes nil nil content reference
+               board 'fact id author nil tags attributes nil nil content reference
                nil nil nil nil nil source-fact-key nil nil nil)))
         (e-board--remember-source board 'fact source-fact-key message)
         (let ((publication (e-board-publication--create

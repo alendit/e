@@ -610,16 +610,27 @@ these terminal states have no output to close the board-owned open projection."
   (list :input-origin 'board
         :board-delivery-id (copy-tree (e-board-pickup-delivery-id pickup))
         :board-id (e-board-pickup-board-id pickup)
-        :board-participant-id (e-board-pickup-participant-id pickup)))
+        :board-participant-id (e-board-pickup-participant-id pickup)
+        :board-message-id (e-board-pickup-message-id pickup)
+        :board-subscription-ids
+        (copy-sequence (e-board-pickup-subscription-ids pickup))
+        :board-event-seq-range
+        (copy-sequence (e-board-pickup-event-seq-range pickup))
+        :board-input-mode (e-board-pickup-mode pickup)
+        :board-reference (copy-tree (e-board-pickup-reference pickup))
+        :board-requester-actor
+        (copy-tree (e-board-pickup-requester-actor pickup))
+        :board-cause-metadata
+        (copy-tree (e-board-pickup-cause-metadata pickup))))
 
-(defun e-board-runtime--deliver-to-harness (attachment pickup message)
+(defun e-board-runtime--deliver-to-harness (attachment pickup _message)
   "Deliver PICKUP's MESSAGE through ATTACHMENT's idle harness session.
 Queue-mode messages enter the harness follow-up queue.  Inject-mode messages
 start an asynchronous prompt only while no active turn owns the session; a
 busy session leaves its pickup pending for an explicit later retry."
   (let* ((harness (e-board-runtime-attachment-harness attachment))
          (session-id (e-board-runtime-attachment-session-id attachment))
-         (prompt (e-board-message-content message))
+         (prompt (e-board-pickup-content pickup))
          (metadata (e-board-runtime--delivery-metadata pickup)))
     (unless (and (stringp prompt) (not (string-empty-p prompt)))
       (user-error "Board input content must be a non-empty string"))
@@ -815,11 +826,12 @@ the new endpoint."
                  (mode 'inject) content reference source-input-key)
   "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
-publications only retry pickups that remain pending.  REQUESTER, when supplied
-for an exact post, must be an active registry client requester context."
+publications only retry pickups that remain pending.  REQUESTER, when supplied,
+must be an active registry client requester context; exact posts additionally
+require authority for their target participant."
   (let* ((board (e-board-runtime--active-board board-or-id))
          (requester-principal
-          (and requester to
+          (and requester
                (e-board-registry-resolve-requester-principal board requester)))
          (_authorization
           (and requester to
@@ -828,7 +840,8 @@ for an exact post, must be an active registry client requester context."
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
-            :id id :author author :tags tags :attributes attributes :to to :mode mode :content content
+            :id id :author author :requester-actor requester-principal
+           :tags tags :attributes attributes :to to :mode mode :content content
            :reference reference :source-input-key source-input-key)))
     (e-board-runtime--enqueue-pickups
      board (e-board-publication-pickup-ids publication))

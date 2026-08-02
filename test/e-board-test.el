@@ -91,6 +91,52 @@
         (e-board-subscribe board "two" '(:tags (main)) :id "late")
          (should-not (member "late" (e-board-pickup-subscription-ids one)))))))
 
+(ert-deftest e-board-test-pickup-freezes-logical-delivery-envelope ()
+  "A pickup owns immutable payload, provenance, and causal routing metadata."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one"
+                               :create-pickup-subscription-id "address")
+      (e-board-subscribe board "one" '(:tags (main)) :id "main")
+      (let* ((publication
+              (e-board-post-input
+               board :id "message" :requester-actor "principal"
+               :tags '(main)
+               :attributes '(:board-subscription-lineage (origin)
+                             :board-subscription-source-message-ids (source))
+               :content "frozen" :reference '(:resource "board://message")
+               :source-input-key '(producer 3 7)))
+             (message (e-board-publication-message publication))
+             (pickup (e-board-pickup board '("board" "message" "one"))))
+        (should (equal (e-board-pickup-event-seq-range pickup)
+                       (list (e-board-message-seq message)
+                             (e-board-message-seq message))))
+        (should (equal (e-board-pickup-subscription-ids pickup) '("main")))
+        (should (equal (e-board-pickup-requester-actor pickup) "principal"))
+        (should (equal (e-board-pickup-content pickup) "frozen"))
+        (should (equal (e-board-pickup-reference pickup)
+                       '(:resource "board://message")))
+        (should
+         (equal (e-board-pickup-cause-metadata pickup)
+                '(:reply-to-message-ids nil
+                  :caused-by-delivery-ids nil
+                  :source-input-key (producer 3 7)
+                  :subscription-lineage (origin)
+                  :source-message-ids (source))))
+        ;; The message is public audit state; later accidental mutation cannot
+        ;; rewrite the already-routed logical delivery bytes or provenance.
+        (setf (e-board-message-content message) "changed"
+              (e-board-message-requester-actor message) "changed"
+              (e-board-message-reference message) nil
+              (e-board-message-attributes message) nil)
+        (should (equal (e-board-pickup-content pickup) "frozen"))
+        (should (equal (e-board-pickup-requester-actor pickup) "principal"))
+        (should (equal (e-board-pickup-reference pickup)
+                       '(:resource "board://message")))
+        (should (equal (plist-get (e-board-pickup-cause-metadata pickup)
+                                  :subscription-lineage)
+                       '(origin)))))))
+
 (ert-deftest e-board-test-condition-selector-matches-author-and-attributes ()
   "Generic routes conjunctively match immutable author and attributes."
   (e-board-test--with-empty-registry
