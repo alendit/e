@@ -438,6 +438,24 @@
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
+(ert-deftest e-board-runtime-test-authorized-exact-input-checks-requester-before-post ()
+  "An explicit requester cannot create an unauthorized exact board input."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner")))
+      (e-board-registry-authorize-principal board "owner" "target-owner" 'member)
+      (let* ((target (e-board-registry-add-participant
+                      board :id "target" :principal "target-owner"))
+             (source-board (e-board-registry-board-source-board board)))
+        (should-error
+         (e-board-runtime-post-input board :id "denied" :to target :requester "stranger"
+                                     :content "no")
+         :type 'e-board-registry-authorization-denied)
+        (should-not (e-board-messages source-board))
+        (e-board-runtime-post-input board :id "allowed" :to target :requester "owner"
+                                    :content "yes")
+        (should (equal (e-board-message-content (car (e-board-messages source-board)))
+                       "yes"))))))
+
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
   (e-board-runtime-test--with-empty-state

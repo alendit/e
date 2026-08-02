@@ -811,11 +811,15 @@ the new endpoint."
              (signal (car err) (cdr err)))))))))
 
 (cl-defun e-board-runtime-post-input
-    (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)
+    (board-or-id &key id author tags attributes to requester
+                 (mode 'inject) content reference source-input-key)
   "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
 publications only retry pickups that remain pending."
   (let* ((board (e-board-runtime--active-board board-or-id))
+         (_authorization
+          (and requester to
+               (e-board-registry-authorize-exact-post board requester to)))
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
