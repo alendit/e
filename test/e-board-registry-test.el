@@ -193,6 +193,19 @@
         (should (= (e-board-observer-next-seq observer)
                    (plist-get page :through-seq)))))))
 
+(ert-deftest e-board-registry-test-detach-client-cancels-its-observers ()
+  "Disconnecting a client releases every nonterminal cursor it owns."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "observer")))
+      (e-board-registry-detach-client board (e-board-registry-client-id client))
+      (should (eq (e-board-observer-state observer) 'cancelled))
+      (should-not (gethash "client" (e-board-registry-board-clients board)))
+      (should-not (e-board-observer-read-page
+                   (e-board-registry-board-source-board board) "observer")))))
+
 (provide 'e-board-registry-test)
 
 ;;; e-board-registry-test.el ends here

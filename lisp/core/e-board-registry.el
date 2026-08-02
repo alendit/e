@@ -160,11 +160,19 @@ The source board is registered with `e-board' under the same board identity."
       client)))
 
 (defun e-board-registry-detach-client (board-or-id client-id)
-  "Detach CLIENT-ID from active BOARD-OR-ID and return its prior record."
+  "Detach CLIENT-ID from active BOARD-OR-ID and release its observers."
   (let* ((board (e-board-registry--require-active board-or-id))
          (clients (e-board-registry-board-clients board))
          (client (gethash client-id clients)))
     (when client
+      (maphash
+       (lambda (_observer-id observer)
+         (when (and (equal (e-board-observer-client-id observer) client-id)
+                    (memq (e-board-observer-state observer) '(active muted)))
+           (e-board-set-observer-state
+            (e-board-registry-board-source-board board)
+            (e-board-observer-id observer) 'cancelled)))
+       (e-board-observers (e-board-registry-board-source-board board)))
       (remhash client-id clients))
     client))
 
