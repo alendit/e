@@ -61,6 +61,25 @@
       (should (string-prefix-p "cli_" (e-board-registry-client-id client)))
       (should (string-prefix-p "ptc_" (e-board-registry-participant-id participant))))))
 
+(ert-deftest e-board-registry-test-list-page-is-bounded-and-continuable ()
+  "Registry pages keep deterministic order without exposing the whole list."
+  (e-board-registry-test--with-empty-registries
+    (e-board-registry-create :id "charlie")
+    (e-board-registry-create :id "alpha")
+    (e-board-registry-create :id "bravo")
+    (let ((first (e-board-registry-list-page :limit 2)))
+      (should (equal (mapcar #'e-board-registry-board-id (plist-get first :boards))
+                     '("alpha" "bravo")))
+      (should (equal (plist-get first :next-after) "bravo"))
+      (let ((second (e-board-registry-list-page
+                     :after (plist-get first :next-after) :limit 2)))
+        (should (equal (mapcar #'e-board-registry-board-id
+                               (plist-get second :boards))
+                       '("charlie")))
+        (should-not (plist-get second :next-after))))
+    (should-error (e-board-registry-list-page :limit 0)
+                  :type 'wrong-type-argument)))
+
 (ert-deftest e-board-registry-test-participants-are-board-local ()
   "A participant record from one board cannot modify another board."
   (e-board-registry-test--with-empty-registries

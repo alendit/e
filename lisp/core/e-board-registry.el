@@ -38,6 +38,9 @@
 (defvar e-board-registry--boards (make-hash-table :test 'equal)
   "Live and closed process-local boards keyed by board id.")
 
+(defconst e-board-registry-list-page-limit 32
+  "Default maximum number of board records returned by one registry page.")
+
 (cl-defstruct (e-board-registry-board
                 (:constructor e-board-registry-board--create)
                 (:conc-name e-board-registry-board-))
@@ -139,6 +142,32 @@ The source board is registered with `e-board' under the same board identity."
     (sort boards (lambda (left right)
                    (string< (format "%s" (e-board-registry-board-id left))
                             (format "%s" (e-board-registry-board-id right)))))))
+
+(cl-defun e-board-registry-list-page
+    (&key after (limit e-board-registry-list-page-limit))
+  "Return one bounded board-registry page after opaque board identity AFTER.
+The page is ordered by the registry's stable printable board identity and
+returns =:next-after= only when another page exists.  The scan retains at most
+LIMIT plus one candidates, rather than materializing the full registry list."
+  (unless (and (integerp limit) (> limit 0))
+    (signal 'wrong-type-argument (list 'plusp limit)))
+  (let ((after-key (and after (format "%s" after)))
+        page more)
+    (maphash
+     (lambda (_id board)
+       (let ((key (format "%s" (e-board-registry-board-id board))))
+         (when (or (null after-key) (string< after-key key))
+           (setq page
+                 (sort (cons board page)
+                       (lambda (left right)
+                         (string< (format "%s" (e-board-registry-board-id left))
+                                  (format "%s" (e-board-registry-board-id right))))))
+           (when (> (length page) limit)
+             (setq more t)
+             (setcdr (nthcdr (1- limit) page) nil)))))
+     e-board-registry--boards)
+    (list :boards page
+          :next-after (and more (e-board-registry-board-id (car (last page)))))))
 
 (defun e-board-registry-participant (board-or-id participant-or-id)
   "Return BOARD-OR-ID's canonical board-local participant record."
