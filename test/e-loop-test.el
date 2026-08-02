@@ -258,7 +258,7 @@
     (should-not (plist-member diagnostics :function))))
 
 (ert-deftest e-loop-test-emits-intermittent-reasoning-and-tool-call-events ()
-  "Reasoning deltas and tool calls are surfaced before the final message."
+  "Reasoning and cheap tool events preserve their real lifecycle order."
   (let* ((calls 0)
          (backend (e-backend-create
                    :name "fake-tool-followup"
@@ -306,8 +306,8 @@
                        provider-request-started
                        reasoning-delta
                        tool-started
-                       provider-request-finished
                        tool-finished
+                       provider-request-finished
                        provider-request-started
                        provider-request-finished
                        turn-finished))))))

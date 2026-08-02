@@ -1622,8 +1622,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
 
 (ert-deftest e-org-canvas-test-input-cancel-aborts-active-tool-request ()
   "Cancelling a submitted input pane aborts the active Org Canvas turn."
-  (let* ((e-chat-submit-backend-delay 0)
-         (tool-callbacks nil)
+  (let* ((tool-callbacks nil)
          (tool-cancelled nil)
          (backend
           (e-backend-create

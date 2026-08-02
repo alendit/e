@@ -21,7 +21,6 @@
 (ert-deftest e-chat-surface-e2e-test-composer-submits-below-transcript ()
   "A displayed chat keeps input in its pane and responses in its transcript."
   (let* ((e-chat--surface-composition-enabled t)
-         (e-chat-submit-backend-delay 0)
          (backend (e-backend-fake-create
                    :items '((:type assistant-message :content "surface answer")
                             (:type done :reason stop))))

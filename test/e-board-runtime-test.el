@@ -1971,7 +1971,7 @@
                            :source-event-id "cancel-activity"))))))))
 
 (ert-deftest e-board-runtime-test-harness-lifecycle-activity-is-bounded-and-provenanced ()
-  "Visible lifecycle events expose only their type and durable event identity."
+  "Visible lifecycle events expose a bounded payload and durable identity."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
@@ -1993,9 +1993,13 @@
           (should (eq (e-board-message-kind activity) 'activity))
           (should (eq (e-board-message-activity-kind activity)
                       'provider-request-started))
+          (should (equal (e-board-message-tags activity) '(main)))
           (should-not (e-board-message-content activity))
           (should (equal (e-board-message-attributes activity)
-                         '(:source-event-id "provider-event")))
+                         '(:caused-by-tool-calls []
+                           :source-event-id "provider-event")))
+          (should-not (plist-member (e-board-message-attributes activity)
+                                    :secret))
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 

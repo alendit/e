@@ -66,10 +66,13 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
       (let* ((chat-binding
               (e-chat-service-ensure-binding parent-harness parent-session-id))
              (board (e-chat-service-binding-board chat-binding))
+             (producer-id
+              (format "subagent:%s:%s"
+                      (e-board-registry-board-id board)
+                      parent-session-id))
              (binding
               (e-board-runtime-producer-bind
-               (list 'subagent parent-harness parent-session-id)
-               board :tags '(subagent))))
+               producer-id board :tags '(subagent))))
         (puthash key binding e-subagent--producer-bindings)
         binding))))
 

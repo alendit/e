@@ -160,14 +160,41 @@ Batch compilation: passed
 Whitespace validation: passed
 #+end_example
 
-The ordinary full-suite command was also attempted.  The available command
-runner ended it at its roughly 25-second execution ceiling before ERT reached
-the final summary.  Before that ceiling it reproduced one focused failure in
-the untouched =e-loop-test-emits-intermittent-reasoning-and-tool-call-events=:
-the current loop emits synchronous =tool-finished= before
-=provider-request-finished= while the test expects the reverse.  The same
-failure reproduces alone, no loop source/test belongs to this feature delta,
-and the scoped acceptance selections above all finish green.
+** Complete-suite repair verification on 2026-08-02
+
+The ordinary checkout now completes its entire suite.  Repairing the final
+failures also closed three board-cutover regressions: lifecycle and terminal
+activity now retain their bounded durable payload, uncorrelated participant
+output/activity defaults to the chat binding's =main= projection, and chat
+submission posts immediately while the board owns deferred delivery.
+
+The test migration removed direct presentation reads of harness transcripts,
+active-turn tables, and prompt queues.  Subagent producer identity is now a
+bounded stable string rather than a recursively printable live harness graph.
+The intermittent activity redraw failure was reproduced on the sixth repeated
+run; removing the redundant outer point marker leaves the running-status
+renderer as the sole owner of offset-based focus restoration.
+
+#+begin_src sh
+rtk eldev test e-chat
+for i in {1..10}; do rtk eldev test e-chat-test-activity-rerender-preserves-running-status-focus >/dev/null || exit 1; done
+rtk eldev test e-chat-test-activity-rerender e-chat-test-progress-rerender e-board-runtime-test-harness-lifecycle-activity-is-bounded-and-provenanced
+rtk eldev compile --warnings-as-errors
+rtk eldev test
+git diff --check
+#+end_src
+
+#+begin_example
+Chat surface and service: 369 passed, 0 unexpected, 1 skipped
+Repeated running-status focus regression: 10/10 commands passed
+Related redraw/runtime selection: 12/12 passed
+Batch compilation with warnings as errors: passed
+Full suite: 1951 tests, 1936 expected, 0 unexpected, 15 skipped
+Whitespace validation: passed
+#+end_example
+
+The running Emacs was left unchanged.  A full restart remains required to use
+the cardinal board-only source cut in the current Emacs process.
 
 * UX and performance playthrough
 

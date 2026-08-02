@@ -121,6 +121,10 @@
                 '(:reply-to-message-ids nil
                   :caused-by-delivery-ids nil
                   :source-input-key (producer 3 7)
+                  :routing-tags (main)
+                  :input-attributes
+                  (:board-subscription-lineage (origin)
+                   :board-subscription-source-message-ids (source))
                   :subscription-lineage (origin)
                   :source-message-ids (source))))
         ;; The message is public audit state; later accidental mutation cannot

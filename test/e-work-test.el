@@ -727,7 +727,10 @@
 
 (ert-deftest e-work-test-agent-task-carrier-returns-task-record ()
   "The agent-task carrier enqueues and finishes with a task record."
-  (let* ((queue (e-task-queue-create :max-parallel 0 :directory nil))
+  (let* ((queue (e-task-queue-create
+                 :max-parallel 0 :directory nil
+                 :runner (lambda (&rest _)
+                           (ert-fail "A zero-parallel queue must not run"))))
          (spec (e-work-spec-create
                 :id "agent-task"
                 :execution 'agent-task

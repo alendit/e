@@ -25,11 +25,12 @@
 (cl-defun e-chat-session-submit
     (harness session-id prompt &key delay references metadata)
   "Submit PROMPT to SESSION-ID through its board binding.
-When DELAY is non-nil, defer the board publication for test callers.
+DELAY is accepted for source compatibility; board publication is immediate.
 REFERENCES are ordered source references from the composer.
 METADATA is caller-provided turn metadata."
+  (ignore delay)
   (e-chat-service-submit-session
-   harness session-id prompt :delay delay :references references
+   harness session-id prompt :references references
    :metadata metadata))
 
 (cl-defun e-chat-session-queue

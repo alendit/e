@@ -954,8 +954,10 @@ has no callback and is observed only."
          :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id
          :source-turn-id turn-id
-         :tags (copy-tree
-                (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
+         :tags (or (copy-tree
+                    (gethash turn-id
+                             (e-board-runtime-attachment-turn-tags attachment)))
+                   '(main))
          :content (plist-get message :content)
          :source-output-key
          (list participant-id
@@ -1013,9 +1015,14 @@ these terminal states have no output to close the board-owned open projection."
        :tags (copy-tree
               (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
        :activity-kind activity-kind
-       :attributes (when-let ((source-event-id
-                               (plist-get event :activity-entry-id)))
-                     (list :source-event-id source-event-id))
+       :attributes
+       (append
+        (copy-tree
+         (e-harness--durable-activity-payload
+          activity-kind (plist-get event :payload)))
+        (when-let ((source-event-id
+                    (plist-get event :activity-entry-id)))
+          (list :source-event-id source-event-id)))
        :source-activity-key
        (e-board-runtime--event-activity-source-key attachment event activity-kind)))))
 
@@ -1033,12 +1040,19 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-post-activity
          board :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id :source-turn-id turn-id
-         :tags (copy-tree
-                (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
+         :tags (or (copy-tree
+                    (gethash turn-id
+                             (e-board-runtime-attachment-turn-tags attachment)))
+                   '(main))
          :activity-kind activity-kind
-         :attributes (when-let ((source-event-id
-                                 (plist-get event :activity-entry-id)))
-                       (list :source-event-id source-event-id))
+         :attributes
+         (append
+          (copy-tree
+           (e-harness--durable-activity-payload
+            activity-kind (plist-get event :payload)))
+          (when-let ((source-event-id
+                      (plist-get event :activity-entry-id)))
+            (list :source-event-id source-event-id)))
          :source-activity-key
          (e-board-runtime--event-activity-source-key attachment event activity-kind))))))
 

@@ -164,11 +164,6 @@ concealment are scheduled for a later timer tick."
   :type 'number
   :group 'e-chat)
 
-(defcustom e-chat-submit-backend-delay 0.05
-  "Seconds to delay backend work after rendering a submitted human turn."
-  :type 'number
-  :group 'e-chat)
-
 (defcustom e-chat-default-harness-id :chat-default
   "Harness registry id used by default chat commands."
   :type 'symbol
@@ -5765,8 +5760,7 @@ small one, since each repaint of a big block costs more."
           (setq e-chat--pending-activity-redraw-handle nil))
       (let ((turn-id e-chat--pending-activity-redraw-turn-id)
             (handle e-chat--pending-activity-redraw-handle)
-            (kind e-chat--pending-activity-redraw-kind)
-            (point-marker (copy-marker (point) nil)))
+            (kind e-chat--pending-activity-redraw-kind))
         (setq e-chat--activity-redraw-running t)
         (unwind-protect
             (let ((e-chat--recenter-inhibited t))
@@ -5778,23 +5772,19 @@ small one, since each repaint of a big block costs more."
                      :metadata (list :kind (and kind (symbol-name kind))
                                      :generation expected-generation))
                (lambda ()
-                 (unwind-protect
-                     (progn
-                       (when (e-work-handle-p handle)
-                         (e-ui-work-cancel handle))
-                       (setq e-chat--pending-activity-redraw-turn-id nil)
-                       (setq e-chat--pending-activity-redraw-handle nil)
-                       (setq e-chat--pending-activity-redraw-kind nil)
-                       (setq e-chat--pending-activity-redraw-generation nil)
-                       (when turn-id
-                         (pcase kind
-                           ('progress
-                            (e-chat--render-progress-indicator turn-id))
-                           (_
-                            (when-let ((record (e-chat--existing-turn-record turn-id)))
-                              (e-chat--render-turn-transient turn-id record))))))
-                   (when (marker-position point-marker)
-                     (goto-char (min (marker-position point-marker) (point-max))))))))
+                 (when (e-work-handle-p handle)
+                   (e-ui-work-cancel handle))
+                 (setq e-chat--pending-activity-redraw-turn-id nil)
+                 (setq e-chat--pending-activity-redraw-handle nil)
+                 (setq e-chat--pending-activity-redraw-kind nil)
+                 (setq e-chat--pending-activity-redraw-generation nil)
+                 (when turn-id
+                   (pcase kind
+                     ('progress
+                      (e-chat--render-progress-indicator turn-id))
+                     (_
+                      (when-let ((record (e-chat--existing-turn-record turn-id)))
+                        (e-chat--render-turn-transient turn-id record))))))))
           (setq e-chat--activity-redraw-running nil)
           (e-chat--ensure-pending-activity-redraw-work))))))
 
@@ -8207,10 +8197,10 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
 (cl-defun e-chat-submit-session
     (harness session-id prompt &key references delay metadata)
   "Submit PROMPT with REFERENCES and METADATA to HARNESS SESSION-ID."
+  (ignore delay)
   (e-chat-service-submit-session
    harness session-id prompt
    :references references
-   :delay delay
    :metadata metadata))
 
 (defun e-chat--active-turn-running-p ()
@@ -9930,7 +9920,6 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                ('submit
                 (e-chat-service-submit-session
                  e-chat-harness e-chat-session-id prompt
-                 :delay e-chat-submit-backend-delay
                  :references references))
                ('steer
                 (e-chat-service-steer-session

@@ -36,17 +36,43 @@
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
+         (e-board--registry (make-hash-table :test 'equal))
+         (e-board--id-sequence 0)
+         (e-board-registry--boards (make-hash-table :test 'equal))
+         (e-board-registry--id-sequence 0)
+         (e-board-runtime--attachments (make-hash-table :test 'equal))
+         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+         (e-board-runtime--invocations (make-hash-table :test 'equal))
+         (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+         (e-board-runtime--producer-epoch 0)
+         (e-board-runtime--producer-head nil)
+         (e-board-runtime--producer-tail nil)
+         (e-board-runtime--producer-drain-scheduled nil)
+         (e-board-runtime--producer-scheduler (lambda (_callback)))
+         (e-board-runtime--admission-open-p t)
+         (e-board-runtime--unsettled-producer-count 0)
+         (e-board-runtime--unsettled-generation 0)
+         (e-chat-service--bindings
+          (make-hash-table :test 'eq :weakness 'key))
+         (e-subagent--producer-bindings (make-hash-table :test 'equal))
          (e-subagent--configured-harnesses
-          (make-hash-table :test 'eq :weakness 'key)))
-     (e-harness-instance-register
-      :id :reviewer
-      :name "Reviewer"
-      :kind 'reviewer
-      :subagent t
-      :description "Use for review."
-      :factory (lambda () (e-harness-create
-                           :backend (e-backend-fake-create :items nil))))
-     ,@body))
+          (make-hash-table :test 'eq :weakness 'key))
+         (e-work--unsettled-count 0)
+         (e-work--unsettled-generation 0)
+         (e-work--unsettled-change-functions nil))
+     (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'timer))
+               ((symbol-function 'timerp) (lambda (value) (eq value 'timer)))
+               ((symbol-function 'cancel-timer) #'ignore))
+       (e-harness-instance-register
+        :id :reviewer
+        :name "Reviewer"
+        :kind 'reviewer
+        :subagent t
+        :description "Use for review."
+        :factory (lambda () (e-harness-create
+                             :backend (e-backend-fake-create :items nil))))
+       ,@body)))
 
 (defun e-subagent-runner-test--capturing-runner (captured)
   "Return a runner that records its call into CAPTURED and never settles."
@@ -110,6 +136,12 @@
                          (eq (e-board-message-kind message) 'fact))
                        messages)))
           (should (>= (length facts) 2))
+          (should (cl-every
+                   (lambda (message)
+                     (string-match-p
+                      "\\`producer:subagent:brd_[[:digit:]]+:parent-1\\'"
+                      (e-board-message-author message)))
+                   facts))
           (let ((tags (mapcar #'e-board-message-tags facts)))
             (should (member '(subagent change queued) tags))
             (should (member '(subagent change running) tags))))))))

@@ -333,14 +333,10 @@
     (e-board-message-id (e-board-publication-message publication))))
 
 (cl-defun e-chat-service-submit-session
-    (harness session-id prompt &key references delay metadata)
+    (harness session-id prompt &key references metadata)
   "Submit PROMPT through HARNESS SESSION-ID's board binding."
-  (if (and delay (> delay 0))
-      (run-at-time delay nil #'e-chat-service--post
-                   harness session-id prompt 'inject
-                   :references references :metadata metadata)
-    (e-chat-service--post harness session-id prompt 'inject
-                          :references references :metadata metadata)))
+  (e-chat-service--post harness session-id prompt 'inject
+                        :references references :metadata metadata))
 
 (cl-defun e-chat-service-steer-session
     (harness session-id prompt &key metadata)
