@@ -14,6 +14,9 @@ harness work observation, participant output publication, and the board-owned
 ordered aggregation reducer have landed.  Slice 3 has begun with deferred
 =post-input= effects, bounded derived-message lineage, runtime pickup sweeps,
 and visibly faulted trusted predicates.
+Each deferred =post-input= also has a board-owned activation record that
+advances through =prepared=, =applying=, and terminal =committed=/=failed=
+states alongside its append event.
 Exact invocation effects now retain only an opaque target in the board; the
 private runtime owns the captured loop completion service and its original
 attachment generation.

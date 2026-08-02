@@ -102,6 +102,11 @@
                 (:conc-name e-board-aggregation-))
   id work-ids mode state effect-target timer activation-id)
 
+(cl-defstruct (e-board-activation
+               (:constructor e-board-activation--create)
+               (:conc-name e-board-activation-))
+  id subscription-id message-id effect state)
+
 (cl-defstruct (e-board-terminal-classification
                (:constructor e-board-terminal-classification--create)
                (:conc-name e-board-terminal-classification-))
@@ -121,7 +126,8 @@
   terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
-  aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler)
+  aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
+  activations)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -206,6 +212,7 @@ explicit ids to individual operations takes precedence over this generator."
                    :work-table (make-hash-table :test 'equal)
                    :invocations (make-hash-table :test 'equal)
                    :aggregations (make-hash-table :test 'equal)
+                  :activations (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
@@ -261,6 +268,10 @@ explicit ids to individual operations takes precedence over this generator."
 (defun e-board-aggregation (board aggregation-id)
   "Return BOARD's aggregation subscription for AGGREGATION-ID, or nil."
   (gethash aggregation-id (e-board-aggregations board)))
+
+(defun e-board-activation (board activation-id)
+  "Return BOARD's frozen effect activation for ACTIVATION-ID, or nil."
+  (gethash activation-id (e-board-activations board)))
 
 (defun e-board-observer (board observer-id)
   "Return BOARD's client observer cursor OBSERVER-ID, or nil."
@@ -999,11 +1010,17 @@ This gives post effects a bounded, visible cycle stop without special routing."
                                       :board-subscription-lineage))
                           (list (e-board-subscription-id subscription))))
          (activation-id (list (e-board-id board) (e-board-subscription-id subscription)
-                              (e-board-message-id message))))
+                              (e-board-message-id message)))
+         (activation (e-board-activation--create
+                      :id activation-id
+                      :subscription-id (e-board-subscription-id subscription)
+                      :message-id (e-board-message-id message)
+                      :effect 'post-input :state 'prepared)))
     (if (> (length lineage) e-board-max-derived-hops)
         (e-board--append-event
          board 'effect-stopped
          (list :activation-id activation-id :reason 'causal-hop-limit))
+      (puthash activation-id activation (e-board-activations board))
       (e-board--append-event
        board 'activation-prepared
        (list :activation-id activation-id
@@ -1012,6 +1029,9 @@ This gives post effects a bounded, visible cycle stop without special routing."
       (e-board--schedule-effect
        board
        (lambda ()
+         (setf (e-board-activation-state activation) 'applying)
+         (e-board--append-event
+          board 'activation-applying (list :activation-id activation-id))
          (condition-case err
              (let ((publication
                     (e-board-post-input
@@ -1030,6 +1050,7 @@ This gives post effects a bounded, visible cycle stop without special routing."
                      :source-input-key
                      (list (e-board-subscription-id subscription) 1
                            (e-board-message-seq message)))))
+               (setf (e-board-activation-state activation) 'committed)
                (e-board--append-event
                 board 'effect-committed
                 (list :activation-id activation-id :effect 'post-input
@@ -1037,6 +1058,7 @@ This gives post effects a bounded, visible cycle stop without special routing."
                                        (e-board-message-id
                                         (e-board-publication-message publication))))))
            (error
+            (setf (e-board-activation-state activation) 'failed)
             (e-board--append-event
              board 'effect-failed
              (list :activation-id activation-id :error err)))))))))
