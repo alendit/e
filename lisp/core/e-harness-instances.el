@@ -32,7 +32,10 @@
   (context-visibility 'always)
   subagent-p
   layers
-  layer-config)
+  layer-config
+  session-store-id
+  session-catalog
+  session-access-store)
 
 (defvar e-harness-instance--instances (make-hash-table :test 'equal)
   "Harness instance records keyed by instance id.")
@@ -56,6 +59,11 @@
     (signal 'wrong-type-argument
             (list '(member always hidden) visibility))))
 
+(defun e-harness-instance--validate-session-port (name port)
+  "Signal unless optional session NAME PORT is a callable application port."
+  (when (and port (not (functionp port)))
+    (signal 'wrong-type-argument (list 'functionp port))))
+
 (defun e-harness-instance--display-name (id name)
   "Return normalized display NAME for ID."
   (cond
@@ -67,7 +75,7 @@
 (cl-defun e-harness-instance-register
     (&key id name kind factory harness-id metadata default
           description (context-visibility 'always) subagent
-          layers layer-config)
+          layers layer-config session-store-id session-catalog session-access-store)
   "Register a configured harness instance.
 ID is the stable user-facing target id.  KIND identifies the role the
 instance plays, such as `chat' or `reviewer'.  FACTORY, when non-nil, is
@@ -90,6 +98,10 @@ declarative selection metadata; the factory still builds the live harness."
   (e-harness-instance--validate-id id)
   (e-harness-instance--validate-kind kind)
   (e-harness-instance--validate-context-visibility context-visibility)
+  (when (and session-store-id (not (stringp session-store-id)))
+    (signal 'wrong-type-argument (list 'stringp session-store-id)))
+  (e-harness-instance--validate-session-port 'session-catalog session-catalog)
+  (e-harness-instance--validate-session-port 'session-access-store session-access-store)
   (let ((harness-id (or harness-id id)))
     (e-harness-instance--validate-id harness-id)
     (when factory
@@ -106,7 +118,10 @@ declarative selection metadata; the factory still builds the live harness."
                      :context-visibility context-visibility
                      :subagent-p subagent
                      :layers layers
-                     :layer-config layer-config)))
+                     :layer-config layer-config
+                     :session-store-id session-store-id
+                     :session-catalog session-catalog
+                     :session-access-store session-access-store)))
       (puthash id instance e-harness-instance--instances)
       (when (or default
                 (not (gethash kind e-harness-instance--defaults)))

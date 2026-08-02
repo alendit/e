@@ -88,6 +88,22 @@
                  (e-harness-instance-default :kind 'chat))
                 :chat-beta))))
 
+(ert-deftest e-harness-instances-test-catalog-ports-never-activate-a-harness ()
+  "Session data ports are declarative metadata, not factory entry points."
+  (e-harness-instances-test--with-empty-registries
+    (let ((factory-calls 0)
+          (catalog (lambda (&rest _arguments) 'pending))
+          (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :dormant :kind 'chat :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((instance (e-harness-instance-get :dormant)))
+        (should (equal (e-harness-instance-session-store-id instance) "store"))
+        (should (eq (e-harness-instance-session-catalog instance) catalog))
+        (should (eq (e-harness-instance-session-access-store instance) access-store))
+        (should (= factory-calls 0))))))
+
 (ert-deftest e-harness-instances-test-replaces-duplicate-registration ()
   "Registering the same instance id replaces catalog metadata."
   (e-harness-instances-test--with-empty-registries
