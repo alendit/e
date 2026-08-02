@@ -17,6 +17,8 @@
 (require 'cl-lib)
 (require 'e-board-registry)
 (require 'e-harness)
+(require 'e-harness-instances)
+(require 'e-harness-registry)
 
 (define-error 'e-board-runtime-error "e board runtime error")
 (define-error 'e-board-runtime-attachment-exists
@@ -27,6 +29,9 @@
   'e-board-runtime-error)
 (define-error 'e-board-runtime-session-missing
   "e board runtime session is missing"
+  'e-board-runtime-error)
+(define-error 'e-board-runtime-instance-ineligible
+  "e board runtime harness instance is not eligible for session attachment"
   'e-board-runtime-error)
 
 (defvar e-board-runtime--attachments (make-hash-table :test 'equal)
@@ -98,7 +103,13 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
-  turn-activity)
+  turn-activity instance-id instance-catalog-generation harness-id harness-object-generation
+  session-store-id endpoint-token)
+
+(cl-defstruct (e-board-runtime-endpoint-token
+               (:constructor e-board-runtime-endpoint-token--create)
+               (:conc-name e-board-runtime-endpoint-token-))
+  harness-id harness-object-generation session-store-id session-id)
 
 (cl-defstruct (e-board-runtime-turn-activity
                (:constructor e-board-runtime-turn-activity--create)
@@ -129,8 +140,23 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (defun e-board-runtime--current-attachment-p (attachment)
   "Return non-nil when ATTACHMENT still owns its board participant endpoint."
   (let* ((board (e-board-runtime-attachment-board attachment))
-         (participant (e-board-runtime-attachment-participant attachment)))
-    (and (eq (gethash (e-board-runtime--attachment-key board participant)
+         (participant (e-board-runtime-attachment-participant attachment))
+         (instance-id (e-board-runtime-attachment-instance-id attachment))
+         (harness-id (e-board-runtime-attachment-harness-id attachment)))
+    (and (or (null instance-id)
+             (and (equal
+                   (e-board-runtime-attachment-instance-catalog-generation
+                    attachment)
+                   (e-harness-instance-generation))
+                  (e-harness-instance-get instance-id)))
+         (or (null harness-id)
+             (and (equal
+                   (e-board-runtime-attachment-harness-object-generation
+                    attachment)
+                   (e-harness-registry-generation harness-id))
+                  (eq (e-board-runtime-attachment-harness attachment)
+                      (e-harness-registry-get harness-id))))
+         (eq (gethash (e-board-runtime--attachment-key board participant)
                       e-board-runtime--attachments)
              attachment)
          (eq (gethash (e-board-runtime--session-key
@@ -657,6 +683,17 @@ delivery or signal; normal return marks that pickup delivered.  Returning
 retrying it; returning =(:discarded REASON)= records a proven non-commit;
 returning =(:failed REASON)= records a permanent endpoint rejection.
 When omitted, the conservative idle-only harness delivery port is used."
+  (e-board-runtime--attach-resolved
+   board-or-id harness session-id
+   :participant-id participant-id :author author :principal principal
+   :delivery-function delivery-function))
+
+(cl-defun e-board-runtime--attach-resolved
+    (board-or-id harness session-id
+                 &key participant-id author principal delivery-function
+                 instance-id instance-catalog-generation harness-id
+                 harness-object-generation session-store-id endpoint-token)
+  "Attach one already-resolved endpoint with optional qualified metadata."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
   (unless (or (null delivery-function) (functionp delivery-function))
@@ -673,16 +710,65 @@ When omitted, the conservative idle-only harness delivery port is used."
       (signal 'e-board-runtime-attachment-exists (list key)))
     (e-board-runtime--activate-attachment
      (e-board-runtime--make-attachment
-      board participant harness session-id delivery-function 1))))
+      board participant harness session-id delivery-function 1
+      :instance-id instance-id
+      :instance-catalog-generation instance-catalog-generation
+      :harness-id harness-id
+      :harness-object-generation harness-object-generation
+      :session-store-id session-store-id
+      :endpoint-token endpoint-token))))
+
+(cl-defun e-board-runtime-attach-instance
+    (board-or-id instance-id session-id
+                 &key participant-id author principal delivery-function)
+  "Attach an existing live SESSION-ID through configured INSTANCE-ID.
+This operation never invokes an instance factory or loads dormant history."
+  (let* ((instance-generation (e-harness-instance-generation))
+         (instance (or (e-harness-instance-get instance-id)
+                       (signal 'e-harness-instance-missing (list instance-id))))
+         (store-id (e-harness-instance-session-store-id instance))
+         (harness-id (e-harness-instance-harness-id instance))
+         (harness (e-harness-registry-get harness-id))
+         (harness-generation (e-harness-registry-generation harness-id)))
+    (unless store-id
+      (signal 'e-board-runtime-instance-ineligible (list instance-id)))
+    (unless harness
+      (signal 'e-harness-registry-missing (list harness-id)))
+    (unless (= instance-generation (e-harness-instance-generation))
+      (signal 'e-board-runtime-error (list instance-id 'stale-instance-catalog)))
+    (let ((token (e-board-runtime-endpoint-token--create
+                  :harness-id harness-id
+                  :harness-object-generation harness-generation
+                  :session-store-id store-id
+                  :session-id session-id)))
+      (e-board-runtime--attach-resolved
+       board-or-id harness session-id
+       :participant-id participant-id :author author :principal principal
+       :delivery-function delivery-function
+       :instance-id instance-id
+       :instance-catalog-generation instance-generation
+       :harness-id harness-id
+       :harness-object-generation harness-generation
+       :session-store-id store-id
+       :endpoint-token token))))
 
 (defun e-board-runtime--make-attachment
-    (board participant harness session-id delivery-function generation)
+    (board participant harness session-id delivery-function generation
+           &rest metadata)
   "Construct one immutable-generation attachment without registering it."
   (e-board-runtime-attachment--create
    :board board :participant participant :harness harness :session-id session-id
    :activity-sequence 0 :generation generation
    :turn-activity (make-hash-table :test 'equal)
-   :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)))
+   :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
+   :instance-id (plist-get metadata :instance-id)
+   :instance-catalog-generation
+   (plist-get metadata :instance-catalog-generation)
+   :harness-id (plist-get metadata :harness-id)
+   :harness-object-generation
+   (plist-get metadata :harness-object-generation)
+   :session-store-id (plist-get metadata :session-store-id)
+   :endpoint-token (plist-get metadata :endpoint-token)))
 
 (defun e-board-runtime--configure-attachment (attachment)
   "Install the private board/harness ports required by ATTACHMENT."
@@ -787,6 +873,7 @@ the new endpoint."
                   (attachment
                    (gethash (e-board-runtime--attachment-key board participant)
                             e-board-runtime--attachments))
+                  ((e-board-runtime--current-attachment-p attachment))
                   (message (e-board-message source-board
                                             (e-board-pickup-message-id pickup))))
         (e-board-pickup-start-delivery source-board delivery-id)

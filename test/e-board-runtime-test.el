@@ -32,7 +32,15 @@
           (e-board-runtime--pending-pickup-head nil)
           (e-board-runtime--pending-pickup-tail nil)
           (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
-          (e-board-runtime--pickup-drain-scheduled nil))
+          (e-board-runtime--pickup-drain-scheduled nil)
+          (e-harness-registry--instances (make-hash-table :test 'equal))
+          (e-harness-registry--factories (make-hash-table :test 'equal))
+          (e-harness-registry--generations (make-hash-table :test 'equal))
+          (e-harness-registry--invalidation-events (make-hash-table :test 'equal))
+          (e-harness-instance--instances (make-hash-table :test 'equal))
+          (e-harness-instance--defaults (make-hash-table :test 'equal))
+          (e-harness-instance--session-stores (make-hash-table :test 'equal))
+          (e-harness-instance--generation 0))
      ,@body))
 
 (ert-deftest e-board-runtime-test-deferred-hooks-use-bounded-fifo-drains ()
@@ -170,6 +178,70 @@
                        '(("board" "exact" "first")
                          ("board" "tagged" "first")
                          ("board" "tagged" "second"))))))))
+
+(ert-deftest e-board-runtime-test-qualified-attachment-captures-composite-generation ()
+  "Configured attachment never creates a harness and fences replaced endpoints."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (factory-calls 0)
+           deliveries
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :qualified :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) harness))
+      (should-error
+       (e-board-runtime-attach-instance
+        board :qualified "session" :participant-id "participant")
+       :type 'e-harness-registry-missing)
+      (should (= factory-calls 0))
+      (should (= (hash-table-count
+                  (e-board-registry-board-participants board))
+                 0))
+      (e-harness-registry-register :live harness)
+      (let* ((attachment
+              (e-board-runtime-attach-instance
+               board :qualified "session" :participant-id "participant"
+               :delivery-function
+               (lambda (_attachment _pickup message)
+                 (push (e-board-message-content message) deliveries))))
+             (token (e-board-runtime-attachment-endpoint-token attachment)))
+        (should (= factory-calls 0))
+        (should (e-board-runtime--current-attachment-p attachment))
+        (should (eq (e-board-runtime-attachment-instance-id attachment)
+                    :qualified))
+        (should (= (e-board-runtime-attachment-instance-catalog-generation
+                    attachment)
+                   1))
+        (should (= (e-board-runtime-attachment-harness-object-generation
+                    attachment)
+                   1))
+        (should (equal (e-board-runtime-attachment-session-store-id attachment)
+                       "store"))
+        (should (eq (e-board-runtime-endpoint-token-harness-id token) :live))
+        (should (equal (e-board-runtime-endpoint-token-session-id token)
+                       "session"))
+        (e-board-runtime-post-input board :id "pending" :to "participant"
+                                    :content "never deliver stale")
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (e-harness-registry-clear-instance :live)
+        (should-not (e-board-runtime--current-attachment-p attachment))
+        (e-board-runtime--drain-pickups)
+        (should-not deliveries)
+        (let* ((source-board (e-board-registry-board-source-board board))
+               (delivery-id (car (e-board--pickup-queue
+                                  source-board "participant"))))
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup source-board delivery-id))
+                      'ready)))))))
 
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."

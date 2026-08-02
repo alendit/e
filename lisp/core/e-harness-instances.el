@@ -231,6 +231,10 @@ declarative selection metadata; the factory still builds the live harness."
   (e-harness-instance--validate-id id)
   (gethash id e-harness-instance--instances))
 
+(defun e-harness-instance-generation ()
+  "Return the current configured harness-instance catalog generation."
+  e-harness-instance--generation)
+
 (cl-defun e-harness-instance-list (&key kind)
   "Return registered harness instances, optionally filtered by KIND."
   (when kind
