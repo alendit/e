@@ -57,7 +57,7 @@
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
-  id board-id author principal source-participant)
+  id board-id author principal role source-participant)
 
 (defun e-board-registry--next-id (id-function kind)
   "Return an identity for KIND from ID-FUNCTION or the local fallback."
@@ -382,7 +382,11 @@ board, with its identity supplied by this registry's id generator."
   (let* ((board (e-board-registry--require-active board-or-id))
          (id-function (e-board-registry-board-id-function board))
          (id (or id (e-board-registry--next-id id-function 'participant)))
-         (participants (e-board-registry-board-participants board)))
+         (participants (e-board-registry-board-participants board))
+         (role (and principal (e-board-registry-principal-role board principal))))
+    (when (and principal (not role))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) principal 'participant)))
     (when (gethash id participants)
       (signal 'e-board-registry-id-conflict (list id)))
     (let* ((source-participant
@@ -395,7 +399,7 @@ board, with its identity supplied by this registry's id generator."
            (participant
             (e-board-registry-participant--create
              :id id :board-id (e-board-registry-board-id board)
-             :author author :principal principal
+             :author author :principal principal :role role
              :source-participant source-participant)))
       (puthash id participant participants)
       participant)))

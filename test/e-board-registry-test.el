@@ -91,6 +91,20 @@
       (should-error (e-board-registry-attach-client board :principal "stranger")
                     :type 'e-board-registry-authorization-denied))))
 
+(ert-deftest e-board-registry-test-named-participant-must-hold-a-board-grant ()
+  "A named participant snapshots an existing owner or member role."
+  (e-board-registry-test--with-empty-registries
+    (let ((board (e-board-registry-create :id "board" :principal "owner")))
+      (should (eq (e-board-registry-participant-role
+                   (e-board-registry-add-participant board :principal "owner"))
+                  'owner))
+      (e-board-registry-authorize-principal board "owner" "member" 'member)
+      (should (eq (e-board-registry-participant-role
+                   (e-board-registry-add-participant board :principal "member"))
+                  'member))
+      (should-error (e-board-registry-add-participant board :principal "stranger")
+                    :type 'e-board-registry-authorization-denied))))
+
 (ert-deftest e-board-registry-test-reconnected-client-gets-a-fresh-generation ()
   "Reusing a detached client id never revives its old connection generation."
   (e-board-registry-test--with-empty-registries
