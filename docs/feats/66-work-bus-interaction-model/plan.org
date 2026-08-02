@@ -27,6 +27,10 @@ The exact work aggregation reducer now recognizes =on-success=, =on-failure=,
 and =on-terminal= readiness alongside the invocation-facing =all=/=any=
 aliases; an empty =all-terminal= set reaches its deferred effect without a
 synthetic terminal event.
+Condition continuations now retain their bounded matching source ids in the
+subscription itself for =batch= count/max-delay and =latest-after-quiet=
+policies; timer callbacks only enqueue generation-fenced later effect drains,
+which freeze one causally attributed derived input.
 Muting or cancelling its subscription fences every still-=prepared= activation,
 so a deferred effect released afterwards becomes a no-op rather than appending
 new input.

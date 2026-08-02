@@ -50,7 +50,8 @@
 (cl-defstruct (e-board-subscription
                (:constructor e-board-subscription--create)
                (:conc-name e-board-subscription-))
-  id board-id participant-id selector effect state built-in-p)
+  id board-id participant-id selector effect state built-in-p
+  readiness accumulator readiness-timer readiness-generation firing-number)
 
 (defconst e-board--ordinary-subscription-states
   '(active muted completed faulted cancelled expired)
@@ -144,6 +145,7 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
+  continuation-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
   open-activities closed-activities retention-floor)
 
@@ -209,7 +211,7 @@ The board object remains valid for inspection by its holder."
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
           terminal-classification-scheduler input-classification-scheduler
-          aggregation-deadline-scheduler
+          aggregation-deadline-scheduler continuation-timer-scheduler
           (pickup-pending-limit e-board-default-pickup-pending-limit)
           (retention-floor 0)
           (register t))
@@ -259,7 +261,8 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :routed-pickup-results nil
                   :aggregation-deadlines nil
                   :aggregation-deadline-scheduled nil
-                  :aggregation-deadline-scheduler aggregation-deadline-scheduler)))
+                  :aggregation-deadline-scheduler aggregation-deadline-scheduler
+                  :continuation-timer-scheduler continuation-timer-scheduler)))
     (when register (e-board-register board))
     board))
 
@@ -1054,11 +1057,30 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
                                    :subscription-id subscription-id))
       participant)))
 
+(defun e-board--valid-continuation-readiness-p (readiness)
+  "Return non-nil when READINESS is a closed continuation accumulator policy."
+  (or (null readiness)
+      (and (listp readiness)
+           (cond
+             ((eq (plist-get readiness :policy) 'batch)
+              (let ((count (plist-get readiness :count))
+                    (max-delay (plist-get readiness :max-delay)))
+                (and (integerp count) (> count 0)
+                     (or (null max-delay)
+                         (and (numberp max-delay) (> max-delay 0))))))
+             ((eq (plist-get readiness :policy) 'latest-after-quiet)
+              (let ((quiet-period (plist-get readiness :quiet-period)))
+                (and (numberp quiet-period) (> quiet-period 0))))))))
+
 (cl-defun e-board-subscribe
-    (board participant-id selector &key id (state 'active) (effect 'create-pickup))
+    (board participant-id selector &key id (state 'active) (effect 'create-pickup)
+           readiness)
   "Install an ordinary immutable subscription for PARTICIPANT-ID.
 SELECTOR supports kind, activity-kind, identity, attribute, and tag clauses.
-Slice 1's effects are `create-pickup' and declarative `(:post-input ...)'.
+Effects are `create-pickup' and declarative `(:post-input ...)'.  A post-input
+continuation may declare READINESS as `(:policy batch :count N :max-delay
+SECONDS)' or `(:policy latest-after-quiet :quiet-period SECONDS)'; otherwise
+every match fires.
 New subscriptions inspect future board records; only `create-pickup' is
 restricted to input records."
   (unless (e-board-participant board participant-id)
@@ -1066,6 +1088,10 @@ restricted to input records."
   (unless (or (eq effect 'create-pickup)
               (and (listp effect) (eq (car effect) :post-input)))
     (signal 'e-board-error (list "Unsupported board effect" effect)))
+  (when (and readiness (not (and (listp effect) (eq (car effect) :post-input))))
+    (signal 'e-board-error (list "Readiness requires post-input effect" readiness)))
+  (unless (e-board--valid-continuation-readiness-p readiness)
+    (signal 'e-board-error (list "Invalid continuation readiness" readiness)))
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
   (unless (memq state '(active muted))
@@ -1080,7 +1106,9 @@ restricted to input records."
             :participant-id participant-id
             ;; The matcher is immutable even if the caller later mutates its plist.
             :selector (copy-tree selector)
-            :effect effect :state state :built-in-p nil)))
+            :effect (copy-tree effect) :state state :built-in-p nil
+            :readiness (copy-tree readiness) :accumulator nil
+            :readiness-generation 0 :firing-number 0)))
       (setf (e-board-subscriptions board)
             (append (e-board-subscriptions board) (list subscription)))
       (e-board--append-event board 'subscription-added
@@ -1425,6 +1453,13 @@ and acknowledge only after their queue accepts the returned page."
               (list "Illegal subscription transition" from state
                     (e-board-subscription-id subscription))))
     (setf (e-board-subscription-state subscription) state)
+    (when (memq state '(muted completed faulted cancelled expired))
+      (when-let ((timer (e-board-subscription-readiness-timer subscription)))
+        (cancel-timer timer))
+      (setf (e-board-subscription-readiness-timer subscription) nil
+            (e-board-subscription-accumulator subscription) nil
+            (e-board-subscription-readiness-generation subscription)
+            (1+ (e-board-subscription-readiness-generation subscription))))
     (e-board--append-event board 'subscription-transition
                            (list :subscription-id (e-board-subscription-id subscription)
                                  :from from :state state))
@@ -1456,7 +1491,7 @@ lifetime belongs to participant membership."
 
 (cl-defun e-board-replace-subscription
     (board subscription-id selector &key id (effect nil effect-supplied-p)
-           (state 'active))
+           (state 'active) (readiness nil readiness-supplied-p))
   "Cancel ordinary SUBSCRIPTION-ID and install a future-only replacement.
 The replacement receives a fresh id by default, so captured classifier views
 continue to name the old immutable subscription.  Replacing a terminal
@@ -1487,23 +1522,117 @@ subscription records the relationship without rewriting its terminal state."
         (let ((replacement
                (e-board-subscribe
                 board (e-board-subscription-participant-id subscription) selector
-                :id replacement-id :state state :effect replacement-effect)))
+                :id replacement-id :state state :effect replacement-effect
+                :readiness (if readiness-supplied-p readiness
+                             (e-board-subscription-readiness subscription)))))
           (e-board--append-event
            board 'subscription-replaced
            (list :subscription-id subscription-id
                  :replacement-id replacement-id))
           replacement)))))
 
-(defun e-board--schedule-post-input (board subscription message)
-  "Freeze and schedule SUBSCRIPTION's declarative post from MESSAGE."
-  (let* ((effect (cdr (e-board-subscription-effect subscription)))
+(defun e-board--schedule-continuation-timer (board seconds callback)
+  "Schedule CALLBACK after SECONDS without letting it apply a continuation."
+  (if-let ((scheduler (e-board-continuation-timer-scheduler board)))
+      (funcall scheduler seconds callback)
+    (run-at-time seconds nil callback)))
+
+(defun e-board--flush-continuation-accumulator (board subscription-id generation)
+  "Freeze the current matching source ids for one deferred continuation effect."
+  (when-let ((subscription (e-board-find-subscription board subscription-id)))
+    (when (and (eq (e-board-subscription-state subscription) 'active)
+               (= generation (e-board-subscription-readiness-generation subscription))
+               (e-board-subscription-accumulator subscription))
+      (when-let ((timer (e-board-subscription-readiness-timer subscription)))
+        (cancel-timer timer))
+      (let ((message-ids (e-board-subscription-accumulator subscription)))
+        (setf (e-board-subscription-readiness-timer subscription) nil
+              (e-board-subscription-accumulator subscription) nil
+              (e-board-subscription-readiness-generation subscription)
+              (1+ (e-board-subscription-readiness-generation subscription))
+              (e-board-subscription-firing-number subscription)
+              (1+ (e-board-subscription-firing-number subscription)))
+        (e-board--schedule-post-input
+         board subscription
+         (mapcar (lambda (message-id) (e-board-message board message-id)) message-ids)
+         (e-board-subscription-firing-number subscription))))))
+
+(defun e-board--queue-continuation-accumulator-flush
+    (board subscription-id generation)
+  "Queue a fenced continuation accumulator flush through BOARD's effect drain."
+  (e-board--schedule-effect
+   board
+   (lambda ()
+     (e-board--flush-continuation-accumulator board subscription-id generation))))
+
+(defun e-board--accept-post-input-match (board frozen-subscription message)
+  "Record MESSAGE for FROZEN-SUBSCRIPTION's current continuation policy.
+Classifier snapshots decide matching, while the current subscription fences a
+later mute, replacement, or cancellation before any accumulator mutation."
+  (when-let ((subscription
+              (e-board-find-subscription board
+                                         (e-board-subscription-id frozen-subscription))))
+    (when (eq (e-board-subscription-state subscription) 'active)
+      (let ((readiness (e-board-subscription-readiness subscription)))
+        (if (null readiness)
+            (e-board--schedule-post-input board subscription message)
+          (pcase (plist-get readiness :policy)
+            ('batch
+             (let* ((generation (if (e-board-subscription-accumulator subscription)
+                                    (e-board-subscription-readiness-generation subscription)
+                                  (1+ (e-board-subscription-readiness-generation subscription))))
+                    (accumulator
+                       (append (e-board-subscription-accumulator subscription)
+                               (list (e-board-message-id message))))
+                      (count (plist-get readiness :count))
+                      (max-delay (plist-get readiness :max-delay)))
+               (setf (e-board-subscription-readiness-generation subscription) generation
+                     (e-board-subscription-accumulator subscription) accumulator)
+                 (cond
+                  ((>= (length accumulator) count)
+                   (e-board--flush-continuation-accumulator
+                    board (e-board-subscription-id subscription) generation))
+                  ((and max-delay
+                        (null (e-board-subscription-readiness-timer subscription)))
+                   (setf (e-board-subscription-readiness-timer subscription)
+                         (e-board--schedule-continuation-timer
+                          board max-delay
+                          (lambda ()
+                            (e-board--queue-continuation-accumulator-flush
+                             board (e-board-subscription-id subscription) generation))))))))
+            ('latest-after-quiet
+             (let ((generation (1+ (e-board-subscription-readiness-generation subscription))))
+               (when-let ((timer (e-board-subscription-readiness-timer subscription)))
+                 (cancel-timer timer))
+               (setf (e-board-subscription-readiness-generation subscription) generation
+                     (e-board-subscription-accumulator subscription)
+                     (list (e-board-message-id message))
+                     (e-board-subscription-readiness-timer subscription)
+                     (e-board--schedule-continuation-timer
+                      board (plist-get readiness :quiet-period)
+                      (lambda ()
+                        (e-board--queue-continuation-accumulator-flush
+                         board (e-board-subscription-id subscription) generation))))))))))))
+
+(defun e-board--schedule-post-input (board subscription message-or-messages &optional firing-number)
+  "Freeze and schedule SUBSCRIPTION's declarative post from matched records."
+  (let* ((messages (if (listp message-or-messages)
+                       message-or-messages
+                     (list message-or-messages)))
+         (message (car messages))
+         (message-ids (mapcar #'e-board-message-id messages))
+         (effect (cdr (e-board-subscription-effect subscription)))
          (attributes (copy-tree (plist-get effect :attributes)))
          (lineage (append (copy-sequence
                            (plist-get (e-board-message-attributes message)
                                       :board-subscription-lineage))
                           (list (e-board-subscription-id subscription))))
-         (activation-id (list (e-board-id board) (e-board-subscription-id subscription)
-                              (e-board-message-id message)))
+         (activation-id (if firing-number
+                            (list (e-board-id board)
+                                  (e-board-subscription-id subscription)
+                                  'continuation firing-number)
+                          (list (e-board-id board) (e-board-subscription-id subscription)
+                                (e-board-message-id message))))
          (activation (e-board-activation--create
                       :id activation-id
                       :subscription-id (e-board-subscription-id subscription)
@@ -1541,13 +1670,15 @@ subscription records the relationship without rewriting its terminal state."
                        :tags (copy-tree (plist-get effect :tags))
                        :attributes
                        (append attributes
-                               (list :board-subscription-lineage lineage))
+                               (list :board-subscription-lineage lineage
+                                     :board-subscription-source-message-ids message-ids))
                        :to (plist-get effect :to)
                        :mode (or (plist-get effect :mode) 'inject)
                        :content (plist-get effect :content)
                        :reference (plist-get effect :reference)
                        :source-input-key
-                       (list (e-board-subscription-id subscription) 1
+                       (list (e-board-subscription-id subscription)
+                             (or firing-number 1)
                              (e-board-message-seq message)))))
                  (setf (e-board-activation-state activation) 'committed)
                  (e-board--append-event
@@ -1712,7 +1843,7 @@ message kind may schedule its frozen explicit continuation matches."
                                      :participant-ids participant-ids
                                      :pickup-ids pickup-ids))))
     (dolist (subscription post-subscriptions)
-      (e-board--schedule-post-input board subscription message))
+      (e-board--accept-post-input-match board subscription message))
     (when (eq (e-board-message-kind message) 'input)
       (setf (e-board-routed-pickup-results board)
             (append (e-board-routed-pickup-results board)

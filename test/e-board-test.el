@@ -941,6 +941,79 @@
            (should (eq (e-board-activation-state activation) 'committed))
            (should (equal (e-board-pickup-participant-id pickup) "one")))))))
 
+(ert-deftest e-board-test-batch-continuation-freezes-matches-into-one-derived-input ()
+  "A count-ready continuation posts once with every matched source id."
+  (e-board-test--with-empty-registry
+    (let (drains)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (drain) (push drain drains)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:kind fact :tags (source)) :id "batch"
+                           :effect '(:post-input :to "one" :content "batched")
+                           :readiness '(:policy batch :count 2))
+        (e-board-post-fact board :id "one" :tags '(source) :source-fact-key '(test 1 1))
+        (should-not drains)
+        (e-board-post-fact board :id "two" :tags '(source) :source-fact-key '(test 1 2))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (let* ((derived (car (last (e-board-messages board))))
+               (activation (e-board-activation board
+                                               '("board" "batch" continuation 1))))
+          (should (equal (e-board-message-content derived) "batched"))
+          (should (equal (plist-get (e-board-message-attributes derived)
+                                    :board-subscription-source-message-ids)
+                         '("one" "two")))
+          (should (eq (e-board-activation-state activation) 'committed)))))))
+
+(ert-deftest e-board-test-batch-deadline-and-quiet-timers-enqueue-fenced-effects ()
+  "Timers only enqueue later effects; a stale quiet callback cannot post."
+  (e-board-test--with-empty-registry
+    (let (drains timers)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (drain) (push drain drains))
+                    :continuation-timer-scheduler
+                    (lambda (_seconds callback) (push callback timers) nil))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-subscribe board "one" '(:kind fact :tags (batch)) :id "batch"
+                           :effect '(:post-input :to "one" :content "deadline")
+                           :readiness '(:policy batch :count 3 :max-delay 1))
+        (e-board-subscribe board "one" '(:kind fact :tags (quiet)) :id "quiet"
+                           :effect '(:post-input :to "one" :content "quiet")
+                           :readiness '(:policy latest-after-quiet :quiet-period 1))
+        (e-board-post-fact board :id "batch-one" :tags '(batch)
+                           :source-fact-key '(test 1 1))
+        (e-board-post-fact board :id "batch-two" :tags '(batch)
+                           :source-fact-key '(test 1 2))
+        (e-board-post-fact board :id "quiet-one" :tags '(quiet)
+                           :source-fact-key '(test 1 3))
+        (e-board-post-fact board :id "quiet-two" :tags '(quiet)
+                           :source-fact-key '(test 1 4))
+        ;; Timer callbacks enqueue, but do not apply, their effects.  The
+        ;; superseded quiet callback remains harmless behind its generation.
+        (dolist (timer timers) (funcall timer))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        ;; The timer-owned accumulator flushes schedule their own derived-post
+        ;; effects for a later bounded drain.
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (let ((derived (cl-remove-if-not
+                        (lambda (message) (eq (e-board-message-kind message) 'input))
+                        (e-board-messages board))))
+          (should (equal (sort (mapcar #'e-board-message-content derived) #'string<)
+                         '("deadline" "quiet")))
+          (let ((deadline (cl-find "deadline" derived
+                                   :key #'e-board-message-content :test #'equal))
+                (quiet (cl-find "quiet" derived
+                                :key #'e-board-message-content :test #'equal)))
+            (should (equal (plist-get (e-board-message-attributes deadline)
+                                    :board-subscription-source-message-ids)
+                           '("batch-one" "batch-two")))
+            (should (equal (plist-get (e-board-message-attributes quiet)
+                                    :board-subscription-source-message-ids)
+                           '("quiet-two")))))))))
+
 (ert-deftest e-board-test-continuations-classify-output-activity-and-fact ()
   "Explicit continuations can derive input from every non-input board record."
   (e-board-test--with-empty-registry
