@@ -477,8 +477,7 @@ the conservative idle-only harness delivery port is used."
                 (run-at-time
                  0 nil
                  (lambda ()
-                   (funcall effect)
-                   (e-board-runtime--deliver-pending-pickups board)))))
+                   (funcall effect)))))
         (setf (e-board-invocation-effect-dispatcher
                (e-board-registry-board-source-board board))
               #'e-board-runtime--apply-invocation-effect)
@@ -500,11 +499,11 @@ the conservative idle-only harness delivery port is used."
         attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
-  "Deliver BOARD's frozen pending PICKUP-IDS through their attachments."
+  "Deliver BOARD's frozen ready PICKUP-IDS through their attachments."
   (let ((source-board (e-board-registry-board-source-board board)))
     (dolist (delivery-id pickup-ids)
       (when-let* ((pickup (e-board-pickup source-board delivery-id))
-                  ((eq (e-board-pickup-state pickup) 'pending))
+                  ((eq (e-board-pickup-state pickup) 'ready))
                   (participant (e-board-registry-participant
                                 board (e-board-pickup-participant-id pickup)))
                   (attachment
@@ -512,21 +511,14 @@ the conservative idle-only harness delivery port is used."
                             e-board-runtime--attachments))
                   (message (e-board-message source-board
                                             (e-board-pickup-message-id pickup))))
-        (funcall (e-board-runtime-attachment-delivery-function attachment)
-                 attachment pickup message)
-         (setf (e-board-pickup-state pickup) 'delivered)))))
-
-(defun e-board-runtime--deliver-pending-pickups (board)
-  "Attempt delivery for BOARD's already-frozen pending pickups.
-This runs after a deferred effect commits its input append; the effect succeeds
-at append time, independently of downstream session acceptance."
-  (let (pickup-ids)
-    (maphash
-     (lambda (delivery-id pickup)
-       (when (eq (e-board-pickup-state pickup) 'pending)
-         (push delivery-id pickup-ids)))
-     (e-board-pickups (e-board-registry-board-source-board board)))
-    (e-board-runtime--enqueue-pickups board (nreverse pickup-ids))))
+        (e-board-pickup-start-delivery source-board delivery-id)
+        (let ((next-id
+               (progn
+                 (funcall (e-board-runtime-attachment-delivery-function attachment)
+                          attachment pickup message)
+                 (e-board-pickup-complete-delivery source-board delivery-id))))
+          (when next-id
+            (e-board-runtime--enqueue-pickups board (list next-id))))))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)

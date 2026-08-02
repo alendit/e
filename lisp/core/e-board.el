@@ -127,7 +127,7 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
-  activations)
+  activations pickup-queues)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -213,6 +213,7 @@ explicit ids to individual operations takes precedence over this generator."
                    :invocations (make-hash-table :test 'equal)
                    :aggregations (make-hash-table :test 'equal)
                   :activations (make-hash-table :test 'equal)
+                  :pickup-queues (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
@@ -256,6 +257,57 @@ explicit ids to individual operations takes precedence over this generator."
 (defun e-board-pickup (board delivery-id)
   "Return BOARD pickup DELIVERY-ID, or nil."
   (gethash delivery-id (e-board-pickups board)))
+
+(defun e-board--pickup-queue (board participant-id)
+  "Return PARTICIPANT-ID's ordered pickup identities on BOARD."
+  (gethash participant-id (e-board-pickup-queues board)))
+
+(defun e-board--enqueue-pickup (board pickup)
+  "Append PICKUP to its participant FIFO and return its initial state."
+  (let* ((participant-id (e-board-pickup-participant-id pickup))
+         (queue (e-board--pickup-queue board participant-id)))
+    (puthash participant-id
+             (append queue (list (e-board-pickup-delivery-id pickup)))
+             (e-board-pickup-queues board))
+    (setf (e-board-pickup-state pickup) (if queue 'pending 'ready))
+    (e-board-pickup-state pickup)))
+
+(defun e-board-pickup-start-delivery (board delivery-id)
+  "Fence ready DELIVERY-ID as the current participant delivery attempt."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (and (eq (e-board-pickup-state pickup) 'ready)
+                 (equal (car (e-board--pickup-queue
+                              board (e-board-pickup-participant-id pickup)))
+                        delivery-id))
+      (signal 'e-board-error (list "Pickup is not ready head" delivery-id)))
+    (setf (e-board-pickup-state pickup) 'delivering)
+    (e-board--append-event board 'pickup-delivering
+                           (list :delivery-id delivery-id))
+    pickup))
+
+(defun e-board-pickup-complete-delivery (board delivery-id)
+  "Consume DELIVERY-ID and promote its participant's next FIFO pickup.
+Return the newly ready pickup identity, if any."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (eq (e-board-pickup-state pickup) 'delivering)
+      (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id)))
+      (unless (equal (car queue) delivery-id)
+        (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (setf (e-board-pickup-state pickup) 'consumed)
+      (e-board--append-event board 'pickup-consumed
+                             (list :delivery-id delivery-id))
+      (setq queue (cdr queue))
+      (puthash participant-id queue (e-board-pickup-queues board))
+      (when-let ((next-id (car queue)))
+        (let ((next (e-board-pickup board next-id)))
+          (setf (e-board-pickup-state next) 'ready)
+          (e-board--append-event board 'pickup-ready
+                                 (list :delivery-id next-id))
+          next-id)))))
 
 (defun e-board-observed-work (board work-id)
   "Return BOARD's observed work record for WORK-ID, or nil."
@@ -1194,8 +1246,9 @@ Return nil when the key is new and may be appended."
                  :message-id (e-board-message-id message)
                  :participant-id participant-id
                  :subscription-ids (gethash participant-id by-participant)
-                 :mode (e-board-message-mode message) :state 'pending)))
+                 :mode (e-board-message-mode message))))
           (puthash delivery-id pickup (e-board-pickups board))
+          (e-board--enqueue-pickup board pickup)
            (setq pickup-ids (append pickup-ids (list delivery-id)))))
        (setf (e-board-message-matching-participant-ids message) participant-ids
              (e-board-message-pickup-ids message) pickup-ids

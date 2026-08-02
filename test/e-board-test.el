@@ -260,7 +260,25 @@
           ;; Observation does not affect input pickup state or routedness.
           (should (eq (e-board-pickup-state
                        (e-board-pickup board '("board" "input" "one")))
-                      'pending)))))))
+                      'ready)))))))
+
+(ert-deftest e-board-test-pickups-preserve-participant-fifo-order ()
+  "Only a participant's oldest pickup may become deliverable."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (e-board-post-input board :id "first" :to "one"))
+             (second (e-board-post-input board :id "second" :to "one"))
+             (first-id (car (e-board-publication-pickup-ids first)))
+             (second-id (car (e-board-publication-pickup-ids second))))
+        (should (eq (e-board-pickup-state (e-board-pickup board first-id)) 'ready))
+        (should (eq (e-board-pickup-state (e-board-pickup board second-id)) 'pending))
+        (should-error (e-board-pickup-start-delivery board second-id)
+                      :type 'e-board-error)
+        (e-board-pickup-start-delivery board first-id)
+        (should (equal (e-board-pickup-complete-delivery board first-id) second-id))
+        (should (eq (e-board-pickup-state (e-board-pickup board first-id)) 'consumed))
+        (should (eq (e-board-pickup-state (e-board-pickup board second-id)) 'ready))))))
 
 (ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
   "Observer muting, terminal states, and replacement never route input."

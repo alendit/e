@@ -83,6 +83,8 @@
             (e-board-registry-board-source-board board))))
         (should-not deliveries)
         (e-board-runtime--drain-pickups)
+        ;; The second pickup for first waits behind its exact-address head,
+        ;; then becomes ready before the other participant's tag pickup.
         (should (equal (mapcar #'car deliveries) '("first" "first" "second")))
         (should (equal (mapcar #'car (mapcar #'cdr deliveries))
                        '(("board" "exact" "first")
