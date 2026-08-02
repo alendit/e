@@ -206,6 +206,20 @@ the cursor and selector because it owns ordered message observation."
               (list "Observer belongs to another client" observer-id client-id)))
     observer))
 
+(cl-defun e-board-registry-replace-observer
+    (board-or-id client-id observer-id selector &key id (state 'active) start-seq)
+  "Replace attached CLIENT-ID's OBSERVER-ID with a fresh authorized cursor.
+The source board owns the old cursor cancellation and the new cursor's
+explicit START-SEQ backfill semantics; this registry only validates client
+ownership before delegating that ordered transition."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-replace-observer
+     (e-board-registry-board-source-board board) observer-id selector
+     :id (or id (e-board-registry--next-id
+                 (e-board-registry-board-id-function board) 'observer))
+     :state state :start-seq start-seq)))
+
 (cl-defun e-board-registry-prepare-observer-page
     (board-or-id client-id observer-id &key (limit 32))
   "Prepare OBSERVER-ID's page for attached CLIENT-ID without cursor advance."

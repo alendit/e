@@ -20,7 +20,8 @@
           (e-board-runtime--attachments (make-hash-table :test 'equal))
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
-          (e-board-runtime--deferred-hooks nil)
+          (e-board-runtime--deferred-hook-head nil)
+          (e-board-runtime--deferred-hook-tail nil)
           (e-board-runtime--deferred-hook-drain-scheduled nil)
           (e-board-runtime--deferred-hook-generation 0)
           (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
@@ -33,6 +34,49 @@
           (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
           (e-board-runtime--pickup-drain-scheduled nil))
      ,@body))
+
+(ert-deftest e-board-runtime-test-deferred-hooks-use-bounded-fifo-drains ()
+  "Deferred hooks preserve order and yield after each configured record page."
+  (e-board-runtime-test--with-empty-state
+    (let ((e-board-runtime-deferred-hook-drain-limit 1)
+          scheduled started)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--schedule-deferred-hook
+         nil 'first (lambda () (setq started (append started '(first)))))
+        (e-board-runtime--schedule-deferred-hook
+         nil 'second (lambda () (setq started (append started '(second)))))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should (equal started '(first)))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should (equal started '(first second)))
+        (should-not scheduled)))))
+
+(ert-deftest e-board-runtime-test-stale-deferred-hooks-use-the-drain-budget ()
+  "Generation-fenced stale records cannot bypass the deferred hook page bound."
+  (e-board-runtime-test--with-empty-state
+    (let ((e-board-runtime-deferred-hook-drain-limit 1)
+          scheduled started)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--schedule-deferred-hook nil 'stale-one #'ignore)
+        (e-board-runtime--schedule-deferred-hook nil 'stale-two #'ignore)
+        (cl-incf e-board-runtime--deferred-hook-generation)
+        (e-board-runtime--schedule-deferred-hook
+         nil 'current (lambda () (setq started t)))
+        (funcall (pop scheduled))
+        (should-not started)
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should-not started)
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should started)
+        (should-not scheduled)))))
 
 (ert-deftest e-board-runtime-test-attachment-maps-live-session-and-delivers-exact-and-tags ()
   "Attached sessions receive only their frozen exact or tag-routed pickups."

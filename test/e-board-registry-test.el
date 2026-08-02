@@ -221,6 +221,32 @@
         (should (= (e-board-observer-history-before-seq observer)
                    (plist-get page :before-seq)))))))
 
+(ert-deftest e-board-registry-test-client-replaces-only-its-observer-with-explicit-backfill ()
+  "A client may widen its own selector without mutating another cursor."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (other (e-board-registry-attach-client board :id "other"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "main" :start-seq 0))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-post-fact source-board :id "subagent" :tags '(subagent)
+                         :source-fact-key '(producer 1 1))
+      (should-error
+       (e-board-registry-replace-observer
+        board (e-board-registry-client-id other) "main" '(:tags (subagent)))
+       :type 'e-board-registry-error)
+      (let* ((replacement
+              (e-board-registry-replace-observer
+               board (e-board-registry-client-id client) "main"
+               '(:tags (subagent)) :id "subagent" :start-seq 0))
+             (page (e-board-registry-prepare-observer-page
+                    board (e-board-registry-client-id client) "subagent" :limit 8)))
+        (should (eq (e-board-observer-state observer) 'cancelled))
+        (should (equal (e-board-observer-client-id replacement) "client"))
+        (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
+                       '("subagent")))))))
+
 (ert-deftest e-board-registry-test-detach-client-cancels-its-observers ()
   "Disconnecting a client releases every nonterminal cursor it owns."
   (e-board-registry-test--with-empty-registries

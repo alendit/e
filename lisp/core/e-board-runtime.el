@@ -41,8 +41,11 @@
 (defconst e-board-runtime-deferred-hook-drain-limit 16
   "Maximum deferred carrier hooks the private runtime starts per drain.")
 
-(defvar e-board-runtime--deferred-hooks nil
-  "Generation-fenced deferred carrier hooks awaiting a runtime drain.")
+(defvar e-board-runtime--deferred-hook-head nil
+  "Head cell of the FIFO of generation-fenced deferred carrier hooks.")
+
+(defvar e-board-runtime--deferred-hook-tail nil
+  "Tail cell of the FIFO of generation-fenced deferred carrier hooks.")
 
 (defvar e-board-runtime--deferred-hook-drain-scheduled nil
   "Non-nil while one deferred-hook runtime drain has been scheduled.")
@@ -173,22 +176,27 @@ Queue items retain the installing runtime generation, so a reload/replacement
 can invalidate pending callbacks without letting an old closure advance the
 new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
   (setq e-board-runtime--deferred-hook-drain-scheduled nil)
-  (let ((started 0))
-    (while (and e-board-runtime--deferred-hooks
-                (< started e-board-runtime-deferred-hook-drain-limit))
+  (let ((processed 0))
+    (while (and e-board-runtime--deferred-hook-head
+                (< processed e-board-runtime-deferred-hook-drain-limit))
       (pcase-let ((`(,generation ,_receipt ,thunk)
-                   (pop e-board-runtime--deferred-hooks)))
+                   (pop e-board-runtime--deferred-hook-head)))
+        (unless e-board-runtime--deferred-hook-head
+          (setq e-board-runtime--deferred-hook-tail nil))
+        (cl-incf processed)
         (when (= generation e-board-runtime--deferred-hook-generation)
-          (cl-incf started)
           (funcall thunk))))
-    (when e-board-runtime--deferred-hooks
+    (when e-board-runtime--deferred-hook-head
       (setq e-board-runtime--deferred-hook-drain-scheduled t)
       (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks))))
 
 (defun e-board-runtime--schedule-deferred-hook (_handle receipt thunk)
   "Queue deferred carrier THUNK with stable RECEIPT outside its start stack."
-  (push (list e-board-runtime--deferred-hook-generation receipt thunk)
-        e-board-runtime--deferred-hooks)
+  (let ((cell (list (list e-board-runtime--deferred-hook-generation receipt thunk))))
+    (if e-board-runtime--deferred-hook-tail
+        (setcdr e-board-runtime--deferred-hook-tail cell)
+      (setq e-board-runtime--deferred-hook-head cell))
+    (setq e-board-runtime--deferred-hook-tail cell))
   (unless e-board-runtime--deferred-hook-drain-scheduled
     (setq e-board-runtime--deferred-hook-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks)))

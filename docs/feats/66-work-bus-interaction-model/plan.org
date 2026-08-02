@@ -99,6 +99,8 @@ history has a first independent bounded cursor that returns pages in ascending
 order without moving live =next-seq=.  Both live and history pages now remain
 prepared until their attached owning client explicitly accepts the matching
 receipt; retention pins and queued client handoff remain future slices.
+The registry now authorizes client-owned observer replacement and delegates the
+fresh cursor's explicit =start-seq= backfill to the board core.
 New live observers now capture the current board high watermark by default and
 begin at its successor; retained backfill requires an explicit =start-seq=.
 Slices 0--4 are private implementation/verification order only.  No board mode,
