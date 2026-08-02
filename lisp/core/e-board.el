@@ -35,7 +35,7 @@
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
   source-activity-key source-fact-key subject-participant-id source-turn-id
   activity-kind
-  matching-participant-ids pickup-ids unrouted-reason)
+  matching-participant-ids pickup-ids unrouted-reason routing-state)
 
 (cl-defstruct (e-board-event
                (:constructor e-board-event--create)
@@ -1044,7 +1044,8 @@ Return nil when the key is new and may be appended."
            :source-fact-key (copy-tree source-fact-key)
            :subject-participant-id subject-participant-id
            :source-turn-id source-turn-id
-           :activity-kind activity-kind)))
+           :activity-kind activity-kind
+           :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
     (setf (e-board-messages board)
           (append (e-board-messages board) (list message)))
@@ -1092,7 +1093,8 @@ Return nil when the key is new and may be appended."
         (let ((reason (if (e-board-message-to message)
                           'target-unavailable
                         'no-matching-subscription)))
-          (setf (e-board-message-unrouted-reason message) reason)
+          (setf (e-board-message-unrouted-reason message) reason
+                (e-board-message-routing-state message) 'unrouted)
           (e-board--append-event board 'input-unrouted
                                  (list :message-id (e-board-message-id message)
                                        :reason reason)))
@@ -1110,7 +1112,8 @@ Return nil when the key is new and may be appended."
           (puthash delivery-id pickup (e-board-pickups board))
            (setq pickup-ids (append pickup-ids (list delivery-id)))))
        (setf (e-board-message-matching-participant-ids message) participant-ids
-             (e-board-message-pickup-ids message) pickup-ids)
+             (e-board-message-pickup-ids message) pickup-ids
+             (e-board-message-routing-state message) 'routed)
         (e-board--append-event board 'input-routed
                                (list :message-id (e-board-message-id message)
                                      :participant-ids participant-ids

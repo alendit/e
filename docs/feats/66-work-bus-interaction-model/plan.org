@@ -21,7 +21,8 @@ Terminal work publication now freezes indexed invocation/aggregation candidates
 and defers their activation classification to a bounded board drain.
 Input append now freezes a private subscription snapshot and returns before
 matching, pickup creation, continuation effects, or harness delivery; the
-runtime drains only the resulting finalized pickup identities later.
+runtime drains only the resulting finalized pickup identities later.  Each
+input now exposes its explicit =routing=, =routed=, or =unrouted= projection.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.
