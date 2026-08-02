@@ -23,6 +23,9 @@ new input.
 Exact invocation effects now retain only an opaque target in the board; the
 private runtime owns the captured loop completion service and its original
 attachment generation.
+Exact invocation and aggregation reply effects now also create inspectable
+board activation records that advance through =prepared=, =applying=, and
+=committed=/=failed= alongside their existing relation state.
 Terminal work publication now freezes indexed invocation/aggregation candidates
 and defers their activation classification to a bounded board drain.
 Input append now freezes a private subscription snapshot and returns before

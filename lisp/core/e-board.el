@@ -652,8 +652,16 @@ effect records and never synchronously enter a tool or harness callback."
   (when (eq (e-board-invocation-state invocation) 'open)
     (setf (e-board-invocation-state invocation) 'prepared)
     (let ((activation-id
-           (list (e-board-id board) (e-board-invocation-id invocation) 1)))
+           (list (e-board-id board) (e-board-invocation-id invocation) 1))
+          (activation nil))
       (setf (e-board-invocation-activation-id invocation) activation-id)
+      (setq activation
+            (e-board-activation--create
+             :id activation-id
+             :subscription-id (e-board-invocation-id invocation)
+             :message-id (e-board-invocation-work-id invocation)
+             :effect 'reply-to-invocation :state 'prepared))
+      (puthash activation-id activation (e-board-activations board))
       (e-board--append-event
        board 'activation-prepared
        (list :activation-id activation-id
@@ -662,8 +670,12 @@ effect records and never synchronously enter a tool or harness callback."
       (e-board--schedule-effect
        board
        (lambda ()
-         (when (eq (e-board-invocation-state invocation) 'prepared)
+         (when (and (eq (e-board-invocation-state invocation) 'prepared)
+                    (eq (e-board-activation-state activation) 'prepared))
            (setf (e-board-invocation-state invocation) 'applying)
+           (setf (e-board-activation-state activation) 'applying)
+           (e-board--append-event
+            board 'activation-applying (list :activation-id activation-id))
            (condition-case err
                (progn
                  (let ((dispatcher (e-board-invocation-effect-dispatcher board)))
@@ -674,12 +686,14 @@ effect records and never synchronously enter a tool or harness callback."
                             (e-board-invocation-effect-target invocation)
                             state payload))
                  (setf (e-board-invocation-state invocation) 'committed)
+                 (setf (e-board-activation-state activation) 'committed)
                  (e-board--append-event
                   board 'effect-committed
                   (list :activation-id activation-id
                         :effect 'reply-to-invocation)))
              (error
               (setf (e-board-invocation-state invocation) 'failed)
+              (setf (e-board-activation-state activation) 'failed)
               (e-board--append-event
                board 'effect-failed
                 (list :activation-id activation-id :error err))))))))))
@@ -705,8 +719,15 @@ effect records and never synchronously enter a tool or harness callback."
       (cancel-timer timer)
       (setf (e-board-aggregation-timer aggregation) nil))
     (let ((activation-id
-           (list (e-board-id board) (e-board-aggregation-id aggregation) 1)))
+           (list (e-board-id board) (e-board-aggregation-id aggregation) 1))
+          (activation nil))
       (setf (e-board-aggregation-activation-id aggregation) activation-id)
+      (setq activation
+            (e-board-activation--create
+             :id activation-id
+             :subscription-id (e-board-aggregation-id aggregation)
+             :message-id nil :effect 'reply-to-invocation :state 'prepared))
+      (puthash activation-id activation (e-board-activations board))
       (e-board--append-event
        board 'activation-prepared
        (list :activation-id activation-id
@@ -715,8 +736,12 @@ effect records and never synchronously enter a tool or harness callback."
       (e-board--schedule-effect
        board
        (lambda ()
-         (when (eq (e-board-aggregation-state aggregation) 'prepared)
+         (when (and (eq (e-board-aggregation-state aggregation) 'prepared)
+                    (eq (e-board-activation-state activation) 'prepared))
            (setf (e-board-aggregation-state aggregation) 'applying)
+           (setf (e-board-activation-state activation) 'applying)
+           (e-board--append-event
+            board 'activation-applying (list :activation-id activation-id))
            (condition-case err
                (progn
                  (let ((dispatcher (e-board-invocation-effect-dispatcher board)))
@@ -727,11 +752,13 @@ effect records and never synchronously enter a tool or harness callback."
                             (e-board-aggregation-effect-target aggregation)
                             'aggregation reason))
                  (setf (e-board-aggregation-state aggregation) 'committed)
+                 (setf (e-board-activation-state activation) 'committed)
                  (e-board--append-event
                   board 'effect-committed
                   (list :activation-id activation-id :effect 'reply-to-invocation)))
              (error
               (setf (e-board-aggregation-state aggregation) 'failed)
+              (setf (e-board-activation-state activation) 'failed)
               (e-board--append-event
                board 'effect-failed
                (list :activation-id activation-id :error err))))))))))

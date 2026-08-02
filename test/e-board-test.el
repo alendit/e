@@ -573,6 +573,9 @@
         (should (= (length routers) 1))
         (funcall (pop routers))
         (should (= (length effects) 1))
+        (should (eq (e-board-activation-state
+                     (e-board-activation board '("board" "turn-1/call-1" 1)))
+                    'prepared))
         (funcall (pop effects))
         (should (equal replies '((finished "done"))))
         (should (eq (e-board-invocation-state
@@ -580,7 +583,7 @@
                     'committed))
         (should (equal (mapcar #'e-board-event-type (e-board-events board))
                        '(posted subscription-added finished activation-prepared
-                                 effect-committed)))))))
+                                 activation-applying effect-committed)))))))
 
 (ert-deftest e-board-test-aggregation-replies-after-all-observed-work-settles ()
   "Ordered aggregation waits for every watched terminal board fact."
@@ -617,11 +620,44 @@
         (should (= (length routers) 1))
         (funcall (pop routers))
         (should (= (length effects) 1))
+        (should (eq (e-board-activation-state
+                     (e-board-activation board '("board" "turn-1/call-1" 1)))
+                    'prepared))
         (funcall (pop effects))
         (should (equal reasons '(complete)))
         (should (eq (e-board-aggregation-state
                      (e-board-aggregation board "turn-1/call-1"))
+                    'committed))
+        (should (eq (e-board-activation-state
+                     (e-board-activation board '("board" "turn-1/call-1" 1)))
                     'committed))))))
+
+(ert-deftest e-board-test-exact-invocation-failure-records-its-activation-state ()
+  "A failed exact reply is visible on both its invocation and activation."
+  (e-board-test--with-empty-registry
+    (let (effects routers)
+      (let* ((board (e-board-create
+                     :id "board"
+                     :effect-scheduler (lambda (effect) (push effect effects))
+                     :terminal-classification-scheduler
+                     (lambda (drain) (push drain routers))
+                     :invocation-effect-dispatcher
+                     (lambda (&rest _arguments) (error "reply failed"))))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "cheap" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done")) nil)))
+        (e-board-enroll-work board handle)
+        (e-board-subscribe-invocation board (e-work-handle-id handle) "call"
+                                      :id "call")
+        (e-work-start-prepared handle)
+        (funcall (pop routers))
+        (funcall (pop effects))
+        (should (eq (e-board-invocation-state (e-board-invocation board "call"))
+                    'failed))
+        (should (eq (e-board-activation-state
+                     (e-board-activation board '("board" "call" 1)))
+                    'failed))))))
 
 (ert-deftest e-board-test-aggregation-timeout-does-not-cancel-work ()
   "Aggregation timeout queues its deferred reply transition without cancelling work."
