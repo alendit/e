@@ -385,7 +385,18 @@
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-finished :session-id "session"
                                    :turn-id "no-provider"))
-        (should (= (length (e-board-messages source-board)) 1))))))
+        (should (= (length (e-board-messages source-board)) 1))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'provider-request-started :session-id "session"
+                                   :turn-id "cancelled" :created-at 200))
+        (e-board-runtime--handle-harness-event
+         attachment (e-events-make :type 'turn-cancelled :session-id "session"
+                                   :turn-id "cancelled" :created-at 203))
+        (let ((summary (car (last (e-board-messages source-board)))))
+          (should (eq (e-board-message-activity-kind summary) 'turn-summary))
+          (should (equal (e-board-message-attributes summary)
+                         '(:status turn-cancelled :duration-seconds 3
+                           :tool-count 0 :action-count 0))))))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
