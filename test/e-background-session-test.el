@@ -37,8 +37,8 @@
    (e-background-session-register :id 'missing :prompt "changed")
    :type 'e-board-runtime-producer-disabled))
 
-(ert-deftest e-background-session-test-fire-publishes-board-fact ()
-  "A fire queues one descriptive fact and creates no participant or turn."
+(ert-deftest e-background-session-test-fire-publishes-board-input ()
+  "A fire queues dispatchable work and exposes zero-match routing."
   (e-background-session-test--with-board (board binding)
     (let* ((trigger (e-background-session-register
                      :id 'sources :producer-binding binding :prompt "changed"
@@ -48,12 +48,18 @@
       (e-board-runtime-drain-producers)
       (let ((message (e-board-publication-message
                       (e-board-runtime-producer-publication-publication item))))
-        (should (eq (e-board-message-kind message) 'fact))
+        (should (eq (e-board-message-kind message) 'input))
         (should (equal (e-board-message-content message) "changed"))
         (should (equal (e-board-message-tags message)
                        '(domain background trigger sources)))
         (should (equal (plist-get (e-board-message-attributes message) :source)
-                       'file)))
+                       'file))
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (should (eq (e-board-message-routing-state message) 'unrouted)))
       (should (= (hash-table-count (e-board-registry-board-participants board)) 0)))))
 
 (ert-deftest e-background-session-test-stale-binding-cannot-start-or-fire ()

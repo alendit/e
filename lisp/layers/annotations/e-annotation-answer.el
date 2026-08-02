@@ -116,13 +116,13 @@ what to do with each thread."
 
 (cl-defun e-annotation-answer-dispatch
     (&key file producer-binding)
-  "Publish actionable annotation threads from FILE as one board fact.
+  "Publish actionable annotation threads from FILE as one board work input.
 PRODUCER-BINDING, or the explicitly configured default, must be current live
 process authority."
   (e-annotation-org--require-org-file file)
   (let ((threads (e-annotation-answer--actionable file)))
     (when threads
-      (e-board-runtime-producer-publish-fact
+      (e-board-runtime-producer-publish-input
        (or producer-binding e-annotation-answer-producer-binding)
        :tags '(annotation answer)
        :attributes (list :file (expand-file-name file)
@@ -133,7 +133,7 @@ process authority."
 ;;;###autoload
 (defun e-annotations-answer ()
   "Answer the open annotation threads on the current Org buffer's file.
-Publish the actionable-thread request as a board fact for an authorized board
+Publish the actionable-thread request as board work for an authorized board
 participant to handle.  The buffer must visit a saved Org file."
   (interactive)
   (unless (derived-mode-p 'org-mode)
@@ -153,7 +153,7 @@ participant to handle.  The buffer must visit a saved Org file."
 
 (cl-defun e-annotation-answer-sweep
     (files &key producer-binding)
-  "Publish a board fact for each Org file in FILES with actionable threads.
+  "Publish board work for each Org file in FILES with actionable threads.
 Generic mechanism: the caller supplies which files to sweep (grimoire policy
 decides that).  Honors the `e-annotation-answer-sweep-inhibit' kill switch and
 defers a file whose live buffer has unsaved edits, so a background write never
@@ -175,7 +175,7 @@ Return a plist summarizing the sweep."
           (let ((threads (ignore-errors (e-annotation-answer--actionable file))))
             (if (null threads)
                 (push file skipped)
-              (e-board-runtime-producer-publish-fact
+              (e-board-runtime-producer-publish-input
                binding :tags '(annotation answer sweep)
                :attributes (list :file (expand-file-name file)
                                  :thread-count (length threads))

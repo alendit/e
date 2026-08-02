@@ -66,6 +66,9 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
           (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+          (e-board-runtime--producer-inputs (make-hash-table :test 'equal))
+          (e-board-runtime--producer-deliveries (make-hash-table :test 'equal))
+          (e-board-runtime--producer-turns (make-hash-table :test 'equal))
           (e-board-runtime--producer-epoch 0)
           (e-board-runtime--producer-head nil)
           (e-board-runtime--producer-tail nil)
@@ -393,6 +396,121 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should (= (hash-table-count (e-board-registry-board-participants board)) 0))
         (should (= (hash-table-count (e-board-pickups source)) 0))
         (should (= (e-board-message-count source) 1))))))
+
+(ert-deftest e-board-runtime-test-producer-input-settles-from-causal-turn ()
+  "Trusted work remains unsettled from routing through its terminal turn."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (binding (e-board-runtime-producer-bind 'tasks board))
+           result attachment item)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :delivery-function (lambda (&rest _arguments) '(:accepted receipt))))
+      (e-board-registry-install-subscription
+       board "participant" '(:tags (task)) :id "tasks")
+      (setq item
+            (e-board-runtime-producer-publish-input
+             binding :tags '(task) :content "work"
+             :on-settle (lambda (&rest terminal) (setq result terminal))))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :producer-items) 1))
+      (e-board-runtime-drain-producers)
+      (let ((source (e-board-registry-board-source-board board)))
+        (should
+         (equal (e-board-message-requester-actor
+                 (e-board-publication-message
+                  (e-board-runtime-producer-publication-publication item)))
+                (list 'client
+                      (e-board-registry-client-id
+                       (e-board-runtime-producer-binding-client binding))
+                      (e-board-registry-client-generation
+                       (e-board-runtime-producer-binding-client binding)))))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source)))
+        (should (eq (e-board-runtime-producer-publication-state item) 'dispatched))
+        (should-not result)
+        (e-board-runtime--drain-pickups)
+        (let* ((delivery-id
+                (car (e-board-runtime-producer-publication-pending-delivery-ids item)))
+               (pickup (e-board-pickup source delivery-id))
+               (attempt (e-board-pickup-attempt pickup)))
+          (e-board-runtime--handle-harness-event
+           attachment
+           (e-events-make
+            :type 'input-consumed :session-id "session" :turn-id "turn"
+            :payload
+            (list :delivery-id delivery-id
+                  :endpoint-token
+                  (e-board-delivery-attempt-endpoint-token attempt)
+                  :endpoint-generation
+                  (e-board-delivery-attempt-composite-generation attempt))))
+          (should-not result)
+          (e-board-runtime--handle-harness-event
+           attachment
+           (e-events-make :type 'turn-finished :session-id "session"
+                          :turn-id "turn"))
+          (should (eq (plist-get result :status) 'done))
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     0)))))))
+
+(ert-deftest e-board-runtime-test-producer-input-broadcast-waits-for-all-pickups ()
+  "Broadcast producer work aggregates all participant terminal outcomes."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (binding (e-board-runtime-producer-bind 'tasks board))
+           result)
+      (dolist (id '("one" "two"))
+        (e-board-registry-add-participant board :id id)
+        (e-board-registry-install-subscription board id '(:tags (task))))
+      (let ((item
+             (e-board-runtime-producer-publish-input
+              binding :tags '(task) :content "work"
+              :on-settle (lambda (&rest terminal) (setq result terminal)))))
+        (e-board-runtime-drain-producers)
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (let ((deliveries
+               (copy-tree
+                (e-board-runtime-producer-publication-pending-delivery-ids item))))
+          (should (= (length deliveries) 2))
+          (e-board-runtime--producer-delivery-terminal
+           item (car deliveries) 'done '(:turn-id "one"))
+          (should-not result)
+          (e-board-runtime--producer-delivery-terminal
+           item (cadr deliveries) 'failed '(:turn-id "two"))
+          (should (eq (plist-get result :status) 'failed)))))))
+
+(ert-deftest e-board-runtime-test-cancelled-producer-input-never-routes ()
+  "Cancelling accepted producer work fences both queued and routing states."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (binding (e-board-runtime-producer-bind 'tasks board))
+           (queued (e-board-runtime-producer-publish-input
+                    binding :tags '(task) :content "queued")))
+      (e-board-runtime-producer-cancel queued)
+      (e-board-runtime-drain-producers)
+      (should-not (e-board-messages (e-board-registry-board-source-board board)))
+      (let ((routing (e-board-runtime-producer-publish-input
+                      binding :tags '(task) :content "routing")))
+        (e-board-runtime-drain-producers)
+        (e-board-runtime-producer-cancel routing)
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (should (eq (e-board-message-routing-state
+                     (e-board-publication-message
+                      (e-board-runtime-producer-publication-publication routing)))
+                    'routing-cancelled))
+        (should (= (plist-get (e-board-runtime-unsettled-state) :producer-items)
+                   0))))))
 
 (ert-deftest e-board-runtime-test-admitted-resume-finishes-after-close ()
   "Closing admission does not reject a previously accepted resume callback."

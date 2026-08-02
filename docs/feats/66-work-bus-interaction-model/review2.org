@@ -481,7 +481,7 @@ One E2E test must show parent input, child pickup, child thinking/tool/summary/
 output, selector widening, and exact/tagged result return on the same board and
 in board sequence, with no transcript scan.
 
-** TODO High: Bundled work producers publish inert facts and task completion is false
+** DONE High: Bundled work producers publish inert facts and task completion is false
 
 *** Expected
 
@@ -525,6 +525,37 @@ For every bundled producer, prove either its intentional observation-only
 contract or its input/pickup/settlement path.  In particular, prove task
 unrouted, one subscriber, broadcast, retry, cancellation, and terminal result
 instead of only successful fact append.
+
+*** Resolution
+
+Trusted producer bindings now own an attached, generation-fenced board client;
+their separately named =e-board-runtime-producer-publish-input= API retains that
+client actor and posts dispatchable input with a stable source key.  Producer
+work remains in the runtime unsettled projection through routing and every
+causally identified participant turn.  Zero matches settle =unrouted=, broadcast
+waits for every pickup, terminal failures dominate the aggregate result, and
+cancellation fences queued or in-progress routing.
+
+The task queue now publishes work input and stays =running= until the board
+outcome settles.  It records =unrouted= visibly instead of claiming =done=.
+Annotation-answer dispatch and background triggers are work inputs.  Cron
+=:publish= and subagent lifecycle changes remain deliberately observation-only
+facts: their domain contract is recording a scheduled notification or lifecycle
+edge, not claiming that an agent completed work.
+
+*** Evidence
+
+=e-board-runtime-test-producer-input-settles-from-causal-turn= proves a trusted
+non-nil client actor, routing, pickup consumption, terminal-turn correlation,
+and quiescence accounting.  The broadcast and cancellation tests prove
+all-pickup aggregation and both cancellation fences; the existing source-key
+retry regression remains green.  Task, annotation, background, cron, and
+subagent selections classify and exercise their intended fact-versus-input
+contracts.
+
+#+begin_example
+Ran 135 tests, 129 results as expected, 0 unexpected, 6 skipped
+#+end_example
 
 ** TODO High: Quiescence and activation can report a false-safe cutover
 
@@ -753,7 +784,7 @@ rtk eldev test test/e-board-test.el test/e-board-registry-test.el
 Ran 94 tests, 94 results as expected, 0 unexpected
 #+end_example
 
-** TODO High: Nil requester identity still bypasses authorization
+** DONE High: Nil requester identity still bypasses authorization
 
 *** Expected
 
@@ -809,11 +840,10 @@ work.  The =:private-pre-cutover= sentinel and principal-only requester resolver
 are gone.  =e-board-runtime-post-participant-input= is the separately named
 participant ingress and derives its actor only from a current active attachment.
 
-The 99-test registry/runtime selection covers omitted, stale, revoked,
+The registry/runtime selection covers omitted, stale, revoked,
 wrong-board, and wrong-generation clients, broadcast and exact grants, delivery
-rechecks, and participant-originated input.  The finding remains open only
-until the trusted producer work ingress in the producer remediation below is
-implemented and tested.
+rechecks, participant-originated input, and trusted producer input.  No
+production input path retains a nil requester actor.
 
 ** TODO High: Production board identity and lifecycle are not durable registry contracts
 

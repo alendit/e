@@ -204,13 +204,13 @@ events into one fire."
                        (e-background-session-fire trigger)))))
 
 (defun e-background-session--resolve-prompt (trigger)
-  "Return TRIGGER's fixed fact text."
+  "Return TRIGGER's fixed work request."
   (e-background-trigger-prompt trigger))
 
 (defun e-background-session-fire (trigger)
-  "Publish TRIGGER's observation-only board fact and return its queued item."
+  "Publish TRIGGER's board work input and return its queued item."
   (let ((item
-         (e-board-runtime-producer-publish-fact
+         (e-board-runtime-producer-publish-input
           (e-background-trigger-producer-binding trigger)
           :tags (list 'background 'trigger (e-background-trigger-id trigger))
           :attributes

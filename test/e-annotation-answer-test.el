@@ -154,8 +154,8 @@
                         :type 'e-board-runtime-producer-disabled))
       (delete-file file))))
 
-(ert-deftest e-annotation-answer-test-dispatch-publishes-board-fact ()
-  "An actionable dispatch publishes one fact and creates no participant."
+(ert-deftest e-annotation-answer-test-dispatch-publishes-board-input ()
+  "An actionable dispatch publishes work and exposes zero-match routing."
   (e-annotation-answer-test--with-board (board binding)
     (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
       (unwind-protect
@@ -169,7 +169,7 @@
               (let ((message (e-board-publication-message
                               (e-board-runtime-producer-publication-publication
                                item))))
-                (should (eq (e-board-message-kind message) 'fact))
+                (should (eq (e-board-message-kind message) 'input))
                 (should (equal (e-board-message-tags message)
                                '(documents annotation answer)))
                 (should (equal (plist-get
@@ -177,7 +177,13 @@
                                 :thread-count)
                                1))
                 (should (string-match-p "Why this?"
-                                        (e-board-message-content message))))
+                                        (e-board-message-content message)))
+                (e-board-runtime--drain-input-routing
+                 board
+                 (lambda ()
+                   (e-board-drain-input-classifications
+                    (e-board-registry-board-source-board board))))
+                (should (eq (e-board-message-routing-state message) 'unrouted)))
               (should (= (hash-table-count
                           (e-board-registry-board-participants board))
                          0))))

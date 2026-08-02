@@ -139,7 +139,7 @@
           (should (cl-every
                    (lambda (message)
                      (string-match-p
-                      "\\`producer:subagent:brd_[[:digit:]]+:parent-1\\'"
+                      "\\`producer:subagent:brd_[[:alnum:]]+:parent-1\\'"
                       (e-board-message-author message)))
                    facts))
           (let ((tags (mapcar #'e-board-message-tags facts)))

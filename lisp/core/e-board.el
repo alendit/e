@@ -2701,7 +2701,14 @@ the same bounded queue solely to classify explicit continuation subscriptions."
               (e-board-input-classification-subscription-count record))
              (index (e-board-input-classification-index record))
              (message (e-board-input-classification-message record)))
-        (if (< index subscription-count)
+        (if (eq (e-board-message-routing-state message) 'routing-cancelled)
+            (progn
+              (setf (e-board-input-classifications board)
+                    (cdr (e-board-input-classifications board)))
+              (e-board--adjust-unsettled board 'routing -1)
+              (unless (e-board-input-classifications board)
+                (setf (e-board-input-classification-tail board) nil)))
+          (if (< index subscription-count)
             (let ((subscription
                    (copy-e-board-subscription
                     (gethash (1+ index)
@@ -2721,7 +2728,7 @@ the same bounded queue solely to classify explicit continuation subscriptions."
                 (e-board--adjust-unsettled board 'routing -1)
                 (unless (e-board-input-classifications board)
                   (setf (e-board-input-classification-tail board) nil)))
-            (error (e-board--fail-input-classification board record err))))
+            (error (e-board--fail-input-classification board record err)))))
         (cl-decf remaining)))
     (when (e-board-input-classifications board)
       (e-board--schedule-input-classification board))))
@@ -2731,6 +2738,17 @@ the same bounded queue solely to classify explicit continuation subscriptions."
   (prog1 (e-board-routed-pickup-results board)
     (setf (e-board-routed-pickup-results board) nil
           (e-board-routed-pickup-results-tail board) nil)))
+
+(defun e-board-cancel-input-routing (board message-id &optional reason)
+  "Cancel nonterminal routing for retained input MESSAGE-ID on BOARD."
+  (let ((message (e-board-message board message-id)))
+    (when (eq (e-board-message-routing-state message) 'routing)
+      (setf (e-board-message-routing-state message) 'routing-cancelled
+            (e-board-message-unrouted-reason message) (or reason 'cancelled))
+      (e-board--append-event
+       board 'input-routing-cancelled
+       (list :message-id message-id :reason (or reason 'cancelled))))
+    message))
 
 (cl-defun e-board-post-input
     (board &key id author requester-actor tags attributes to (mode 'inject)

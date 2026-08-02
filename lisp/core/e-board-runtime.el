@@ -68,13 +68,13 @@
 (cl-defstruct (e-board-runtime-producer-binding
                (:constructor e-board-runtime--producer-binding-create))
   "Runtime-scoped authority for one trusted application producer."
-  id board-id board epoch tags attributes next-sequence state)
+  id board-id board epoch tags attributes next-sequence client requester state)
 
 (cl-defstruct (e-board-runtime-producer-publication
                (:constructor e-board-runtime--producer-publication-create))
   "One source-key-frozen producer publication attempt."
-  binding binding-epoch source-key tags attributes content reference state
-  publication error)
+  binding binding-epoch source-key kind tags attributes to mode content reference
+  on-settle state publication pending-delivery-ids terminal-results error)
 
 (defvar e-board-runtime--admission-open-p t
   "Non-nil while public board-runtime roots may be admitted.")
@@ -136,6 +136,15 @@ Operations accepted before this commit may continue to completion."
 
 (defvar e-board-runtime--producer-bindings (make-hash-table :test 'equal)
   "Current runtime-scoped trusted producer bindings by producer id.")
+
+(defvar e-board-runtime--producer-inputs (make-hash-table :test 'equal)
+  "Nonterminal producer work items keyed by retained input message id.")
+
+(defvar e-board-runtime--producer-deliveries (make-hash-table :test 'equal)
+  "Producer work items keyed by their frozen delivery ids.")
+
+(defvar e-board-runtime--producer-turns (make-hash-table :test 'equal)
+  "Producer work items keyed by board, participant, and source turn.")
 
 (defvar e-board-runtime--producer-epoch 0
   "Monotonic process-local producer binding epoch.")
@@ -333,8 +342,20 @@ producer remains disabled until an owner supplies the exact live board again."
                    board))
     (signal 'e-board-runtime-producer-disabled (list producer-id 'missing-board)))
   (when-let ((old (gethash producer-id e-board-runtime--producer-bindings)))
-    (setf (e-board-runtime-producer-binding-state old) 'replaced))
-  (let ((binding
+    (setf (e-board-runtime-producer-binding-state old) 'replaced)
+    (ignore-errors
+      (e-board-registry-detach-client
+       (e-board-runtime-producer-binding-board old)
+       (e-board-registry-client-id
+        (e-board-runtime-producer-binding-client old)))))
+  (let* ((client
+          (e-board-registry-attach-client
+           board :author (format "producer:%s" producer-id)
+           :principal (e-board-registry-board-principal board)))
+         (requester
+          (e-board-registry-client-requester-context
+           board (e-board-registry-client-id client)))
+         (binding
          (e-board-runtime--producer-binding-create
           :id producer-id
           :board-id (e-board-registry-board-id board)
@@ -343,6 +364,8 @@ producer remains disabled until an owner supplies the exact live board again."
           :tags (copy-tree tags)
           :attributes (copy-tree attributes)
           :next-sequence 0
+          :client client
+          :requester requester
           :state 'active)))
     (puthash producer-id binding e-board-runtime--producer-bindings)
     binding))
@@ -355,6 +378,11 @@ producer remains disabled until an owner supplies the exact live board again."
               binding)
       (remhash (e-board-runtime-producer-binding-id binding)
                e-board-runtime--producer-bindings))
+    (ignore-errors
+      (e-board-registry-detach-client
+       (e-board-runtime-producer-binding-board binding)
+       (e-board-registry-client-id
+        (e-board-runtime-producer-binding-client binding))))
     (setf (e-board-runtime-producer-binding-state binding) 'disabled))
   binding)
 
@@ -395,6 +423,7 @@ idempotent.  Zero matching subscriptions never creates a participant or turn."
           (list (e-board-runtime-producer-binding-id binding)
                 (e-board-runtime-producer-binding-epoch binding)
                 (cl-incf (e-board-runtime-producer-binding-next-sequence binding)))
+          :kind 'fact
           :tags (append (copy-tree (e-board-runtime-producer-binding-tags binding))
                         (copy-tree tags))
           :attributes
@@ -402,6 +431,31 @@ idempotent.  Zero matching subscriptions never creates a participant or turn."
                   (copy-tree attributes))
           :content content :reference reference :state 'created)))
     (e-board-runtime--enqueue-producer-publication item)))
+
+(cl-defun e-board-runtime-producer-publish-input
+    (binding &key tags attributes to (mode 'inject) content reference on-settle)
+  "Accept one dispatchable work input from current producer BINDING.
+ON-SETTLE receives a terminal plist after routing and all causally identified
+participant turns settle.  An unrouted input settles visibly as `unrouted'."
+  (e-board-runtime--require-admission)
+  (unless (e-board-runtime--producer-binding-current-p binding)
+    (signal 'e-board-runtime-producer-disabled (list binding 'stale-binding)))
+  (e-board-runtime--enqueue-producer-publication
+   (e-board-runtime--producer-publication-create
+    :binding binding
+    :binding-epoch (e-board-runtime-producer-binding-epoch binding)
+    :source-key
+    (list (e-board-runtime-producer-binding-id binding)
+          (e-board-runtime-producer-binding-epoch binding)
+          (cl-incf (e-board-runtime-producer-binding-next-sequence binding)))
+    :kind 'input
+    :tags (append (copy-tree (e-board-runtime-producer-binding-tags binding))
+                  (copy-tree tags))
+    :attributes
+    (append (copy-tree (e-board-runtime-producer-binding-attributes binding))
+            (copy-tree attributes))
+    :to to :mode mode :content content :reference reference
+    :on-settle on-settle :state 'created)))
 
 (defun e-board-runtime-producer-retry (item)
   "Retry failed producer publication ITEM with its original source key."
@@ -413,8 +467,89 @@ idempotent.  Zero matching subscriptions never creates a participant or turn."
   (setf (e-board-runtime-producer-publication-error item) nil)
   (e-board-runtime--enqueue-producer-publication item))
 
+(defun e-board-runtime-producer-cancel (item)
+  "Cancel trusted producer work ITEM without accepting new work."
+  (unless (and (e-board-runtime-producer-publication-p item)
+               (eq (e-board-runtime-producer-publication-kind item) 'input))
+    (signal 'wrong-type-argument
+            (list 'e-board-runtime-producer-publication-p item)))
+  (pcase (e-board-runtime-producer-publication-state item)
+    ((or 'created 'queued)
+     ;; The bounded producer drain owns retirement of the queued unsettled slot.
+     (setf (e-board-runtime-producer-publication-state item) 'cancelled))
+    ((or 'published 'dispatched)
+     (let* ((binding (e-board-runtime-producer-publication-binding item))
+            (source
+             (e-board-registry-board-source-board
+              (e-board-runtime-producer-binding-board binding)))
+            (publication
+             (e-board-runtime-producer-publication-publication item)))
+       (when publication
+         (e-board-cancel-input-routing
+          source (e-board-message-id (e-board-publication-message publication))
+          'producer-cancelled))
+       (dolist (delivery-id
+                (e-board-runtime-producer-publication-pending-delivery-ids item))
+         (when (e-board-pickup source delivery-id)
+           (e-board-cancel-pickup source delivery-id 'producer-cancelled)))
+       (e-board-runtime--settle-producer-input item 'cancelled)))
+    (_ nil))
+  item)
+
+(defun e-board-runtime--settle-producer-input (item status &optional payload)
+  "Settle producer work ITEM once with STATUS and optional PAYLOAD."
+  (unless (memq (e-board-runtime-producer-publication-state item)
+                '(done failed cancelled unrouted))
+    (setf (e-board-runtime-producer-publication-state item) status)
+    (when-let* ((publication
+                 (e-board-runtime-producer-publication-publication item))
+                (message (e-board-publication-message publication)))
+      (remhash (e-board-message-id message) e-board-runtime--producer-inputs))
+    (dolist (delivery-id
+             (e-board-runtime-producer-publication-pending-delivery-ids item))
+      (remhash delivery-id e-board-runtime--producer-deliveries))
+    (e-board-runtime--adjust-unsettled-count 'producer -1)
+    (when-let ((callback
+                (e-board-runtime-producer-publication-on-settle item)))
+      (apply callback (append (list :status status) payload)))))
+
+(defun e-board-runtime--producer-routing-finished (board message-id pickup-ids)
+  "Advance producer work MESSAGE-ID after BOARD routing produced PICKUP-IDS."
+  (when-let ((item (gethash message-id e-board-runtime--producer-inputs)))
+    (let* ((source (e-board-registry-board-source-board board))
+           (message (e-board-message source message-id)))
+      (if (null pickup-ids)
+          (e-board-runtime--settle-producer-input
+           item 'unrouted
+           (list :reason (e-board-message-unrouted-reason message)
+                 :message-id message-id))
+        (setf (e-board-runtime-producer-publication-state item) 'dispatched
+              (e-board-runtime-producer-publication-pending-delivery-ids item)
+              (copy-tree pickup-ids))
+        (dolist (delivery-id pickup-ids)
+          (puthash delivery-id item e-board-runtime--producer-deliveries))))))
+
+(defun e-board-runtime--producer-delivery-terminal (item delivery-id status payload)
+  "Record one producer ITEM DELIVERY-ID terminal STATUS and PAYLOAD."
+  (remhash delivery-id e-board-runtime--producer-deliveries)
+  (setf (e-board-runtime-producer-publication-pending-delivery-ids item)
+        (delete delivery-id
+                (e-board-runtime-producer-publication-pending-delivery-ids item))
+        (e-board-runtime-producer-publication-terminal-results item)
+        (cons (list :delivery-id delivery-id :status status :payload payload)
+              (e-board-runtime-producer-publication-terminal-results item)))
+  (unless (e-board-runtime-producer-publication-pending-delivery-ids item)
+    (let* ((results (nreverse
+                     (e-board-runtime-producer-publication-terminal-results item)))
+           (statuses (mapcar (lambda (result) (plist-get result :status)) results))
+           (final (cond ((memq 'failed statuses) 'failed)
+                        ((memq 'cancelled statuses) 'cancelled)
+                        (t 'done))))
+      (e-board-runtime--settle-producer-input
+       item final (list :results results)))))
+
 (defun e-board-runtime-drain-producers ()
-  "Apply one bounded page of accepted trusted producer facts."
+  "Apply one bounded page of accepted trusted producer publications."
   (setq e-board-runtime--producer-drain-scheduled nil)
   (let ((remaining e-board-runtime-producer-drain-limit))
     (while (and (> remaining 0) e-board-runtime--producer-head)
@@ -422,6 +557,8 @@ idempotent.  Zero matching subscriptions never creates a participant or turn."
         (unless e-board-runtime--producer-head
           (setq e-board-runtime--producer-tail nil))
         (unwind-protect
+            (if (eq (e-board-runtime-producer-publication-state item) 'cancelled)
+                nil
             (condition-case err
                 (let ((binding
                        (e-board-runtime-producer-publication-binding item)))
@@ -430,25 +567,52 @@ idempotent.  Zero matching subscriptions never creates a participant or turn."
                                   (e-board-runtime-producer-binding-epoch binding)))
                     (signal 'e-board-runtime-producer-disabled
                             (list binding 'stale-drain)))
-                  (setf (e-board-runtime-producer-publication-publication item)
-                        (e-board-post-fact
-                         (e-board-registry-board-source-board
-                          (e-board-runtime-producer-binding-board binding))
-                         :author
-                         (format "producer:%s"
-                                 (e-board-runtime-producer-binding-id binding))
-                         :tags (e-board-runtime-producer-publication-tags item)
-                         :attributes
-                         (e-board-runtime-producer-publication-attributes item)
-                         :content (e-board-runtime-producer-publication-content item)
-                         :reference (e-board-runtime-producer-publication-reference item)
-                         :source-fact-key
-                         (e-board-runtime-producer-publication-source-key item))
-                        (e-board-runtime-producer-publication-state item) 'published))
+                  (let ((publication
+                         (if (eq (e-board-runtime-producer-publication-kind item)
+                                 'input)
+                             (e-board-runtime--post-client-input
+                              (e-board-runtime-producer-binding-board binding)
+                              :author
+                              (format "producer:%s"
+                                      (e-board-runtime-producer-binding-id binding))
+                              :requester
+                              (e-board-runtime-producer-binding-requester binding)
+                              :tags (e-board-runtime-producer-publication-tags item)
+                              :attributes
+                              (e-board-runtime-producer-publication-attributes item)
+                              :to (e-board-runtime-producer-publication-to item)
+                              :mode (e-board-runtime-producer-publication-mode item)
+                              :content (e-board-runtime-producer-publication-content item)
+                              :reference (e-board-runtime-producer-publication-reference item)
+                              :source-input-key
+                              (e-board-runtime-producer-publication-source-key item))
+                           (e-board-post-fact
+                            (e-board-registry-board-source-board
+                             (e-board-runtime-producer-binding-board binding))
+                            :author
+                            (format "producer:%s"
+                                    (e-board-runtime-producer-binding-id binding))
+                            :tags (e-board-runtime-producer-publication-tags item)
+                            :attributes
+                            (e-board-runtime-producer-publication-attributes item)
+                            :content (e-board-runtime-producer-publication-content item)
+                            :reference (e-board-runtime-producer-publication-reference item)
+                            :source-fact-key
+                            (e-board-runtime-producer-publication-source-key item)))))
+                    (setf (e-board-runtime-producer-publication-publication item)
+                          publication
+                          (e-board-runtime-producer-publication-state item) 'published)
+                    (when (eq (e-board-runtime-producer-publication-kind item) 'input)
+                      (puthash
+                       (e-board-message-id (e-board-publication-message publication))
+                       item e-board-runtime--producer-inputs))))
               (error
                (setf (e-board-runtime-producer-publication-error item) err
-                     (e-board-runtime-producer-publication-state item) 'failed)))
-          (e-board-runtime--adjust-unsettled-count 'producer -1)))
+                     (e-board-runtime-producer-publication-state item) 'failed))))
+          (unless (and (eq (e-board-runtime-producer-publication-kind item) 'input)
+                       (eq (e-board-runtime-producer-publication-state item)
+                           'published))
+            (e-board-runtime--adjust-unsettled-count 'producer -1))))
       (cl-decf remaining))
     (when e-board-runtime--producer-head
       (e-board-runtime--schedule-producer-drain))))
@@ -880,6 +1044,7 @@ will consume the mailbox under its own bounded drain."
   (funcall drain)
   (dolist (result (e-board-drain-routed-pickups
                    (e-board-registry-board-source-board board)))
+    (e-board-runtime--producer-routing-finished board (car result) (cadr result))
     (e-board-runtime--enqueue-pickups board (cadr result))))
 
 (defun e-board-runtime--enroll-work (harness handle callback)
@@ -1108,6 +1273,28 @@ these terminal states have no output to close the board-owned open projection."
          :source-activity-key
          (e-board-runtime--event-activity-source-key attachment event 'turn-summary))))))
 
+(defun e-board-runtime--producer-turn-key (attachment turn-id)
+  "Return producer completion key for ATTACHMENT and TURN-ID."
+  (list (e-board-registry-board-id
+         (e-board-runtime-attachment-board attachment))
+        (e-board-registry-participant-id
+         (e-board-runtime-attachment-participant attachment))
+        turn-id))
+
+(defun e-board-runtime--settle-producer-turn (attachment event status)
+  "Settle any producer delivery causally owned by terminal EVENT."
+  (when-let* ((turn-id (plist-get event :turn-id))
+              (entry (gethash (e-board-runtime--producer-turn-key
+                               attachment turn-id)
+                              e-board-runtime--producer-turns)))
+    (remhash (e-board-runtime--producer-turn-key attachment turn-id)
+             e-board-runtime--producer-turns)
+    (e-board-runtime--producer-delivery-terminal
+     (car entry) (cadr entry) status
+     (list :turn-id turn-id :participant-id
+           (e-board-registry-participant-id
+            (e-board-runtime-attachment-participant attachment))))))
+
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
   (when (e-board-runtime--current-attachment-p attachment)
@@ -1120,12 +1307,15 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-runtime--publish-turn-summary attachment event 'finished)
         (remhash (plist-get event :turn-id)
                  (e-board-runtime-attachment-turn-tags attachment))
+        (e-board-runtime--settle-producer-turn attachment event 'done)
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((memq type '(turn-failed turn-cancelled))
         (e-board-runtime--publish-terminal-activity attachment event)
         (e-board-runtime--publish-turn-summary attachment event type)
         (remhash (plist-get event :turn-id)
                  (e-board-runtime-attachment-turn-tags attachment))
+        (e-board-runtime--settle-producer-turn
+         attachment event (if (eq type 'turn-cancelled) 'cancelled 'failed))
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((eq type 'input-consumed)
         (let* ((payload (plist-get event :payload))
@@ -1139,6 +1329,13 @@ these terminal states have no output to close the board-owned open projection."
                       (plist-get (e-board-pickup-cause-metadata pickup)
                                  :routing-tags))
                      (e-board-runtime-attachment-turn-tags attachment)))
+          (when-let* ((turn-id (plist-get event :turn-id))
+                      (item (gethash delivery-id
+                                     e-board-runtime--producer-deliveries)))
+            (puthash (e-board-runtime--producer-turn-key
+                      attachment turn-id)
+                     (list item delivery-id)
+                     e-board-runtime--producer-turns))
           (when (and pickup
                      (memq (e-board-pickup-state pickup) '(accepted cancelling))
                      (e-board-runtime--consumption-receipt-matches-p
@@ -1152,6 +1349,11 @@ these terminal states have no output to close the board-owned open projection."
                (registry-board (e-board-runtime-attachment-board attachment))
                (board (e-board-registry-board-source-board registry-board))
                (pickup (e-board-pickup board delivery-id)))
+          (when-let ((item (gethash delivery-id
+                                    e-board-runtime--producer-deliveries)))
+            (e-board-runtime--producer-delivery-terminal
+             item delivery-id 'failed
+             (list :reason (or (plist-get payload :reason) 'input-discarded))))
           (when (and pickup
                      (memq (e-board-pickup-state pickup) '(accepted cancelling))
                      (e-board-runtime--consumption-receipt-matches-p
@@ -2368,15 +2570,10 @@ and pickup tombstones remain on the source board."
                         (e-board-runtime--enqueue-pickups
                          board (list delivery-id)))))))))))))))
 
-(cl-defun e-board-runtime-post-input
+(cl-defun e-board-runtime--post-client-input
     (board-or-id &key id author tags attributes to requester
                  (mode 'inject) content reference source-input-key)
-  "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
-The returned value is the source board's `e-board-publication'.  Duplicate
-publications only retry pickups that remain pending.  REQUESTER must be an
-active registry client requester context; exact posts additionally
-require authority for their target participant."
-  (e-board-runtime--require-admission)
+  "Post input using authenticated client REQUESTER without opening admission."
   (unless requester
     (signal 'e-board-registry-authorization-denied
             (list (if (e-board-registry-board-p board-or-id)
@@ -2394,14 +2591,28 @@ require authority for their target participant."
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
-            :id id :author author :requester-actor requester-actor
-            :tags tags :attributes attributes
+           :id id :author author :requester-actor requester-actor
+           :tags tags :attributes attributes
            :to (and target (e-board-registry-participant-id target))
            :mode mode :content content
            :reference reference :source-input-key source-input-key)))
     (e-board-runtime--enqueue-pickups
      board (e-board-publication-pickup-ids publication))
     publication))
+
+(cl-defun e-board-runtime-post-input
+    (board-or-id &key id author tags attributes to requester
+                 (mode 'inject) content reference source-input-key)
+  "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
+The returned value is the source board's `e-board-publication'.  Duplicate
+publications only retry pickups that remain pending.  REQUESTER must be an
+active registry client requester context; exact posts additionally
+require authority for their target participant."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--post-client-input
+   board-or-id :id id :author author :tags tags :attributes attributes
+   :to to :requester requester :mode mode :content content
+   :reference reference :source-input-key source-input-key))
 
 (cl-defun e-board-runtime-post-participant-input
     (attachment &key id author tags attributes to (mode 'inject)

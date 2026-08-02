@@ -287,13 +287,16 @@ tests need a runner whose handle carries one."
   (should-error (e-task-queue-enqueue (e-task-queue-create) :prompt "work")
                 :type 'e-board-runtime-producer-disabled))
 
-(ert-deftest e-task-queue-test-default-runner-publishes-board-fact ()
-  "The bundled queue publishes one fact and creates no session or participant."
+(ert-deftest e-task-queue-test-default-runner-records-unrouted-board-work ()
+  "The bundled queue cannot claim completion when no participant picks work up."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board--id-sequence 0)
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--id-sequence 0)
         (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
+        (e-board-runtime--producer-inputs (make-hash-table :test 'equal))
+        (e-board-runtime--producer-deliveries (make-hash-table :test 'equal))
+        (e-board-runtime--producer-turns (make-hash-table :test 'equal))
         (e-board-runtime--producer-epoch 0)
         (e-board-runtime--producer-head nil)
         (e-board-runtime--producer-tail nil)
@@ -306,12 +309,22 @@ tests need a runner whose handle carries one."
            (binding (e-board-runtime-producer-bind 'tasks board))
            (queue (e-task-queue-create :producer-binding binding))
            (record (e-task-queue-enqueue queue :prompt "please work")))
-      (should (eq (plist-get record :status) 'done))
+      (should (eq (plist-get record :status) 'running))
       (should-not (plist-get record :session-id))
       (e-board-runtime-drain-producers)
+      (e-board-runtime--drain-input-routing
+       board
+       (lambda ()
+         (e-board-drain-input-classifications
+          (e-board-registry-board-source-board board))))
+      (setq record (e-task-queue-get queue (plist-get record :task-id)))
+      (should (eq (plist-get record :status) 'unrouted))
+      (should (string-match-p "no-matching-subscription"
+                              (plist-get record :error)))
       (let ((message (car (e-board-messages
                            (e-board-registry-board-source-board board)))))
-        (should (eq (e-board-message-kind message) 'fact))
+        (should (eq (e-board-message-kind message) 'input))
+        (should (eq (e-board-message-routing-state message) 'unrouted))
         (should (equal (e-board-message-content message) "please work")))
       (should (= (hash-table-count (e-board-registry-board-participants board)) 0)))))
 

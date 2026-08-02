@@ -238,6 +238,10 @@ truncated prompt prefix in `:prompt-summary'."
        (e-work-fail handle
                     (list 'e-task-queue-error
                           (or (plist-get record :error) "Task failed"))))
+      ('unrouted
+       (e-work-fail handle
+                    (list 'e-task-queue-error
+                          (or (plist-get record :error) "Task was unrouted"))))
       ('cancelled (e-work-cancel handle)))
     handle))
 
@@ -253,6 +257,10 @@ truncated prompt prefix in `:prompt-summary'."
        (e-work-fail handle
                     (list 'e-task-queue-error
                           (or (plist-get record :error) "Task failed"))))
+      ('unrouted
+       (e-work-fail handle
+                    (list 'e-task-queue-error
+                          (or (plist-get record :error) "Task was unrouted"))))
       ('cancelled (e-work-cancel handle)))))
 
 ;; --- dispatch helpers -------------------------------------------------------
@@ -558,7 +566,7 @@ Returns QUEUE."
 ;; --- default runner ---------------------------------------------------------
 
 (defun e-task-queue-default-runner (task harness on-settle)
-  "Publish TASK as a board fact through QUEUE-owned process authority.
+  "Publish TASK as board work through QUEUE-owned process authority.
 HARNESS is the queue sentinel carrying QUEUE for the default path.  Custom test
 and application runners retain the historical runner signature."
   (unless (e-task-queue-p harness)
@@ -568,7 +576,7 @@ and application runners retain the historical runner signature."
       (signal 'e-board-runtime-producer-disabled
               (list (plist-get task :task-id) 'missing-live-binding)))
     (let ((publication
-           (e-board-runtime-producer-publish-fact
+           (e-board-runtime-producer-publish-input
             binding
             :tags '(task-queue task)
             :attributes
@@ -576,12 +584,23 @@ and application runners retain the historical runner signature."
                   :summary (plist-get task :summary)
                   :metadata (copy-tree (plist-get task :metadata)))
             :content (plist-get task :prompt)
-            :reference (format "task:%s" (plist-get task :task-id)))))
-      (funcall on-settle :status 'done
-               :outputs (list (list :kind 'board-fact
-                                    :value (e-board-runtime-producer-publication-source-key
-                                            publication))))
-      (list :publication publication))))
+            :reference (format "task:%s" (plist-get task :task-id))
+            :on-settle
+            (lambda (&rest result)
+              (let ((status (plist-get result :status)))
+                (apply on-settle
+                       :status status
+                       :outputs
+                       (list (list :kind 'board-work
+                                   :value result))
+                       (when (eq status 'unrouted)
+                         (list :error
+                               (format "Board work unrouted: %s"
+                                       (plist-get result :reason))))))))))
+      (list :publication publication
+            :cancel
+            (lambda ()
+              (e-board-runtime-producer-cancel publication))))))
 
 ;; --- persistence ------------------------------------------------------------
 

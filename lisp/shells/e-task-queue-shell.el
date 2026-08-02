@@ -39,6 +39,7 @@
     ('running "running")
     ('done "done")
     ('failed "failed")
+    ('unrouted "unrouted")
     ('cancelled "cancelled")
     ('paused "paused")
     (_ (format "%s" status))))
