@@ -124,6 +124,37 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-catalog-port-returns-current-board-rows ()
+  "The writer serves bounded preflight pages without transcript reads in Emacs."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-catalog-port-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         result failure)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (e-session-persistence-declare-board-state
+           controller "session-1" "principal:owner")
+          (e-session-persistence-flush controller 5)
+          (e-session-persistence-catalog-request
+           controller '(:operation preflight-page :limit 1)
+           (lambda (value) (setq result value))
+           (lambda (err) (setq failure err)))
+          (while (and (not result) (not failure))
+            (accept-process-output (e-session-persistence-process controller) 0.05))
+          (should-not failure)
+          (let ((row (car (plist-get result :sessions))))
+            (should (equal (plist-get row :session-id) "session-1"))
+            (should (eq (plist-get row :state) 'dormant))
+            (should (equal (plist-get (plist-get row :access-record) :controller)
+                           "principal:owner"))
+            (should (= (plist-get row :board-output-sequence) 0))
+            (should (= (plist-get row :board-activity-sequence) 0))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (provide 'e-session-persistence-test)
 
 ;;; e-session-persistence-test.el ends here

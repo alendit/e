@@ -49,6 +49,7 @@
                (:conc-name e-session-persistence-))
   store process stderr-buffer input-fragment
   instance-id (next-sequence 0) (outbox (make-hash-table :test 'equal))
+  (callbacks (make-hash-table :test 'equal))
   checkpoint-timer retry-timer last-error)
 
 (defun e-session-persistence--directory ()
@@ -87,6 +88,21 @@
         (lambda (left right)
           (< (plist-get left :sequence) (plist-get right :sequence)))))
 
+(defun e-session-persistence--catalog-result (result)
+  "Normalize writer catalog RESULT into the core symbolic row contract."
+  (cl-labels ((row (value)
+                (when (listp value)
+                  (let ((copy (copy-tree value)))
+                    (when (stringp (plist-get copy :state))
+                      (setq copy
+                            (plist-put copy :state
+                                       (intern (plist-get copy :state)))))
+                    copy))))
+    (if (and (listp result) (plist-member result :sessions))
+        (plist-put (copy-sequence result) :sessions
+                   (mapcar #'row (plist-get result :sessions)))
+      (row result))))
+
 (defun e-session-persistence--restart-later (controller)
   "Retry CONTROLLER's writer when it still has work."
   (when (and (> (hash-table-count (e-session-persistence-outbox controller)) 0)
@@ -107,9 +123,23 @@
 
 (defun e-session-persistence--handle-response (controller response)
   "Apply one writer RESPONSE to CONTROLLER."
-  (let ((id (plist-get response :id)))
+  (let* ((id (plist-get response :id))
+         (request (and (stringp id)
+                       (gethash id (e-session-persistence-outbox controller))))
+         (callbacks (and (stringp id)
+                         (gethash id (e-session-persistence-callbacks controller)))))
     (if (eq (plist-get response :ok) :json-false)
-        (progn
+        (if (plist-get request :ephemeral)
+            (progn
+              (remhash id (e-session-persistence-outbox controller))
+              (remhash id (e-session-persistence-callbacks controller))
+              (e-session--adjust-unsettled-writes
+               (e-session-persistence-store controller) -1)
+              (when-let ((on-error (cdr callbacks)))
+                (funcall on-error
+                         (list 'e-session-persistence-error
+                               (or (plist-get response :error)
+                                   "Writer rejected command")))))
           (setf (e-session-persistence-last-error controller)
                 (list 'e-session-persistence-error
                       (or (plist-get response :error) "Writer rejected command")))
@@ -117,8 +147,15 @@
       (when (stringp id)
         (when (gethash id (e-session-persistence-outbox controller))
           (remhash id (e-session-persistence-outbox controller))
+          (remhash id (e-session-persistence-callbacks controller))
           (e-session--adjust-unsettled-writes
            (e-session-persistence-store controller) -1))
+        (when-let ((on-done (car callbacks)))
+          (funcall on-done
+                   (if (equal (plist-get request :op) "catalog-page")
+                       (e-session-persistence--catalog-result
+                        (plist-get response :result))
+                     (plist-get response :result))))
         (setf (e-session-persistence-last-error controller) nil)))))
 
 (defun e-session-persistence--consume-output (controller text)
@@ -155,7 +192,7 @@
       (set-process-query-on-exit-flag (e-session-persistence-process controller) nil)))
   (e-session-persistence-process controller))
 
-(defun e-session-persistence--submit (controller operation)
+(defun e-session-persistence--submit (controller operation &optional on-done on-error)
   "Queue OPERATION for CONTROLLER and return its stable command id."
   (let* ((sequence (cl-incf (e-session-persistence-next-sequence controller)))
          ;; The writer deduplicates this value after an Emacs restart.  A local
@@ -167,6 +204,9 @@
                                             (e-session-persistence-store controller)))
                           operation)))
     (puthash id request (e-session-persistence-outbox controller))
+    (when (or on-done on-error)
+      (puthash id (cons on-done on-error)
+               (e-session-persistence-callbacks controller)))
     (e-session--adjust-unsettled-writes
      (e-session-persistence-store controller) 1)
     (condition-case err
@@ -178,10 +218,47 @@
        (e-session-persistence--restart-later controller)))
     id))
 
+(defun e-session-persistence-catalog-request
+    (controller arguments on-done on-error)
+  "Submit one bounded catalog ARGUMENTS request through CONTROLLER."
+  (let ((operation (plist-get arguments :operation)))
+    (unless (memq operation '(list-page preflight-page read))
+      (signal 'e-session-persistence-error
+              (list "Unsupported session catalog operation" operation)))
+    (e-session-persistence--submit
+     controller
+     (list :op "catalog-page" :ephemeral t
+           :catalog-operation (symbol-name operation)
+           :after (plist-get arguments :after)
+           :session-id (plist-get arguments :session-id)
+           :limit (plist-get arguments :limit))
+     on-done on-error)
+    (lambda () nil)))
+
 (defun e-session-persistence-submit-record (controller session-id record)
   "Submit durable RECORD for SESSION-ID through CONTROLLER."
   (e-session-persistence--submit
    controller (list :op "append" :session-id session-id :record record)))
+
+(defun e-session-persistence-declare-board-state
+    (controller session-id controller-principal)
+  "Persist current dormant board schema for SESSION-ID.
+CONTROLLER-PRINCIPAL is trusted host policy, never inferred from transcript
+content.  The derived catalog checkpoint remains asynchronous."
+  (let* ((store (e-session-persistence-store controller))
+         (session (e-session-get store session-id)))
+    (e-session-persistence-submit-record
+     controller session-id
+     (list :type "board-session-state" :session-id session-id
+           :state "dormant"
+           :access-record
+           (list :controller controller-principal :version 0
+                 :discover-principals nil :resume-principals nil)
+           :board-output-sequence
+           (or (plist-get session :board-output-sequence) 0)
+           :board-activity-sequence
+           (or (plist-get session :board-activity-sequence) 0)))
+    (e-session-persistence-request-checkpoint controller)))
 
 (defun e-session-persistence-request-checkpoint (controller)
   "Debounce a derived catalog checkpoint for CONTROLLER."

@@ -106,6 +106,28 @@ async function handle(request) {
     }
   } else if (request.op === "checkpoint") {
     await rebuildCatalog(directory);
+  } else if (request.op === "catalog-page") {
+    const target = path.join(directory, "index.json");
+    const entries = JSON.parse(await fs.readFile(target, "utf8").catch(() => "[]"));
+    const rows = entries
+      .map((entry) => ({
+        "session-id": entry.id,
+        state: entry.state,
+        "access-record": entry["access-record"],
+        "board-output-sequence": entry["board-output-sequence"],
+        "board-activity-sequence": entry["board-activity-sequence"],
+      }))
+      .sort((left, right) => String(left["session-id"]).localeCompare(String(right["session-id"])));
+    if (request["catalog-operation"] === "read") {
+      return rows.find((row) => row["session-id"] === request["session-id"]) ?? null;
+    }
+    const after = request.after == null ? null : String(request.after);
+    const limit = Math.max(1, Math.min(Number(request.limit) || 32, 32));
+    const start = after == null ? 0 : rows.findIndex((row) => String(row["session-id"]) > after);
+    const offset = start < 0 ? rows.length : start;
+    const page = rows.slice(offset, offset + limit);
+    const more = offset + page.length < rows.length;
+    return { sessions: page, "next-after": more ? page.at(-1)["session-id"] : null };
   } else {
     throw new Error(`Unsupported writer operation ${request.op}`);
   }
@@ -120,8 +142,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       let request;
       try {
         request = JSON.parse(line);
-        await handle(request);
-        process.stdout.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+        const result = await handle(request);
+        process.stdout.write(JSON.stringify({ id: request.id, ok: true, result }) + "\n");
       } catch (error) {
         process.stdout.write(JSON.stringify({ id: request?.id ?? null, ok: false, error: error?.message || String(error) }) + "\n");
       }

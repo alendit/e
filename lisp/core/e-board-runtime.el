@@ -51,6 +51,12 @@
 (define-error 'e-board-runtime-quiescence-active
   "e board runtime quiescence request is already active"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-activation-active
+  "e board runtime activation request is already active"
+  'e-board-runtime-error)
+(define-error 'e-board-runtime-activation-preflight
+  "e board runtime activation preflight failed"
+  'e-board-runtime-error)
 (define-error 'e-board-runtime-producer-disabled
   "e board runtime producer has no current live binding"
   'e-board-runtime-error)
@@ -64,6 +70,11 @@
                (:constructor e-board-runtime--quiescence-create))
   "One controlled process-quiescence request and its admission authority."
   request admission-token)
+
+(cl-defstruct (e-board-runtime-activation
+               (:constructor e-board-runtime--activation-create))
+  "One startup activation gate over quiescence and store preflight."
+  request quiescence preflight)
 
 (cl-defstruct (e-board-runtime-producer-binding
                (:constructor e-board-runtime--producer-binding-create))
@@ -84,6 +95,9 @@
 
 (defvar e-board-runtime--quiescence-current nil
   "The one active controlled process-quiescence request, if any.")
+
+(defvar e-board-runtime--activation-current nil
+  "The one active startup activation gate, if any.")
 
 (defun e-board-runtime-admission-state ()
   "Return the current bounded board-runtime admission state."
@@ -728,6 +742,73 @@ retain the returned admission token and reopen it explicitly when appropriate."
                            (e-board-runtime-admission-token-epoch token)))
     (e-board-runtime--quiescence-evaluate quiescence)
     quiescence))
+
+(defun e-board-runtime--activation-fail (activation condition)
+  "Fail ACTIVATION with CONDITION while leaving admission closed."
+  (when (eq activation e-board-runtime--activation-current)
+    (setq e-board-runtime--activation-current nil)
+    (e-request-fail (e-board-runtime-activation-request activation) condition)))
+
+(defun e-board-runtime--activation-preflight (activation)
+  "Start configured-store preflight for quiescent ACTIVATION."
+  (if (null (e-harness-instance-session-stores))
+      (e-board-runtime--activation-fail
+       activation
+       (list 'e-board-runtime-activation-preflight
+             "No configured session store is available for activation"))
+    (condition-case err
+        (setf
+         (e-board-runtime-activation-preflight activation)
+         (e-harness-instance-session-catalog-preflight-start
+          :limit e-harness-instance-session-preflight-page-limit
+          :on-done
+          (lambda (result)
+            (when (eq activation e-board-runtime--activation-current)
+              (condition-case reopen-error
+                  (progn
+                    (e-board-runtime-reopen-admission
+                     (e-board-runtime-quiescence-admission-token
+                      (e-board-runtime-activation-quiescence activation)))
+                    (setq e-board-runtime--activation-current nil)
+                    (e-request-finish
+                     (e-board-runtime-activation-request activation) result))
+                (error
+                 (e-board-runtime--activation-fail activation reopen-error)))))
+          :on-error
+          (lambda (condition)
+            (e-board-runtime--activation-fail activation condition))))
+      (error (e-board-runtime--activation-fail activation err)))))
+
+(defun e-board-runtime-startup-activation ()
+  "Fence roots, quiesce owners, and asynchronously preflight configured stores.
+Successful settlement is the only path that reopens runtime admission."
+  (when e-board-runtime--activation-current
+    (signal 'e-board-runtime-activation-active nil))
+  (let* ((request (e-request-lifecycle-create
+                   :id (format "runtime-activation-%d"
+                               (1+ e-board-runtime--admission-epoch))
+                   :owner 'e-board-runtime-activation))
+         (quiescence (e-board-runtime-request-quiescence))
+         (activation (e-board-runtime--activation-create
+                      :request request :quiescence quiescence))
+         (quiescence-request (e-board-runtime-quiescence-request quiescence)))
+    (setq e-board-runtime--activation-current activation)
+    (e-request-start request (list :state 'quiescing))
+    (if (e-request-terminal-p quiescence-request)
+        (if (eq (e-request-lifecycle-state quiescence-request) 'finished)
+            (e-board-runtime--activation-preflight activation)
+          (e-board-runtime--activation-fail
+           activation (e-request-lifecycle-terminal-payload quiescence-request)))
+      (let ((cleanup (e-request-lifecycle-cleanup-trigger quiescence-request)))
+        (setf (e-request-lifecycle-cleanup-trigger quiescence-request)
+              (lambda (settled)
+                (when cleanup (funcall cleanup settled))
+                (if (eq (e-request-lifecycle-state settled) 'finished)
+                    (e-board-runtime--activation-preflight activation)
+                  (e-board-runtime--activation-fail
+                   activation
+                   (e-request-lifecycle-terminal-payload settled)))))))
+    activation))
 
 (defun e-board-runtime--track-control-request (request)
   "Count REQUEST until its first terminal transition."

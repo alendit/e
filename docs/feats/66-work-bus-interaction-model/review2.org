@@ -601,7 +601,7 @@ contracts.
 Ran 135 tests, 129 results as expected, 0 unexpected, 6 skipped
 #+end_example
 
-** TODO High: Quiescence and activation can report a false-safe cutover
+** DONE High: Quiescence and activation can report a false-safe cutover
 
 *** Expected
 
@@ -678,8 +678,36 @@ and failed-writer counters: timer ownership transfers without a false-zero
 edge, a write failure remains an activation blocker, and runtime quiescence
 subscribes to those transitions.  Focused tests hold a task writer independently
 and prove quiescence settles only after the writer owner retires its slot.  The
-finding remains open for the production preparation/preflight/restart
-activation service.
+The production startup gate now closes admission, waits for those owner
+projections, and runs the configured-store catalog preflight before reopening
+the exact admission epoch.  Missing store ports, writer errors, outdated rows,
+or missing access/counter schema fail the activation lifecycle and leave
+admission closed.  Default chat/debug instances register one stable store id
+with catalog, access, and activation ports.  The Node persistence adapter serves
+fixed 32-row catalog pages from =index.json= without transcript reads in Emacs;
+new board sessions persist explicit controller policy plus both publication
+high-watermarks.  Existing pre-cutover data is never upgraded on read: it must
+meet the separately audited offline preparation/snapshot contract or startup
+fails closed.
+
+*** Resolution
+
+There is now one production activation service and one ordering:
+=admission fence -> owner-notified quiescence -> asynchronous configured-store
+preflight -> exact-token reopen=.  No failed or missing phase can report an
+active runtime, and interactive default startup invokes this gate from a fresh
+process.
+
+*** Evidence
+
+- =e-board-runtime-test-startup-activation-reopens-only-after-preflight= proves
+  reopening occurs only after successful store validation.
+- =e-board-runtime-test-startup-activation-fails-closed-without-store= proves a
+  missing production port cannot become a false green.
+- =e-session-persistence-test-catalog-port-returns-current-board-rows= proves
+  the writer returns dormant access/counter rows through its bounded protocol.
+- =e-defaults-test-registers-chat-instance-for-legacy-spec= proves default
+  instances carry every required store/activation port.
 
 ** TODO High: Main-thread bounds remain incomplete
 

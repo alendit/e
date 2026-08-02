@@ -78,6 +78,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--admission-open-p t)
           (e-board-runtime--admission-epoch 0)
           (e-board-runtime--quiescence-current nil)
+          (e-board-runtime--activation-current nil)
           (e-board-runtime--unsettled-control-count 0)
           (e-board-runtime--unsettled-invocation-count 0)
           (e-board-runtime--unsettled-deferred-hook-count 0)
@@ -323,6 +324,40 @@ Tests that explicitly provide `:requester' retain that exact requester."
                      '((task-persistence.writes . 1))))
       (e-task-queue--adjust-writer-state 'writes -1)
       (should (eq (e-request-lifecycle-state request) 'finished)))))
+
+(ert-deftest e-board-runtime-test-startup-activation-reopens-only-after-preflight ()
+  "The startup gate orders quiescence before current-store validation."
+  (e-board-runtime-test--with-empty-state
+    (cl-letf (((symbol-function 'e-harness-instance-session-stores)
+               (lambda () '((:session-store-id "store"))))
+              ((symbol-function
+                'e-harness-instance-session-catalog-preflight-start)
+               (lambda (&rest arguments)
+                 (funcall (plist-get arguments :on-done)
+                          '(:generation 1 :session-store-count 1
+                            :session-count 0))
+                 (let ((request (e-request-lifecycle-create :id "preflight")))
+                   (e-request-finish request t)
+                   request))))
+      (let* ((activation (e-board-runtime-startup-activation))
+             (request (e-board-runtime-activation-request activation)))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should (equal (e-board-runtime-admission-state)
+                       '(:state open :epoch 1)))))))
+
+(ert-deftest e-board-runtime-test-startup-activation-fails-closed-without-store ()
+  "A missing production store port cannot yield a false-green activation."
+  (e-board-runtime-test--with-empty-state
+    (cl-letf (((symbol-function 'e-harness-instance-session-stores)
+               (lambda () nil)))
+      (let* ((activation (e-board-runtime-startup-activation))
+             (request (e-board-runtime-activation-request activation)))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (equal (e-board-runtime-admission-state)
+                       '(:state closed :epoch 1)))
+        (e-board-runtime-reopen-admission
+         (e-board-runtime-quiescence-admission-token
+          (e-board-runtime-activation-quiescence activation)))))))
 
 (ert-deftest e-board-runtime-test-cancelled-quiescence-keeps-admission-closed ()
   "Cancelling observation never silently reopens the fenced admission epoch."

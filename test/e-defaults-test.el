@@ -170,9 +170,15 @@
      '((:id :chat-default
         :factory e-default-chat-harness-create
         :sync e-default-chat-harness-sync)))
-    (should (eq (e-harness-instance-id
-                 (e-harness-instance-default :kind 'chat))
-                :chat-default))))
+    (let ((instance (e-harness-instance-default :kind 'chat)))
+      (should (eq (e-harness-instance-id instance) :chat-default))
+      (should (equal (e-harness-instance-session-store-id instance)
+                     e-default-session-store-id))
+      (should (eq (e-harness-instance-session-catalog instance)
+                  #'e-default-session-catalog-port))
+      (should (eq (e-harness-instance-session-access-store instance)
+                  #'e-default-session-access-port))
+      (should (functionp (e-harness-instance-session-activation instance))))))
 
 (ert-deftest e-defaults-test-layer-specs-include-dev-harness-base-and-os-base ()
   "Built-in layer specs include dev, harness, and OS base layer ids."

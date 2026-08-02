@@ -22,6 +22,7 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
+(require 'e-session-persistence)
 
 (defvar e-chat-default-harness-id)
 
@@ -327,8 +328,15 @@
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
   (let* ((harness (or harness (e-chat-service-default-harness)))
-         (session (e-harness-create-session harness :id id :metadata metadata)))
-    (e-chat-service--bind-session harness (plist-get session :id))))
+         (session (e-harness-create-session harness :id id :metadata metadata))
+         (binding (e-chat-service--bind-session harness (plist-get session :id)))
+         (store (e-harness-sessions harness)))
+    (when-let ((controller (e-session-store-persistence-controller store)))
+      (e-session-persistence-declare-board-state
+       controller (plist-get session :id)
+       (e-board-registry-board-principal
+        (e-chat-service-binding-board binding))))
+    binding))
 
 (cl-defun e-chat-service-open-board
     (board harness session-id &key participant-id pickup-selector
