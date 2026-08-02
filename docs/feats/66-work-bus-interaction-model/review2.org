@@ -932,7 +932,7 @@ wrong-board, and wrong-generation clients, broadcast and exact grants, delivery
 rechecks, participant-originated input, and trusted producer input.  No
 production input path retains a nil requester actor.
 
-** TODO High: Production board identity and lifecycle are not durable registry contracts
+** DONE High: Production board identity and lifecycle are not durable registry contracts
 
 *** Expected
 
@@ -993,9 +993,21 @@ effect, and routing counters, then reconciles subscriptions, participants,
 clients, and observers in fixed 32-record scheduler pages.  Completion removes
 the source board and registry/index entry and leaves no client or participant
 records.  Focused tests hold owner work, step callbacks, enforce the per-page
-budget, and verify terminal cleanup.  The finding remains open only for an
-idle-expiry policy and shell-owned explicit board close; ordinary subscriber
-and binding retirement already detach their registry clients.
+budget, and verify terminal cleanup.
+
+The chat application service now exposes explicit board close, detaches every
+board-local binding/client before close, and schedules idle close after the
+last presentation subscriber leaves.  Reconnection cancels the pending idle
+timer.  =e-chat-service-test-idle-board-closes-through-bounded-registry= drives
+the timer and every close page, then proves the historical board id no longer
+resolves.
+
+*** Resolution
+
+Registry identities no longer alias after restart, and registry lifecycle now
+owns bounded close, explicit close, presentation detach, and idle expiry.  A
+closed board leaves neither a source board nor a registry/index/client/
+participant entry behind.
 
 ** TODO Medium: Current regression guards certify wrappers rather than the product contract
 

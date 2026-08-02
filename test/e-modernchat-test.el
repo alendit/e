@@ -332,6 +332,39 @@ messages so the transcript reads as one clean answer."
                                                   (plist-get event :turn-id)))))
         (should (null (e-harness-queued-prompts harness session-id)))))))
 
+(ert-deftest e-chat-service-test-idle-board-closes-through-bounded-registry ()
+  "The last shell client schedules full registry-owned board cleanup."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        idle-callback
+        close-callbacks)
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "idle"))
+           (board (e-chat-service-binding-board binding))
+           (board-id (e-board-registry-board-id board))
+           (e-board-registry-close-scheduler
+            (lambda (function)
+              (setq close-callbacks
+                    (append close-callbacks (list function))))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq idle-callback (lambda () (apply function arguments)))
+                   (timer-create))))
+        (e-chat-service--schedule-idle-close binding))
+      (funcall idle-callback)
+      (should (eq (e-board-registry-board-state board) 'closing))
+      (while close-callbacks
+        (funcall (pop close-callbacks)))
+      (should (eq (e-board-registry-board-state board) 'closed))
+      (should-error (e-board-registry-get board-id)
+                    :type 'e-board-registry-missing))))
+
 (provide 'e-modernchat-test)
 
 ;;; e-modernchat-test.el ends here

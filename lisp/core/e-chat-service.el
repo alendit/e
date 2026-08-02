@@ -41,11 +41,16 @@
 (defconst e-chat-service-subscriber-limit 8
   "Maximum presentation subscribers admitted to one chat binding.")
 
+(defcustom e-chat-service-idle-close-delay 300
+  "Seconds without a presentation client before an idle board closes."
+  :type 'number
+  :group 'e-chat-service)
+
 (cl-defstruct (e-chat-service-binding
                (:constructor e-chat-service--binding-create))
   harness session-id board client requester attachment observer subscribers
   observer-drain-scheduled pending-input-head pending-input-tail turn-map
-  input-sequence default-tags default-to)
+  input-sequence default-tags default-to idle-close-timer)
 
 (cl-defstruct (e-chat-service-subscription
                (:constructor e-chat-service--subscription-create))
@@ -81,6 +86,9 @@
     (setf (e-chat-service-subscription-active-p subscription) nil))
   (setf (e-chat-service-binding-subscribers binding) nil)
   (setf (e-chat-service-binding-observer-drain-scheduled binding) nil)
+  (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+    (when (timerp timer) (cancel-timer timer))
+    (setf (e-chat-service-binding-idle-close-timer binding) nil))
   (let* ((board (e-chat-service-binding-board binding))
          (board-id (e-board-registry-board-id board)))
     (puthash board-id
@@ -101,6 +109,47 @@
         (e-chat-service--retire-binding binding)
         (remhash session-id bindings)
         nil))))
+
+(defun e-chat-service--board-has-active-subscriber-p (board-id)
+  "Return non-nil when BOARD-ID has any live presentation subscriber."
+  (cl-some
+   (lambda (binding)
+     (cl-some #'e-chat-service-subscription-active-p
+              (e-chat-service-binding-subscribers binding)))
+   (gethash board-id e-chat-service--board-bindings)))
+
+(defun e-chat-service--cancel-idle-close (binding)
+  "Cancel BINDING's pending idle close, if any."
+  (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+    (when (timerp timer) (cancel-timer timer))
+    (setf (e-chat-service-binding-idle-close-timer binding) nil)))
+
+(defun e-chat-service-close-board (binding)
+  "Retire all process-local clients and begin async close of BINDING's board."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (let* ((board (e-chat-service-binding-board binding))
+         (board-id (e-board-registry-board-id board)))
+    (dolist (current (copy-sequence
+                      (gethash board-id e-chat-service--board-bindings)))
+      (e-chat-service--retire-binding current))
+    (remhash board-id e-chat-service--board-bindings)
+    (e-board-registry-close board)))
+
+(defun e-chat-service--schedule-idle-close (binding)
+  "Schedule registry-owned board cleanup after BINDING becomes idle."
+  (e-chat-service--cancel-idle-close binding)
+  (setf (e-chat-service-binding-idle-close-timer binding)
+        (run-at-time
+         (max 0 e-chat-service-idle-close-delay) nil
+         (lambda ()
+           (setf (e-chat-service-binding-idle-close-timer binding) nil)
+           (let* ((board (e-chat-service-binding-board binding))
+                  (board-id (e-board-registry-board-id board)))
+             (when (and (eq (e-board-registry-board-state board) 'active)
+                        (not (e-chat-service--board-has-active-subscriber-p
+                              board-id)))
+               (e-chat-service-close-board binding)))))))
 
 (defun e-chat-service--enqueue-pending-input (binding message-id)
   "Append MESSAGE-ID to BINDING's uncorrelated input FIFO."
@@ -446,6 +495,7 @@
          (subscription (e-chat-service--subscription-create
                         :binding binding :function function :active-p t
                         :client client :observer observer :state 'active)))
+    (e-chat-service--cancel-idle-close binding)
     (setf (e-chat-service-binding-subscribers binding)
           (cons subscription (e-chat-service-binding-subscribers binding)))
     (e-chat-service--schedule-subscription-drain subscription)
@@ -463,7 +513,10 @@
         (ignore-errors
           (e-board-registry-detach-client
            (e-chat-service-binding-board binding)
-           (e-board-registry-client-id client))))))
+           (e-board-registry-client-id client))))
+      (unless (cl-some #'e-chat-service-subscription-active-p
+                       (e-chat-service-binding-subscribers binding))
+        (e-chat-service--schedule-idle-close binding))))
   nil)
 
 (cl-defun e-chat-service-replace-selector
