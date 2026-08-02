@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 const knownCommandsByDirectory = new Map();
 
@@ -32,7 +33,7 @@ async function knownCommands(directory) {
   return known;
 }
 
-function updateCatalogEntry(entry, record, file) {
+export function updateCatalogEntry(entry, record, file) {
   const timestamp = record.timestamp || record["updated-at"] || entry["updated-at"];
   entry["updated-at"] = timestamp || entry["updated-at"];
   entry.file = file;
@@ -57,6 +58,11 @@ function updateCatalogEntry(entry, record, file) {
     entry.summary = null;
     entry["last-message-at"] = null;
     entry["latest-assistant-marker"] = null;
+  } else if (record.type === "board-session-state") {
+    entry.state = record.state;
+    entry["access-record"] = record["access-record"];
+    entry["board-output-sequence"] = record["board-output-sequence"];
+    entry["board-activity-sequence"] = record["board-activity-sequence"];
   }
 }
 
@@ -66,7 +72,7 @@ function titleFor(entry) {
   return `Untitled ${entry["created-at"] || entry.id}`;
 }
 
-async function rebuildCatalog(directory) {
+export async function rebuildCatalog(directory) {
   const dir = await sessionsDirectory(directory);
   const entries = [];
   for (const name of await fs.readdir(dir)) {
@@ -105,18 +111,20 @@ async function handle(request) {
   }
 }
 
-const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-let chain = Promise.resolve();
-input.on("line", (line) => {
-  if (!line.trim()) return;
-  chain = chain.then(async () => {
-    let request;
-    try {
-      request = JSON.parse(line);
-      await handle(request);
-      process.stdout.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
-    } catch (error) {
-      process.stdout.write(JSON.stringify({ id: request?.id ?? null, ok: false, error: error?.message || String(error) }) + "\n");
-    }
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  let chain = Promise.resolve();
+  input.on("line", (line) => {
+    if (!line.trim()) return;
+    chain = chain.then(async () => {
+      let request;
+      try {
+        request = JSON.parse(line);
+        await handle(request);
+        process.stdout.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ id: request?.id ?? null, ok: false, error: error?.message || String(error) }) + "\n");
+      }
+    });
   });
-});
+}

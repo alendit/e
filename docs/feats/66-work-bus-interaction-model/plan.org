@@ -147,6 +147,16 @@ revalidates the destination grant and participant-id vacancy, then replaces the
 source membership and attachment with a fresh destination-local record and
 attachment generation while retaining the live session transcript.  Board-local
 cross-target grants and third-party private grants do not cross that boundary.
+The one-shot offline preparation command now lives outside the loaded runtime at
+=lisp/core/e-session-cutover-prepare.mjs=.  Given explicit =--store=,
+=--manifest=, and unused =--snapshot= paths, it validates an exact policy for
+every journal, rejects malformed/duplicate/already-prepared state, derives both
+publication high-watermarks, and only then builds a prepared sibling copy.  It
+records the untouched restorable snapshot and swaps the complete prepared tree;
+the ordinary writer shares the same catalog reducer and exposes the resulting
+dormant access/counter rows.  The command has not been run on user data and
+still requires Slice 5's external quiescence and exclusive-store boundary; see
+=cutover-preparation.org= for the manifest, invocation, and recovery contract.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
