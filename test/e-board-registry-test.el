@@ -147,6 +147,12 @@
       (should (eq (e-board-subscription-state subscription) 'active))
       (e-board-registry-cancel-subscription board "main")
       (should (eq (e-board-subscription-state subscription) 'cancelled))
+      (let ((expiring (e-board-registry-install-subscription
+                       board participant '(:tags (later)) :id "expiring")))
+        (e-board-registry-expire-subscription board "expiring")
+        (should (eq (e-board-subscription-state expiring) 'expired))
+        (should-error (e-board-registry-resume-subscription board "expiring")
+                      :type 'e-board-error))
       (should-error
        (e-board-registry-mute-subscription
         board

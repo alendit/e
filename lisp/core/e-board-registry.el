@@ -362,6 +362,12 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
     (e-board-set-subscription-state
      (e-board-registry-board-source-board board) subscription-id 'cancelled)))
 
+(defun e-board-registry-expire-subscription (board-or-id subscription-id)
+  "Expire ordinary SUBSCRIPTION-ID on active BOARD-OR-ID permanently."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-set-subscription-state
+     (e-board-registry-board-source-board board) subscription-id 'expired)))
+
 (defun e-board-registry-close (board-or-id)
   "Close BOARD-OR-ID, disable its routes, and unregister its source board."
   (let ((board (e-board-registry--require-active board-or-id)))
