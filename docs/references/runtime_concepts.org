@@ -75,6 +75,29 @@ reading feature plans or examples.
 - =backend adapter= :: Provider-specific request, auth, retry, streaming, and
   response translation code behind the generic backend contract.
 
+- =board= :: The process-local interaction record and routing context.  A board
+  owns ordered messages/facts, participants, subscriptions, activations,
+  pickups, and their visible state transitions.  It is not a harness or UI;
+  runtime adapters perform delivery and publication outside its reducer.
+
+- =participant= :: A board-local logical recipient that may be attached to one
+  live harness session.  Its identity and pending pickups survive a proven
+  endpoint rebind; an attachment generation fences old endpoint callbacks.
+
+- =pickup= :: One immutable logical delivery envelope for a routed input and a
+  participant.  Pickups are FIFO per participant and move through explicit
+  ready, delivery, acceptance, consumption, retry, and tombstone states; a
+  physical adapter never changes the original delivery identity.
+
+- =observer subscription= :: A client-owned, non-consuming board read cursor.
+  It matches retained messages and advances only its own live/history cursor;
+  observation cannot route input, create a pickup, or activate an effect.
+
+- =orchestration subscription= :: A board-owned matcher that may create a
+  pickup, await work, or schedule one declarative effect.  Its matching and
+  effect activation are frozen and deferred from the append stack so routing is
+  inspectable and bounded.
+
 * Action Calls
 
 Use =e-actions-call= when evaluated Elisp needs to call an active capability
