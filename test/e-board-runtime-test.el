@@ -78,6 +78,42 @@
         (should started)
         (should-not scheduled)))))
 
+(ert-deftest e-board-runtime-test-stale-activity-mailboxes-use-the-drain-budget ()
+  "Stale activity queue entries yield after each configured record page."
+  (e-board-runtime-test--with-empty-state
+    (let ((e-board-runtime-activity-drain-limit 1)
+          scheduled)
+      (setq e-board-runtime--pending-activity-head '(first second)
+            e-board-runtime--pending-activity-tail (last e-board-runtime--pending-activity-head))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--drain-activity-mailboxes)
+        (should (equal e-board-runtime--pending-activity-head '(second)))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should-not e-board-runtime--pending-activity-head)
+        (should-not scheduled)))))
+
+(ert-deftest e-board-runtime-test-stale-pickups-use-the-drain-budget ()
+  "Expired board lookup entries yield after each configured pickup page."
+  (e-board-runtime-test--with-empty-state
+    (let ((e-board-runtime-pickup-drain-limit 1)
+          scheduled)
+      (setq e-board-runtime--pending-pickup-head '(("missing-one" "one")
+                                                    ("missing-two" "two"))
+            e-board-runtime--pending-pickup-tail (last e-board-runtime--pending-pickup-head))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--drain-pickups)
+        (should (equal e-board-runtime--pending-pickup-head
+                       '(("missing-two" "two"))))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should-not e-board-runtime--pending-pickup-head)
+        (should-not scheduled)))))
+
 (ert-deftest e-board-runtime-test-attachment-maps-live-session-and-delivers-exact-and-tags ()
   "Attached sessions receive only their frozen exact or tag-routed pickups."
   (e-board-runtime-test--with-empty-state

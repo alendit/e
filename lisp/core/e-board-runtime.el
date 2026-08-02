@@ -221,15 +221,16 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
 (defun e-board-runtime--drain-activity-mailboxes ()
   "Publish one bounded page of latest work activity mailbox snapshots."
   (setq e-board-runtime--activity-drain-scheduled nil)
-  (let ((published 0))
+  (let ((processed 0))
     (while (and e-board-runtime--pending-activity-head
-                (< published e-board-runtime-activity-drain-limit))
+                (< processed e-board-runtime-activity-drain-limit))
       (let* ((work-id (pop e-board-runtime--pending-activity-head))
              (mailbox (gethash work-id e-board-runtime--work-activity-mailboxes)))
         (unless e-board-runtime--pending-activity-head
           (setq e-board-runtime--pending-activity-tail nil))
         (remhash work-id e-board-runtime--pending-activity-set)
         (remhash work-id e-board-runtime--work-activity-mailboxes)
+        (cl-incf processed)
         (when mailbox
           (let* ((attachment (plist-get mailbox :attachment))
                  (board (e-board-registry-board-source-board
@@ -238,7 +239,6 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
                   (e-board-registry-participant-id
                    (e-board-runtime-attachment-participant attachment))))
             (when (e-board-runtime--current-attachment-p attachment)
-              (cl-incf published)
               (e-board-post-activity
                board
                :author (format "participant:%s" participant-id)
@@ -314,18 +314,18 @@ will consume the mailbox under its own bounded drain."
 (defun e-board-runtime--drain-pickups ()
   "Attempt one bounded FIFO page of previously frozen pickup envelopes."
   (setq e-board-runtime--pickup-drain-scheduled nil)
-  (let ((attempts 0))
+  (let ((processed 0))
     (while (and e-board-runtime--pending-pickup-head
-                (< attempts e-board-runtime-pickup-drain-limit))
+                (< processed e-board-runtime-pickup-drain-limit))
       (let ((key (pop e-board-runtime--pending-pickup-head)))
         (unless e-board-runtime--pending-pickup-head
           (setq e-board-runtime--pending-pickup-tail nil))
         (remhash key e-board-runtime--pending-pickup-set)
+        (cl-incf processed)
         (let ((board (condition-case nil
                          (e-board-registry-get (car key))
                        (e-board-registry-missing nil))))
           (when board
-            (cl-incf attempts)
             (e-board-runtime--deliver-pickups board (list (cadr key)))))))
     (when e-board-runtime--pending-pickup-head
       (setq e-board-runtime--pickup-drain-scheduled t)
