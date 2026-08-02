@@ -50,6 +50,21 @@
 (defvar e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal)
   "Latest bounded activity capture for each board-enrolled work handle.")
 
+(defconst e-board-runtime-activity-drain-limit 16
+  "Maximum latest-value work activity mailboxes published per drain.")
+
+(defvar e-board-runtime--pending-activity-head nil
+  "Head cell of work ids whose latest activity mailbox needs a flush.")
+
+(defvar e-board-runtime--pending-activity-tail nil
+  "Tail cell of work ids whose latest activity mailbox needs a flush.")
+
+(defvar e-board-runtime--pending-activity-set (make-hash-table :test 'equal)
+  "Deduplication set for scheduled work activity mailbox flushes.")
+
+(defvar e-board-runtime--activity-drain-scheduled nil
+  "Non-nil while the runtime has one activity mailbox drain pending.")
+
 (defconst e-board-runtime-pickup-drain-limit 16
   "Maximum frozen pickup attempts the private runtime starts per drain.")
 
@@ -68,7 +83,7 @@
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function subscription)
+  board participant harness session-id delivery-function subscription activity-sequence)
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -105,16 +120,76 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
     (setq e-board-runtime--deferred-hook-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks)))
 
-(defun e-board-runtime--capture-work-activity (handle payload)
+(defun e-board-runtime--enqueue-activity-flush (work-id)
+  "Queue one future flush for WORK-ID without retaining each raw update."
+  (unless (gethash work-id e-board-runtime--pending-activity-set)
+    (puthash work-id t e-board-runtime--pending-activity-set)
+    (let ((cell (list work-id)))
+      (if e-board-runtime--pending-activity-tail
+          (setcdr e-board-runtime--pending-activity-tail cell)
+        (setq e-board-runtime--pending-activity-head cell))
+      (setq e-board-runtime--pending-activity-tail cell)))
+  (unless e-board-runtime--activity-drain-scheduled
+    (setq e-board-runtime--activity-drain-scheduled t)
+    (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes)))
+
+(defun e-board-runtime--activity-content (payload)
+  "Return a bounded diagnostic rendering of raw activity PAYLOAD."
+  (truncate-string-to-width (e-prin1-safe payload) 512 nil nil "..."))
+
+(defun e-board-runtime--drain-activity-mailboxes ()
+  "Publish one bounded page of latest work activity mailbox snapshots."
+  (setq e-board-runtime--activity-drain-scheduled nil)
+  (let ((published 0))
+    (while (and e-board-runtime--pending-activity-head
+                (< published e-board-runtime-activity-drain-limit))
+      (let* ((work-id (pop e-board-runtime--pending-activity-head))
+             (mailbox (gethash work-id e-board-runtime--work-activity-mailboxes)))
+        (unless e-board-runtime--pending-activity-head
+          (setq e-board-runtime--pending-activity-tail nil))
+        (remhash work-id e-board-runtime--pending-activity-set)
+        (remhash work-id e-board-runtime--work-activity-mailboxes)
+        (when mailbox
+          (cl-incf published)
+          (let* ((attachment (plist-get mailbox :attachment))
+                 (board (e-board-registry-board-source-board
+                         (e-board-runtime-attachment-board attachment)))
+                 (participant-id
+                  (e-board-registry-participant-id
+                   (e-board-runtime-attachment-participant attachment))))
+            (e-board-post-activity
+             board
+             :author (format "participant:%s" participant-id)
+             :subject-participant-id participant-id
+             :source-turn-id (plist-get mailbox :turn-id)
+             :activity-kind 'work-progress
+             :attributes (list :work-id work-id)
+             :content (e-board-runtime--activity-content
+                       (plist-get mailbox :payload))
+             :source-activity-key (plist-get mailbox :source-key))))))
+    (when e-board-runtime--pending-activity-head
+      (setq e-board-runtime--activity-drain-scheduled t)
+      (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes))))
+
+(defun e-board-runtime--capture-work-activity (attachment handle payload)
   "Replace HANDLE's bounded progress mailbox with PAYLOAD.
 This is the sole synchronous activity observer installed by board enrollment.
 It neither formats nor publishes PAYLOAD; a later runtime activity publisher
 will consume the mailbox under its own bounded drain."
-  (puthash (e-work-handle-id handle)
-           (list :work-id (e-work-handle-id handle) :payload payload)
-           e-board-runtime--work-activity-mailboxes))
+  (let* ((work-id (e-work-handle-id handle))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant attachment)))
+         (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+    (puthash work-id
+             (list :attachment attachment
+                   :turn-id (plist-get (e-work-handle-context handle) :turn-id)
+                   :payload payload
+                   :source-key (list participant-id 1 sequence))
+             e-board-runtime--work-activity-mailboxes)
+    (e-board-runtime--enqueue-activity-flush work-id)))
 
-(defun e-board-runtime--install-work-hooks (handle)
+(defun e-board-runtime--install-work-hooks (attachment handle)
   "Install the private board-runtime hook classification on prepared HANDLE."
   (let ((policies '(:cancel deferred :cleanup deferred :settle deferred)))
     (dolist (key '(:on-done :on-error :on-progress :on-event))
@@ -128,7 +203,9 @@ will consume the mailbox under its own bounded drain."
     (e-work-install-hook-dispatcher
      handle #'e-board-runtime--schedule-deferred-hook policies)
     (e-work-install-activity-observer
-     handle #'e-board-runtime--capture-work-activity)))
+     handle (lambda (current-handle payload)
+              (e-board-runtime--capture-work-activity
+               attachment current-handle payload)))))
 
 (defun e-board-runtime--pickup-queue-key (board pickup-id)
   "Return the process-local queue identity for BOARD's PICKUP-ID."
@@ -179,7 +256,7 @@ has no callback and is observed only."
     (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
-      (e-board-runtime--install-work-hooks handle)
+      (e-board-runtime--install-work-hooks attachment handle)
       (e-board-enroll-work board handle :metadata metadata)
       (when callback
         (let* ((context (e-work-handle-context handle))
@@ -222,6 +299,8 @@ has no callback and is observed only."
         (e-board-post-output
          board
          :author (format "participant:%s" participant-id)
+         :subject-participant-id participant-id
+         :source-turn-id turn-id
          :content (plist-get message :content)
          :source-output-key (list participant-id 1 sequence))))))
 
@@ -296,6 +375,7 @@ the conservative idle-only harness delivery port is used."
             :participant participant
              :harness harness
              :session-id session-id
+             :activity-sequence 0
               :delivery-function (or delivery-function
                                      #'e-board-runtime--deliver-to-harness))))
        (setf (e-board-runtime-attachment-subscription attachment)

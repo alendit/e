@@ -806,18 +806,27 @@ return status `source-history-expired' without appending or routing again."
 
 (cl-defun e-board-post-output
     (board &key id author tags content reference source-output-key
+           subject-participant-id source-turn-id
            reply-to-message-ids caused-by-delivery-ids)
   "Append one non-routable output message and return an `e-board-publication'.
 SOURCE-OUTPUT-KEY is required because output publication retries must be
 at-most-once.  Outputs never create participant pickups."
   (unless source-output-key
     (signal 'e-board-invalid-source-key (list source-output-key)))
+  (when (or subject-participant-id source-turn-id)
+    (unless (and (stringp subject-participant-id)
+                 (equal author (format "participant:%s" subject-participant-id))
+                 source-turn-id)
+      (signal 'e-board-invalid-activity
+              (list :author author :subject-participant-id subject-participant-id
+                    :source-turn-id source-turn-id))))
   (or (e-board--source-publication board 'output source-output-key)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
                         board 'output id author tags nil nil nil content reference nil
                        source-output-key reply-to-message-ids
-                       caused-by-delivery-ids)))
+                       caused-by-delivery-ids nil nil subject-participant-id
+                       source-turn-id nil)))
         (e-board--remember-source board 'output source-output-key message)
         (e-board-publication--create :status 'posted :message message
                                      :pickup-ids nil))))
