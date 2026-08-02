@@ -467,6 +467,31 @@
           (should (eq (e-board-message-kind (car messages)) 'output))
           (should (equal (e-board-message-content (car messages)) "done")))))))
 
+(ert-deftest e-board-runtime-test-rebind-gives-fresh-session-output-a-new-source-generation ()
+  "A fresh session after rebind cannot deduplicate a prior endpoint's output."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create)))
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (let ((old (e-board-runtime-attach board old-harness "old"
+                                         :participant-id "participant")))
+        (e-session-append-message
+         (e-harness-sessions old-harness) "old"
+         '(:id "assistant-old" :role assistant :turn-id "old-turn" :content "old"))
+        (e-board-runtime--publish-output old "old-turn")
+        (let ((new (e-board-runtime-rebind board "participant" new-harness "new")))
+          (e-session-append-message
+           (e-harness-sessions new-harness) "new"
+           '(:id "assistant-new" :role assistant :turn-id "new-turn" :content "new"))
+          (e-board-runtime--publish-output new "new-turn"))
+        (let ((messages (e-board-messages
+                         (e-board-registry-board-source-board board))))
+          (should (equal (mapcar #'e-board-message-content messages) '("old" "new")))
+          (should (equal (mapcar #'e-board-message-source-output-key messages)
+                         '(("participant" 1 1) ("participant" 2 1)))))))))
+
 (provide 'e-board-runtime-test)
 
 ;;; e-board-runtime-test.el ends here

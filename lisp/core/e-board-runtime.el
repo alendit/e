@@ -259,7 +259,10 @@ will consume the mailbox under its own bounded drain."
              (list :attachment attachment
                    :turn-id (plist-get (e-work-handle-context handle) :turn-id)
                    :payload payload
-                   :source-key (list participant-id 1 sequence))
+                   :source-key
+                   (list participant-id
+                         (e-board-runtime-attachment-generation attachment)
+                         sequence))
              e-board-runtime--work-activity-mailboxes)
     (e-board-runtime--enqueue-activity-flush work-id)))
 
@@ -399,7 +402,10 @@ has no callback and is observed only."
          :subject-participant-id participant-id
          :source-turn-id turn-id
          :content (plist-get message :content)
-         :source-output-key (list participant-id 1 sequence))))))
+         :source-output-key
+         (list participant-id
+               (e-board-runtime-attachment-generation attachment)
+               sequence))))))
 
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
