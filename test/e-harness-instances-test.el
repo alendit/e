@@ -104,6 +104,22 @@
         (should (eq (e-harness-instance-session-access-store instance) access-store))
         (should (= factory-calls 0))))))
 
+(ert-deftest e-harness-instances-test-shared-session-store-requires-identical-ports ()
+  "Two views of one store must not expose divergent catalog contracts."
+  (e-harness-instances-test--with-empty-registries
+    (let ((catalog (lambda (&rest _arguments) 'pending))
+          (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register :id :first :kind 'chat :session-store-id "store"
+                                   :session-catalog catalog :session-access-store access-store)
+      (e-harness-instance-register :id :second :kind 'chat :session-store-id "store"
+                                   :session-catalog catalog :session-access-store access-store)
+      (should-error
+       (e-harness-instance-register
+        :id :conflict :kind 'chat :session-store-id "store"
+        :session-catalog (lambda (&rest _arguments) 'pending)
+        :session-access-store access-store)
+       :type 'e-harness-instance-store-conflict))))
+
 (ert-deftest e-harness-instances-test-replaces-duplicate-registration ()
   "Registering the same instance id replaces catalog metadata."
   (e-harness-instances-test--with-empty-registries

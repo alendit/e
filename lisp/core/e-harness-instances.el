@@ -19,6 +19,8 @@
 
 (define-error 'e-harness-instance-missing
   "No harness instance is registered for id")
+(define-error 'e-harness-instance-store-conflict
+  "Harness instances sharing a session store disagree on its ports")
 
 (cl-defstruct e-harness-instance
   id
@@ -64,6 +66,25 @@
   (when (and port (not (functionp port)))
     (signal 'wrong-type-argument (list 'functionp port))))
 
+(defun e-harness-instance--validate-shared-store-ports
+    (id session-store-id session-catalog session-access-store)
+  "Require one stable pair of ports for every SESSION-STORE-ID.
+ID's replacement registration is excluded so an instance can update its own
+metadata without comparing against its retired record."
+  (when session-store-id
+    (maphash
+     (lambda (other-id instance)
+       (when (and (not (eq other-id id))
+                  (equal (e-harness-instance-session-store-id instance)
+                         session-store-id)
+                  (not (and (eq (e-harness-instance-session-catalog instance)
+                                session-catalog)
+                            (eq (e-harness-instance-session-access-store instance)
+                                session-access-store))))
+         (signal 'e-harness-instance-store-conflict
+                 (list session-store-id id other-id))))
+     e-harness-instance--instances)))
+
 (defun e-harness-instance--display-name (id name)
   "Return normalized display NAME for ID."
   (cond
@@ -102,6 +123,8 @@ declarative selection metadata; the factory still builds the live harness."
     (signal 'wrong-type-argument (list 'stringp session-store-id)))
   (e-harness-instance--validate-session-port 'session-catalog session-catalog)
   (e-harness-instance--validate-session-port 'session-access-store session-access-store)
+  (e-harness-instance--validate-shared-store-ports
+   id session-store-id session-catalog session-access-store)
   (let ((harness-id (or harness-id id)))
     (e-harness-instance--validate-id harness-id)
     (when factory
