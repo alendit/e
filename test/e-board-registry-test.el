@@ -161,6 +161,26 @@
        :type 'e-board-error)
       (should (e-board-find-subscription source "main")))))
 
+(ert-deftest e-board-registry-test-replaces-ordinary-subscription-with-fresh-route ()
+  "A replacement retains membership but installs only its new future selector."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant board :id "member"))
+           (source-board (e-board-registry-board-source-board board))
+           (old (e-board-registry-install-subscription
+                 board participant '(:tags (old)) :id "old"))
+           (replacement
+            (e-board-registry-replace-subscription
+             board "old" '(:tags (new)) :id "new")))
+      (should (eq (e-board-subscription-state old) 'cancelled))
+      (should (equal (e-board-subscription-participant-id replacement) "member"))
+      (let ((old-publication (e-board-post-input source-board :tags '(old))))
+        (e-board-drain-input-classifications source-board)
+        (should-not (e-board-publication-pickup-ids old-publication)))
+      (let ((new-publication (e-board-post-input source-board :tags '(new))))
+        (e-board-drain-input-classifications source-board)
+        (should (= (length (e-board-publication-pickup-ids new-publication)) 1))))))
+
 (ert-deftest e-board-registry-test-attached-client-owns-observer-cursor ()
   "Observation is available only through a board-local attached client."
   (e-board-registry-test--with-empty-registries

@@ -368,6 +368,24 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
     (e-board-set-subscription-state
      (e-board-registry-board-source-board board) subscription-id 'expired)))
 
+(cl-defun e-board-registry-replace-subscription
+    (board-or-id subscription-id selector &key id (effect nil effect-supplied-p)
+                 (state 'active))
+  "Replace ordinary SUBSCRIPTION-ID with SELECTOR on active BOARD-OR-ID.
+The core retains the existing participant and default effect when EFFECT is
+omitted; this registry supplies only the board-local replacement identity."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (arguments
+          (list :id (or id (e-board-registry--next-id
+                            (e-board-registry-board-id-function board)
+                            'subscription))
+                :state state)))
+    (when effect-supplied-p
+      (setq arguments (append arguments (list :effect effect))))
+    (apply #'e-board-replace-subscription
+           (e-board-registry-board-source-board board)
+           subscription-id selector arguments)))
+
 (defun e-board-registry-close (board-or-id)
   "Close BOARD-OR-ID, disable its routes, and unregister its source board."
   (let ((board (e-board-registry--require-active board-or-id)))

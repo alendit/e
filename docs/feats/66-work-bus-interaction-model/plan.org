@@ -82,7 +82,8 @@ Ordinary subscription lifecycle now records the full active/muted/completed/
 faulted/cancelled/expired state set with legal one-way terminal transitions;
 matcher/effect changes cancel the old future route and create a fresh
 subscription identity.  The board registry exposes explicit expiry alongside
-mute, resume, and cancellation for ordinary subscriptions.
+mute, resume, and cancellation for ordinary subscriptions, and delegates
+ordinary matcher/effect replacement to the core with a fresh local identity.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime
