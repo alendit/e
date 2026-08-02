@@ -496,6 +496,146 @@
             (should-not (equal (e-board-delivery-attempt-receipt attempt)
                                'stale-receipt))))))))
 
+(ert-deftest e-board-runtime-test-revoked-delivery-fails-before-adapter-call ()
+  "A post-routing principal revoke creates a tombstone without endpoint access."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (calls 0))
+      (e-board-registry-authorize-principal board "owner" "agent" 'member)
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach
+       board harness "session" :participant-id "participant" :principal "agent"
+       :delivery-function
+       (lambda (&rest _arguments) (cl-incf calls)))
+      (e-board-runtime-post-input
+       board :id "input" :to "participant" :content "never expose")
+      (let ((source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (e-board-registry-revoke-principal board "owner" "agent")
+        (let ((delivery-id
+               (car (e-board-message-pickup-ids
+                     (e-board-message source-board "input")))))
+          (e-board-runtime--drain-pickups)
+          (let ((pickup (e-board-pickup source-board delivery-id)))
+            (should (= calls 0))
+            (should (eq (e-board-pickup-state pickup) 'failed))
+            (should-not (e-board-pickup-attempt pickup))))))))
+
+(ert-deftest e-board-runtime-test-requester-membership-revoke-fences-delivery ()
+  "A routed tagged pickup rechecks its frozen requester's current membership."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (calls 0))
+      (e-board-registry-authorize-principal board "owner" "requester" 'member)
+      (let* ((client
+              (e-board-registry-attach-client
+               board :id "client" :principal "requester"))
+             (context
+              (e-board-registry-client-requester-context
+               board (e-board-registry-client-id client))))
+        (e-harness-create-session harness :id "session")
+        (e-board-runtime-attach
+         board harness "session" :participant-id "participant"
+         :delivery-function (lambda (&rest _arguments) (cl-incf calls)))
+        (e-board-registry-install-subscription
+         board "participant" '(:tags (main)) :id "main")
+        (e-board-runtime-post-input
+         board :id "input" :tags '(main) :requester context :content "secret")
+        (let ((source-board (e-board-registry-board-source-board board)))
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source-board)))
+          (e-board-registry-revoke-principal board "owner" "requester")
+          (let ((delivery-id
+                 (car (e-board-message-pickup-ids
+                       (e-board-message source-board "input")))))
+            (e-board-runtime--drain-pickups)
+            (should (= calls 0))
+            (should (eq (e-board-pickup-state
+                         (e-board-pickup source-board delivery-id))
+                        'failed))))))))
+
+(ert-deftest e-board-runtime-test-exact-grant-revoke-fences-delivery ()
+  "A routed exact pickup rechecks the target-owned post grant before exposure."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (calls 0))
+      (e-board-registry-authorize-principal board "owner" "requester" 'member)
+      (e-board-registry-authorize-principal board "owner" "agent" 'member)
+      (let* ((client
+              (e-board-registry-attach-client
+               board :id "client" :principal "requester"))
+             (context
+              (e-board-registry-client-requester-context
+               board (e-board-registry-client-id client))))
+        (e-harness-create-session harness :id "session")
+        (e-board-runtime-attach
+         board harness "session" :participant-id "participant" :principal "agent"
+         :delivery-function (lambda (&rest _arguments) (cl-incf calls)))
+        (e-board-registry-grant-participant-access
+         board "owner" "participant" "requester" '(post))
+        (e-board-runtime-post-input
+         board :id "input" :to "participant" :requester context :content "secret")
+        (let ((source-board (e-board-registry-board-source-board board)))
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source-board)))
+          (e-board-registry-revoke-participant-access
+           board "owner" "participant" "requester")
+          (let ((delivery-id
+                 (car (e-board-message-pickup-ids
+                       (e-board-message source-board "input")))))
+            (e-board-runtime--drain-pickups)
+            (should (= calls 0))
+            (should (eq (e-board-pickup-state
+                         (e-board-pickup source-board delivery-id))
+                        'failed))))))))
+
+(ert-deftest e-board-runtime-test-revoke-during-acceptance-cancels-bound-item ()
+  "A proven accepted item reconciles after a grant disappears during its call."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           attachment)
+      (e-board-registry-authorize-principal board "owner" "agent" 'member)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "agent"
+             :delivery-function
+             (lambda (&rest _arguments)
+               (e-board-registry-revoke-principal board "owner" "agent")
+               '(:accepted receipt))))
+      (e-board-runtime-post-input
+       board :id "input" :to "participant" :content "accepted")
+      (let ((source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (let ((delivery-id
+               (car (e-board-message-pickup-ids
+                     (e-board-message source-board "input")))))
+          (e-board-runtime--drain-pickups)
+          (let* ((pickup (e-board-pickup source-board delivery-id))
+                 (attempt (e-board-pickup-attempt pickup)))
+            (should (eq (e-board-pickup-state pickup) 'cancelling))
+            (should (equal (e-board-delivery-attempt-receipt attempt) 'receipt))
+            (should (eq (e-board-delivery-attempt-reason attempt)
+                        'delivery-authorization-revoked))
+            (e-board-runtime--handle-harness-event
+             attachment
+             (e-events-make
+              :type 'input-consumed :session-id "session" :turn-id "turn"
+              :payload
+              (list :delivery-id delivery-id
+                    :endpoint-token
+                    (e-board-delivery-attempt-endpoint-token attempt)
+                    :endpoint-generation
+                    (e-board-delivery-attempt-composite-generation attempt))))
+            (should (eq (e-board-pickup-state pickup) 'consumed))))))))
+
 (ert-deftest e-board-runtime-test-remove-participant-cancels-only-before-commit ()
   "A prepared removal can cancel without changing the live attachment."
   (e-board-runtime-test--with-empty-state
@@ -1469,6 +1609,119 @@
           (should (eq (e-board-pickup-state (e-board-pickup source-board delivery-id))
                       'consumed)))))))
 
+(ert-deftest e-board-runtime-test-busy-delivery-retries-after-failed-or-cancelled-turn ()
+  "Every terminal idle edge wakes a retryable participant-local FIFO head."
+  (dolist (terminal-type '(turn-failed turn-cancelled))
+    (e-board-runtime-test--with-empty-state
+      (let* ((board (e-board-registry-create :id "board"))
+             (harness (e-harness-create))
+             (attempts 0))
+        (e-harness-create-session harness :id "session")
+        (let ((attachment
+               (e-board-runtime-attach
+                board harness "session" :participant-id "participant"
+                :delivery-function
+                (lambda (&rest _arguments)
+                  (cl-incf attempts)
+                  (when (= attempts 1)
+                    (signal 'e-board-runtime-session-busy '("session")))))))
+          (let* ((publication
+                  (e-board-runtime-post-input
+                   board :id "input" :to "participant" :content "queued"))
+                 (source-board (e-board-registry-board-source-board board)))
+            (e-board-runtime--drain-input-routing
+             board (lambda () (e-board-drain-input-classifications source-board)))
+            (let ((delivery-id (car (e-board-publication-pickup-ids publication))))
+              (e-board-runtime--drain-pickups)
+              (e-board-runtime--handle-harness-event
+               attachment
+               (e-events-make :type terminal-type :session-id "session"
+                              :turn-id "terminal"))
+              (e-board-runtime--drain-pickups)
+              (should (= attempts 2))
+              (should (eq (e-board-pickup-state
+                           (e-board-pickup source-board delivery-id))
+                          'consumed)))))))))
+
+(ert-deftest e-board-runtime-test-signalled-delivery-retries-on-later-drain ()
+  "A proven-uncommitted signal retains scheduler ownership until success."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attempts 0))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach
+       board harness "session" :participant-id "participant"
+       :delivery-function
+       (lambda (&rest _arguments)
+         (cl-incf attempts)
+         (when (= attempts 1) (error "temporary"))))
+      (let* ((publication
+              (e-board-runtime-post-input
+               board :id "input" :to "participant" :content "retry"))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (let ((delivery-id (car (e-board-publication-pickup-ids publication))))
+          (e-board-runtime--drain-pickups)
+          (should (= attempts 1))
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup source-board delivery-id))
+                      'ready))
+          (should (= (hash-table-count e-board-runtime--pending-pickup-set) 1))
+          (e-board-runtime--drain-pickups)
+          (should (= attempts 2))
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup source-board delivery-id))
+                      'consumed)))))))
+
+(ert-deftest e-board-runtime-test-signalled-delivery-exhausts-and-other-lane-continues ()
+  "Repeated signals fail visibly while an independent participant still runs."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (first-harness (e-harness-create))
+           (second-harness (e-harness-create))
+           (first-attempts 0)
+           (second-attempts 0))
+      (e-harness-create-session first-harness :id "first-session")
+      (e-harness-create-session second-harness :id "second-session")
+      (e-board-runtime-attach
+       board first-harness "first-session" :participant-id "first"
+       :delivery-function
+       (lambda (&rest _arguments)
+         (cl-incf first-attempts)
+         (error "always")))
+      (e-board-runtime-attach
+       board second-harness "second-session" :participant-id "second"
+       :delivery-function
+       (lambda (&rest _arguments) (cl-incf second-attempts)))
+      (let* ((first
+              (e-board-runtime-post-input
+               board :id "first-input" :to "first" :content "fail"))
+             (second
+              (e-board-runtime-post-input
+               board :id "second-input" :to "second" :content "continue"))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (e-board-runtime--drain-pickups)
+        (should (= first-attempts 1))
+        (should (= second-attempts 1))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup
+                      source-board (car (e-board-publication-pickup-ids second))))
+                    'consumed))
+        (e-board-runtime--drain-pickups)
+        (e-board-runtime--drain-pickups)
+        (let ((pickup
+               (e-board-pickup
+                source-board (car (e-board-publication-pickup-ids first)))))
+          (should (= first-attempts e-board-runtime-pickup-retry-limit))
+          (should (eq (e-board-pickup-state pickup) 'failed))
+          (should (eq (e-board-delivery-attempt-reason
+                       (e-board-pickup-attempt pickup))
+                      'delivery-retry-exhausted)))))))
+
 (ert-deftest e-board-runtime-test-terminal-turn-events-close-open-activity ()
   "Failed and cancelled turns publish terminal activity without an output."
   (e-board-runtime-test--with-empty-state
@@ -1811,6 +2064,45 @@
         (should (eq (e-board-invocation-state
                      (e-board-invocation source-board '("turn" "call")))
                     'committed))))))
+
+(ert-deftest e-board-runtime-test-invocation-effect-rejects-stale-endpoint ()
+  "A qualified invocation cannot call back after its harness generation clears."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending))
+           (calls 0))
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :qualified :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-registry-register :live harness)
+      (e-board-runtime-attach-instance
+       board :qualified "session" :participant-id "participant")
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id "tool" :execution 'cheap :interactive-policy 'cheap
+                :runner (lambda (_arguments _context) "done"))
+               nil :context
+               '(:session-id "session" :turn-id "turn"
+                 :tool-call (:id "call"))))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (funcall enroll handle (lambda (&rest _arguments) (cl-incf calls)))
+        (e-work-start-prepared handle)
+        (e-board-drain-terminal-classifications source-board)
+        (let* ((invocation (e-board-invocation source-board '("turn" "call")))
+               (target (e-board-invocation-effect-target invocation)))
+          (e-harness-registry-clear-instance :live)
+          (e-board-drain-effects source-board)
+          (should (= calls 0))
+          (should (eq (e-board-invocation-state invocation) 'failed))
+          (should (eq (e-board-runtime-invocation-state
+                       (gethash target e-board-runtime--invocations))
+                      'unavailable)))))))
 
 (ert-deftest e-board-runtime-test-await-aggregation-uses-opaque-target ()
   "Await completion uses the captured awaiting call rather than a board closure."

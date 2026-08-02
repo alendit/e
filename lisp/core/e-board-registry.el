@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'avl-tree)
 (require 'e-board)
 
 (define-error 'e-board-registry-error "e board registry error")
@@ -41,13 +42,24 @@
 (defvar e-board-registry--boards (make-hash-table :test 'equal)
   "Live and closed process-local boards keyed by board id.")
 
+(defvar e-board-registry--board-index
+  (avl-tree-create
+   (lambda (left right) (string< (car left) (car right))))
+  "Ordered board index of printable identity keys to registry boards.")
+
 (defconst e-board-registry-list-page-limit 32
   "Default maximum number of board records returned by one registry page.")
+
+(defconst e-board-registry-client-revocation-drain-limit 16
+  "Maximum client or observer revocation units committed per drain.")
 
 (cl-defstruct (e-board-registry-board
                 (:constructor e-board-registry-board--create)
                 (:conc-name e-board-registry-board-))
-  id source-board state author principal principal-grants id-function clients client-generations participants)
+  id source-board state author principal principal-grants id-function clients
+  client-generations principal-clients client-revocation-head
+  client-revocation-tail client-revocation-scheduled client-revocation-scheduler
+  participants)
 
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
@@ -58,6 +70,11 @@
                (:constructor e-board-registry-requester-context--create)
                (:conc-name e-board-registry-requester-context-))
   board-id client-id client-generation principal role)
+
+(cl-defstruct (e-board-registry-client-revocation
+               (:constructor e-board-registry-client-revocation--create)
+               (:conc-name e-board-registry-client-revocation-))
+  principal client-ids current-client current-observer-ids)
 
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
@@ -163,11 +180,16 @@ board's participant identity from being used to mutate another board."
                     board requester-principal target)
                  (e-board-registry-authorization-denied nil)))))))
 
-(cl-defun e-board-registry-create (&key id id-function author principal)
+(cl-defun e-board-registry-create
+    (&key id id-function author principal client-revocation-scheduler)
   "Create and register an active board with stored AUTHOR and PRINCIPAL.
 ID-FUNCTION receives an identity kind and supplies all registry-owned ids.
 The source board is registered with `e-board' under the same board identity."
   (let* ((id (or id (e-board-registry--next-id id-function 'board))))
+    (when (= (hash-table-count e-board-registry--boards) 0)
+      (setq e-board-registry--board-index
+            (avl-tree-create
+             (lambda (left right) (string< (car left) (car right))))))
     (when (gethash id e-board-registry--boards)
       (signal 'e-board-registry-id-conflict (list id)))
     (let* ((source-board (e-board-create :id id))
@@ -183,12 +205,16 @@ The source board is registered with `e-board' under the same board identity."
                   :id-function id-function
                   :clients (make-hash-table :test 'equal)
                   :client-generations (make-hash-table :test 'equal)
+                  :principal-clients (make-hash-table :test 'equal)
+                  :client-revocation-scheduler client-revocation-scheduler
                   :participants (make-hash-table :test 'equal))))
       (setf (e-board-classification-authorizer source-board)
             (lambda (subscription message phase)
               (e-board-registry--classification-authorized-p
                board subscription message phase)))
       (puthash id board e-board-registry--boards)
+      (avl-tree-enter e-board-registry--board-index
+                      (cons (format "%s" id) board))
       board)))
 
 (defun e-board-registry-get (id)
@@ -270,6 +296,84 @@ message routing never consults it."
              (e-board-registry-board-principal-grants board))
     count))
 
+(defun e-board-registry--schedule-client-revocation-drain (board)
+  "Schedule one bounded revoked-client cleanup drain for BOARD."
+  (unless (e-board-registry-board-client-revocation-scheduled board)
+    (setf (e-board-registry-board-client-revocation-scheduled board) t)
+    (if-let ((scheduler
+              (e-board-registry-board-client-revocation-scheduler board)))
+        (funcall scheduler
+                 (lambda ()
+                   (e-board-registry--drain-client-revocations board)))
+      (run-at-time
+       0 nil (lambda () (e-board-registry--drain-client-revocations board))))))
+
+(defun e-board-registry--queue-client-revocation (board principal client-ids)
+  "Queue PRINCIPAL's CLIENT-IDS for bounded generation fencing and closure."
+  (when client-ids
+    (let* ((job
+            (e-board-registry-client-revocation--create
+             :principal principal :client-ids client-ids))
+           (cell (list job)))
+      (if (e-board-registry-board-client-revocation-tail board)
+          (setcdr (e-board-registry-board-client-revocation-tail board) cell)
+        (setf (e-board-registry-board-client-revocation-head board) cell))
+      (setf (e-board-registry-board-client-revocation-tail board) cell)
+      (e-board-registry--schedule-client-revocation-drain board))))
+
+(defun e-board-registry--drain-client-revocations (board)
+  "Commit one bounded page of revoked client and observer cleanup for BOARD."
+  (setf (e-board-registry-board-client-revocation-scheduled board) nil)
+  (let ((remaining e-board-registry-client-revocation-drain-limit))
+    (while (and (> remaining 0)
+                (e-board-registry-board-client-revocation-head board))
+      (let* ((job (car (e-board-registry-board-client-revocation-head board)))
+             (client (e-board-registry-client-revocation-current-client job)))
+        (cond
+         ((e-board-registry-client-revocation-current-observer-ids job)
+          (let ((observer-id
+                 (pop (e-board-registry-client-revocation-current-observer-ids job))))
+            (when-let ((observer
+                        (e-board-observer
+                         (e-board-registry-board-source-board board) observer-id)))
+              (when (memq (e-board-observer-state observer) '(active muted))
+                (e-board-set-observer-state
+                 (e-board-registry-board-source-board board)
+                 observer-id 'cancelled)))))
+         (client
+          (let* ((client-id (e-board-registry-client-id client))
+                 (generation
+                  (1+ (gethash client-id
+                               (e-board-registry-board-client-generations board)
+                               0))))
+            (setf (e-board-registry-client-state client) 'detached
+                  (e-board-registry-client-observer-ids client) nil
+                  (e-board-registry-client-generation client) generation
+                  (e-board-registry-client-revocation-current-client job) nil)
+            (puthash client-id generation
+                     (e-board-registry-board-client-generations board))
+            (remhash client-id (e-board-registry-board-clients board))))
+         ((e-board-registry-client-revocation-client-ids job)
+          (let* ((client-id
+                  (pop (e-board-registry-client-revocation-client-ids job)))
+                 (next
+                  (gethash client-id (e-board-registry-board-clients board))))
+            (when (and next
+                       (equal (e-board-registry-client-principal next)
+                              (e-board-registry-client-revocation-principal job)))
+              (setf (e-board-registry-client-revocation-current-client job) next
+                    (e-board-registry-client-revocation-current-observer-ids job)
+                    (e-board-registry-client-observer-ids next)
+                    (e-board-registry-client-observer-ids next) nil))))
+         (t
+          (setf (e-board-registry-board-client-revocation-head board)
+                (cdr (e-board-registry-board-client-revocation-head board)))
+          (unless (e-board-registry-board-client-revocation-head board)
+            (setf (e-board-registry-board-client-revocation-tail board) nil))))
+        (cl-decf remaining)))
+    (when (e-board-registry-board-client-revocation-head board)
+      (e-board-registry--schedule-client-revocation-drain board))))
+
 (defun e-board-registry-authorize-principal (board-or-id requester principal role)
   "Grant PRINCIPAL the board ROLE when REQUESTER is a current owner.
 ROLE is either `owner' or `member'.  This application operation owns board
@@ -293,6 +397,11 @@ controller for future board lifecycle operations."
       (signal 'e-board-registry-authorization-denied
               (list (e-board-registry-board-id board) principal 'last-owner)))
     (remhash principal grants)
+    (let ((client-ids
+           (gethash principal
+                    (e-board-registry-board-principal-clients board))))
+      (remhash principal (e-board-registry-board-principal-clients board))
+      (e-board-registry--queue-client-revocation board principal client-ids))
     role))
 
 (defun e-board-registry-list ()
@@ -312,22 +421,31 @@ LIMIT plus one candidates, rather than materializing the full registry list."
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let ((after-key (and after (format "%s" after)))
-        page more)
-    (maphash
-     (lambda (_id board)
-       (let ((key (format "%s" (e-board-registry-board-id board))))
-         (when (or (null after-key) (string< after-key key))
-           (setq page
-                 (sort (cons board page)
-                       (lambda (left right)
-                         (string< (format "%s" (e-board-registry-board-id left))
-                                  (format "%s" (e-board-registry-board-id right))))))
-           (when (> (length page) limit)
-             (setq more t)
-             (setcdr (nthcdr (1- limit) page) nil)))))
-     e-board-registry--boards)
-    (list :boards page
-          :next-after (and more (e-board-registry-board-id (car (last page)))))))
+        cursor entries exhausted)
+    (dotimes (_index (1+ limit))
+      (unless exhausted
+        (let ((node (avl-tree--root e-board-registry--board-index))
+              candidate
+              (seek (or cursor after-key)))
+          (while node
+            (let* ((entry (avl-tree--node-data node))
+                   (key (car entry)))
+              (if (or (null seek) (string< seek key))
+                  (setq candidate entry
+                        node (avl-tree--node-left node))
+                (setq node (avl-tree--node-right node)))))
+          (if candidate
+              (progn
+                (push candidate entries)
+                (setq cursor (car candidate)))
+            (setq exhausted t)))))
+    (setq entries (nreverse entries))
+    (let* ((more (> (length entries) limit))
+           (page-entries (if more (butlast entries) entries))
+           (boards (mapcar #'cdr page-entries)))
+      (list :boards boards
+            :next-after
+            (and more (e-board-registry-board-id (car (last boards))))))))
 
 (defun e-board-registry-participant (board-or-id participant-or-id)
   "Return BOARD-OR-ID's canonical board-local participant record."
@@ -354,7 +472,22 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                     :generation generation :state 'active :observer-ids nil)))
       (puthash id generation generations)
       (puthash id client (e-board-registry-board-clients board))
+      (when principal
+        (puthash principal
+                 (cons id
+                       (gethash principal
+                                (e-board-registry-board-principal-clients board)))
+                 (e-board-registry-board-principal-clients board)))
       client)))
+
+(defun e-board-registry--client-authorized-p (board client)
+  "Return non-nil while CLIENT is active under its current board grant."
+  (and client
+       (eq (e-board-registry-client-state client) 'active)
+       (or (null (e-board-registry-client-principal client))
+           (eq (e-board-registry-principal-role
+                board (e-board-registry-client-principal client))
+               (e-board-registry-client-role client)))))
 
 (defun e-board-registry-detach-client (board-or-id client-id)
   "Detach CLIENT-ID from active BOARD-OR-ID and release its observers."
@@ -371,6 +504,13 @@ LIMIT plus one candidates, rather than materializing the full registry list."
              (e-board-registry-board-source-board board) observer-id 'cancelled))))
       (setf (e-board-registry-client-observer-ids client) nil)
       (setf (e-board-registry-client-state client) 'detached)
+      (when-let ((principal (e-board-registry-client-principal client)))
+        (puthash principal
+                 (delete client-id
+                         (gethash
+                          principal
+                          (e-board-registry-board-principal-clients board)))
+                 (e-board-registry-board-principal-clients board)))
       (remhash client-id clients))
     client))
 
@@ -378,7 +518,7 @@ LIMIT plus one candidates, rather than materializing the full registry list."
   "Capture active CLIENT-ID as a generation-fenced requester context."
   (let* ((board (e-board-registry--require-active board-or-id))
          (client (gethash client-id (e-board-registry-board-clients board))))
-    (unless (and client (eq (e-board-registry-client-state client) 'active))
+    (unless (e-board-registry--client-authorized-p board client)
       (signal 'e-board-registry-client-missing (list client-id)))
     (e-board-registry-requester-context--create
      :board-id (e-board-registry-board-id board)
@@ -394,10 +534,9 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                          (e-board-registry-requester-context-client-id context)))
          (client (and client-id
                       (gethash client-id (e-board-registry-board-clients board)))))
-    (unless (and client
+    (unless (and (e-board-registry--client-authorized-p board client)
                  (equal (e-board-registry-requester-context-board-id context)
                         (e-board-registry-board-id board))
-                 (eq (e-board-registry-client-state client) 'active)
                  (= (e-board-registry-requester-context-client-generation context)
                     (e-board-registry-client-generation client))
                  (equal (e-board-registry-requester-context-principal context)
@@ -418,6 +557,9 @@ the cursor and selector because it owns ordered message observation."
          (client (gethash client-id (e-board-registry-board-clients board))))
     (unless client
       (signal 'e-board-registry-client-missing (list client-id)))
+    (unless (e-board-registry--client-authorized-p board client)
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) client-id 'board-read)))
     (let ((observer
             (e-board-observer-subscribe
             (e-board-registry-board-source-board board) client-id selector
@@ -436,7 +578,10 @@ the cursor and selector because it owns ordered message observation."
   "Return BOARD OBSERVER-ID after validating its attached owning CLIENT-ID."
   (let ((client (gethash client-id (e-board-registry-board-clients board))))
     (unless client
-    (signal 'e-board-registry-client-missing (list client-id)))
+      (signal 'e-board-registry-client-missing (list client-id)))
+    (unless (e-board-registry--client-authorized-p board client)
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) client-id 'board-read)))
     (let ((observer (or (e-board-observer
                          (e-board-registry-board-source-board board) observer-id)
                         (signal 'e-board-observer-missing (list observer-id)))))
@@ -677,8 +822,40 @@ explicit `post' grant."
                     (if (eq state 'detaching) 'target-unavailable 'post))))
     t))
 
+(defun e-board-registry--delivery-requester-authorized-p
+    (board actor target addressed-p)
+  "Return non-nil while frozen ACTOR may still deliver to TARGET.
+ADDRESSED-P requires the target-owned exact-post grant in addition to current
+board membership.  A nil actor is retained only for the private pre-cutover
+foundation and disappears with the public source cut."
+  (let ((principal
+         (cond
+          ((null actor) :private-pre-cutover)
+          ((stringp actor)
+           (and (e-board-registry-principal-role board actor) actor))
+          ((and (listp actor) (eq (car actor) 'participant))
+           (when-let ((source
+                       (gethash (cadr actor)
+                                (e-board-registry-board-participants board))))
+             (let ((source-principal
+                    (e-board-registry-participant-principal source)))
+               (and (memq
+                     (e-board-participant-state
+                      (e-board-registry-participant-source-participant source))
+                     '(active dormant stale))
+                    (or (null source-principal)
+                        (e-board-registry-principal-role board source-principal))
+                    (or source-principal :private-pre-cutover))))))))
+    (and principal
+         (or (not addressed-p)
+             (eq principal :private-pre-cutover)
+             (condition-case nil
+                 (e-board-registry-authorize-exact-post
+                  board principal target)
+               (e-board-registry-authorization-denied nil))))))
+
 (defun e-board-registry-participant-delivery-authorization
-    (board-or-id participant-or-id)
+    (board-or-id participant-or-id &optional requester-actor addressed-p)
   "Return PARTICIPANT-OR-ID's current physical-delivery authorization state.
 `authorized' permits a new endpoint attempt.  `waiting' preserves a dormant,
 stale, or detaching member's bounded FIFO without calling a harness.  `revoked'
@@ -703,6 +880,9 @@ missing current principal grant."
     (cond
      ((or (null participant) (not (eq current participant))) 'revoked)
      ((and principal (null (e-board-registry-principal-role board principal)))
+      'revoked)
+     ((not (e-board-registry--delivery-requester-authorized-p
+            board requester-actor participant addressed-p))
       'revoked)
      ((eq state 'active) 'authorized)
      ((memq state '(detaching dormant stale)) 'waiting)

@@ -1442,6 +1442,104 @@
                      (e-board-activation board '("board" "continuation" continuation 1)))
                     'cancelled))))))
 
+(ert-deftest e-board-test-held-classifier-respects-later-subscription-lifecycle ()
+  "Frozen selector matches cannot create pickups after later lifecycle fences."
+  (dolist (transition '(muted cancelled expired replaced))
+    (let ((e-board--registry (make-hash-table :test 'equal))
+          (e-board--id-sequence 0))
+      (let (drains)
+        (let ((board
+               (e-board-create
+                :id "board"
+                :input-classification-scheduler
+                (lambda (drain) (push drain drains)))))
+          (e-board-add-participant
+           board :id "participant" :create-pickup-subscription-id "address")
+          (e-board-subscribe
+           board "participant" '(:tags (main)) :id "route")
+          (let ((publication
+                 (e-board-post-input board :id "input" :tags '(main))))
+            (pcase transition
+              ('replaced
+               (e-board-replace-subscription
+                board "route" '(:tags (replacement)) :id "replacement"))
+              (_ (e-board-set-subscription-state board "route" transition)))
+            (funcall (pop drains))
+            (should-not (e-board-publication-pickup-ids publication))
+            (should (eq (e-board-message-routing-state
+                         (e-board-publication-message publication))
+                        'unrouted))
+            (should-not (e-board-input-classifications board))))))))
+
+(ert-deftest e-board-test-held-classifier-respects-later-effect-cancellation ()
+  "A continuation cancelled before classification never prepares its effect."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0))
+    (let (drains effects)
+      (let ((board
+             (e-board-create
+              :id "board"
+              :input-classification-scheduler
+              (lambda (drain) (push drain drains))
+              :effect-scheduler (lambda (effect) (push effect effects)))))
+        (e-board-add-participant
+         board :id "participant" :create-pickup-subscription-id "address")
+        (e-board-subscribe
+         board "participant" '(:tags (source)) :id "continuation"
+         :effect '(:post-input :to "participant" :content "derived"))
+        (e-board-post-input board :id "source" :tags '(source) :content "source")
+        (e-board-set-subscription-state board "continuation" 'cancelled)
+        (funcall (pop drains))
+        (should-not effects)
+        (should (= (length (e-board-messages board)) 1))
+        (should (= (hash-table-count (e-board-activations board)) 0))))))
+
+(ert-deftest e-board-test-append-and-observer-pages-use-owner-indexes ()
+  "Retained prefixes and subscriber count do not enter append or page work."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        drains)
+    (let ((board
+           (e-board-create
+            :id "board"
+            :input-classification-scheduler
+            (lambda (drain) (push drain drains)))))
+      (e-board-add-participant
+       board :id "participant" :create-pickup-subscription-id "address")
+      (dotimes (index 64)
+        (e-board-subscribe
+         board "participant" (list :tags (list index))
+         :id (format "subscription-%d" index)))
+      (dotimes (index 64)
+        (e-board-post-fact
+         board :id (format "fact-%d" index)
+         :tags '(main) :source-fact-key (list 'producer 1 (1+ index))))
+      (let ((copies 0))
+        (cl-letf (((symbol-function 'copy-e-board-subscription)
+                   (lambda (subscription)
+                     (cl-incf copies)
+                     subscription)))
+          (e-board-post-input board :id "input" :tags '(main)))
+        (should (= copies 0)))
+      (let* ((observer
+              (e-board-observer-subscribe
+               board "client" '(:tags (main)) :id "observer"
+               :start-seq 0 :history-before-seq (1+ (e-board-next-seq board))))
+             live history)
+        (cl-letf (((symbol-function 'e-board-messages)
+                   (lambda (&rest _arguments)
+                     (error "observer page scanned retained message list")))
+                  ((symbol-function 'reverse)
+                   (lambda (&rest _arguments)
+                     (error "observer history reversed retained log"))))
+          (setq live (e-board-observer-prepare-page board "observer" :limit 3)
+                history
+                (e-board-observer-prepare-history-page
+                 board "observer" :limit 3)))
+        (should (= (length (plist-get live :messages)) 3))
+        (should (= (length (plist-get history :messages)) 3))
+        (should (= (e-board-observer-next-index observer) 0))))))
+
 (provide 'e-board-test)
 
 ;;; e-board-test.el ends here

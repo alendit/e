@@ -146,6 +146,9 @@ Operations accepted before this commit may continue to completion."
 (defconst e-board-runtime-pickup-drain-limit 16
   "Maximum frozen pickup attempts the private runtime starts per drain.")
 
+(defconst e-board-runtime-pickup-retry-limit 3
+  "Maximum proven-uncommitted delivery attempts before visible failure.")
+
 (defconst e-board-runtime--visible-harness-activity-types
   '(turn-started provider-request-started provider-request-finished
     tool-started tool-finished action-started action-finished action-failed
@@ -191,7 +194,8 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (cl-defstruct (e-board-runtime-invocation
                (:constructor e-board-runtime-invocation--create)
                (:conc-name e-board-runtime-invocation-))
-  target attachment attachment-generation callback state)
+  target attachment attachment-generation endpoint-token composite-generation
+  callback state)
 
 (defvar e-board-runtime--unsettled-control-count 0
   "Number of nonterminal board-runtime control requests.")
@@ -348,6 +352,10 @@ endpoint by session identity."
               :target target
               :attachment attachment
               :attachment-generation (e-board-runtime-attachment-generation attachment)
+              :endpoint-token
+              (copy-tree (e-board-runtime-attachment-endpoint-token attachment))
+              :composite-generation
+              (copy-tree (e-board-runtime--attachment-composite-generation attachment))
               :callback callback
               :state 'open)
              e-board-runtime--invocations)
@@ -362,8 +370,14 @@ endpoint by session identity."
     (unless (eq (e-board-runtime-invocation-state invocation) 'open)
       (signal 'e-board-runtime-error (list "Invocation target is not open" target)))
     (let ((attachment (e-board-runtime-invocation-attachment invocation)))
-      (unless (= (e-board-runtime-invocation-attachment-generation invocation)
-                 (e-board-runtime-attachment-generation attachment))
+      (unless (and
+               (= (e-board-runtime-invocation-attachment-generation invocation)
+                  (e-board-runtime-attachment-generation attachment))
+               (equal (e-board-runtime-invocation-endpoint-token invocation)
+                      (e-board-runtime-attachment-endpoint-token attachment))
+               (equal (e-board-runtime-invocation-composite-generation invocation)
+                      (e-board-runtime--attachment-composite-generation attachment))
+               (e-board-runtime--current-attachment-p attachment))
         (setf (e-board-runtime-invocation-state invocation) 'unavailable)
         (e-board-runtime--adjust-unsettled-count 'invocation -1)
         (signal 'e-board-runtime-error
@@ -529,9 +543,15 @@ will consume the mailbox under its own bounded drain."
 (defun e-board-runtime--drain-pickups ()
   "Attempt one bounded FIFO page of previously frozen pickup envelopes."
   (setq e-board-runtime--pickup-drain-scheduled nil)
-  (let ((processed 0))
+  (let ((processed 0)
+        (available-at-start 0)
+        (cursor e-board-runtime--pending-pickup-head))
+    (while (and cursor
+                (< available-at-start e-board-runtime-pickup-drain-limit))
+      (cl-incf available-at-start)
+      (setq cursor (cdr cursor)))
     (while (and e-board-runtime--pending-pickup-head
-                (< processed e-board-runtime-pickup-drain-limit))
+                (< processed available-at-start))
       (let ((key (pop e-board-runtime--pending-pickup-head)))
         (unless e-board-runtime--pending-pickup-head
           (setq e-board-runtime--pending-pickup-tail nil))
@@ -773,7 +793,8 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((memq type '(turn-failed turn-cancelled))
         (e-board-runtime--publish-terminal-activity attachment event)
-        (e-board-runtime--publish-turn-summary attachment event type))
+        (e-board-runtime--publish-turn-summary attachment event type)
+        (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((eq type 'input-consumed)
         (let* ((payload (plist-get event :payload))
                (delivery-id (plist-get payload :delivery-id))
@@ -1883,61 +1904,106 @@ and pickup tombstones remain on the source board."
   "Deliver BOARD's frozen ready PICKUP-IDS through their attachments."
   (let ((source-board (e-board-registry-board-source-board board)))
     (dolist (delivery-id pickup-ids)
-      (when-let* ((pickup (e-board-pickup source-board delivery-id))
-                  ((eq (e-board-pickup-state pickup) 'ready))
-                  (participant (e-board-registry-participant
-                                board (e-board-pickup-participant-id pickup)))
-                  (attachment
-                   (gethash (e-board-runtime--attachment-key board participant)
-                            e-board-runtime--attachments))
-                  ((e-board-runtime--current-attachment-p attachment))
-                  ((eq (e-board-runtime-attachment-state attachment)
-                       'active))
-                  (message (e-board-message source-board
-                                            (e-board-pickup-message-id pickup))))
-        (e-board-pickup-start-delivery
-         source-board delivery-id
-         (e-board-runtime-attachment-endpoint-token attachment)
-         (e-board-runtime--attachment-composite-generation attachment))
-        (condition-case err
-            (let ((result (funcall (e-board-runtime-attachment-delivery-function attachment)
-                                   attachment pickup message)))
-              (pcase (car-safe result)
-                (:accepted
-                 (if (and (e-board-runtime--current-attachment-p attachment)
-                          (e-board-runtime--attempt-belongs-to-attachment-p
-                           pickup attachment))
-                     (e-board-pickup-accept-delivery
-                      source-board delivery-id (cadr result))
-                   (when-let ((next-id
-                               (e-board-pickup-mark-uncertain
-                                source-board delivery-id
-                                'acceptance-endpoint-changed)))
-                     (e-board-runtime--enqueue-pickups board (list next-id)))))
-                (:uncertain
-                 (when-let ((next-id
-                             (e-board-pickup-mark-uncertain
-                              source-board delivery-id (or (cadr result) 'delivery-uncertain))))
-                   (e-board-runtime--enqueue-pickups board (list next-id))))
-                (:discarded
-                 (e-board-pickup-accept-delivery source-board delivery-id)
-                 (when-let ((next-id
-                             (e-board-pickup-discard-delivery
-                              source-board delivery-id (or (cadr result) 'delivery-discarded))))
-                   (e-board-runtime--enqueue-pickups board (list next-id))))
-                (:failed
-                 (when-let ((next-id
-                             (e-board-fail-pickup
-                              source-board delivery-id (or (cadr result) 'delivery-failed))))
-                   (e-board-runtime--enqueue-pickups board (list next-id))))
-                (_
-                 (when-let ((next-id (e-board-pickup-complete-delivery
-                                      source-board delivery-id)))
-                   (e-board-runtime--enqueue-pickups board (list next-id))))))
-          (error
-           (e-board-pickup-return-ready source-board delivery-id err)
-           (unless (eq (car err) 'e-board-runtime-session-busy)
-             (signal (car err) (cdr err)))))))))
+      (when-let ((pickup (e-board-pickup source-board delivery-id)))
+        (when (eq (e-board-pickup-state pickup) 'ready)
+          (let* ((participant-id (e-board-pickup-participant-id pickup))
+                 (participant
+                  (gethash participant-id
+                           (e-board-registry-board-participants board)))
+                 (authorization
+                  (e-board-registry-participant-delivery-authorization
+                   board (or participant participant-id)
+                   (e-board-pickup-requester-actor pickup)
+                   (e-board-pickup-addressed-p pickup))))
+            (pcase authorization
+              ('revoked
+               (when-let ((next-id
+                           (e-board-fail-pickup
+                            source-board delivery-id 'delivery-authorization-revoked)))
+                 (e-board-runtime--enqueue-pickups board (list next-id))))
+              ('authorized
+               (when-let* ((attachment
+                           (gethash
+                             (e-board-runtime--attachment-key board participant)
+                             e-board-runtime--attachments))
+                           ((e-board-runtime--current-attachment-p attachment))
+                           ((eq (e-board-runtime-attachment-state attachment)
+                                'active))
+                           (message
+                            (e-board-message
+                             source-board (e-board-pickup-message-id pickup))))
+                 (e-board-pickup-start-delivery
+                  source-board delivery-id
+                  (e-board-runtime-attachment-endpoint-token attachment)
+                  (e-board-runtime--attachment-composite-generation attachment))
+                 (condition-case err
+                     (let ((result
+                            (funcall
+                             (e-board-runtime-attachment-delivery-function attachment)
+                             attachment pickup message)))
+                       (pcase (car-safe result)
+                         (:accepted
+                          (if (and
+                               (e-board-runtime--current-attachment-p attachment)
+                               (e-board-runtime--attempt-belongs-to-attachment-p
+                                pickup attachment))
+                              (progn
+                                (e-board-pickup-accept-delivery
+                                 source-board delivery-id (cadr result))
+                                (unless
+                                    (eq (e-board-registry-participant-delivery-authorization
+                                         board participant
+                                         (e-board-pickup-requester-actor pickup)
+                                         (e-board-pickup-addressed-p pickup))
+                                        'authorized)
+                                  (e-board-cancel-pickup
+                                   source-board delivery-id
+                                   'delivery-authorization-revoked)))
+                            (when-let ((next-id
+                                        (e-board-pickup-mark-uncertain
+                                         source-board delivery-id
+                                         'acceptance-endpoint-changed)))
+                              (e-board-runtime--enqueue-pickups
+                               board (list next-id)))))
+                         (:uncertain
+                          (when-let ((next-id
+                                      (e-board-pickup-mark-uncertain
+                                       source-board delivery-id
+                                       (or (cadr result) 'delivery-uncertain))))
+                            (e-board-runtime--enqueue-pickups board (list next-id))))
+                         (:discarded
+                          (e-board-pickup-accept-delivery source-board delivery-id)
+                          (when-let ((next-id
+                                      (e-board-pickup-discard-delivery
+                                       source-board delivery-id
+                                       (or (cadr result) 'delivery-discarded))))
+                            (e-board-runtime--enqueue-pickups board (list next-id))))
+                         (:failed
+                          (when-let ((next-id
+                                      (e-board-fail-pickup
+                                       source-board delivery-id
+                                       (or (cadr result) 'delivery-failed))))
+                            (e-board-runtime--enqueue-pickups board (list next-id))))
+                         (_
+                          (when-let ((next-id
+                                      (e-board-pickup-complete-delivery
+                                       source-board delivery-id)))
+                            (e-board-runtime--enqueue-pickups
+                             board (list next-id))))))
+                   (error
+                    (e-board-pickup-return-ready source-board delivery-id err)
+                    (unless (eq (car err) 'e-board-runtime-session-busy)
+                      (if (>= (e-board-delivery-attempt-number
+                               (e-board-pickup-attempt pickup))
+                              e-board-runtime-pickup-retry-limit)
+                          (when-let ((next-id
+                                      (e-board-fail-pickup
+                                       source-board delivery-id
+                                       'delivery-retry-exhausted)))
+                            (e-board-runtime--enqueue-pickups
+                             board (list next-id)))
+                        (e-board-runtime--enqueue-pickups
+                         board (list delivery-id)))))))))))))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to requester

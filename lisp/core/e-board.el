@@ -65,8 +65,8 @@
 (cl-defstruct (e-board-observer
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
-  id board-id client-id client-generation selector state next-seq
-  history-before-seq history-floor
+  id board-id client-id client-generation selector state next-seq next-index
+  history-before-seq history-before-index history-floor
   prepared-page last-accepted-page-receipt
   prepared-history-page last-accepted-history-receipt)
 
@@ -104,7 +104,7 @@
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
   delivery-id board-id participant-id message-id subscription-ids
-  event-seq-range mode requester-actor cause-metadata content reference state
+  event-seq-range mode requester-actor addressed-p cause-metadata content reference state
   attempt)
 
 (cl-defstruct (e-board-publication
@@ -145,7 +145,7 @@
 (cl-defstruct (e-board-input-classification
                (:constructor e-board-input-classification--create)
                (:conc-name e-board-input-classification-))
-  message publication subscriptions index matches post-subscriptions post-index)
+  message publication subscription-count index matches post-subscriptions post-index)
 
 (cl-defstruct (e-board-subscription-replay
                (:constructor e-board-subscription-replay--create)
@@ -155,14 +155,18 @@
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
-  id id-function next-seq events messages message-table message-seq-table participants subscriptions
+  id id-function next-seq events events-tail messages messages-tail message-count
+  message-table message-seq-table message-index-table event-message-count
+  participants subscriptions subscriptions-tail subscription-count
+  subscription-index-table subscription-id-table
   observers pickups source-high-watermarks source-recent work-table invocations aggregations
   pending-effects effects-scheduled
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
   terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
-  input-classifications input-classification-scheduled input-classification-scheduler
+  input-classifications input-classification-tail
+  input-classification-scheduled input-classification-scheduler
   subscription-replays subscription-replay-scheduled
-  routed-pickup-results
+  routed-pickup-results routed-pickup-results-tail
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
   continuation-timer-scheduler subscription-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
@@ -252,11 +256,23 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                  :id-function id-function
                  :next-seq 0
                  :events nil
+                  :events-tail nil
                   :messages nil
+                  :messages-tail nil
+                  :message-count 0
                   :message-table (make-hash-table :test 'equal)
                   :message-seq-table (make-hash-table :test 'eql)
+                  :message-index-table (make-hash-table :test 'eql)
+                  :event-message-count
+                  (let ((table (make-hash-table :test 'eql)))
+                    (puthash 0 0 table)
+                    table)
                  :participants (make-hash-table :test 'equal)
                  :subscriptions nil
+                 :subscriptions-tail nil
+                 :subscription-count 0
+                 :subscription-index-table (make-hash-table :test 'eql)
+                 :subscription-id-table (make-hash-table :test 'equal)
                  :observers (make-hash-table :test 'equal)
                   :pickups (make-hash-table :test 'equal)
                   :source-high-watermarks (make-hash-table :test 'equal)
@@ -282,11 +298,13 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :terminal-classification-scheduled nil
                   :terminal-classification-scheduler terminal-classification-scheduler
                   :input-classifications nil
+                  :input-classification-tail nil
                   :input-classification-scheduled nil
                   :input-classification-scheduler input-classification-scheduler
                   :subscription-replays nil
                   :subscription-replay-scheduled nil
                   :routed-pickup-results nil
+                  :routed-pickup-results-tail nil
                   :aggregation-deadlines nil
                   :aggregation-deadline-scheduled nil
                   :aggregation-deadline-scheduler aggregation-deadline-scheduler
@@ -301,7 +319,13 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                 :seq (cl-incf (e-board-next-seq board))
                 :type type
                 :data data)))
-    (setf (e-board-events board) (append (e-board-events board) (list event)))
+    (let ((cell (list event)))
+      (if (e-board-events-tail board)
+          (setcdr (e-board-events-tail board) cell)
+        (setf (e-board-events board) cell))
+      (setf (e-board-events-tail board) cell))
+    (puthash (e-board-event-seq event) (e-board-message-count board)
+             (e-board-event-message-count board))
     event))
 
 (defun e-board-events-after (board seq)
@@ -1102,6 +1126,19 @@ making `e-work' depend on board state or making the board retain loop closures."
   "Return non-nil when PARTICIPANT can receive a new pickup."
   (memq (e-board-participant-state participant) '(active dormant stale)))
 
+(defun e-board--append-subscription (board subscription)
+  "Append SUBSCRIPTION to BOARD's ordered list and constant-time indexes."
+  (let* ((index (cl-incf (e-board-subscription-count board)))
+         (cell (list subscription)))
+    (if (e-board-subscriptions-tail board)
+        (setcdr (e-board-subscriptions-tail board) cell)
+      (setf (e-board-subscriptions board) cell))
+    (setf (e-board-subscriptions-tail board) cell)
+    (puthash index subscription (e-board-subscription-index-table board))
+    (puthash (e-board-subscription-id subscription) subscription
+             (e-board-subscription-id-table board))
+    subscription))
+
 (cl-defun e-board-add-participant
     (board &key id (state 'active) create-pickup-subscription-id)
   "Add participant ID to BOARD and install its built-in exact pickup route.
@@ -1114,24 +1151,23 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
     (e-board--require-id id 'e-board-participant-id)
     (when (e-board-participant board id)
       (signal 'e-board-id-conflict (list id)))
-    (when (cl-find subscription-id (e-board-subscriptions board)
-                   :key #'e-board-subscription-id :test #'equal)
+    (when (e-board-find-subscription board subscription-id)
       (signal 'e-board-id-conflict (list subscription-id)))
     (let ((participant
            (e-board-participant--create
             :id id :board-id (e-board-id board) :state state
             :create-pickup-subscription-id subscription-id)))
       (puthash id participant (e-board-participants board))
-      (setf (e-board-subscriptions board)
-            (append (e-board-subscriptions board)
-                    (list (e-board-subscription--create
-                           :id subscription-id
-                           :board-id (e-board-id board)
-                           :participant-id id
-                           :selector (list :to id)
-                           :effect 'create-pickup
-                           :state 'active
-                           :built-in-p t))))
+      (e-board--append-subscription
+       board
+       (e-board-subscription--create
+        :id subscription-id
+        :board-id (e-board-id board)
+        :participant-id id
+        :selector (list :to id)
+        :effect 'create-pickup
+        :state 'active
+        :built-in-p t))
       (e-board--append-event board 'participant-added
                              (list :participant-id id
                                    :subscription-id subscription-id))
@@ -1202,8 +1238,7 @@ restricted to input records."
   (unless (memq state '(active muted))
     (signal 'wrong-type-argument (list '(member active muted) state)))
   (let ((id (or id (e-board--next-id board 'subscription))))
-    (when (cl-find id (e-board-subscriptions board)
-                   :key #'e-board-subscription-id :test #'equal)
+    (when (e-board-find-subscription board id)
       (signal 'e-board-id-conflict (list id)))
     (let ((subscription
            (e-board-subscription--create
@@ -1216,8 +1251,7 @@ restricted to input records."
             :readiness-generation 0 :firing-number 0
             :firing-limit firing-limit :lifetime lifetime
             :lifetime-generation 0)))
-      (setf (e-board-subscriptions board)
-            (append (e-board-subscriptions board) (list subscription)))
+      (e-board--append-subscription board subscription)
       (e-board--append-event board 'subscription-added
                              (list :subscription-id id
                                    :participant-id participant-id
@@ -1293,6 +1327,13 @@ restricted to input records."
                  nil))
             t))))
 
+(defun e-board--message-count-through-seq (board seq)
+  "Return BOARD's number of messages whose event sequence is at most SEQ."
+  (cond
+   ((<= seq 0) 0)
+   ((>= seq (e-board-next-seq board)) (e-board-message-count board))
+   (t (or (gethash seq (e-board-event-message-count board)) 0))))
+
 (cl-defun e-board-observer-subscribe
     (board client-id selector &key id client-generation (state 'active) start-seq
            history-before-seq (history-floor 0))
@@ -1326,7 +1367,10 @@ the returned cursor's advancing `next-seq' for later bounded pages."
                      :client-generation client-generation
                      :selector (copy-tree selector) :state state
                      :next-seq start-seq
+                     :next-index (e-board--message-count-through-seq
+                                  board start-seq)
                      :history-before-seq history-before-seq
+                     :history-before-index nil
                      :history-floor history-floor)))
       (puthash id observer (e-board-observers board))
       (e-board--append-event board 'observer-added
@@ -1345,26 +1389,35 @@ Return =:messages= plus an opaque =:receipt= for
     (if-let ((prepared (e-board-observer-prepared-history-page observer)))
         (copy-tree prepared)
         (let ((next-before nil)
+              (next-before-index nil)
+              (index
+               (or (e-board-observer-history-before-index observer)
+                   (and (e-board-observer-history-before-seq observer)
+                        (e-board--message-count-through-seq
+                         board
+                         (1- (e-board-observer-history-before-seq observer))))))
               (inspected 0)
               matches)
           (when (and (eq (e-board-observer-state observer) 'active)
                      (e-board-observer-history-before-seq observer))
-            (let ((before (e-board-observer-history-before-seq observer))
-                  (floor (e-board-observer-history-floor observer)))
-              (dolist (message (reverse (e-board-messages board)))
-                (when (and (< inspected limit)
-                           (< (e-board-message-seq message) before)
-                           (>= (e-board-message-seq message) floor))
-                  (cl-incf inspected)
-                  (setq next-before (e-board-message-seq message))
-                  (when (e-board--observer-matches-p board observer message)
-                    (push message matches))))))
+            (let ((floor (e-board-observer-history-floor observer)))
+              (while (and index (> index 0) (< inspected limit))
+                (let ((message (gethash index (e-board-message-index-table board))))
+                  (if (< (e-board-message-seq message) floor)
+                      (setq index 0)
+                    (cl-incf inspected)
+                    (setq next-before (e-board-message-seq message)
+                          next-before-index (1- index))
+                    (when (e-board--observer-matches-p board observer message)
+                      (push message matches))
+                    (cl-decf index))))))
           (let* ((receipt
                   (and next-before
                        (list (e-board-id board) observer-id 'history
                              (e-board-observer-history-before-seq observer)
                              next-before)))
                  (page (list :messages matches :before-seq next-before
+                             :before-index next-before-index
                              :receipt receipt)))
             (when receipt
               (setf (e-board-observer-prepared-history-page observer) page))
@@ -1380,7 +1433,8 @@ Return =:messages= plus an opaque =:receipt= for
         observer
       (let* ((page (e-board-observer-prepared-history-page observer))
              (expected (and page (plist-get page :receipt)))
-             (before-seq (and page (plist-get page :before-seq))))
+             (before-seq (and page (plist-get page :before-seq)))
+             (before-index (and page (plist-get page :before-index))))
         (unless (and expected (equal receipt expected))
           (signal 'e-board-error
                   (list "Invalid observer history acceptance" observer-id receipt)))
@@ -1392,6 +1446,7 @@ Return =:messages= plus an opaque =:receipt= for
           (signal 'e-board-error
                   (list "Stale observer history acceptance" observer-id receipt)))
         (setf (e-board-observer-history-before-seq observer) before-seq
+              (e-board-observer-history-before-index observer) before-index
               (e-board-observer-prepared-history-page observer) nil
               (e-board-observer-last-accepted-history-receipt observer)
               (copy-tree receipt))
@@ -1518,25 +1573,29 @@ it accepts this page.  Trusted predicates run here, never from append."
     (if-let ((prepared (e-board-observer-prepared-page observer)))
         (copy-tree prepared)
         (let ((inspected 0)
+              (index (1+ (e-board-observer-next-index observer)))
               (through-seq nil)
+              (through-index nil)
               matches)
           (when (eq (e-board-observer-state observer) 'active)
-            (dolist (message (e-board-messages board))
-              (when (and (< inspected limit)
-                         (> (e-board-message-seq message)
-                            (e-board-observer-next-seq observer))
-                         (>= (e-board-message-seq message)
-                             (e-board-retention-floor board)))
-                (cl-incf inspected)
-                (setq through-seq (e-board-message-seq message))
-                (when (e-board--observer-matches-p board observer message)
-                  (push message matches)))))
+            (while (and (<= index (e-board-message-count board))
+                        (< inspected limit))
+              (let ((message (gethash index (e-board-message-index-table board))))
+                (when (>= (e-board-message-seq message)
+                          (e-board-retention-floor board))
+                  (cl-incf inspected)
+                  (setq through-seq (e-board-message-seq message)
+                        through-index index)
+                  (when (e-board--observer-matches-p board observer message)
+                    (push message matches)))
+                (cl-incf index))))
           (let* ((receipt
                   (and through-seq
                        (list (e-board-id board) observer-id 'live
                              (e-board-observer-next-seq observer) through-seq)))
                  (page (list :messages (nreverse matches)
                              :through-seq through-seq
+                             :through-index through-index
                              :receipt receipt
                              :resnapshot-required resnapshot-required)))
             (when receipt
@@ -1554,7 +1613,8 @@ retrying the last committed receipt is idempotent."
         observer
       (let* ((page (e-board-observer-prepared-page observer))
              (expected (and page (plist-get page :receipt)))
-             (through-seq (and page (plist-get page :through-seq))))
+             (through-seq (and page (plist-get page :through-seq)))
+             (through-index (and page (plist-get page :through-index))))
         (unless (and expected (equal receipt expected))
           (signal 'e-board-error
                   (list "Invalid observer page acceptance" observer-id receipt)))
@@ -1565,6 +1625,7 @@ retrying the last committed receipt is idempotent."
           (signal 'e-board-error
                   (list "Stale observer page acceptance" observer-id receipt)))
         (setf (e-board-observer-next-seq observer) through-seq
+              (e-board-observer-next-index observer) through-index
               (e-board-observer-prepared-page observer) nil
               (e-board-observer-last-accepted-page-receipt observer)
               (copy-tree receipt))
@@ -1595,8 +1656,17 @@ and acknowledge only after their queue accepts the returned page."
 
 (defun e-board-find-subscription (board subscription-id)
   "Return BOARD's subscription SUBSCRIPTION-ID, or nil."
-  (cl-find subscription-id (e-board-subscriptions board)
-           :key #'e-board-subscription-id :test #'equal))
+  (gethash subscription-id (e-board-subscription-id-table board)))
+
+(defun e-board--classification-subscription-current-p (board snapshot)
+  "Return the active current subscription represented by frozen SNAPSHOT.
+The snapshot keeps historical selector bytes stable, while this lookup fences
+later mute, terminal, cancellation, expiry, and replacement transitions."
+  (when-let ((current
+              (e-board-find-subscription
+               board (e-board-subscription-id snapshot))))
+    (and (eq (e-board-subscription-state current) 'active)
+         current)))
 
 (defun e-board--subscription-transition-allowed-p (from to)
   "Return non-nil when ordinary subscription state FROM may move to TO."
@@ -2054,8 +2124,15 @@ Return nil when the key is new and may be appended."
            :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
     (puthash (e-board-message-seq message) message (e-board-message-seq-table board))
-    (setf (e-board-messages board)
-          (append (e-board-messages board) (list message)))
+    (let* ((index (cl-incf (e-board-message-count board)))
+           (cell (list message)))
+      (if (e-board-messages-tail board)
+          (setcdr (e-board-messages-tail board) cell)
+        (setf (e-board-messages board) cell))
+      (setf (e-board-messages-tail board) cell)
+      (puthash index message (e-board-message-index-table board))
+      (puthash (e-board-message-seq message) index
+               (e-board-event-message-count board)))
     message))
 
 (defun e-board--authorize-classification (board subscription message phase)
@@ -2136,8 +2213,11 @@ message kind may schedule its frozen explicit continuation matches."
     (setq subscriptions
           (cl-remove-if-not
            (lambda (subscription)
-             (e-board--authorize-classification
-              board subscription message 'pickup-finalization))
+             (when-let ((current
+                         (e-board--classification-subscription-current-p
+                          board subscription)))
+               (e-board--authorize-classification
+                board current message 'pickup-finalization)))
            subscriptions))
     (when (eq (e-board-message-kind message) 'input)
       ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
@@ -2175,6 +2255,7 @@ message kind may schedule its frozen explicit continuation matches."
                    :requester-actor
                    (e-board--copy-envelope-value
                     (e-board-message-requester-actor message))
+                   :addressed-p (and (e-board-message-to message) t)
                    :cause-metadata
                    (e-board--copy-envelope-value
                     (e-board--pickup-cause-metadata message))
@@ -2195,12 +2276,19 @@ message kind may schedule its frozen explicit continuation matches."
                                      :participant-ids participant-ids
                                      :pickup-ids pickup-ids))))
     (dolist (subscription post-subscriptions)
-      (e-board--accept-post-input-match board subscription message))
+      (when-let ((current
+                  (e-board--classification-subscription-current-p
+                   board subscription)))
+        (when (e-board--authorize-classification
+               board current message 'effect-finalization)
+          (e-board--accept-post-input-match board current message))))
     (when (eq (e-board-message-kind message) 'input)
-      (setf (e-board-routed-pickup-results board)
-            (append (e-board-routed-pickup-results board)
-                    (list (list (e-board-message-id message) pickup-ids)))
-            (e-board-publication-pickup-ids publication) pickup-ids))))
+      (let ((cell (list (list (e-board-message-id message) pickup-ids))))
+        (if (e-board-routed-pickup-results-tail board)
+            (setcdr (e-board-routed-pickup-results-tail board) cell)
+          (setf (e-board-routed-pickup-results board) cell))
+        (setf (e-board-routed-pickup-results-tail board) cell))
+      (setf (e-board-publication-pickup-ids publication) pickup-ids))))
 
 (defun e-board--schedule-input-classification (board)
   "Schedule BOARD's frozen input classifier once after append returns."
@@ -2214,15 +2302,17 @@ message kind may schedule its frozen explicit continuation matches."
   "Freeze BOARD's subscription view for MESSAGE without matching on append.
 The legacy name reflects its original pickup-only caller; non-input records use
 the same bounded queue solely to classify explicit continuation subscriptions."
-  (let ((subscriptions
-         (mapcar #'copy-e-board-subscription (e-board-subscriptions board))))
-    (setf (e-board-input-classifications board)
-          (append (e-board-input-classifications board)
-                  (list (e-board-input-classification--create
-                         :message message :subscriptions subscriptions :index 0
-                         :publication publication
-                         :matches nil :post-subscriptions nil :post-index 0))))
-    (e-board--schedule-input-classification board)))
+  (let ((cell
+         (list (e-board-input-classification--create
+                :message message
+                :subscription-count (e-board-subscription-count board)
+                :index 0 :publication publication
+                :matches nil :post-subscriptions nil :post-index 0))))
+    (if (e-board-input-classification-tail board)
+        (setcdr (e-board-input-classification-tail board) cell)
+      (setf (e-board-input-classifications board) cell))
+    (setf (e-board-input-classification-tail board) cell))
+  (e-board--schedule-input-classification board))
 
 (defun e-board--fail-input-classification (board record err)
   "Stop RECORD before pickup commit after a core classifier ERR."
@@ -2237,7 +2327,9 @@ the same bounded queue solely to classify explicit continuation subscriptions."
        board 'continuation-classification-failed
        (list :message-id (e-board-message-id message) :error err)))
     (setf (e-board-input-classifications board)
-          (cdr (e-board-input-classifications board)))))
+          (cdr (e-board-input-classifications board)))
+    (unless (e-board-input-classifications board)
+      (setf (e-board-input-classification-tail board) nil))))
 
 (defun e-board-drain-input-classifications (board)
   "Classify a bounded page of frozen input subscriptions in board order."
@@ -2245,11 +2337,15 @@ the same bounded queue solely to classify explicit continuation subscriptions."
   (let ((remaining e-board-input-classification-drain-limit))
     (while (and (> remaining 0) (e-board-input-classifications board))
       (let* ((record (car (e-board-input-classifications board)))
-             (subscriptions (e-board-input-classification-subscriptions record))
+             (subscription-count
+              (e-board-input-classification-subscription-count record))
              (index (e-board-input-classification-index record))
              (message (e-board-input-classification-message record)))
-        (if (< index (length subscriptions))
-            (let ((subscription (nth index subscriptions)))
+        (if (< index subscription-count)
+            (let ((subscription
+                   (copy-e-board-subscription
+                    (gethash (1+ index)
+                             (e-board-subscription-index-table board)))))
               (setf (e-board-input-classification-index record) (1+ index))
               (condition-case err
                   (when (e-board--message-subscription-matches-p board subscription message)
@@ -2264,7 +2360,9 @@ the same bounded queue solely to classify explicit continuation subscriptions."
            (e-board-input-classification-matches record)
            (e-board-input-classification-post-subscriptions record))
           (setf (e-board-input-classifications board)
-                (cdr (e-board-input-classifications board))))
+                (cdr (e-board-input-classifications board)))
+          (unless (e-board-input-classifications board)
+            (setf (e-board-input-classification-tail board) nil)))
         (cl-decf remaining)))
     (when (e-board-input-classifications board)
       (e-board--schedule-input-classification board))))
@@ -2272,7 +2370,8 @@ the same bounded queue solely to classify explicit continuation subscriptions."
 (defun e-board-drain-routed-pickups (board)
   "Return and clear finalized pickup ids for separately scheduled delivery."
   (prog1 (e-board-routed-pickup-results board)
-    (setf (e-board-routed-pickup-results board) nil)))
+    (setf (e-board-routed-pickup-results board) nil
+          (e-board-routed-pickup-results-tail board) nil)))
 
 (cl-defun e-board-post-input
     (board &key id author requester-actor tags attributes to (mode 'inject)

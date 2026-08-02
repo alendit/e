@@ -79,6 +79,12 @@ Input append now freezes a private subscription snapshot and returns before
 matching, pickup creation, continuation effects, or harness delivery; the
 runtime drains only the resulting finalized pickup identities later.  Each
 input now exposes its explicit =routing=, =routed=, or =unrouted= projection.
+The snapshot supplies only historical selector bytes: finalization resolves
+the same board-owned subscription identity again and suppresses pickup or
+effect creation after mute, cancellation, replacement, completion, or expiry.
+Append captures only the constant-time subscription-index high watermark;
+later bounded classifier work resolves one immutable selector record per work
+unit, so append no longer copies the subscriber set.
 Board effects now drain in one FIFO record-bounded page per scheduler turn and
 schedule one successor for a remaining backlog, rather than applying a whole
 effect queue from one callback.  An unexpected queued callback failure records
@@ -128,9 +134,26 @@ private metadata and consumption receipt.  The runtime advances the board
 ledger only when both values match the still-bound attempt and current
 attachment; a delivery id from another generation is ignored rather than
 consuming the logical pickup.
+The registry now classifies physical-delivery authorization independently as
+=authorized=, recoverably =waiting= for dormant/stale membership, or
+=revoked=.  The runtime rechecks that status before the adapter call and turns
+a revoked ready pickup into an explicit failure without exposing its bytes.
+That check consumes the pickup's frozen requester actor and exact-address bit:
+current board membership and any target-owned =post= grant must still exist at
+both the pre-call and acceptance-reconciliation boundaries.
+If a call returns a proven acceptance after its grant vanished, the receipt is
+retained and the pickup enters =cancelling= for normal consume/discard
+reconciliation instead of being retried or falsely treated as uncommitted.
 When an attached session is busy, its retryable pickup adapter result likewise
 returns the head to =ready=; the next =turn-finished= event reschedules only
 that participant's head instead of losing the delivery token or polling.
+Failed and cancelled turn edges perform the same participant-local wake.
+Unexpected adapter signals are contained per pickup and schedule a later
+proven-uncommitted attempt without aborting independent lanes; the third failed
+attempt records =delivery-retry-exhausted= and releases the FIFO successor.
+Exact invocation targets freeze the endpoint token and full composite
+generation as well as the local attachment generation, and effect application
+requires the captured attachment to remain the exact current endpoint.
 Participant rebind now uses the same controlled reconciliation owner as removal.
 Its first scheduled commit revalidates owner authority, replacement-session
 availability, and the exact old attachment before entering =detaching=.
@@ -273,6 +296,11 @@ Reverse-history windows are record-bounded before selector filtering, so sparse
 matches cannot turn one client page into an unbounded retained-history scan.
 An accepted history receipt is retry-idempotent, matching the live read-through
 lane without appending a second observer-acceptance event.
+Board events and messages append through owner-local tail cells, while a
+message ordinal index gives live and reverse-history observers direct bounded
+page windows without rescanning or reversing retained prefixes.  Registry
+paging uses an ordered AVL successor index and visits only the requested page
+plus its one-record continuation sentinel.
 The registry now authorizes client-owned observer replacement and lifecycle
 transitions, delegating the fresh cursor's explicit =start-seq= backfill and
 legal state edges to the board core.

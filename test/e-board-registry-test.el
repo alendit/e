@@ -743,6 +743,71 @@
       (should-not (e-board-observer-read-page
                    (e-board-registry-board-source-board board) "observer")))))
 
+(ert-deftest e-board-registry-test-principal-revoke-fences-client-before-bounded-close ()
+  "Grant removal denies every client operation before scheduled observer closure."
+  (e-board-registry-test--with-empty-registries
+    (let (scheduled)
+      (let* ((board
+              (e-board-registry-create
+               :id "board" :principal "owner"
+               :client-revocation-scheduler
+               (lambda (drain) (push drain scheduled))))
+             (_grant
+              (e-board-registry-authorize-principal
+               board "owner" "member" 'member))
+             (client
+              (e-board-registry-attach-client
+               board :id "client" :principal "member"))
+             (context
+              (e-board-registry-client-requester-context board "client"))
+             (observer
+              (e-board-registry-install-observer
+               board "client" '(:tags (main)) :id "observer" :start-seq 0)))
+        (e-board-post-input
+         (e-board-registry-board-source-board board)
+         :id "input" :tags '(main))
+        (let* ((page
+                (e-board-registry-prepare-observer-page
+                 board "client" "observer" :limit 1))
+               (receipt (plist-get page :receipt)))
+          (e-board-registry-revoke-principal board "owner" "member")
+          (should-error
+           (e-board-registry-resolve-requester-principal board context)
+           :type 'e-board-registry-authorization-denied)
+          (should-error
+           (e-board-registry-client-requester-context board "client")
+           :type 'e-board-registry-client-missing)
+          (should-error
+           (e-board-registry-install-observer
+            board "client" '(:tags (main)) :id "later")
+           :type 'e-board-registry-authorization-denied)
+          (should-error
+           (e-board-registry-prepare-observer-page
+            board "client" "observer" :limit 1)
+           :type 'e-board-registry-authorization-denied)
+          (should-error
+           (e-board-registry-accept-observer-page
+            board "client" "observer" receipt)
+           :type 'e-board-registry-authorization-denied)
+          (should (= (length scheduled) 1))
+          (funcall (pop scheduled))
+          (should (eq (e-board-registry-client-state client) 'detached))
+          (should (= (e-board-registry-client-generation client) 2))
+          (should (eq (e-board-observer-state observer) 'cancelled)))))))
+
+(ert-deftest e-board-registry-test-list-page-uses-ordered-index-not-registry-scan ()
+  "A page performs bounded successor lookups instead of visiting every board."
+  (e-board-registry-test--with-empty-registries
+    (dotimes (index 64)
+      (e-board-registry-create :id (format "board-%02d" index)))
+    (let ((e-board-registry--boards :must-not-scan)
+          page)
+      (setq page (e-board-registry-list-page :after "board-30" :limit 3))
+      (should (equal (mapcar #'e-board-registry-board-id
+                             (plist-get page :boards))
+                     '("board-31" "board-32" "board-33")))
+      (should (equal (plist-get page :next-after) "board-33")))))
+
 (provide 'e-board-registry-test)
 
 ;;; e-board-registry-test.el ends here
