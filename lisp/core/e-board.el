@@ -292,8 +292,9 @@ explicit ids to individual operations takes precedence over this generator."
 Return the newly ready pickup identity, if any."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (memq (e-board-pickup-state pickup) '(delivering accepted))
-      (signal 'e-board-error (list "Pickup is not delivering or accepted" delivery-id)))
+    (unless (memq (e-board-pickup-state pickup) '(delivering accepted cancelling))
+      (signal 'e-board-error
+              (list "Pickup is not delivering, accepted, or cancelling" delivery-id)))
     (let* ((participant-id (e-board-pickup-participant-id pickup))
            (queue (e-board--pickup-queue board participant-id)))
       (unless (equal (car queue) delivery-id)
@@ -324,14 +325,15 @@ Return the newly ready pickup identity, if any."
   "Record accepted DELIVERY-ID as discarded and promote its FIFO successor."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (eq (e-board-pickup-state pickup) 'accepted)
-      (signal 'e-board-error (list "Pickup is not accepted" delivery-id)))
+    (unless (memq (e-board-pickup-state pickup) '(accepted cancelling))
+      (signal 'e-board-error (list "Pickup is not accepted or cancelling" delivery-id)))
     (let* ((participant-id (e-board-pickup-participant-id pickup))
-           (queue (e-board--pickup-queue board participant-id)))
+           (queue (e-board--pickup-queue board participant-id))
+           (cancelled-p (eq (e-board-pickup-state pickup) 'cancelling)))
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
-      (setf (e-board-pickup-state pickup) 'discarded)
-      (e-board--append-event board 'pickup-discarded
+      (setf (e-board-pickup-state pickup) (if cancelled-p 'cancelled 'discarded))
+      (e-board--append-event board (if cancelled-p 'pickup-cancelled 'pickup-discarded)
                              (list :delivery-id delivery-id :reason reason))
       (setq queue (cdr queue))
       (puthash participant-id queue (e-board-pickup-queues board))
@@ -348,7 +350,7 @@ An uncertain physical attempt is never retried as though it had not reached the
 original endpoint.  REASON records the reconciliation gap for later inspection."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (memq (e-board-pickup-state pickup) '(delivering accepted))
+    (unless (memq (e-board-pickup-state pickup) '(delivering accepted cancelling))
       (signal 'e-board-error
               (list "Pickup uncertainty requires delivering or accepted state" delivery-id)))
     (let* ((participant-id (e-board-pickup-participant-id pickup))
@@ -368,38 +370,66 @@ original endpoint.  REASON records the reconciliation gap for later inspection."
           next-id)))))
 
 (defun e-board-cancel-pickup (board delivery-id &optional reason)
-  "Cancel pending or ready DELIVERY-ID without affecting watched work.
-Return a newly ready successor when cancellation releases the FIFO head."
+  "Cancel DELIVERY-ID without affecting watched work.
+Pending and ready pickups become terminal immediately.  In-flight and accepted
+pickups become `cancelling' until a consumption or discard receipt resolves the
+same immutable delivery id.  Return a newly ready successor only when this
+call releases the FIFO head."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (memq (e-board-pickup-state pickup) '(pending ready))
+    (unless (memq (e-board-pickup-state pickup)
+                  '(pending ready delivering accepted))
       (signal 'e-board-error
-              (list "Pickup cancellation requires pending or ready state" delivery-id)))
-    (let* ((participant-id (e-board-pickup-participant-id pickup))
-           (queue (e-board--pickup-queue board participant-id))
-           (head-p (equal (car queue) delivery-id)))
-      (setf (e-board-pickup-state pickup) 'cancelled)
-      (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
-      (e-board--append-event board 'pickup-cancelled
-                             (list :delivery-id delivery-id :reason reason))
-      (when head-p
-        (when-let ((next-id (car (e-board--pickup-queue board participant-id))))
-          (let ((next (e-board-pickup board next-id)))
-            (setf (e-board-pickup-state next) 'ready)
-            (e-board--append-event board 'pickup-ready
-                                   (list :delivery-id next-id))
-            next-id))))))
+              (list "Pickup cancellation requires a nonterminal state" delivery-id)))
+    (if (memq (e-board-pickup-state pickup) '(delivering accepted))
+        (progn
+          (setf (e-board-pickup-state pickup) 'cancelling)
+          (e-board--append-event board 'pickup-cancelling
+                                 (list :delivery-id delivery-id :reason reason))
+          nil)
+      (let* ((participant-id (e-board-pickup-participant-id pickup))
+             (queue (e-board--pickup-queue board participant-id))
+             (head-p (equal (car queue) delivery-id)))
+        (setf (e-board-pickup-state pickup) 'cancelled)
+        (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
+        (e-board--append-event board 'pickup-cancelled
+                               (list :delivery-id delivery-id :reason reason))
+        (when head-p
+          (when-let ((next-id (car (e-board--pickup-queue board participant-id))))
+            (let ((next (e-board-pickup board next-id)))
+              (setf (e-board-pickup-state next) 'ready)
+              (e-board--append-event board 'pickup-ready
+                                     (list :delivery-id next-id))
+              next-id)))))))
 
 (defun e-board-pickup-return-ready (board delivery-id err)
-  "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR."
+  "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR.
+When a cancellation already fenced the in-flight attempt, a proven
+uncommitted failure settles that cancellation instead of retrying it."
   (let ((pickup (or (e-board-pickup board delivery-id)
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
-    (unless (eq (e-board-pickup-state pickup) 'delivering)
-      (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
-    (setf (e-board-pickup-state pickup) 'ready)
-    (e-board--append-event board 'pickup-delivery-failed
-                           (list :delivery-id delivery-id :error err))
-    pickup))
+    (unless (memq (e-board-pickup-state pickup) '(delivering cancelling))
+      (signal 'e-board-error (list "Pickup is not delivering or cancelling" delivery-id)))
+    (if (eq (e-board-pickup-state pickup) 'cancelling)
+        (let* ((participant-id (e-board-pickup-participant-id pickup))
+               (queue (e-board--pickup-queue board participant-id)))
+          (unless (equal (car queue) delivery-id)
+            (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+          (setf (e-board-pickup-state pickup) 'cancelled)
+          (e-board--append-event board 'pickup-cancelled
+                                 (list :delivery-id delivery-id :reason err))
+          (setq queue (cdr queue))
+          (puthash participant-id queue (e-board-pickup-queues board))
+          (when-let ((next-id (car queue)))
+            (let ((next (e-board-pickup board next-id)))
+              (setf (e-board-pickup-state next) 'ready)
+              (e-board--append-event board 'pickup-ready
+                                     (list :delivery-id next-id))
+              next-id)))
+      (setf (e-board-pickup-state pickup) 'ready)
+      (e-board--append-event board 'pickup-delivery-failed
+                             (list :delivery-id delivery-id :error err))
+      pickup)))
 
 (defun e-board-observed-work (board work-id)
   "Return BOARD's observed work record for WORK-ID, or nil."

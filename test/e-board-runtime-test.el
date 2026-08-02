@@ -210,6 +210,31 @@
                        (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
                       'discarded)))))))
 
+(ert-deftest e-board-runtime-test-session-reset-settles-cancelling-queue-pickup ()
+  "A reset acknowledgement closes an already fenced accepted delivery cancelled."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let ((publication (e-board-runtime-post-input
+                          board :to "participant" :mode 'queue :content "queued")))
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (let* ((source-board (e-board-registry-board-source-board board))
+               (pickup-id (car (e-board-message-pickup-ids
+                                (e-board-publication-message publication)))))
+          (e-board-runtime--drain-pickups)
+          (e-board-cancel-pickup source-board pickup-id 'owner-cancelled)
+          (should (eq (e-board-pickup-state (e-board-pickup source-board pickup-id))
+                      'cancelling))
+          (e-harness-reset harness "session")
+          (should (eq (e-board-pickup-state (e-board-pickup source-board pickup-id))
+                      'cancelled)))))))
+
 (ert-deftest e-board-runtime-test-attached-session-enrolls-prepared-work-before-start ()
   "An attached harness maps turn/tool work to its participant board."
   (e-board-runtime-test--with-empty-state

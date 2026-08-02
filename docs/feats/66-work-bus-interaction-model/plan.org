@@ -43,8 +43,9 @@ records an =uncertain= tombstone, never retries against a replacement endpoint,
 and releases only that participant's FIFO successor.  Discard/rebind
 reconciliation remains to be generalized in the delivery ledger slice.
 Pending or ready pickup cancellation now records a =cancelled= tombstone and
-releases only the affected FIFO position; accepted/delivering cancellation
-races remain part of the later receipt reconciliation work.
+releases only the affected FIFO position.  Accepted/delivering cancellation
+first fences the attempt as =cancelling=: a consumption receipt wins, while a
+proven unconsumed discard records =cancelled= and releases its successor.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.

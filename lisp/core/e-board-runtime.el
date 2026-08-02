@@ -399,7 +399,7 @@ has no callback and is observed only."
              (registry-board (e-board-runtime-attachment-board attachment))
              (board (e-board-registry-board-source-board registry-board))
              (pickup (e-board-pickup board delivery-id)))
-        (when (and pickup (eq (e-board-pickup-state pickup) 'accepted))
+        (when (and pickup (memq (e-board-pickup-state pickup) '(accepted cancelling)))
           (when-let ((next-id (e-board-pickup-complete-delivery board delivery-id)))
             (e-board-runtime--enqueue-pickups registry-board (list next-id))))))
      ((eq type 'session-reset)
@@ -409,7 +409,7 @@ has no callback and is observed only."
                               (e-board-runtime-attachment-participant attachment)))
              (delivery-id (car (e-board--pickup-queue board participant-id)))
              (pickup (and delivery-id (e-board-pickup board delivery-id))))
-        (when (and pickup (eq (e-board-pickup-state pickup) 'accepted))
+        (when (and pickup (memq (e-board-pickup-state pickup) '(accepted cancelling)))
           (when-let ((next-id
                       (e-board-pickup-discard-delivery board delivery-id 'session-reset)))
             (e-board-runtime--enqueue-pickups registry-board (list next-id)))))))))
