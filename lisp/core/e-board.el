@@ -178,6 +178,7 @@
   continuation-timer-scheduler subscription-timer-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
   open-activities closed-activities retention-floor classification-authorizer
+  message-notification-function
   unsettled-pickup-count unsettled-effect-count unsettled-routing-count
   unsettled-generation unsettled-change-function)
 
@@ -267,7 +268,8 @@ The board object remains valid for inspection by its holder."
 
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
-          classification-authorizer unsettled-change-function
+          classification-authorizer message-notification-function
+          unsettled-change-function
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
           subscription-timer-scheduler
@@ -288,6 +290,10 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   (unless (or (null unsettled-change-function)
               (functionp unsettled-change-function))
     (signal 'wrong-type-argument (list 'functionp unsettled-change-function)))
+  (unless (or (null message-notification-function)
+              (functionp message-notification-function))
+    (signal 'wrong-type-argument
+            (list 'functionp message-notification-function)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -330,6 +336,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :effect-scheduler effect-scheduler
                   :invocation-effect-dispatcher invocation-effect-dispatcher
                   :classification-authorizer classification-authorizer
+                  :message-notification-function message-notification-function
                   :unsettled-pickup-count 0
                   :unsettled-effect-count 0
                   :unsettled-routing-count 0
@@ -2222,6 +2229,16 @@ Return nil when the key is new and may be appended."
       (puthash index message (e-board-message-index-table board))
       (puthash (e-board-message-seq message) index
                (e-board-event-message-count board)))
+    ;; Notification runs only after the immutable append.  Adapters must do no
+    ;; more than enqueue one bounded wake token; they must not re-enter board
+    ;; mutation here.
+    (when-let ((notify (e-board-message-notification-function board)))
+      (condition-case err
+          (funcall notify board message)
+        (error
+         (e-board--append-event
+          board 'message-notification-failed
+          (list :message-id (e-board-message-id message) :error err)))))
     message))
 
 (defun e-board--authorize-classification (board subscription message phase)
@@ -2273,6 +2290,10 @@ fact publications."
           (copy-tree (e-board-message-caused-by-delivery-ids message))
           :source-input-key
           (copy-tree (e-board-message-source-input-key message))
+          :routing-tags
+          (copy-tree (e-board-message-tags message))
+          :input-attributes
+          (copy-tree attributes)
           :subscription-lineage
           (copy-tree (plist-get attributes :board-subscription-lineage))
           :source-message-ids

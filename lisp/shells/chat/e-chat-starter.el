@@ -23,6 +23,7 @@
 (require 'e-harness-registry)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-ui-work)
 
 (defgroup e-chat-starter nil
   "Global one-shot chat starter."
@@ -319,11 +320,12 @@ so a child-frame adapter can be added without changing controller logic."
 (defun e-chat-starter--cleanup ()
   "Clean up the current starter popup subscription and repaint timer."
   (when-let ((state e-chat-starter--state))
+    (e-ui-work-cancel-matching
+     (current-buffer) 'chat-starter-render :key :any)
     (e-chat-starter--stop-progress-timer state)
     (when (and (e-chat-starter-state-harness state)
                (e-chat-starter-state-subscription state))
-      (e-harness-unsubscribe
-       (e-chat-starter-state-harness state)
+      (e-chat-service-unsubscribe
        (e-chat-starter-state-subscription state))
       (setf (e-chat-starter-state-subscription state) nil))))
 
@@ -358,6 +360,24 @@ so a child-frame adapter can be added without changing controller logic."
         (when (derived-mode-p 'e-chat-starter-mode)
           (e-chat-starter--render))))))
 
+(defun e-chat-starter--schedule-render-state-buffer (state)
+  "Schedule a coalesced repaint of STATE's live popup buffer."
+  (when-let ((buffer (e-chat-starter-state-buffer state)))
+    (when (buffer-live-p buffer)
+      (e-ui-work-schedule
+       (e-ui-work-spec-create
+        :id "chat_starter_render"
+        :description "Render board-observed starter chat state."
+        :owner 'chat-starter-render
+        :target-buffer buffer
+        :key (e-chat-starter-state-session-id state)
+        :generation (float-time)
+        :focus-policy 'tail-if-selected
+        :reentrancy-policy 'defer
+        :coalesce t
+        :apply (lambda (_job _handle)
+                 (e-chat-starter--render-state-buffer state)))))))
+
 (defun e-chat-starter--stop-progress-timer (state)
   "Cancel STATE's live progress repaint timer when one is running."
   (when-let ((timer (e-chat-starter-state-progress-timer state)))
@@ -380,7 +400,7 @@ the turn settles or the popup buffer dies."
              (let ((buffer (e-chat-starter-state-buffer state)))
                (if (and (eq (e-chat-starter-state-status state) 'running)
                         (buffer-live-p buffer))
-                   (e-chat-starter--render-state-buffer state)
+                   (e-chat-starter--schedule-render-state-buffer state)
                  (e-chat-starter--stop-progress-timer state))))))))
 
 (defun e-chat-starter--event-error-message (event)
@@ -388,7 +408,7 @@ the turn settles or the popup buffer dies."
   (or (plist-get (plist-get event :payload) :error)
       (format "%s" (plist-get event :type))))
 
-(defun e-chat-starter--handle-event (state event)
+(cl-defun e-chat-starter--handle-event (state event &key defer-render)
   "Update STATE from harness EVENT."
   (when (equal (plist-get event :session-id)
                (e-chat-starter-state-session-id state))
@@ -439,7 +459,9 @@ the turn settles or the popup buffer dies."
     (if (eq (e-chat-starter-state-status state) 'running)
         (e-chat-starter--ensure-progress-timer state)
       (e-chat-starter--stop-progress-timer state))
-    (e-chat-starter--render-state-buffer state))
+    (if defer-render
+        (e-chat-starter--schedule-render-state-buffer state)
+      (e-chat-starter--render-state-buffer state)))
   state)
 
 (defun e-chat-starter--subscribe (state)
@@ -447,11 +469,10 @@ the turn settles or the popup buffer dies."
   (let* ((harness (e-chat-starter-state-harness state))
          (session-id (e-chat-starter-state-session-id state))
          (subscription
-          (e-harness-subscribe
-           harness
+          (e-chat-service-subscribe
+           harness session-id
            (lambda (event)
-             (e-chat-starter--handle-event state event))
-           :session-id session-id)))
+             (e-chat-starter--handle-event state event :defer-render t)))))
     (setf (e-chat-starter-state-subscription state) subscription)
     subscription))
 

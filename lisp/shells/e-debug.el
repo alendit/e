@@ -153,13 +153,13 @@ A fractional value is interpreted relative to the selected frame height."
 (defun e-debug--ensure-session-project-root (harness session-id)
   "Keep the standing debug session rooted in the last focused project."
   (when-let ((project-root (e-debug--last-focused-project-root))
-             (session (e-session-get (e-harness-sessions harness) session-id)))
+             (session (e-chat-service-session harness session-id)))
     (let* ((metadata (copy-sequence (plist-get session :metadata)))
            (current-root (plist-get metadata :project-root)))
       (when (or (not current-root)
                 (e-debug--narrower-project-root-p project-root current-root))
         (e-session-set-session-config
-         (e-harness-sessions harness)
+         (e-chat-service-session-store harness)
          session-id
          (list :project-root project-root))))))
 
@@ -192,7 +192,7 @@ A fractional value is interpreted relative to the selected frame height."
 (defun e-debug--session-exists-p (harness session-id)
   "Return non-nil when SESSION-ID exists in HARNESS as the debug session."
   (when session-id
-    (when-let ((session (e-session-get (e-harness-sessions harness) session-id)))
+    (when-let ((session (e-chat-service-session harness session-id)))
       (e-debug--debug-session-p session))))
 
 (defun e-debug--find-session-id (harness)
@@ -306,8 +306,8 @@ A fractional value is interpreted relative to the selected frame height."
          (t
           (setq e-debug--session-id
                 (plist-get
-                 (e-harness-create-session
-                  harness
+                 (e-chat-service-create-session
+                  :harness harness
                   :metadata (e-debug--session-metadata))
                  :id))))
       (when e-debug--session-id
@@ -549,15 +549,12 @@ reload so package-specific workspace behavior can live in user config."
                e-debug--notification-subscription)
     (when (and e-debug--notification-harness
                e-debug--notification-subscription)
-      (e-harness-unsubscribe e-debug--notification-harness
-                             e-debug--notification-subscription))
+      (e-chat-service-unsubscribe e-debug--notification-subscription))
     (setq e-debug--notification-harness harness)
     (setq e-debug--notification-session-id session-id)
     (setq e-debug--notification-subscription
-          (e-harness-subscribe
-           harness
-           #'e-debug--handle-notification-event
-           :session-id session-id))))
+          (e-chat-service-subscribe
+           harness session-id #'e-debug--handle-notification-event))))
 
 ;;;###autoload
 (defun e-debug ()

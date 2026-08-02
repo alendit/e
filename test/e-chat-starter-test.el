@@ -33,7 +33,9 @@
 (defun e-chat-starter-test--answered-state (buffer-name)
   "Return an answered starter state wired to BUFFER-NAME."
   (let* ((harness (e-chat-starter-test--harness))
-         (subscription (e-harness-subscribe harness (lambda (_event))))
+         (binding (e-chat-service--binding-create :subscribers nil))
+         (subscription (e-chat-service--subscription-create
+                        :binding binding :function #'ignore :active-p t))
          (buffer (get-buffer-create buffer-name))
          (state (make-e-chat-starter-state
                  :harness harness
@@ -44,6 +46,7 @@
                  :status 'answered
                  :latest-answer "Because."
                  :subscription subscription)))
+    (setf (e-chat-service-binding-subscribers binding) (list subscription))
     (with-current-buffer buffer
       (e-chat-starter-mode)
       (setq-local e-chat-starter--state state))
@@ -455,9 +458,22 @@ its final value only when the turn settled."
                    :metadata)
                   :origin)
                  :global-session-starter))
+        (let ((binding (e-chat-service-binding harness session-id)))
+          (e-board-runtime--drain-input-routing
+           (e-chat-service-binding-board binding)
+           (lambda ()
+             (e-board-drain-input-classifications
+              (e-board-registry-board-source-board
+               (e-chat-service-binding-board binding)))))
+          (e-board-runtime--drain-pickups))
         (should (equal
                  (plist-get (e-harness-wait-batch harness session-id 1.0) :status)
                  'done))
+        (e-chat-service--drain-observer
+         (e-chat-service-binding harness session-id))
+        (e-ui-work-with-batch-drain
+          (e-ui-work-drain-batch
+           :buffer (e-chat-starter-state-buffer state)))
         (should (equal (e-chat-starter-state-latest-answer state)
                        "starter answer"))
         (should (equal (e-chat-starter-state-status state) 'answered))
@@ -564,7 +580,7 @@ its final value only when the turn settled."
             (call-interactively #'e-chat-starter-dismiss))
           (should-not (buffer-live-p popup))
           (should-not (window-live-p popup-window))
-          (should-not (memq subscription (e-harness-subscribers harness))))
+          (should-not (e-chat-service-subscription-active-p subscription)))
       (when (window-live-p popup-window)
         (delete-window popup-window))
       (when (buffer-live-p popup)
@@ -590,7 +606,7 @@ its final value only when the turn settled."
           (should (eq (car opened) harness))
           (should (equal (cadr opened) "starter-action"))
           (should-not (buffer-live-p popup))
-          (should-not (memq subscription (e-harness-subscribers harness))))
+          (should-not (e-chat-service-subscription-active-p subscription)))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 
@@ -636,7 +652,7 @@ its final value only when the turn settled."
                   (call-interactively #'e-chat-starter-open-answer)))
           (should-not (buffer-live-p popup))
           (should (buffer-live-p answer-buffer))
-          (should-not (memq subscription (e-harness-subscribers harness)))
+          (should-not (e-chat-service-subscription-active-p subscription))
           (with-current-buffer answer-buffer
             (should (string-match-p "Because." (buffer-string)))
             (should (equal e-chat-starter-answer-session-id
@@ -685,7 +701,7 @@ its final value only when the turn settled."
                          "Because."))
           (should (equal (current-kill 0 t) "Because."))
           (should-not (buffer-live-p popup))
-          (should-not (memq subscription (e-harness-subscribers harness))))
+          (should-not (e-chat-service-subscription-active-p subscription)))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 

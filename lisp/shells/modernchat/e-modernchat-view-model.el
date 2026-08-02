@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'e-chat-service)
 (require 'e-harness)
+(require 'e-chat-service)
 (require 'e-session)
 (require 'e-structured-blocks)
 (require 'subr-x)
@@ -185,26 +186,25 @@ hidden blocks (e.g. a reasoning mark) from the displayed content."
 (cl-defun e-modernchat-view-model-snapshot
     (harness session-id &key composer-text message-limit activity-limit)
   "Return JSON-friendly snapshot for HARNESS SESSION-ID."
-  (let* ((store (e-harness-sessions harness))
-         (session (e-session-get store session-id))
+  (let* ((session (e-chat-service-session harness session-id))
          (metadata (plist-get session :metadata))
-         (state (ignore-errors (e-harness-state harness session-id)))
+         (state (ignore-errors (e-chat-service-state harness session-id)))
          (active-turn-id (or (plist-get (plist-get state :active-turn) :id)
                              (plist-get state :active-turn)))
          (output-mode (e-chat-service-output-mode harness session-id))
          (registry (ignore-errors
-                     (e-harness-structured-blocks harness session-id)))
+                     (e-chat-service-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last
                     (cl-remove-if #'e-harness-message-hidden-p
-                                  (e-harness-messages harness session-id))
+                                  (e-chat-service-messages harness session-id))
                     (or message-limit e-modernchat-view-model-message-limit)))
          (activities (e-modernchat-view-model--take-last
-                      (e-harness-session-activity-events harness session-id)
+                      (e-chat-service-activity-events harness session-id)
                       (or activity-limit e-modernchat-view-model-activity-limit)))
          (attachments (e-modernchat-view-model--attachments metadata)))
     `((session . ((id . ,(e-modernchat-view-model--string session-id))
-                  (name . ,(or (e-harness-session-name harness session-id)
-                               (e-harness-session-title harness session-id)))
+                  (name . ,(or (e-chat-service-session-name harness session-id)
+                               (e-chat-service-session-title harness session-id)))
                   (projectRoot . ,(e-modernchat-view-model--string
                                    (plist-get metadata :project-root)))
                   (activeTurnId . ,(e-modernchat-view-model--string

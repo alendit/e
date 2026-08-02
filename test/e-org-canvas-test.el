@@ -66,6 +66,15 @@
   (e-ui-work-with-batch-drain
     (e-ui-work-drain-batch :buffer buffer)))
 
+(defun e-org-canvas-test--emit-board-event (harness event)
+  "Deliver translated board EVENT to HARNESS session presentation subscribers."
+  (let* ((session-id (plist-get event :session-id))
+         (binding (e-chat-service-ensure-binding harness session-id)))
+    (dolist (subscription
+             (copy-sequence (e-chat-service-binding-subscribers binding)))
+      (when (e-chat-service-subscription-active-p subscription)
+        (funcall (e-chat-service-subscription-function subscription) event)))))
+
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."
   (let ((file (expand-file-name name directory)))
@@ -337,6 +346,7 @@
          input)
     (unwind-protect
         (progn
+          (e-harness-create-session harness :id "session-1")
           (with-current-buffer target
             (org-mode)
             (e-buffer-set-workspace target token))
@@ -761,11 +771,12 @@
       (e-session-append-activity-event
        store "org-canvas-usage" "turn-1" 'token-usage
        '(:input-tokens 202598 :total-tokens 203017))
-      (e-harness--emit
+      (e-org-canvas-test--emit-board-event
        harness
        (e-events-make :type 'token-usage
                       :session-id "org-canvas-usage"
                       :turn-id "turn-1"))
+      (e-org-canvas-test--drain-ui-work (current-buffer))
       (should (equal mode-name "Org Canvas gpt-5.5/high 78% (203k/258k tok)"))
       (e-org-canvas-mode -1))))
 
@@ -984,7 +995,7 @@
                         segment-ids))))))
 
 (ert-deftest e-org-canvas-test-submit-records-scope-focus-and_canvas_metadata ()
-  "Prompt submission records Org Canvas turn metadata through chat-session."
+  "Prompt submission records Org Canvas metadata through the board service."
   (let ((harness (e-org-canvas-test--harness)))
     (with-temp-buffer
       (rename-buffer "org-canvas-submit" t)
@@ -994,7 +1005,7 @@
       (e-org-canvas--mark-session
        harness "session-1" (current-buffer) :scope 'thread :target-folder nil)
       (let (call)
-        (cl-letf (((symbol-function 'e-chat-session-submit)
+        (cl-letf (((symbol-function 'e-chat-service-submit-session)
                    (lambda (&rest args)
                      (setq call args)
                      "turn-1")))
@@ -1209,7 +1220,7 @@
                    (lambda (buffer &rest _args)
                      (set-window-buffer window buffer)
                      buffer))
-                  ((symbol-function 'e-chat-session-submit)
+                  ((symbol-function 'e-chat-service-submit-session)
                    (lambda (&rest _args) "turn-1")))
           (unwind-protect
               (progn
@@ -1218,7 +1229,7 @@
                   (goto-char (point-max))
                   (insert "expand this")
                   (e-org-canvas-input-submit))
-                (e-harness--emit
+          (e-org-canvas-test--emit-board-event
                  harness
                  (e-events-make
                   :type 'turn-finished
@@ -1285,7 +1296,7 @@
                  :session-id "session-1"
                  :scope 'thread
                  :target-buffer (current-buffer)))
-          (cl-letf (((symbol-function 'e-chat-session-submit)
+          (cl-letf (((symbol-function 'e-chat-service-submit-session)
                      (lambda (&rest args)
                        (setq call args)
                        "turn-1"))
@@ -1324,16 +1335,16 @@
                  :session-id "session-1"
                  :scope 'document
                  :target-buffer (current-buffer)))
-          (cl-letf (((symbol-function 'e-chat-session-submit)
+          (cl-letf (((symbol-function 'e-chat-service-submit-session)
                      (lambda (&rest _args)
-                       (e-harness--emit
+          (e-org-canvas-test--emit-board-event
                         harness
                         (e-events-make
                          :type 'turn-started
                          :session-id "session-1"
                          :turn-id "turn-1"
                          :created-at (float-time)))
-                       (e-harness--emit
+          (e-org-canvas-test--emit-board-event
                         harness
                         (e-events-make
                          :type 'provider-request-started
@@ -1391,7 +1402,7 @@
           (with-current-buffer input
             (setq-local e-org-canvas-input--active-turn-id "turn-1")
             (e-org-canvas--input-enter-result-state))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'turn-started
@@ -1399,7 +1410,7 @@
             :turn-id "turn-1"
             :created-at 0))
           (dotimes (index 8)
-            (e-harness--emit
+          (e-org-canvas-test--emit-board-event
              harness
              (e-events-make
               :type 'reasoning-delta
@@ -1469,24 +1480,24 @@
 (ert-deftest e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message ()
   "Submitted input panes show a done line when a turn has no assistant output."
   (let* ((harness (e-org-canvas-test--harness))
-         (buffer (e-org-canvas--input-buffer
-                  :harness harness
-                  :session-id "session-1"
-                  :scope 'thread
-                  :target-buffer (current-buffer))))
+         buffer)
+    (e-harness-create-session harness :id "session-1")
+    (setq buffer (e-org-canvas--input-buffer
+                  :harness harness :session-id "session-1"
+                  :scope 'thread :target-buffer (current-buffer)))
     (unwind-protect
         (let (subscription)
           (with-current-buffer buffer
             (setq subscription e-org-canvas-input--subscription)
             (setq-local e-org-canvas-input--active-turn-id "turn-1"))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'turn-started
             :session-id "session-1"
             :turn-id "turn-1"
             :created-at 0))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'turn-finished
@@ -1499,7 +1510,8 @@
             (should-not (e-chat--composer-active-p))
             (should (string-match-p "✓ Done" (buffer-string)))
             (should (timerp e-org-canvas-input--close-timer)))
-          (should-not (memq subscription (e-harness-subscribers harness))))
+          (should-not
+           (e-chat-service-subscription-active-p subscription)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1507,24 +1519,24 @@
   "Assistant output remains briefly in the input pane before auto-close."
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-result-target"))
-         (buffer (e-org-canvas--input-buffer
-                  :harness harness
-                  :session-id "session-1"
-                  :scope 'thread
-                  :target-buffer target)))
+         buffer)
+    (e-harness-create-session harness :id "session-1")
+    (setq buffer (e-org-canvas--input-buffer
+                  :harness harness :session-id "session-1"
+                  :scope 'thread :target-buffer target))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (setq-local e-org-canvas-input--active-turn-id "turn-1")
             (e-chat--delete-composer))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'turn-started
             :session-id "session-1"
             :turn-id "turn-1"
             :created-at 0))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'message-added
@@ -1533,7 +1545,7 @@
             :created-at 1
             :payload '(:message (:role assistant
                                   :content "Here is the result."))))
-          (e-harness--emit
+          (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
             :type 'turn-finished
@@ -1563,11 +1575,11 @@ Regression: progress redraws bypass harness event dispatch, so the pane
 relied on `e-chat--running-status-rendered-hook' to follow the bottom."
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-follow-target"))
-         (buffer (e-org-canvas--input-buffer
-                  :harness harness
-                  :session-id "session-1"
-                  :scope 'thread
-                  :target-buffer target)))
+         buffer)
+    (e-harness-create-session harness :id "session-1")
+    (setq buffer (e-org-canvas--input-buffer
+                  :harness harness :session-id "session-1"
+                  :scope 'thread :target-buffer target))
     (unwind-protect
         (progn
           ;; Hook is wired buffer-locally for the input pane.
@@ -1671,10 +1683,14 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
             (with-current-buffer input
               (goto-char (point-max))
               (insert "run held tool")
-              (e-org-canvas-input-submit)))
-          (should tool-callbacks)
-          (with-current-buffer input
-            (e-org-canvas-input-cancel))
+              (e-org-canvas-input-submit))
+            (let ((deadline (+ (float-time) 0.5)))
+              (while (and (not tool-callbacks)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should tool-callbacks)
+            (with-current-buffer input
+              (e-org-canvas-input-cancel)))
           (funcall (plist-get tool-callbacks :on-done) "late result")
           (should (equal (plist-get
                           (e-harness-wait-batch harness "session-1" 0.1)

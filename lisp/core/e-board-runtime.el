@@ -214,7 +214,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
-  turn-activity instance-id instance-catalog-generation harness-id harness-object-generation
+  turn-activity turn-tags instance-id instance-catalog-generation harness-id harness-object-generation
   session-store-id endpoint-token state reconciliation)
 
 (cl-defstruct (e-board-runtime-reconciliation
@@ -315,6 +315,10 @@ the board transcript.  Terminal events use their dedicated publisher below.")
          (and (eq registered
                   (e-board-runtime-producer-binding-board binding))
               (eq (e-board-registry-board-state registered) 'active)))))
+
+(defun e-board-runtime-producer-binding-live-p (binding)
+  "Return non-nil when BINDING is current live runtime producer authority."
+  (e-board-runtime--producer-binding-current-p binding))
 
 (cl-defun e-board-runtime-producer-bind
     (producer-id board &key tags attributes)
@@ -950,6 +954,8 @@ has no callback and is observed only."
          :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id
          :source-turn-id turn-id
+         :tags (copy-tree
+                (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
          :content (plist-get message :content)
          :source-output-key
          (list participant-id
@@ -1004,6 +1010,8 @@ these terminal states have no output to close the board-owned open projection."
       (e-board-post-activity
        board :author (format "participant:%s" participant-id)
        :subject-participant-id participant-id :source-turn-id turn-id
+       :tags (copy-tree
+              (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
        :activity-kind activity-kind
        :attributes (when-let ((source-event-id
                                (plist-get event :activity-entry-id)))
@@ -1025,6 +1033,8 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-post-activity
          board :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id :source-turn-id turn-id
+         :tags (copy-tree
+                (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
          :activity-kind activity-kind
          :attributes (when-let ((source-event-id
                                  (plist-get event :activity-entry-id)))
@@ -1068,6 +1078,8 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-post-activity
          board :author (format "participant:%s" participant-id)
          :subject-participant-id participant-id :source-turn-id turn-id
+         :tags (copy-tree
+                (gethash turn-id (e-board-runtime-attachment-turn-tags attachment)))
          :activity-kind 'turn-summary
          :attributes
          (append (list :status status
@@ -1092,10 +1104,14 @@ these terminal states have no output to close the board-owned open projection."
        ((eq type 'turn-finished)
         (e-board-runtime--publish-output attachment (plist-get event :turn-id))
         (e-board-runtime--publish-turn-summary attachment event 'finished)
+        (remhash (plist-get event :turn-id)
+                 (e-board-runtime-attachment-turn-tags attachment))
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((memq type '(turn-failed turn-cancelled))
         (e-board-runtime--publish-terminal-activity attachment event)
         (e-board-runtime--publish-turn-summary attachment event type)
+        (remhash (plist-get event :turn-id)
+                 (e-board-runtime-attachment-turn-tags attachment))
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((eq type 'input-consumed)
         (let* ((payload (plist-get event :payload))
@@ -1103,6 +1119,12 @@ these terminal states have no output to close the board-owned open projection."
                (registry-board (e-board-runtime-attachment-board attachment))
                (board (e-board-registry-board-source-board registry-board))
                (pickup (e-board-pickup board delivery-id)))
+          (when (and pickup (plist-get event :turn-id))
+            (puthash (plist-get event :turn-id)
+                     (copy-tree
+                      (plist-get (e-board-pickup-cause-metadata pickup)
+                                 :routing-tags))
+                     (e-board-runtime-attachment-turn-tags attachment)))
           (when (and pickup
                      (memq (e-board-pickup-state pickup) '(accepted cancelling))
                      (e-board-runtime--consumption-receipt-matches-p
@@ -1166,7 +1188,8 @@ these terminal states have no output to close the board-owned open projection."
                      (signal 'e-board-runtime-error
                              (list "Pickup has no bound attempt"
                                    (e-board-pickup-delivery-id pickup))))))
-    (list :input-origin 'board
+    (append
+     (list :input-origin 'board
           :board-delivery-id (copy-tree (e-board-pickup-delivery-id pickup))
           :board-id (e-board-pickup-board-id pickup)
           :board-participant-id (e-board-pickup-participant-id pickup)
@@ -1186,7 +1209,10 @@ these terminal states have no output to close the board-owned open projection."
            (e-board-delivery-attempt-endpoint-token attempt))
           :board-endpoint-generation
           (copy-tree
-           (e-board-delivery-attempt-composite-generation attempt)))))
+           (e-board-delivery-attempt-composite-generation attempt)))
+     (copy-tree
+      (plist-get (e-board-pickup-cause-metadata pickup)
+                 :input-attributes)))))
 
 (defun e-board-runtime--attempt-belongs-to-attachment-p (pickup attachment)
   "Return non-nil when PICKUP's bound attempt names ATTACHMENT exactly."
@@ -1207,25 +1233,45 @@ these terminal states have no output to close the board-owned open projection."
                 (e-board-delivery-attempt-composite-generation attempt)))))
 
 (defun e-board-runtime--deliver-to-harness (attachment pickup _message)
-  "Deliver PICKUP's MESSAGE through ATTACHMENT's idle harness session.
-Queue-mode messages enter the harness follow-up queue.  Inject-mode messages
-start an asynchronous prompt only while no active turn owns the session; a
-busy session leaves its pickup pending for an explicit later retry."
+  "Deliver PICKUP's MESSAGE through ATTACHMENT's harness session.
+An idle input starts one turn.  During an active turn, inject-mode enters the
+steering lane while queue-mode enters the later-turn inbox."
   (let* ((harness (e-board-runtime-attachment-harness attachment))
          (session-id (e-board-runtime-attachment-session-id attachment))
          (prompt (e-board-pickup-content pickup))
          (metadata (e-board-runtime--delivery-metadata pickup)))
     (unless (and (stringp prompt) (not (string-empty-p prompt)))
       (user-error "Board input content must be a non-empty string"))
-    (when (plist-get (e-harness-state harness session-id) :active-turn)
-      (signal 'e-board-runtime-session-busy (list session-id)))
-    (pcase (e-board-pickup-mode pickup)
-      ('queue
-       (list :accepted
-             (e-harness-request-follow-up harness session-id prompt :metadata metadata)))
-      ('inject
-       (e-harness-prompt-async harness session-id prompt :metadata metadata)
-       :consumed))))
+    (let ((active-turn (plist-get (e-harness-state harness session-id)
+                                  :active-turn)))
+      (pcase (e-board-pickup-mode pickup)
+        ('queue
+         (if active-turn
+             (list :accepted
+                   (e-harness-request-follow-up
+                    harness session-id prompt :metadata metadata))
+           (let ((turn-id
+                  (e-harness-prompt-async
+                   harness session-id prompt :metadata metadata)))
+             (puthash turn-id
+                      (copy-tree
+                       (plist-get (e-board-pickup-cause-metadata pickup)
+                                  :routing-tags))
+                      (e-board-runtime-attachment-turn-tags attachment))
+             :consumed)))
+        ('inject
+         (let ((turn-id
+                (if active-turn
+                    (e-harness-steer-active-turn
+                     harness session-id prompt :metadata metadata)
+                  (e-harness-prompt-async
+                   harness session-id prompt :metadata metadata))))
+           (puthash turn-id
+                    (copy-tree
+                     (plist-get (e-board-pickup-cause-metadata pickup)
+                                :routing-tags))
+                    (e-board-runtime-attachment-turn-tags attachment))
+           :consumed))))))
 
 (cl-defun e-board-runtime-attach
     (board-or-id harness session-id
@@ -1527,6 +1573,7 @@ read proves the expected authorization and controller are still current."
    :board board :participant participant :harness harness :session-id session-id
    :activity-sequence 0 :generation generation :state 'active
    :turn-activity (make-hash-table :test 'equal)
+   :turn-tags (make-hash-table :test 'equal)
    :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
    :instance-id (plist-get metadata :instance-id)
    :instance-catalog-generation
@@ -2333,6 +2380,22 @@ require authority for their target participant."
     (e-board-runtime--enqueue-pickups
      board (e-board-publication-pickup-ids publication))
     publication))
+
+(defun e-board-runtime-attachment-active-turn-p (attachment)
+  "Return non-nil when current ATTACHMENT owns a live harness turn."
+  (and (e-board-runtime--current-attachment-p attachment)
+       (plist-get
+        (e-harness-state (e-board-runtime-attachment-harness attachment)
+                         (e-board-runtime-attachment-session-id attachment))
+        :active-turn)))
+
+(defun e-board-runtime-abort-attachment (attachment)
+  "Abort the current board-bound ATTACHMENT turn through runtime admission."
+  (e-board-runtime--require-admission)
+  (unless (e-board-runtime--current-attachment-p attachment)
+    (signal 'e-board-runtime-error (list "Stale attachment" attachment)))
+  (e-harness-abort (e-board-runtime-attachment-harness attachment)
+                   (e-board-runtime-attachment-session-id attachment)))
 
 (provide 'e-board-runtime)
 

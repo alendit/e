@@ -1688,7 +1688,7 @@ ordinary transcript rendering must leave the composer buffer untouched."
   "Return non-nil when HARNESS has active capability CAPABILITY-ID."
   (memq capability-id
         (mapcar #'e-capability-id
-                (e-harness-active-capabilities harness))))
+                (e-chat-service-active-capabilities harness))))
 
 (defun e-chat--chat-instances ()
   "Return configured chat harness instances."
@@ -1769,7 +1769,7 @@ PROMPT forces completion even when only one/default instance exists."
 (defun e-chat--unloaded-index-session (harness session-id)
   "Return unloaded persistent SESSION-ID metadata from HARNESS, or nil."
   (when (and (e-harness-p harness) session-id)
-    (let* ((store (e-harness-sessions harness))
+    (let* ((store (e-chat-service-session-store harness))
            (session (ignore-errors
                       (e-session--peek-session store session-id))))
       (when (and session
@@ -1890,7 +1890,7 @@ PROMPT forces completion even when only one/default instance exists."
              (= generation e-chat--loaded-session-backfill-generation)
              e-chat-harness
              e-chat-session-id)
-    (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
+    (let* ((messages (e-chat-service-messages e-chat-harness e-chat-session-id))
            (total-count (length messages))
            (next-count (min next-count total-count))
            (composer-state (e-chat--capture-composer-state)))
@@ -1918,7 +1918,7 @@ message's block surgically."
   "Render the initial view for the attached loaded session."
   (e-chat--cancel-loaded-session-backfill)
   (let ((inhibit-read-only t))
-    (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
+    (let* ((messages (e-chat-service-messages e-chat-harness e-chat-session-id))
            (total-count (length messages))
            (rendered-count (e-chat--loaded-session-initial-count messages)))
       (e-chat--render-loaded-session-messages messages rendered-count)
@@ -1936,7 +1936,7 @@ message's block surgically."
 (defun e-chat--start-session-load
     (buffer harness session-id instance-id generation)
   "Start async transcript load for BUFFER/HARNESS SESSION-ID."
-  (let* ((store (e-harness-sessions harness))
+  (let* ((store (e-chat-service-session-store harness))
          request
          (on-done
           (lambda (_session)
@@ -2008,9 +2008,8 @@ name."
 
 (defun e-chat--create-session (harness &optional session-id instance-id)
   "Create a chat session in HARNESS with SESSION-ID when non-nil."
-  (e-harness-create-session
-   harness
-   :id session-id
+  (e-chat-service-create-session
+   :harness harness :id session-id
    :metadata (e-chat--session-metadata instance-id)))
 
 (defun e-chat--short-session-id (session-id)
@@ -2077,25 +2076,42 @@ context insertions from the chat buffer the user is looking at."
      t)))
 
 (defun e-chat--subscribe (harness buffer session-id)
-  "Subscribe BUFFER to HARNESS chat events for SESSION-ID."
+  "Subscribe BUFFER to board-observed chat events for SESSION-ID."
   (setq e-chat--event-subscription
-        (e-harness-subscribe
-         harness
+        (e-chat-service-subscribe
+         harness session-id
          (lambda (event)
            (when (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (when (eq e-chat-harness harness)
-                 (unless (and (eq (plist-get event :type) 'assistant-delta)
+             (e-ui-work-schedule
+              (e-ui-work-spec-create
+               :id (format "chat_board_event_%s"
+                           (or (plist-get event :turn-id) "board"))
+               :description "Render one board-observed chat event."
+               :owner 'board-observer
+               :target-buffer buffer
+               :key (list (plist-get event :turn-id)
+                          (plist-get event :type)
+                          (plist-get event :created-at))
+               :generation 0
+               :delay 0
+               :coalesce nil
+               :focus-policy 'preserve
+               :reentrancy-policy 'defer
+               :apply
+               (lambda (_job _handle)
+                 (when (and (buffer-live-p buffer)
+                            (eq e-chat-harness harness))
+                   (with-current-buffer buffer
+                     (unless (and
+                              (eq (plist-get event :type) 'assistant-delta)
                               e-chat--assistant-streaming-p
                               (equal e-chat--status "streaming"))
-                   (e-chat--render-event event))))))
-         :session-id session-id)))
+                       (e-chat--render-event event))))))))))))
 
 (defun e-chat--unsubscribe ()
-  "Remove this buffer's harness event subscription."
-  (when (and e-chat-harness
-             e-chat--event-subscription)
-    (e-harness-unsubscribe e-chat-harness e-chat--event-subscription))
+  "Remove this buffer's board observer subscription."
+  (when e-chat--event-subscription
+    (e-chat-service-unsubscribe e-chat--event-subscription))
   (setq e-chat--event-subscription nil))
 
 (defun e-chat--mark-protected (start end)
@@ -2425,7 +2441,7 @@ keeps composer positioning O(window-height) instead of O(transcript-length)."
   "Return queued prompt items for the attached chat session."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (e-harness-queued-prompts e-chat-harness e-chat-session-id))))
+      (e-chat-service-queued-inputs e-chat-harness e-chat-session-id))))
 
 (defun e-chat--queue-preview-text (prompt)
   "Return compact one-line preview text for queued PROMPT."
@@ -3086,7 +3102,7 @@ scan."
               (list :kind 'capability
                     :label (e-chat--capability-candidate-label capability)
                     :capability capability))
-            (e-harness-active-capabilities e-chat-harness))))
+            (e-chat-service-active-capabilities e-chat-harness))))
 
 (defun e-chat--at-candidates ()
   "Return composer @ candidates for files, resources, and capabilities."
@@ -3194,7 +3210,7 @@ scan."
     (mapcar (lambda (prompt)
               (list :label (e-prompt-spec-name prompt)
                     :prompt prompt))
-            (e-harness-prompts e-chat-harness))))
+            (e-chat-service-prompt-catalog e-chat-harness))))
 
 (defun e-chat--collect-prompt-arguments (prompt)
   "Read arguments for PROMPT and return an alist."
@@ -5439,7 +5455,7 @@ window retains its scroll position, including when the composer is focused."
                  (lambda (message)
                    (and (eq (plist-get message :role) 'user)
                         (equal (plist-get message :turn-id) turn-id)))
-                 (e-harness-messages e-chat-harness e-chat-session-id))))
+                 (e-chat-service-messages e-chat-harness e-chat-session-id))))
       (let ((summary (plist-get (plist-get prompt :metadata)
                                 :pending-summary)))
         (and (stringp summary) summary)))))
@@ -5848,7 +5864,7 @@ turn keeps a background session from stalling the main thread."
              e-chat-session-id
              (e-harness-p e-chat-harness))
     (let ((entry (gethash e-chat-session-id
-                          (e-harness-active-turns e-chat-harness))))
+                          (e-chat-service-active-turns e-chat-harness))))
       (cond
        ((e-harness--active-turn-running-p entry)
         (not (equal turn-id (e-harness--active-turn-id entry))))
@@ -7512,13 +7528,13 @@ until the gateway cache is populated or when MODEL is not listed."
   "Return semantic cache key for this buffer's mode-line context estimate."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (let* ((state (e-harness-state e-chat-harness e-chat-session-id))
+      (let* ((state (e-chat-service-state e-chat-harness e-chat-session-id))
              (options (e-harness-display-options e-chat-harness
                                                  e-chat-session-id))
              (usage-event
               (ignore-errors
                 (e-session-latest-token-usage-event
-                 (e-harness-sessions e-chat-harness)
+                 (e-chat-service-session-store e-chat-harness)
                  e-chat-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
@@ -7783,35 +7799,6 @@ separate dimmed representation instead."
      (and hidden (not e-chat--reveal-hidden)))
     entry))
 
-(defun e-chat--final-assistant-message (turn-id)
-  "Return the final assistant message for TURN-ID in the attached session."
-  (car
-   (last
-    (cl-remove-if-not
-     (lambda (message)
-       (and (eq (plist-get message :role) 'assistant)
-            (equal (plist-get message :turn-id) turn-id)))
-     (e-harness-messages e-chat-harness e-chat-session-id)))))
-
-(defun e-chat--render-missed-final-assistant (turn-id created-at)
-  "Render TURN-ID's durable final assistant if its message event was missed."
-  (when-let ((message (e-chat--final-assistant-message turn-id)))
-    (let ((record (e-chat--turn-record turn-id)))
-      (unless (plist-get record :final-rendered)
-        (when created-at
-          (e-chat--set-turn-time turn-id :ended-at created-at))
-        (e-chat--cancel-pending-activity-redraw turn-id)
-        (e-chat--stop-progress-indicator turn-id)
-        (when-let ((activity-events
-                    (ignore-errors
-                      (e-harness-session-activity-events
-                       e-chat-harness
-                       e-chat-session-id))))
-          (e-chat--render-turn-activity-events turn-id activity-events))
-        (e-chat--finalize-turn-display turn-id)
-        (e-chat--render-durable-message message turn-id)
-        t))))
-
 (defun e-chat--render-event (event)
   "Render harness EVENT into the current chat buffer."
   (e-chat--profile-call
@@ -7836,9 +7823,6 @@ separate dimmed representation instead."
                              :ended-at
                              (plist-get event :created-at))
      (e-chat--run-pending-activity-redraw)
-     (e-chat--render-missed-final-assistant
-      (plist-get event :turn-id)
-      (plist-get event :created-at))
      (e-chat--mark-buffer-session-read-if-selected)
      (e-chat--set-status "done")
      (e-chat--ensure-composer)
@@ -8143,10 +8127,10 @@ separate dimmed representation instead."
 When MESSAGES is non-nil, render that message list instead of the
 attached session's full transcript."
   (let ((messages (or messages
-                      (e-harness-messages e-chat-harness e-chat-session-id)))
+                      (e-chat-service-messages e-chat-harness e-chat-session-id)))
         (turn-index 0)
         (activity-events (ignore-errors
-                           (e-harness-session-activity-events
+                           (e-chat-service-activity-events
                             e-chat-harness
                             e-chat-session-id)))
         turn-id
@@ -8233,14 +8217,13 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   "Return non-nil when the attached session has a running active turn."
   (and e-chat-harness
        e-chat-session-id
-       (plist-get (e-harness-state e-chat-harness e-chat-session-id)
-                  :active-turn)))
+       (e-chat-service-active-turn-p e-chat-harness e-chat-session-id)))
 
 (defun e-chat--harness-session-active-turn-p (harness session-id)
   "Return non-nil when HARNESS has a running active turn for SESSION-ID."
   (and (e-harness-p harness)
        session-id
-       (plist-get (e-harness-state harness session-id) :active-turn)))
+       (e-chat-service-active-turn-p harness session-id)))
 
 (defun e-chat--submit-intent (prefix)
   "Return submit intent for PREFIX in the current chat state."
@@ -8394,7 +8377,8 @@ HARNESS are internal test seams."
   "Attach BUFFER to HARNESS and SESSION-ID."
   (let ((unloaded-session (e-chat--unloaded-index-session harness session-id)))
     (unless unloaded-session
-      (e-chat--ensure-session harness session-id instance-id))
+      (e-chat--ensure-session harness session-id instance-id)
+      (e-chat-service-ensure-binding harness session-id))
   (with-current-buffer buffer
     (let* ((same-session
             (and (eq e-chat-harness harness)
@@ -8465,7 +8449,8 @@ HARNESS are internal test seams."
       ;; arbitrary text part of the rendered conversation.
       (when (e-chat--surface-transcript-p)
         (setq-local buffer-read-only t))
-      (e-chat--subscribe harness buffer session-id)))
+      (unless unloaded-session
+        (e-chat--subscribe harness buffer session-id))))
     buffer))
 
 (defun e-chat-reload-buffers ()
@@ -8573,7 +8558,7 @@ CATEGORY is exposed through completion metadata when non-nil."
         (e-chat--clear t)
         (if (plist-get session :loaded)
             (let ((messages (e-chat--tail-messages
-                             (e-harness-messages harness session-id)
+                             (e-chat-service-messages harness session-id)
                              e-chat-resume-preview-message-limit)))
               (e-chat--render-session messages))
           (e-chat--insert-protected
@@ -8675,7 +8660,7 @@ once.  Legacy sessions in unique stores stay under their store's instance."
 
 (defun e-chat--shared-session-store-p (harness store-counts)
   "Return non-nil when HARNESS shares its session store in STORE-COUNTS."
-  (> (or (gethash (e-harness-sessions harness) store-counts) 0) 1))
+  (> (or (gethash (e-chat-service-session-store harness) store-counts) 0) 1))
 
 (defun e-chat--session-candidate-newer-p (left right)
   "Return non-nil when session LEFT sorts before RIGHT (newest first).
@@ -8708,7 +8693,7 @@ timestamp."
         (progn
           (dolist (instance instances)
             (let* ((harness (e-chat--harness-for-instance instance))
-                   (store (e-harness-sessions harness)))
+                   (store (e-chat-service-session-store harness)))
               (puthash store (1+ (or (gethash store store-counts) 0))
                        store-counts)))
           (dolist (instance instances)
@@ -9033,7 +9018,7 @@ operation."
       (when (plist-get session :loaded)
         (let ((session-id (plist-get session :id))
               marker)
-          (dolist (message (reverse (e-harness-messages harness session-id)))
+          (dolist (message (reverse (e-chat-service-messages harness session-id)))
             (when (and (not marker)
                        (eq (plist-get message :role) 'assistant))
               (setq marker (or (plist-get message :id)
@@ -9312,8 +9297,7 @@ adds its display name to the row."
   "Return non-nil when SESSION-ID has an active turn in HARNESS."
   (and harness
        session-id
-       (ignore-errors
-         (gethash session-id (e-harness-active-turns harness)))))
+       (ignore-errors (e-chat-service-active-turn-p harness session-id))))
 
 (defun e-chat--active-session-state (candidate)
   "Return read state for active-session CANDIDATE."
@@ -9349,7 +9333,7 @@ adds its display name to the row."
          (state (ignore-errors
                   (and harness
                        session-id
-                       (e-harness-state harness session-id))))
+                       (e-chat-service-state harness session-id))))
          (options (ignore-errors
                     (and harness
                          session-id
@@ -9358,7 +9342,7 @@ adds its display name to the row."
                         (and harness
                              session-id
                              (e-session-latest-token-usage-event
-                              (e-harness-sessions harness)
+                              (e-chat-service-session-store harness)
                               session-id)))))
     (list :session-id session-id
           :message-count (or (plist-get state :message-count)
@@ -9424,7 +9408,7 @@ adds its display name to the row."
 (defun e-chat--active-session-preview-messages (harness session)
   "Return messages to render for active-session preview of SESSION."
   (or (plist-get session :messages)
-      (let* ((store (e-harness-sessions harness))
+      (let* ((store (e-chat-service-session-store harness))
              (stored-session
               (ignore-errors
                 (e-session--peek-session store (plist-get session :id)))))
@@ -9698,54 +9682,23 @@ When DISPLAY is non-nil, display the preview buffer."
   (e-chat-overview--render))
 
 (defun e-chat-overview--unsubscribe ()
-  "Unsubscribe the current overview buffer from harness events."
-  (when (and e-chat-overview--harness
-             e-chat-overview--subscription)
-    (e-harness-unsubscribe e-chat-overview--harness
-                           e-chat-overview--subscription)
-    (setq e-chat-overview--subscription nil))
-  (dolist (entry e-chat-overview--subscriptions)
-    (let ((harness (car entry))
-          (subscription (cdr entry)))
-      (when (and harness subscription)
-        (e-harness-unsubscribe harness subscription))))
+  "Clear obsolete overview live-feed state.
+The overview is explicitly manual-refresh-only after the board cutover; it does
+not open an unbounded process-wide presentation subscription."
+  (setq e-chat-overview--subscription nil)
   (setq e-chat-overview--subscriptions nil))
 
 (defun e-chat-overview--subscribe (buffer harness)
-  "Subscribe BUFFER to HARNESS events for overview refreshes."
+  "Keep BUFFER manual-refresh-only for HARNESS after the board cutover."
+  (ignore harness)
   (with-current-buffer buffer
-    (e-chat-overview--unsubscribe)
-    (let ((target buffer))
-      (setq-local
-       e-chat-overview--subscription
-       (e-harness-subscribe
-        harness
-        (lambda (_event)
-          (when (buffer-live-p target)
-            (with-current-buffer target
-              (when (derived-mode-p 'e-chat-overview-mode)
-                (e-chat-overview--render harness))))))))))
+    (e-chat-overview--unsubscribe)))
 
 (defun e-chat-overview--subscribe-instances (buffer instances)
-  "Subscribe BUFFER to overview refresh events from INSTANCES."
+  "Keep BUFFER manual-refresh-only for INSTANCES after the board cutover."
+  (ignore instances)
   (with-current-buffer buffer
-    (e-chat-overview--unsubscribe)
-    (let ((target buffer))
-      (setq-local
-       e-chat-overview--subscriptions
-       (mapcar
-        (lambda (instance)
-          (let* ((harness (e-chat--harness-for-instance instance))
-                 (subscription
-                  (e-harness-subscribe
-                   harness
-                   (lambda (_event)
-                     (when (buffer-live-p target)
-                       (with-current-buffer target
-                         (when (derived-mode-p 'e-chat-overview-mode)
-                           (e-chat-overview--render))))))))
-            (cons harness subscription)))
-        instances)))))
+    (e-chat-overview--unsubscribe)))
 
 (defun e-chat-overview--display (buffer)
   "Display overview BUFFER as the chat session sidebar."
@@ -9975,16 +9928,16 @@ plain submit steers an active turn and prefix submit queues a follow-up."
            (progn
              (pcase intent
                ('submit
-                (e-chat-session-submit
+                (e-chat-service-submit-session
                  e-chat-harness e-chat-session-id prompt
                  :delay e-chat-submit-backend-delay
                  :references references))
                ('steer
-                (e-chat-session-steer
+                (e-chat-service-steer-session
                  e-chat-harness e-chat-session-id prompt
                  :metadata (e-chat--submit-metadata 'steering references)))
                ('queue
-                (e-chat-session-queue
+                (e-chat-service-queue-session
                  e-chat-harness e-chat-session-id prompt
                  :references references
                  :metadata (e-chat--submit-metadata 'queued references))))
@@ -10014,7 +9967,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
   (interactive)
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-chat-session-abort e-chat-harness e-chat-session-id))
+  (e-chat-service-abort-session e-chat-harness e-chat-session-id))
 
 ;;;###autoload
 (defun e-chat-reset ()

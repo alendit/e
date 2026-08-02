@@ -127,20 +127,121 @@ messages so the transcript reads as one clean answer."
              (lambda () nil)))
     (should-error (e-modernchat--ensure-runtime) :type 'user-error)))
 
-(ert-deftest e-chat-service-test-submit-delegates-to-chat-session ()
-  "Shell-neutral submit service delegates to chat-session submit."
-  (let ((called nil))
-    (cl-letf (((symbol-function 'e-chat-session-submit)
-               (lambda (harness session-id prompt &rest args)
-                 (setq called (list harness session-id prompt args))
-                 :submitted)))
-      (should (eq (e-chat-service-submit-session
-                   'harness "s1" "hello" :references '(r1) :metadata '(:m t))
-                  :submitted))
-      (should (equal (list (nth 0 called) (nth 1 called) (nth 2 called))
-                     '(harness "s1" "hello")))
-      (should (equal (plist-get (nth 3 called) :references) '(r1)))
-      (should (equal (plist-get (nth 3 called) :metadata) '(:m t))))))
+(ert-deftest e-chat-service-test-submit-uses-bound-board-ingress ()
+  "Shell-neutral submit posts only through its attached board participant."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        called)
+    (let* ((harness (e-harness-create
+                     :backend (e-backend-create :name "noop")
+                     :enabled-layer-ids nil))
+           (session (e-chat-service-create-session :harness harness :id "s1"))
+           (binding (e-chat-service-binding harness (plist-get session :id))))
+      (cl-letf (((symbol-function 'e-board-runtime-post-input)
+                 (lambda (board &rest args)
+                   (setq called (cons board args))
+                   (e-board-post-input
+                    (e-board-registry-board-source-board board)
+                    :author (plist-get args :author)
+                    :tags (plist-get args :tags)
+                    :attributes (plist-get args :attributes)
+                    :mode (plist-get args :mode)
+                    :content (plist-get args :content)
+                    :reference (plist-get args :reference)
+                    :source-input-key (plist-get args :source-input-key)))))
+        (should (stringp
+                 (e-chat-service-submit-session
+                  harness "s1" "hello" :references '(r1) :metadata '(:m t))))
+        (should (eq (car called) (e-chat-service-binding-board binding)))
+        (should (equal (plist-get (cdr called) :content) "hello"))
+        (should (equal (plist-get (cdr called) :tags) '(main)))
+        (should (equal (plist-get (cdr called) :reference) '(r1)))
+        (should (equal (plist-get (cdr called) :attributes)
+                       '(:m t :references (r1))))))))
+
+(ert-deftest e-chat-service-test-board-chat-end-to-end ()
+  "Board ingress, harness delivery, board output, and observation round-trip."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        events)
+    (let* ((harness
+            (e-harness-create
+             :backend (e-backend-fake-create
+                       :items '((:type assistant-message :content "answer")
+                                (:type done :reason stop)))
+             :enabled-layer-ids nil))
+           (session (e-chat-service-create-session :harness harness :id "chat-e2e"))
+           (session-id (plist-get session :id))
+           (binding (e-chat-service-binding harness session-id)))
+      (e-chat-service-subscribe harness session-id
+                                (lambda (event) (push event events)))
+      (let ((input-id (e-chat-service-submit-session harness session-id "question")))
+        (e-board-runtime--drain-input-routing
+         (e-chat-service-binding-board binding)
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board
+             (e-chat-service-binding-board binding)))))
+        (e-board-runtime--drain-pickups)
+        (should (equal (plist-get (e-harness-wait-batch harness session-id 2.0)
+                                  :status)
+                       'done))
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (< (float-time) deadline)
+                      (not (cl-find-if
+                            (lambda (event)
+                              (and (eq (plist-get event :type) 'message-added)
+                                   (eq (plist-get
+                                        (plist-get (plist-get event :payload)
+                                                   :message)
+                                        :role)
+                                       'assistant)))
+                            events)))
+            (accept-process-output nil 0.01)))
+        (let* ((source (e-board-registry-board-source-board
+                        (e-chat-service-binding-board binding)))
+               (messages (e-board-messages source)))
+          (should (eq (e-board-message-kind (car messages)) 'input))
+          (should (cl-find 'turn-summary messages
+                           :key #'e-board-message-activity-kind))
+          (should (equal (e-board-message-content
+                          (cl-find 'output messages :key #'e-board-message-kind))
+                         "answer"))
+          (should (cl-find-if
+                   (lambda (event)
+                     (and (eq (plist-get event :type) 'message-added)
+                          (eq (plist-get
+                               (plist-get (plist-get event :payload) :message)
+                               :role)
+                              'assistant)))
+                   events))
+          (should (cl-find input-id events :key (lambda (event)
+                                                  (plist-get event :turn-id)))))
+        (should (null (e-harness-queued-prompts harness session-id)))))))
 
 (provide 'e-modernchat-test)
 

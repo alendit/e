@@ -470,8 +470,9 @@
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) messages))))
       (e-debug--ensure-notification-subscription harness "debug-session")
-      (e-harness--emit-turn-event harness "debug-session" "turn-1"
-                                  'turn-finished nil)
+      (funcall
+       (e-chat-service-subscription-function e-debug--notification-subscription)
+       '(:type turn-finished :turn-id "turn-1" :payload nil))
       (should (equal (car messages) "*e-debug*: finished: turn-1")))))
 
 (ert-deftest e-debug-test-background-turn-failed-notifies-error-after-popup-dismissal ()
@@ -491,8 +492,10 @@
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) messages))))
       (e-debug--ensure-notification-subscription harness "debug-session")
-      (e-harness--emit-turn-event harness "debug-session" "turn-1"
-                                  'turn-failed '(:error "provider failed"))
+      (funcall
+       (e-chat-service-subscription-function e-debug--notification-subscription)
+       '(:type turn-failed :turn-id "turn-1"
+         :payload (:error "provider failed")))
       (should (equal (car messages) "*e-debug*: failed: provider failed")))))
 
 (ert-deftest e-debug-test-popup-visible-requires-live-frame ()
@@ -530,9 +533,13 @@
     (let ((first e-debug--notification-subscription))
       (e-debug--ensure-notification-subscription harness "debug-session-2")
       (should-not (eq e-debug--notification-subscription first))
+      (should-not (e-chat-service-subscription-active-p first))
       (should (equal e-debug--notification-session-id "debug-session-2"))
-      (should (equal (plist-get e-debug--notification-subscription :session-id)
-                     "debug-session-2")))))
+      (should (equal
+               (e-chat-service-binding-session-id
+                (e-chat-service-subscription-binding
+                 e-debug--notification-subscription))
+               "debug-session-2")))))
 
 (ert-deftest e-debug-test-tab-display-strategy-creates-named-tab-before-buffer ()
   "The tab display strategy creates and names a debug tab before showing BUFFER."

@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'e-backend)
 (require 'e-capabilities)
+(require 'e-chat-service)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-request)
@@ -23,45 +24,27 @@
 
 (cl-defun e-chat-session-submit
     (harness session-id prompt &key delay references metadata)
-  "Submit PROMPT to SESSION-ID through HARNESS.
-When DELAY is non-nil, pass it to `e-harness-prompt-async'.
+  "Submit PROMPT to SESSION-ID through its board binding.
+When DELAY is non-nil, defer the board publication for test callers.
 REFERENCES are ordered source references from the composer.
 METADATA is caller-provided turn metadata."
-  (unless (and (stringp prompt) (not (string-empty-p prompt)))
-    (user-error "Prompt must not be empty"))
-  (e-harness-prompt-async
-   harness
-   session-id
-   prompt
-   :delay delay
-   :metadata (append (copy-sequence metadata)
-                     (and references (list :references references)))))
+  (e-chat-service-submit-session
+   harness session-id prompt :delay delay :references references
+   :metadata metadata))
 
 (cl-defun e-chat-session-queue
     (harness session-id prompt &key references metadata)
-  "Queue PROMPT as a follow-up for SESSION-ID through HARNESS.
+  "Queue PROMPT as a board-routed follow-up for SESSION-ID.
 REFERENCES are ordered source references from the composer.
 METADATA is caller-provided turn metadata."
-  (unless (and (stringp prompt) (not (string-empty-p prompt)))
-    (user-error "Prompt must not be empty"))
-  (e-harness-queue-prompt
-   harness
-   session-id
-   prompt
-   :references references
-   :metadata metadata))
+  (e-chat-service-queue-session
+   harness session-id prompt :references references :metadata metadata))
 
 (cl-defun e-chat-session-steer
     (harness session-id prompt &key metadata)
-  "Steer SESSION-ID's active turn through HARNESS with PROMPT.
+  "Steer SESSION-ID's active turn through its board binding with PROMPT.
 METADATA is caller-provided turn activity metadata."
-  (unless (and (stringp prompt) (not (string-empty-p prompt)))
-    (user-error "Prompt must not be empty"))
-  (e-harness-steer-active-turn
-   harness
-   session-id
-   prompt
-   :metadata metadata))
+  (e-chat-service-steer-session harness session-id prompt :metadata metadata))
 
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
   "Ensure SESSION-ID has PROJECT-ROOT when no durable root is stored."
@@ -78,8 +61,8 @@ METADATA is caller-provided turn activity metadata."
        store session-id (list :project-root project-root)))))
 
 (defun e-chat-session-abort (harness session-id)
-  "Abort the active chat turn for SESSION-ID through HARNESS."
-  (e-harness-abort harness session-id))
+  "Abort SESSION-ID's board-attached active chat turn."
+  (e-chat-service-abort-session harness session-id))
 
 (defun e-chat-session-reset (harness session-id)
   "Reset SESSION-ID through HARNESS."

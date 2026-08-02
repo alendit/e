@@ -976,15 +976,20 @@
                   (e-board-registry-board-participants board)))))))
 
 (ert-deftest e-board-runtime-test-remove-participant-discards-fenced-queue-head ()
-  "Removal gets an exact harness discard receipt for an idle queued input."
+  "Removal gets an exact harness discard receipt for an accepted queued input."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board" :principal "owner"))
-           (harness (e-harness-create))
+           (harness (e-harness-create
+                     :backend (e-backend-create
+                               :name "held" :start (lambda (&rest _) nil))))
            (source-board (e-board-registry-board-source-board board))
-           scheduled request delivery-id pickup)
+           scheduled request delivery-id pickup attachment active-turn)
       (e-harness-create-session harness :id "session")
-      (e-board-runtime-attach
-       board harness "session" :participant-id "participant")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"))
+      (e-harness-prompt-async harness "session" "running")
+      (setq active-turn (gethash "session" (e-harness-active-turns harness)))
       (cl-letf (((symbol-function 'run-at-time)
                  (lambda (_seconds _repeat function &rest arguments)
                    (setq scheduled
@@ -1004,13 +1009,29 @@
                        board "participant" "owner"))
         (should (eq (e-board-pickup-state pickup) 'accepted))
         (should (= (length (e-harness-queued-prompts harness "session")) 1))
-        (funcall (pop scheduled))
-        (funcall (pop scheduled))
-        (funcall (pop scheduled))
+        (while scheduled
+          (funcall (pop scheduled)))
+        (should (eq (e-board-pickup-state pickup) 'cancelling))
+        (should (eq (plist-get (e-request-lifecycle-progress request) :phase)
+                    'awaiting-active-turn))
+        (plist-put active-turn :status 'finished)
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make
+          :type 'turn-finished :session-id "session"
+          :turn-id (plist-get active-turn :id) :payload nil))
+        (let ((steps 0))
+          (while (and scheduled
+                      (not (eq (e-board-pickup-state pickup) 'cancelled))
+                      (< steps 64))
+            (cl-incf steps)
+            (funcall (pop scheduled)))
+          (should (< steps 64)))
         (should (eq (e-board-pickup-state pickup) 'cancelled))
         (should-not (e-harness-queued-prompts harness "session"))
-        (should (= (length scheduled) 1))
-        (funcall (pop scheduled))
+        (while (and scheduled
+                    (not (eq (e-request-lifecycle-state request) 'finished)))
+          (funcall (pop scheduled)))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (should-not
          (gethash "participant"
@@ -1652,15 +1673,18 @@
                     :type 'e-board-runtime-session-busy)
       (should-not (gethash "second" (e-board-registry-board-participants board))))))
 
-(ert-deftest e-board-runtime-test-default-queue-delivery-enters-idle-follow-up-queue ()
-  "Default queue delivery uses the harness queue without starting a turn."
+(ert-deftest e-board-runtime-test-default-queue-delivery-enters-active-follow-up-queue ()
+  "Default queue delivery enters the inbox behind an active turn."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create))
+           (harness (e-harness-create
+                     :backend (e-backend-create
+                               :name "held" :start (lambda (&rest _) nil))))
            attachment)
       (e-harness-create-session harness :id "session")
       (setq attachment (e-board-runtime-attach
                         board harness "session" :participant-id "participant"))
+      (e-harness-prompt-async harness "session" "running")
       (let* ((publication (e-board-runtime-post-input board :to "participant" :mode 'queue
                                                       :content "queued input"))
              (pickup-id nil))
@@ -1722,7 +1746,7 @@
                      (e-board-pickup (e-board-registry-board-source-board board)
                                      pickup-id))
                     'consumed))
-        (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
+        (should (plist-get (e-harness-state harness "session") :active-turn))))))
 
 (ert-deftest e-board-runtime-test-busy-delivery-retries-after-turn-finished ()
   "A retryable busy adapter result stays ready until the terminal wake edge."
@@ -2117,9 +2141,12 @@
   "Resetting a queued harness item releases its accepted board pickup."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create)))
+           (harness (e-harness-create
+                     :backend (e-backend-create
+                               :name "held" :start (lambda (&rest _) nil)))))
       (e-harness-create-session harness :id "session")
       (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (e-harness-prompt-async harness "session" "running")
       (let ((publication (e-board-runtime-post-input
                           board :to "participant" :mode 'queue :content "queued")))
         (e-board-runtime--drain-input-routing
@@ -2142,9 +2169,12 @@
   "A reset acknowledgement closes an already fenced accepted delivery cancelled."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create)))
+           (harness (e-harness-create
+                     :backend (e-backend-create
+                               :name "held" :start (lambda (&rest _) nil)))))
       (e-harness-create-session harness :id "session")
       (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (e-harness-prompt-async harness "session" "running")
       (let ((publication (e-board-runtime-post-input
                           board :to "participant" :mode 'queue :content "queued")))
         (e-board-runtime--drain-input-routing

@@ -222,14 +222,14 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
   "Return semantic cache key for the current Org Canvas context status."
   (when (and e-org-canvas-harness e-org-canvas-session-id)
     (ignore-errors
-      (let* ((state (e-harness-state e-org-canvas-harness
-                                     e-org-canvas-session-id))
+      (let* ((state (e-chat-service-state e-org-canvas-harness
+                                          e-org-canvas-session-id))
              (options (e-harness-display-options e-org-canvas-harness
                                                  e-org-canvas-session-id))
              (usage-event
               (ignore-errors
                 (e-session-latest-token-usage-event
-                 (e-harness-sessions e-org-canvas-harness)
+                 (e-chat-service-session-store e-org-canvas-harness)
                  e-org-canvas-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
@@ -281,21 +281,33 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
       (e-org-canvas--unsubscribe-status)
       (setq-local
        e-org-canvas--status-subscription
-       (e-harness-subscribe
-        harness
+       (e-chat-service-subscribe
+        harness session-id
         (lambda (event)
           (when (and (buffer-live-p buffer)
                      (e-org-canvas--status-relevant-event-p event))
-            (with-current-buffer buffer
-              (when (eq e-org-canvas-harness harness)
-                (e-org-canvas--refresh-status)))))
-        :session-id session-id)))))
+            (e-ui-work-schedule
+             (e-ui-work-spec-create
+              :id "org_canvas_board_status"
+              :description "Refresh board-observed Org Canvas status."
+              :owner 'org-canvas-board-status
+              :target-buffer buffer
+              :key session-id
+              :generation (float-time)
+              :focus-policy 'preserve
+              :reentrancy-policy 'defer
+              :coalesce t
+              :apply
+              (lambda (_job _handle)
+                (when (eq e-org-canvas-harness harness)
+                  (e-org-canvas--refresh-status))))))))))))
 
 (defun e-org-canvas--unsubscribe-status ()
   "Remove this buffer's Org Canvas context indicator subscription."
   (when (and e-org-canvas-harness e-org-canvas--status-subscription)
-    (e-harness-unsubscribe e-org-canvas-harness
-                           e-org-canvas--status-subscription))
+    (e-chat-service-unsubscribe e-org-canvas--status-subscription))
+  (e-ui-work-cancel-matching
+   (current-buffer) 'org-canvas-board-status :key :any)
   (setq-local e-org-canvas--status-subscription nil))
 
 (defun e-org-canvas--refresh-mode-buffers ()
@@ -418,7 +430,7 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
 (defun e-org-canvas--set-session-metadata
     (harness session-id org-canvas-metadata)
   "Persist ORG-CANVAS-METADATA on HARNESS SESSION-ID."
-  (let ((store (e-harness-sessions harness)))
+  (let ((store (e-chat-service-session-store harness)))
     (e-session-set-context-reference
      store session-id :org-canvas-ref org-canvas-metadata)
     (when (plist-get org-canvas-metadata :root)
@@ -426,7 +438,7 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
        store
        session-id
        (list :project-root (plist-get org-canvas-metadata :root))))
-    (plist-get (e-session-get store session-id) :metadata)))
+    (plist-get (e-chat-service-session harness session-id) :metadata)))
 
 (cl-defun e-org-canvas--mark-session
     (harness session-id buffer &key scope target-folder needs-file-name focus)
@@ -459,10 +471,9 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
 
 (defun e-org-canvas--all-sessions (harness)
   "Return full root session records for HARNESS."
-  (let ((store (e-harness-sessions harness)))
-    (mapcar (lambda (session)
-              (e-session-get store (plist-get session :id)))
-            (e-harness-root-session-list harness))))
+  (mapcar (lambda (session)
+            (e-chat-service-session harness (plist-get session :id)))
+          (e-chat-service-root-session-list harness)))
 
 (defun e-org-canvas--normalize-directory (directory)
   "Return normalized DIRECTORY."
@@ -515,7 +526,7 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   "Return SESSION-ID from HARNESS, or nil when it is missing."
   (and session-id
        (condition-case nil
-           (e-session-get (e-harness-sessions harness) session-id)
+           (e-chat-service-session harness session-id)
          (e-session-missing nil))))
 
 (defun e-org-canvas--session-matches-buffer-p (session buffer)
@@ -922,8 +933,7 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
     (cancel-timer e-org-canvas-input--close-timer)
     (setq-local e-org-canvas-input--close-timer nil))
   (when (and e-org-canvas-input--harness e-org-canvas-input--subscription)
-    (e-harness-unsubscribe
-     e-org-canvas-input--harness e-org-canvas-input--subscription)
+    (e-chat-service-unsubscribe e-org-canvas-input--subscription)
     (setq-local e-org-canvas-input--subscription nil)))
 
 (defun e-org-canvas--input-close-buffer (buffer)
@@ -1191,11 +1201,10 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
     (with-current-buffer buffer
       (setq-local
        e-org-canvas-input--subscription
-       (e-harness-subscribe
-        harness
+       (e-chat-service-subscribe
+        harness session-id
         (lambda (event)
-          (e-org-canvas--input-handle-event buffer event))
-        :session-id session-id)))))
+          (e-org-canvas--input-handle-event buffer event)))))))
 
 (defun e-org-canvas--input-reset-chat-state ()
   "Reset chat-local presentation state for a transient Org Canvas input pane."
@@ -1265,7 +1274,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
          (focus (with-current-buffer buffer
                   (e-org-canvas-capture-focus scope)))
          (uri (plist-get focus :uri)))
-    (e-chat-session-submit
+    (e-chat-service-submit-session
      harness
      session-id
      prompt
@@ -1383,14 +1392,11 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
   (when (and e-org-canvas-input--harness
              e-org-canvas-input--session-id
              e-org-canvas-input--active-turn-id
-             (equal (plist-get
-                     (e-harness-state
-                      e-org-canvas-input--harness
-                      e-org-canvas-input--session-id)
-                     :active-turn)
-                    e-org-canvas-input--active-turn-id))
-    (e-chat-session-abort e-org-canvas-input--harness
-                          e-org-canvas-input--session-id)))
+             (e-chat-service-active-turn-p
+              e-org-canvas-input--harness
+              e-org-canvas-input--session-id))
+    (e-chat-service-abort-session e-org-canvas-input--harness
+                                  e-org-canvas-input--session-id)))
 
 ;;;###autoload
 (defun e-org-canvas-input-cancel ()
@@ -1535,7 +1541,7 @@ paragraphs changed."
    (lambda (message)
      (and (eq (plist-get message :role) 'user)
           (plist-get (plist-get message :metadata) :org-canvas-scope)))
-   (reverse (e-harness-messages harness session-id))))
+   (reverse (e-chat-service-messages harness session-id))))
 
 ;;;###autoload
 (defun e-org-canvas-reopen-last-prompt ()

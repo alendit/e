@@ -21,8 +21,19 @@
 (require 'e-session)
 (require 'e-work)
 
-(ert-deftest e-chat-session-test-submit-validates-and-queues-prompt ()
-  "Submitting validates prompt text and queues an async harness turn."
+(defun e-chat-session-test--drain-board (harness session-id)
+  "Drain one chat board routing and pickup turn for HARNESS SESSION-ID."
+  (let* ((binding (e-chat-service-binding harness session-id))
+         (board (e-chat-service-binding-board binding)))
+    (e-board-runtime--drain-input-routing
+     board
+     (lambda ()
+       (e-board-drain-input-classifications
+        (e-board-registry-board-source-board board))))
+    (e-board-runtime--drain-pickups)))
+
+(ert-deftest e-chat-session-test-submit-validates-and-publishes-input ()
+  "Submitting validates prompt text and publishes board-routed input."
   (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
@@ -31,10 +42,9 @@
     (should-error
      (e-chat-session-submit harness "session-1" "")
      :type 'user-error)
-    (let ((turn-id (e-chat-session-submit harness "session-1" "hello")))
-      (should (equal (plist-get (e-harness-state harness "session-1")
-                                :active-turn)
-                     turn-id))
+    (let ((message-id (e-chat-session-submit harness "session-1" "hello")))
+      (should (stringp message-id))
+      (e-chat-session-test--drain-board harness "session-1")
       (should (equal (plist-get (car (e-harness-messages harness "session-1"))
                                 :content)
                      "hello")))))
@@ -52,6 +62,7 @@
      "hello"
      :metadata '(:org-canvas-scope thread)
      :references '((:uri "buffer://source")))
+    (e-chat-session-test--drain-board harness "session-1")
     (let ((metadata (plist-get (car (e-harness-messages harness "session-1"))
                                :metadata)))
       (should (equal (plist-get metadata :org-canvas-scope) 'thread))
@@ -96,35 +107,37 @@
             (should-not (plist-member metadata :e-chat-read-markers))))
       (delete-directory project-root t))))
 
-(ert-deftest e-chat-session-test-queue-validates-and-delegates ()
-  "Queueing validates prompt text and delegates to harness queue state."
+(ert-deftest e-chat-session-test-queue-validates-and-routes-to-inbox ()
+  "Queueing validates prompt text and reaches the active turn's inbox."
   (let* ((backend (e-backend-create
                    :name "held"
                    :start (lambda (&rest _args) nil)))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-chat-session-submit harness "session-1" "running" :delay 1.0)
+    (e-chat-session-submit harness "session-1" "running")
+    (e-chat-session-test--drain-board harness "session-1")
     (should-error
      (e-chat-session-queue harness "session-1" "")
      :type 'user-error)
-    (let ((queue-id
+    (let ((message-id
            (e-chat-session-queue
             harness
             "session-1"
             "queued"
             :references '((:uri "buffer://source"))
             :metadata '(:source chat-composer))))
+      (should (stringp message-id))
+      (e-chat-session-test--drain-board harness "session-1")
       (let ((item (car (e-harness-queued-prompts harness "session-1"))))
-        (should (equal (plist-get item :id) queue-id))
         (should (equal (plist-get item :prompt) "queued"))
-        (should (equal (plist-get item :references)
+        (should (equal (plist-get (plist-get item :metadata) :references)
                        '((:uri "buffer://source"))))
-        (should (equal (plist-get item :metadata)
-                       '(:source chat-composer)))))
+        (should (equal (plist-get (plist-get item :metadata) :source)
+                       'chat-composer))))
     (e-harness-abort harness "session-1")))
 
-(ert-deftest e-chat-session-test-steer-validates-and-delegates ()
-  "Steering validates prompt text and delegates to the active harness turn."
+(ert-deftest e-chat-session-test-steer-validates-and-routes-to-active-turn ()
+  "Steering validates prompt text and reaches the active steering lane."
   (let* ((backend (e-backend-create
                    :name "steerable"
                    :start (cl-function
@@ -137,17 +150,20 @@
                              nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-chat-session-submit harness "session-1" "running"
-                                          :delay 0)))
+    (e-chat-session-submit harness "session-1" "running")
+    (e-chat-session-test--drain-board harness "session-1")
     (should-error
      (e-chat-session-steer harness "session-1" "")
      :type 'user-error)
-      (should (equal (e-chat-session-steer
-                      harness
-                      "session-1"
-                      "focus here"
-                      :metadata '(:source chat-composer))
-                     turn-id)))))
+    (should (stringp (e-chat-session-steer
+                      harness "session-1" "focus here"
+                      :metadata '(:source chat-composer))))
+    (e-chat-session-test--drain-board harness "session-1")
+    (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
+           (item (car (plist-get entry :pending-steering-input))))
+      (should (equal (plist-get item :prompt) "focus here"))
+      (should (equal (plist-get (plist-get item :metadata) :source)
+                     'chat-composer)))))
 
 (ert-deftest e-chat-session-test-abort-reset-and-rename ()
   "Chat-session actions delegate abort, reset, and rename to the harness/store."
@@ -156,7 +172,8 @@
                             :name "delayed"
                             :stream (lambda (&rest _args) nil)))))
     (e-harness-create-session harness :id "session-1")
-    (e-chat-session-submit harness "session-1" "hello" :delay 1.0)
+    (e-chat-session-submit harness "session-1" "hello")
+    (e-chat-session-test--drain-board harness "session-1")
     (e-chat-session-abort harness "session-1")
     (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)

@@ -154,21 +154,19 @@
                buffer))))))
 
 (defun e-modernchat--handle-event (buffer event)
-  "Handle harness EVENT for modern chat BUFFER."
-  (when (and (buffer-live-p buffer)
-             (equal (plist-get event :session-id)
-                    (buffer-local-value 'e-modernchat-session-id buffer)))
+  "Handle board-observed EVENT for modern chat BUFFER."
+  (ignore event)
+  (when (buffer-live-p buffer)
     (e-modernchat--schedule-push buffer)))
 
 (defun e-modernchat--subscribe ()
   "Subscribe current modern chat buffer to harness events."
   (let ((buffer (current-buffer)))
     (setq e-modernchat--event-subscription
-          (e-harness-subscribe
-           e-modernchat-harness
+          (e-chat-service-subscribe
+           e-modernchat-harness e-modernchat-session-id
            (lambda (event)
-             (e-modernchat--handle-event buffer event))
-           :session-id e-modernchat-session-id))))
+             (e-modernchat--handle-event buffer event))))))
 
 (defun e-modernchat--cleanup ()
   "Clean up current modern chat buffer subscriptions and timers."
@@ -176,8 +174,7 @@
     (cancel-timer e-modernchat--update-timer))
   (setq e-modernchat--update-timer nil)
   (when (and e-modernchat-harness e-modernchat--event-subscription)
-    (e-harness-unsubscribe
-     e-modernchat-harness e-modernchat--event-subscription))
+    (e-chat-service-unsubscribe e-modernchat--event-subscription))
   (setq e-modernchat--event-subscription nil))
 
 (defun e-modernchat--open-resource (uri)
