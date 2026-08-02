@@ -399,6 +399,22 @@
        :type 'wrong-type-argument)
       (should (= calls 0)))))
 
+(ert-deftest e-harness-instances-test-session-access-rights-are-explicit ()
+  "Controller and explicit ACLs grant discover/resume without implication gaps."
+  (let ((record '(:controller "owner" :version 1
+                  :discover-principals ("reader")
+                  :resume-principals ("resumer"))))
+    (should (e-harness-instance-session-access-allows-p
+             record "owner" 'resume))
+    (should (e-harness-instance-session-access-allows-p
+             record "reader" 'discover))
+    (should-not (e-harness-instance-session-access-allows-p
+                 record "reader" 'resume))
+    (should (e-harness-instance-session-access-allows-p
+             record "resumer" 'discover))
+    (should (e-harness-instance-session-access-allows-p
+             record "resumer" 'resume))))
+
 (ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
   "A declared durable store cannot silently omit a required port."
   (e-harness-instances-test--with-empty-registries

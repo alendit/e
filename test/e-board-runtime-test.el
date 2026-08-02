@@ -21,6 +21,7 @@
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
           (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
+          (e-board-runtime--control-sequence 0)
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
           (e-board-runtime--deferred-hook-drain-scheduled nil)
@@ -244,6 +245,52 @@
                        (e-board-pickup source-board delivery-id))
                       'ready)))))))
 
+(ert-deftest e-board-runtime-test-commits-qualified-attempt-before-adapter-call ()
+  "The board owns the selected endpoint binding before delivery code runs."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending))
+           observed)
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :qualified :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-registry-register :live harness)
+      (let ((attachment
+             (e-board-runtime-attach-instance
+              board :qualified "session" :participant-id "participant"
+              :delivery-function
+              (lambda (current pickup _message)
+                (let ((attempt (e-board-pickup-attempt pickup)))
+                  (setq observed
+                        (list (e-board-pickup-state pickup)
+                              (e-board-delivery-attempt-state attempt)
+                              (equal (e-board-delivery-attempt-endpoint-token attempt)
+                                     (e-board-runtime-attachment-endpoint-token current))
+                              (e-board-delivery-attempt-composite-generation attempt))))))))
+        (let* ((publication
+                (e-board-runtime-post-input
+                 board :id "input" :to "participant" :content "deliver"))
+               (source-board (e-board-registry-board-source-board board))
+               (delivery-id (car (e-board-publication-pickup-ids publication))))
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source-board)))
+          (setq delivery-id
+                (car (e-board-message-pickup-ids
+                      (e-board-message source-board "input"))))
+          (e-board-runtime--drain-pickups)
+          (should (equal observed '(delivering delivering t (1 1))))
+          (let* ((pickup (e-board-pickup source-board delivery-id))
+                 (attempt (e-board-pickup-attempt pickup)))
+            (should (eq (e-board-pickup-state pickup) 'consumed))
+            (should (eq (e-board-delivery-attempt-state attempt) 'consumed))
+            (should (equal
+                     (e-board-delivery-attempt-endpoint-token attempt)
+                     (e-board-runtime-attachment-endpoint-token attachment)))))))))
+
 (ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
   "Two harness objects cannot attach the same stable store/session identity."
   (e-board-runtime-test--with-empty-state
@@ -274,6 +321,117 @@
       (should (= (hash-table-count
                   (e-board-registry-board-participants second-board))
                  0)))))
+
+(ert-deftest e-board-runtime-test-live-resume-validates-catalog-before-attach ()
+  "Authorized current dormant row attaches later without invoking a factory."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "board-owner"))
+           (harness (e-harness-create))
+           (factory-calls 0)
+           succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-board-registry-authorize-principal
+       board "board-owner" "resumer" 'member)
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) harness))
+      (e-harness-registry-register :live harness)
+      (let ((request
+             (e-board-runtime-resume-live-instance-start
+              board :instance "store" "session" "resumer" 3
+              :participant-id "participant")))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (= (hash-table-count
+                    (e-board-registry-board-participants board))
+                   0))
+        (should (= factory-calls 0))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record
+                   (:controller "controller" :version 3
+                    :discover-principals nil :resume-principals ("resumer"))
+                   :board-output-sequence 5 :board-activity-sequence 8))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (let* ((attachment (e-request-lifecycle-terminal-payload request))
+               (participant
+                (e-board-runtime-attachment-participant attachment)))
+          (should (equal (e-board-registry-participant-principal participant)
+                         "resumer"))
+          (should (equal (e-board-registry-participant-controller participant)
+                         "controller"))
+          (should (= factory-calls 0)))))))
+
+(ert-deftest e-board-runtime-test-live-resume-denial-precedes-factory-or-membership ()
+  "Denied durable resume creates no harness, grant, participant, or attachment."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
+           (factory-calls 0)
+           succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :offline
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-board-runtime-resume-live-instance-start
+              board :instance "store" "session" "requester" 2
+              :participant-id "participant")))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record
+                   (:controller "controller" :version 2
+                    :discover-principals ("requester") :resume-principals nil)
+                   :board-output-sequence 0 :board-activity-sequence 0))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-board-runtime-resume-denied))
+        (should (= factory-calls 0))
+        (should (= (hash-table-count
+                    (e-board-registry-board-participants board))
+                   0))))))
+
+(ert-deftest e-board-runtime-test-live-resume-offline-instance-never-calls-factory ()
+  "Authorized offline resume fails visibly instead of invoking legacy factory."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
+           (factory-calls 0)
+           succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)
+                      nil))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :offline
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-board-runtime-resume-live-instance-start
+              board :instance "store" "session" "requester" 2
+              :participant-id "participant")))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record
+                   (:controller "requester" :version 2
+                    :discover-principals nil :resume-principals nil)
+                   :board-output-sequence 0 :board-activity-sequence 0))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-harness-registry-missing))
+        (should (= factory-calls 0))
+        (should (= (hash-table-count
+                    (e-board-registry-board-participants board))
+                   0))))))
 
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."

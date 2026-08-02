@@ -19,6 +19,7 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-request)
 
 (define-error 'e-board-runtime-error "e board runtime error")
 (define-error 'e-board-runtime-attachment-exists
@@ -33,6 +34,12 @@
 (define-error 'e-board-runtime-instance-ineligible
   "e board runtime harness instance is not eligible for session attachment"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-resume-denied
+  "e board runtime dormant session resume is not authorized"
+  'e-board-runtime-error)
+(define-error 'e-board-runtime-resume-version-conflict
+  "e board runtime dormant session access version is stale"
+  'e-board-runtime-error)
 
 (defvar e-board-runtime--attachments (make-hash-table :test 'equal)
   "Live runtime attachments keyed by board and participant identity.")
@@ -45,6 +52,9 @@
 
 (defvar e-board-runtime--invocations (make-hash-table :test 'equal)
   "Exact invocation effect targets owned by their original attachment.")
+
+(defvar e-board-runtime--control-sequence 0
+  "Process-local sequence for board runtime control request identities.")
 
 (defconst e-board-runtime-deferred-hook-drain-limit 16
   "Maximum deferred carrier hooks the private runtime starts per drain.")
@@ -146,6 +156,11 @@ the board transcript.  Terminal events use their dedicated publisher below.")
    (e-board-runtime-attachment-harness attachment)
    (e-board-runtime-attachment-session-id attachment)
    (e-board-runtime-attachment-session-store-id attachment)))
+
+(defun e-board-runtime--attachment-composite-generation (attachment)
+  "Return ATTACHMENT's frozen instance/concrete-harness generation pair."
+  (list (e-board-runtime-attachment-instance-catalog-generation attachment)
+        (e-board-runtime-attachment-harness-object-generation attachment)))
 
 (defun e-board-runtime--invocation-target (attachment turn-id tool-call-id)
   "Return ATTACHMENT's immutable target for TURN-ID and TOOL-CALL-ID."
@@ -775,8 +790,102 @@ This operation never invokes an instance factory or loads dormant history."
        :instance-catalog-generation instance-generation
        :harness-id harness-id
        :harness-object-generation harness-generation
-       :session-store-id store-id
-       :endpoint-token token))))
+      :session-store-id store-id
+      :endpoint-token token))))
+
+(cl-defun e-board-runtime-resume-live-instance-start
+    (board-or-id instance-id session-store-id session-id requester-principal
+                 expected-version
+                 &key participant-id author delivery-function on-done on-error)
+  "Start authorized resume of an already-live loaded dormant session.
+The operation first performs an exact asynchronous catalog read.  It validates
+store/instance eligibility, dormant access version, and durable resume rights
+before attaching.  It never invokes the instance's legacy synchronous factory;
+an offline instance therefore fails visibly after authorization."
+  (unless (and requester-principal
+               (integerp expected-version) (>= expected-version 0))
+    (signal 'wrong-type-argument
+            (list 'resume-authorization requester-principal expected-version)))
+  (let* ((board (e-board-runtime--active-board board-or-id))
+         (instance (or (e-harness-instance-get instance-id)
+                       (signal 'e-harness-instance-missing (list instance-id))))
+         (store (e-harness-instance-session-store session-store-id))
+         (eligible (plist-get store :eligible-instance-ids))
+         catalog-request
+         request)
+    (unless (and (equal (e-harness-instance-session-store-id instance)
+                        session-store-id)
+                 (memq instance-id eligible))
+      (signal 'e-board-runtime-instance-ineligible
+              (list instance-id session-store-id)))
+    (cl-labels
+        ((fail (condition)
+           (when (e-request-fail request condition)
+             (when on-error
+               (funcall on-error condition))))
+         (catalog-finished (row)
+           (unless (e-request-terminal-p request)
+             (let ((access-record (plist-get row :access-record))
+                   attachment)
+               (condition-case condition
+                   (progn
+                     (unless (= (plist-get access-record :version)
+                                expected-version)
+                       (signal 'e-board-runtime-resume-version-conflict
+                               (list session-store-id session-id expected-version
+                                     (plist-get access-record :version))))
+                     (unless (e-harness-instance-session-access-allows-p
+                              access-record requester-principal 'resume)
+                       (signal 'e-board-runtime-resume-denied
+                               (list session-store-id session-id
+                                     requester-principal)))
+                     (unless (memq instance-id
+                                   (plist-get row :eligible-instance-ids))
+                       (signal 'e-board-runtime-instance-ineligible
+                               (list instance-id session-store-id session-id)))
+                     (e-request-progress
+                      request (list :phase 'validated
+                                    :session-store-id session-store-id
+                                    :session-id session-id))
+                     (setq attachment
+                           (e-board-runtime-attach-instance
+                            board instance-id session-id
+                            :participant-id participant-id :author author
+                            :principal requester-principal
+                            :controller (plist-get access-record :controller)
+                            :delivery-function delivery-function)))
+                 (error
+                  (fail condition)))
+               (when (and attachment
+                          (e-request-finish request attachment))
+                 (when on-done
+                   (funcall on-done attachment)))))))
+      (setq request
+            (e-request-lifecycle-create
+             :id (format "board-resume-%d"
+                         (cl-incf e-board-runtime--control-sequence))
+             :owner 'e-board-runtime-resume
+             :session-id session-id
+             :generation (e-harness-instance-generation)
+             :state 'created
+             :cancel-function
+             (lambda (_request)
+               (when (and catalog-request
+                          (not (e-request-terminal-p catalog-request)))
+                 (e-request-cancel catalog-request 'resume-cancelled)))))
+      (e-request-start
+       request (list :phase 'catalog-read :instance-id instance-id
+                     :session-store-id session-store-id :session-id session-id))
+      (condition-case condition
+          (setq catalog-request
+                (e-harness-instance-session-catalog-read-start
+                 session-store-id session-id :principal requester-principal
+                 :on-done #'catalog-finished :on-error #'fail))
+        (error
+         (if (e-request-terminal-p request)
+             (signal (car condition) (cdr condition))
+           (fail condition))))
+      request)))
 
 (defun e-board-runtime--make-attachment
     (board participant harness session-id delivery-function generation
@@ -909,13 +1018,17 @@ the new endpoint."
                   ((e-board-runtime--current-attachment-p attachment))
                   (message (e-board-message source-board
                                             (e-board-pickup-message-id pickup))))
-        (e-board-pickup-start-delivery source-board delivery-id)
+        (e-board-pickup-start-delivery
+         source-board delivery-id
+         (e-board-runtime-attachment-endpoint-token attachment)
+         (e-board-runtime--attachment-composite-generation attachment))
         (condition-case err
             (let ((result (funcall (e-board-runtime-attachment-delivery-function attachment)
                                    attachment pickup message)))
               (pcase (car-safe result)
                 (:accepted
-                 (e-board-pickup-accept-delivery source-board delivery-id))
+                 (e-board-pickup-accept-delivery
+                  source-board delivery-id (cadr result)))
                 (:uncertain
                  (when-let ((next-id
                              (e-board-pickup-mark-uncertain

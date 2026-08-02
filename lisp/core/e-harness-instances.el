@@ -316,6 +316,20 @@ declarative selection metadata; the factory still builds the live harness."
        (plist-member record :resume-principals)
        (listp (plist-get record :resume-principals))))
 
+(defun e-harness-instance-session-access-allows-p (record principal right)
+  "Return non-nil when current access RECORD grants PRINCIPAL durable RIGHT."
+  (unless (memq right '(discover resume))
+    (signal 'wrong-type-argument (list '(member discover resume) right)))
+  (and (e-harness-instance--current-session-access-record-p record)
+       principal
+       (or (equal principal (plist-get record :controller))
+           (pcase right
+             ('discover
+              (or (member principal (plist-get record :discover-principals))
+                  (member principal (plist-get record :resume-principals))))
+             ('resume
+              (member principal (plist-get record :resume-principals)))))))
+
 (defun e-harness-instance--normalize-session-catalog-row
     (entry row &optional expected-session-id)
   "Validate and decorate one current dormant catalog ROW from store ENTRY."
