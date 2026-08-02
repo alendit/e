@@ -22,7 +22,11 @@
           (e-board-runtime--deferred-hooks nil)
           (e-board-runtime--deferred-hook-drain-scheduled nil)
           (e-board-runtime--deferred-hook-generation 0)
-          (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal)))
+          (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
+          (e-board-runtime--pending-pickup-head nil)
+          (e-board-runtime--pending-pickup-tail nil)
+          (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+          (e-board-runtime--pickup-drain-scheduled nil))
      ,@body))
 
 (ert-deftest e-board-runtime-test-attachment-maps-live-session-and-delivers-exact-and-tags ()
@@ -64,6 +68,10 @@
                                     :content "exact message")
         (e-board-runtime-post-input board :id "tagged" :tags '(main)
                                     :content "tagged message")
+        ;; Ingress only appends/enqueues.  A bounded later drain owns all
+        ;; harness delivery attempts, so routing cannot start a turn inline.
+        (should-not deliveries)
+        (e-board-runtime--drain-pickups)
         (should (equal (mapcar #'car deliveries) '("first" "first" "second")))
         (should (equal (mapcar #'car (mapcar #'cdr deliveries))
                        '(("board" "exact" "first")
@@ -79,6 +87,8 @@
       (e-board-runtime-attach board harness "session" :participant-id "participant")
       (e-board-runtime-post-input board :to "participant" :mode 'queue
                                   :content "queued input")
+      (should-not (e-harness-queued-prompts harness "session"))
+      (e-board-runtime--drain-pickups)
       (should (equal (plist-get (car (e-harness-queued-prompts harness "session"))
                                 :prompt)
                      "queued input"))

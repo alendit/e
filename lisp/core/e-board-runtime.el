@@ -50,6 +50,21 @@
 (defvar e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal)
   "Latest bounded activity capture for each board-enrolled work handle.")
 
+(defconst e-board-runtime-pickup-drain-limit 16
+  "Maximum frozen pickup attempts the private runtime starts per drain.")
+
+(defvar e-board-runtime--pending-pickup-head nil
+  "Head cell of the FIFO queue of pending board pickup identities.")
+
+(defvar e-board-runtime--pending-pickup-tail nil
+  "Tail cell of the FIFO queue of pending board pickup identities.")
+
+(defvar e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)
+  "Deduplication set for runtime pickup identities awaiting an attempt.")
+
+(defvar e-board-runtime--pickup-drain-scheduled nil
+  "Non-nil while the runtime has one pickup-drain timer pending.")
+
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
@@ -114,6 +129,45 @@ will consume the mailbox under its own bounded drain."
      handle #'e-board-runtime--schedule-deferred-hook policies)
     (e-work-install-activity-observer
      handle #'e-board-runtime--capture-work-activity)))
+
+(defun e-board-runtime--pickup-queue-key (board pickup-id)
+  "Return the process-local queue identity for BOARD's PICKUP-ID."
+  (list (e-board-registry-board-id board) pickup-id))
+
+(defun e-board-runtime--enqueue-pickups (board pickup-ids)
+  "Enqueue BOARD PICKUP-IDS once; never deliver on an append/effect stack."
+  (dolist (pickup-id pickup-ids)
+    (let ((key (e-board-runtime--pickup-queue-key board pickup-id)))
+      (unless (gethash key e-board-runtime--pending-pickup-set)
+        (puthash key t e-board-runtime--pending-pickup-set)
+        (let ((cell (list key)))
+          (if e-board-runtime--pending-pickup-tail
+              (setcdr e-board-runtime--pending-pickup-tail cell)
+            (setq e-board-runtime--pending-pickup-head cell))
+          (setq e-board-runtime--pending-pickup-tail cell)))))
+  (unless e-board-runtime--pickup-drain-scheduled
+    (setq e-board-runtime--pickup-drain-scheduled t)
+    (run-at-time 0 nil #'e-board-runtime--drain-pickups)))
+
+(defun e-board-runtime--drain-pickups ()
+  "Attempt one bounded FIFO page of previously frozen pickup envelopes."
+  (setq e-board-runtime--pickup-drain-scheduled nil)
+  (let ((attempts 0))
+    (while (and e-board-runtime--pending-pickup-head
+                (< attempts e-board-runtime-pickup-drain-limit))
+      (let ((key (pop e-board-runtime--pending-pickup-head)))
+        (unless e-board-runtime--pending-pickup-head
+          (setq e-board-runtime--pending-pickup-tail nil))
+        (remhash key e-board-runtime--pending-pickup-set)
+        (let ((board (condition-case nil
+                         (e-board-registry-get (car key))
+                       (e-board-registry-missing nil))))
+          (when board
+            (cl-incf attempts)
+            (e-board-runtime--deliver-pickups board (list (cadr key)))))))
+    (when e-board-runtime--pending-pickup-head
+      (setq e-board-runtime--pickup-drain-scheduled t)
+      (run-at-time 0 nil #'e-board-runtime--drain-pickups))))
 
 (defun e-board-runtime--enroll-work (harness handle callback)
   "Enroll HANDLE for its attached HARNESS session before runner entry.
@@ -299,11 +353,11 @@ at append time, independently of downstream session acceptance."
        (when (eq (e-board-pickup-state pickup) 'pending)
          (push delivery-id pickup-ids)))
      (e-board-pickups (e-board-registry-board-source-board board)))
-    (e-board-runtime--deliver-pickups board (nreverse pickup-ids))))
+    (e-board-runtime--enqueue-pickups board (nreverse pickup-ids))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)
-  "Post one input to BOARD-OR-ID's source board, then deliver its frozen pickups.
+  "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
 publications only retry pickups that remain pending."
   (let* ((board (e-board-runtime--active-board board-or-id))
@@ -312,8 +366,8 @@ publications only retry pickups that remain pending."
            (e-board-registry-board-source-board board)
             :id id :author author :tags tags :attributes attributes :to to :mode mode :content content
            :reference reference :source-input-key source-input-key)))
-    (e-board-runtime--deliver-pickups board
-                                      (e-board-publication-pickup-ids publication))
+    (e-board-runtime--enqueue-pickups
+     board (e-board-publication-pickup-ids publication))
     publication))
 
 (provide 'e-board-runtime)
