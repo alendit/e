@@ -622,28 +622,38 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
     e-harness--aggregate-unsettled-change-functions
     e-work--unsettled-change-functions
     e-board-registry--unsettled-change-functions
-    e-session--unsettled-change-functions)
+    e-session--unsettled-change-functions
+    e-task-queue--unsettled-change-functions)
   "Owner-transition hooks observed by controlled quiescence requests.")
 
 (defun e-board-runtime--quiescence-sources ()
   "Return all constant-time process-local unsettled source projections."
-  (list :runtime (e-board-runtime-unsettled-state)
-        :harnesses (e-harness-aggregate-unsettled-state)
-        :work (e-work-unsettled-state)
-        :boards (e-board-registry-unsettled-state)
-        :persistence (e-session-persistence-unsettled-state)))
+  (append
+   (list :runtime (e-board-runtime-unsettled-state)
+         :harnesses (e-harness-aggregate-unsettled-state)
+         :work (e-work-unsettled-state)
+         :boards (e-board-registry-unsettled-state)
+         :persistence (e-session-persistence-unsettled-state))
+   (when (fboundp 'e-task-queue-unsettled-state)
+     (list :task-persistence (e-task-queue-unsettled-state)))))
 
 (defun e-board-runtime--quiescence-blockers (sources)
   "Return the nonzero unsettled counters from SOURCES."
   (let (blockers)
-    (dolist (source '(:runtime :harnesses :work :boards :persistence))
+    (dolist (source '(:runtime :harnesses :work :boards :persistence
+                      :task-persistence))
       (let ((state (plist-get sources source)))
         (while state
           (let ((key (pop state))
                 (value (pop state)))
             (unless (eq key :generation)
               (when (and (integerp value) (> value 0))
-                (push (cons (intern (format "%s.%s" source key)) value)
+                (push (cons
+                       (intern
+                        (format "%s.%s"
+                                (string-remove-prefix ":" (symbol-name source))
+                                (string-remove-prefix ":" (symbol-name key))))
+                       value)
                       blockers)))))))
     (nreverse blockers)))
 

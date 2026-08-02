@@ -77,6 +77,26 @@ original task), `:session-id' (the failed session to reference), and `:error'.")
 Each function is called with the queue.  Intended for observation (shells,
 tests); handlers must not mutate the queue.")
 
+(defvar e-task-queue--unsettled-write-count 0)
+(defvar e-task-queue--failed-write-count 0)
+(defvar e-task-queue--unsettled-generation 0)
+(defvar e-task-queue--unsettled-change-functions nil)
+
+(defun e-task-queue-unsettled-state ()
+  "Return constant-time task writer state for runtime quiescence."
+  (list :generation e-task-queue--unsettled-generation
+        :writes e-task-queue--unsettled-write-count
+        :failures e-task-queue--failed-write-count))
+
+(defun e-task-queue--adjust-writer-state (class delta)
+  "Adjust task writer CLASS by DELTA and notify quiescence observers."
+  (pcase class
+    ('writes (cl-incf e-task-queue--unsettled-write-count delta))
+    ('failures (cl-incf e-task-queue--failed-write-count delta)))
+  (cl-incf e-task-queue--unsettled-generation)
+  (run-hook-with-args 'e-task-queue--unsettled-change-functions
+                      (e-task-queue-unsettled-state)))
+
 (define-error 'e-task-queue-error "Task queue error")
 (define-error 'e-task-queue-unknown-task "Unknown task id" 'e-task-queue-error)
 
@@ -100,7 +120,8 @@ WRITE-TIMER coalesces those writes."
   paused-p
   max-retries
   directory
-  write-timer)
+  write-timer
+  write-failed-p)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
                                     runner producer-binding max-retries directory)
@@ -642,27 +663,46 @@ The transient `:handle', `:pausing', and the live harness are never persisted.")
               (print-level nil))
           (prin1 (e-task-queue--serialize queue) (current-buffer)))))))
 
+(defun e-task-queue--complete-write (queue)
+  "Perform QUEUE's pending write and maintain quiescence state."
+  (condition-case err
+      (progn
+        (e-task-queue--write-now queue)
+        (when (e-task-queue-write-failed-p queue)
+          (setf (e-task-queue-write-failed-p queue) nil)
+          (e-task-queue--adjust-writer-state 'failures -1)))
+    (error
+     (unless (e-task-queue-write-failed-p queue)
+       (setf (e-task-queue-write-failed-p queue) t)
+       (e-task-queue--adjust-writer-state 'failures 1))
+     (signal (car err) (cdr err))))
+  queue)
+
 (defun e-task-queue--schedule-write (queue)
   "Schedule a coalesced durable write for QUEUE.
 No-op for an in-memory queue.  Reuses a pending timer so a burst of mutations
 collapses into one write off the hot enqueue/settle path."
   (when (and (e-task-queue-directory queue)
              (not (timerp (e-task-queue-write-timer queue))))
+    (e-task-queue--adjust-writer-state 'writes 1)
     (setf (e-task-queue-write-timer queue)
           (run-at-time
            (max 0 (or e-task-queue-write-delay 0)) nil
            (lambda ()
              (when (e-task-queue-p queue)
                (setf (e-task-queue-write-timer queue) nil)
-               (e-task-queue--write-now queue)))))))
+               (unwind-protect
+                   (e-task-queue--complete-write queue)
+                 (e-task-queue--adjust-writer-state 'writes -1))))))))
 
 (defun e-task-queue-flush (queue)
   "Flush any pending durable write for QUEUE synchronously.  Return QUEUE."
   (when-let ((timer (e-task-queue-write-timer queue)))
     (cancel-timer timer)
-    (setf (e-task-queue-write-timer queue) nil))
+    (setf (e-task-queue-write-timer queue) nil)
+    (e-task-queue--adjust-writer-state 'writes -1))
   (when (e-task-queue-directory queue)
-    (e-task-queue--write-now queue))
+    (e-task-queue--complete-write queue))
   queue)
 
 (defun e-task-queue--persist-on-change (queue)

@@ -633,6 +633,27 @@ without one there is nothing to analyze, so the task terminates."
                                "do the thing")))))
         (delete-directory dir t)))))
 
+(ert-deftest e-task-queue-test-write-timer-owns-quiescence-slot ()
+  "A coalesced domain write remains visible until its callback returns."
+  (let ((e-task-queue--unsettled-write-count 0)
+        (e-task-queue--failed-write-count 0)
+        (e-task-queue--unsettled-generation 0)
+        callback
+        wrote)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_seconds _repeat function &rest arguments)
+                 (setq callback (lambda () (apply function arguments)))
+                 (timer-create)))
+              ((symbol-function 'e-task-queue--write-now)
+               (lambda (_queue) (setq wrote t))))
+      (let ((queue (e-task-queue-create :directory "/tmp/task-writer-test")))
+        (e-task-queue--schedule-write queue)
+        (should (equal (e-task-queue-unsettled-state)
+                       '(:generation 1 :writes 1 :failures 0)))
+        (funcall callback)
+        (should wrote)
+        (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0))))))
+
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here

@@ -9,6 +9,7 @@
 
 (require 'ert)
 (require 'e-board-runtime)
+(require 'e-task-queue)
 
 (defconst e-board-runtime-test--production-post-input
   (symbol-function 'e-board-runtime-post-input)
@@ -100,6 +101,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-session--unsettled-write-count 0)
           (e-session--unsettled-generation 0)
           (e-session--unsettled-change-functions nil)
+          (e-task-queue--unsettled-write-count 0)
+          (e-task-queue--failed-write-count 0)
+          (e-task-queue--unsettled-generation 0)
+          (e-task-queue--unsettled-change-functions nil)
           (e-board-runtime--control-sequence 0)
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
@@ -306,6 +311,18 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (funcall (pop scheduled))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (should (= (plist-get (e-board-unsettled-state source) :routing) 0))))))
+
+(ert-deftest e-board-runtime-test-quiescence-waits-for-task-writer ()
+  "A domain writer timer is an activation blocker until its owner retires it."
+  (e-board-runtime-test--with-empty-state
+    (let* ((e-task-queue--unsettled-write-count 1)
+           (quiescence (e-board-runtime-request-quiescence))
+           (request (e-board-runtime-quiescence-request quiescence)))
+      (should (eq (e-request-lifecycle-state request) 'started))
+      (should (equal (plist-get (e-request-lifecycle-progress request) :blockers)
+                     '((task-persistence.writes . 1))))
+      (e-task-queue--adjust-writer-state 'writes -1)
+      (should (eq (e-request-lifecycle-state request) 'finished)))))
 
 (ert-deftest e-board-runtime-test-cancelled-quiescence-keeps-admission-closed ()
   "Cancelling observation never silently reopens the fenced admission epoch."

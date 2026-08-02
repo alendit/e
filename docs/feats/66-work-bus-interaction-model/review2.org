@@ -672,8 +672,14 @@ Board-owned terminal classification and aggregation-deadline queues now adjust
 the same constant-time routing unsettled counter used by runtime quiescence.
 =e-board-runtime-test-quiescence-waits-for-terminal-and-deadline-queues= holds
 both reducers independently and proves the request remains started until the
-last bounded drain retires.  The finding remains open for producer/domain
-writers and the production preparation/preflight/restart activation service.
+last bounded drain retires.  Producer work is counted from acceptance through
+causal terminal settlement.  Task persistence now owns constant-time pending
+and failed-writer counters: timer ownership transfers without a false-zero
+edge, a write failure remains an activation blocker, and runtime quiescence
+subscribes to those transitions.  Focused tests hold a task writer independently
+and prove quiescence settles only after the writer owner retires its slot.  The
+finding remains open for the production preparation/preflight/restart
+activation service.
 
 ** TODO High: Main-thread bounds remain incomplete
 
