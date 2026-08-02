@@ -31,6 +31,9 @@
 (define-error 'e-board-registry-client-missing
   "e board registry client is missing"
   'e-board-registry-error)
+(define-error 'e-board-registry-authorization-denied
+  "e board registry authorization denied"
+  'e-board-registry-error)
 
 (defvar e-board-registry--id-sequence 0
   "Process-local fallback sequence for registry-owned identities.")
@@ -44,7 +47,7 @@
 (cl-defstruct (e-board-registry-board
                 (:constructor e-board-registry-board--create)
                 (:conc-name e-board-registry-board-))
-  id source-board state author principal id-function clients client-generations participants)
+  id source-board state author principal principal-grants id-function clients client-generations participants)
 
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
@@ -125,6 +128,9 @@ The source board is registered with `e-board' under the same board identity."
                   :state 'active
                   :author author
                   :principal principal
+                  :principal-grants (let ((grants (make-hash-table :test 'equal)))
+                                      (when principal (puthash principal 'owner grants))
+                                      grants)
                   :id-function id-function
                   :clients (make-hash-table :test 'equal)
                   :client-generations (make-hash-table :test 'equal)
@@ -135,6 +141,55 @@ The source board is registered with `e-board' under the same board identity."
 (defun e-board-registry-get (id)
   "Return process-local board ID, or signal `e-board-registry-missing'."
   (e-board-registry--resolve id))
+
+(defun e-board-registry-principal-role (board-or-id principal)
+  "Return PRINCIPAL's board role, or nil when it has no board grant."
+  (and principal
+       (gethash principal
+                (e-board-registry-board-principal-grants
+                 (e-board-registry--resolve board-or-id)))))
+
+(defun e-board-registry--require-owner (board requester)
+  "Signal unless REQUESTER currently owns BOARD."
+  (unless (eq (e-board-registry-principal-role board requester) 'owner)
+    (signal 'e-board-registry-authorization-denied
+            (list (e-board-registry-board-id board) requester 'owner)))
+  board)
+
+(defun e-board-registry--owner-count (board)
+  "Return the number of current owner grants on BOARD.
+Administrative grant changes may scan this small registry-owned table; hot
+message routing never consults it."
+  (let ((count 0))
+    (maphash (lambda (_principal role)
+               (when (eq role 'owner) (cl-incf count)))
+             (e-board-registry-board-principal-grants board))
+    count))
+
+(defun e-board-registry-authorize-principal (board-or-id requester principal role)
+  "Grant PRINCIPAL the board ROLE when REQUESTER is a current owner.
+ROLE is either `owner' or `member'.  This application operation owns board
+grant mutation; message routing remains independent of its grant table."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--require-owner board requester)
+    (unless (and principal (memq role '(owner member)))
+      (signal 'wrong-type-argument (list '(member owner member) role)))
+    (puthash principal role (e-board-registry-board-principal-grants board))
+    role))
+
+(defun e-board-registry-revoke-principal (board-or-id requester principal)
+  "Revoke PRINCIPAL's grant when REQUESTER is an owner.
+The registry refuses to remove its last owner, preserving an authenticated
+controller for future board lifecycle operations."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (grants (e-board-registry-board-principal-grants board))
+         (role (gethash principal grants)))
+    (e-board-registry--require-owner board requester)
+    (when (and (eq role 'owner) (= (e-board-registry--owner-count board) 1))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) principal 'last-owner)))
+    (remhash principal grants)
+    role))
 
 (defun e-board-registry-list ()
   "Return all process-local boards sorted by printable identity."
