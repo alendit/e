@@ -149,6 +149,25 @@
                      (e-board-invocation source-board '("turn" "call")))
                     'committed))))))
 
+(ert-deftest e-board-runtime-test-invalid-invocation-rejects-before-enrollment ()
+  "An invalid exact invocation leaves its prepared work off the board."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "tool" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "never"))
+                      nil :context '(:session-id "session" :turn-id "turn")))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (should-error (funcall enroll handle (lambda (&rest _args)))
+                      :type 'e-board-runtime-error)
+        (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should-not (e-work-handle-started-p handle))))))
+
 (ert-deftest e-board-runtime-test-enrollment-installs-bounded-activity-mailbox ()
   "Board enrollment captures progress before it schedules general hook work."
   (e-board-runtime-test--with-empty-state

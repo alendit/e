@@ -453,6 +453,19 @@ target after the start stack unwinds."
 EFFECT-TARGET is owned by an injected runtime invocation service.  This
 convenience keeps required pre-run ordering at one application boundary without
 making `e-work' depend on board state or making the board retain loop closures."
+  ;; Validate every relation that can reject before `e-board-enroll-work'
+  ;; appends the operation record.  A cheap runner may settle immediately, so
+  ;; callers must never have to roll a visible enrollment back afterwards.
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (e-work-handle-started-p handle)
+    (signal 'e-board-error (list "Cannot enroll started work" handle)))
+  (when (e-board-observed-work board (e-work-handle-id handle))
+    (signal 'e-board-id-conflict (list (e-work-handle-id handle))))
+  (unless effect-target
+    (signal 'e-board-error (list "Invocation effect target is required")))
+  (when (e-board-invocation board invocation-id)
+    (signal 'e-board-id-conflict (list invocation-id)))
   (e-board-enroll-work board handle :metadata metadata)
   (e-board-subscribe-invocation board (e-work-handle-id handle) effect-target
                                  :id invocation-id)

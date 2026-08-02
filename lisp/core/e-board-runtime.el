@@ -317,20 +317,22 @@ has no callback and is observed only."
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
       (e-board-runtime--install-work-hooks attachment handle)
-      (e-board-enroll-work board handle :metadata metadata)
-      (when callback
-        (let* ((context (e-work-handle-context handle))
-               (turn-id (plist-get context :turn-id))
-               (tool-call-id (plist-get (plist-get context :tool-call) :id))
-               (target (e-board-runtime--register-invocation
-                        attachment turn-id tool-call-id callback)))
+      (if callback
+          (let* ((context (e-work-handle-context handle))
+                 (turn-id (plist-get context :turn-id))
+                 (tool-call-id (plist-get (plist-get context :tool-call) :id))
+                 (invocation-id (list turn-id tool-call-id))
+                 ;; Capturing this service first means an invalid tool-call
+                 ;; identity cannot leave an enrolled board operation behind.
+                 (target (e-board-runtime--register-invocation
+                          attachment turn-id tool-call-id callback)))
           (condition-case err
-              (e-board-subscribe-invocation
-               board (e-work-handle-id handle) target
-               :id (list turn-id tool-call-id))
+              (e-board-enroll-invocation-work
+               board handle invocation-id target :metadata metadata)
             (error
              (remhash target e-board-runtime--invocations)
-             (signal (car err) (cdr err)))))))))
+             (signal (car err) (cdr err)))))
+        (e-board-enroll-work board handle :metadata metadata)))))
 
 (defun e-board-runtime--subscribe-aggregation
     (harness handles mode timeout callback)
