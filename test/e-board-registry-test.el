@@ -247,6 +247,27 @@
         (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
                        '("subagent")))))))
 
+(ert-deftest e-board-registry-test-client-controls-only-its-observer-lifecycle ()
+  "Attached-client authorization precedes every observer state transition."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (other (e-board-registry-attach-client board :id "other"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "observer")))
+      (should-error
+       (e-board-registry-set-observer-state
+        board (e-board-registry-client-id other) "observer" 'muted)
+       :type 'e-board-registry-error)
+      (e-board-registry-set-observer-state
+       board (e-board-registry-client-id client) "observer" 'muted)
+      (should (eq (e-board-observer-state observer) 'muted))
+      (e-board-registry-set-observer-state
+       board (e-board-registry-client-id client) "observer" 'active)
+      (e-board-registry-set-observer-state
+       board (e-board-registry-client-id client) "observer" 'cancelled)
+      (should (eq (e-board-observer-state observer) 'cancelled)))))
+
 (ert-deftest e-board-registry-test-detach-client-cancels-its-observers ()
   "Disconnecting a client releases every nonterminal cursor it owns."
   (e-board-registry-test--with-empty-registries

@@ -220,6 +220,16 @@ ownership before delegating that ordered transition."
                  (e-board-registry-board-id-function board) 'observer))
      :state state :start-seq start-seq)))
 
+(defun e-board-registry-set-observer-state
+    (board-or-id client-id observer-id state)
+  "Transition attached CLIENT-ID's OBSERVER-ID to STATE.
+The board core validates the observer lifecycle; the registry prevents one
+attached client from muting, resuming, or closing another client's cursor."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-set-observer-state
+     (e-board-registry-board-source-board board) observer-id state)))
+
 (cl-defun e-board-registry-prepare-observer-page
     (board-or-id client-id observer-id &key (limit 32))
   "Prepare OBSERVER-ID's page for attached CLIENT-ID without cursor advance."
