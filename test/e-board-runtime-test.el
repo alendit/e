@@ -291,6 +291,41 @@
                      (e-board-delivery-attempt-endpoint-token attempt)
                      (e-board-runtime-attachment-endpoint-token attachment)))))))))
 
+(ert-deftest e-board-runtime-test-acceptance-rechecks-bound-endpoint-generation ()
+  "An endpoint replacement during delivery cannot accept the stale attempt."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :qualified :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-registry-register :live harness)
+      (e-board-runtime-attach-instance
+       board :qualified "session" :participant-id "participant"
+       :delivery-function
+       (lambda (&rest _arguments)
+         (e-harness-registry-clear-instance :live)
+         '(:accepted stale-receipt)))
+      (e-board-runtime-post-input
+       board :id "input" :to "participant" :content "deliver")
+      (let ((source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (let ((delivery-id
+               (car (e-board-message-pickup-ids
+                     (e-board-message source-board "input")))))
+          (e-board-runtime--drain-pickups)
+          (let* ((pickup (e-board-pickup source-board delivery-id))
+                 (attempt (e-board-pickup-attempt pickup)))
+            (should (eq (e-board-pickup-state pickup) 'uncertain))
+            (should (eq (e-board-delivery-attempt-state attempt) 'uncertain))
+            (should-not (equal (e-board-delivery-attempt-receipt attempt)
+                               'stale-receipt))))))))
+
 (ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
   "Two harness objects cannot attach the same stable store/session identity."
   (e-board-runtime-test--with-empty-state
@@ -560,7 +595,9 @@
                          (list (e-board-message-seq
                                 (e-board-publication-message publication))
                                (e-board-message-seq
-                                (e-board-publication-message publication))))))
+                                (e-board-publication-message publication)))))
+          (should (equal (plist-get metadata :board-endpoint-generation)
+                         '(nil nil))))
         (should (eq (e-board-pickup-state
                      (e-board-pickup (e-board-registry-board-source-board board)
                                      pickup-id))
@@ -568,7 +605,27 @@
         (e-board-runtime--handle-harness-event
          attachment
          (e-events-make :type 'input-consumed :session-id "session" :turn-id "turn"
-                        :payload (list :delivery-id pickup-id)))
+                        :payload (list :delivery-id pickup-id
+                                       :endpoint-generation '(9 9))))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup (e-board-registry-board-source-board board)
+                                     pickup-id))
+                    'accepted))
+        (let ((attempt
+               (e-board-pickup-attempt
+                (e-board-pickup (e-board-registry-board-source-board board)
+                                pickup-id))))
+          (e-board-runtime--handle-harness-event
+           attachment
+           (e-events-make
+            :type 'input-consumed :session-id "session" :turn-id "turn"
+            :payload
+            (list :delivery-id pickup-id
+                  :endpoint-token
+                  (copy-tree (e-board-delivery-attempt-endpoint-token attempt))
+                  :endpoint-generation
+                  (copy-tree
+                   (e-board-delivery-attempt-composite-generation attempt))))))
         (should (eq (e-board-pickup-state
                      (e-board-pickup (e-board-registry-board-source-board board)
                                      pickup-id))

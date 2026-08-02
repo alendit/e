@@ -123,6 +123,11 @@ harness-object-generation)= pair; the logical pickup remains generation
 neutral.  Acceptance and terminal transitions advance the attempt record,
 while only an explicitly proven-uncommitted adapter return permits a later
 attempt to replace its endpoint binding.
+Queued harness items now copy that accepted attempt token/generation into their
+private metadata and consumption receipt.  The runtime advances the board
+ledger only when both values match the still-bound attempt and current
+attachment; a delivery id from another generation is ignored rather than
+consuming the logical pickup.
 When an attached session is busy, its retryable pickup adapter result likewise
 returns the head to =ready=; the next =turn-finished= event reschedules only
 that participant's head instead of losing the delivery token or polling.

@@ -2771,6 +2771,11 @@ cancellation.  SESSION-ID identifies the session."
            (list :delivery-id (copy-tree (plist-get metadata :board-delivery-id))
                  :board-id (plist-get metadata :board-id)
                  :participant-id (plist-get metadata :board-participant-id)
+                 :endpoint-token
+                 (let ((token (plist-get metadata :board-endpoint-token)))
+                   (if (vectorp token) (copy-sequence token) (copy-tree token)))
+                 :endpoint-generation
+                 (copy-tree (plist-get metadata :board-endpoint-generation))
                  :message-id (plist-get entry :prompt-message-id))))
         (e-work-start-prepared turn-work :arguments nil
                                :context (list :session-id session-id

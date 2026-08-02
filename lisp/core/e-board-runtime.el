@@ -637,7 +637,10 @@ these terminal states have no output to close the board-owned open projection."
              (registry-board (e-board-runtime-attachment-board attachment))
              (board (e-board-registry-board-source-board registry-board))
              (pickup (e-board-pickup board delivery-id)))
-        (when (and pickup (memq (e-board-pickup-state pickup) '(accepted cancelling)))
+        (when (and pickup
+                   (memq (e-board-pickup-state pickup) '(accepted cancelling))
+                   (e-board-runtime--consumption-receipt-matches-p
+                    pickup attachment payload))
           (when-let ((next-id (e-board-pickup-complete-delivery board delivery-id)))
             (e-board-runtime--enqueue-pickups registry-board (list next-id))))))
      ((eq type 'session-reset)
@@ -668,21 +671,49 @@ these terminal states have no output to close the board-owned open projection."
 
 (defun e-board-runtime--delivery-metadata (pickup)
   "Return harness metadata that identifies the frozen PICKUP."
-  (list :input-origin 'board
-        :board-delivery-id (copy-tree (e-board-pickup-delivery-id pickup))
-        :board-id (e-board-pickup-board-id pickup)
-        :board-participant-id (e-board-pickup-participant-id pickup)
-        :board-message-id (e-board-pickup-message-id pickup)
-        :board-subscription-ids
-        (copy-sequence (e-board-pickup-subscription-ids pickup))
-        :board-event-seq-range
-        (copy-sequence (e-board-pickup-event-seq-range pickup))
-        :board-input-mode (e-board-pickup-mode pickup)
-        :board-reference (copy-tree (e-board-pickup-reference pickup))
-        :board-requester-actor
-        (copy-tree (e-board-pickup-requester-actor pickup))
-        :board-cause-metadata
-        (copy-tree (e-board-pickup-cause-metadata pickup))))
+  (let ((attempt (or (e-board-pickup-attempt pickup)
+                     (signal 'e-board-runtime-error
+                             (list "Pickup has no bound attempt"
+                                   (e-board-pickup-delivery-id pickup))))))
+    (list :input-origin 'board
+          :board-delivery-id (copy-tree (e-board-pickup-delivery-id pickup))
+          :board-id (e-board-pickup-board-id pickup)
+          :board-participant-id (e-board-pickup-participant-id pickup)
+          :board-message-id (e-board-pickup-message-id pickup)
+          :board-subscription-ids
+          (copy-sequence (e-board-pickup-subscription-ids pickup))
+          :board-event-seq-range
+          (copy-sequence (e-board-pickup-event-seq-range pickup))
+          :board-input-mode (e-board-pickup-mode pickup)
+          :board-reference (copy-tree (e-board-pickup-reference pickup))
+          :board-requester-actor
+          (copy-tree (e-board-pickup-requester-actor pickup))
+          :board-cause-metadata
+          (copy-tree (e-board-pickup-cause-metadata pickup))
+          :board-endpoint-token
+          (e-board--copy-envelope-value
+           (e-board-delivery-attempt-endpoint-token attempt))
+          :board-endpoint-generation
+          (copy-tree
+           (e-board-delivery-attempt-composite-generation attempt)))))
+
+(defun e-board-runtime--attempt-belongs-to-attachment-p (pickup attachment)
+  "Return non-nil when PICKUP's bound attempt names ATTACHMENT exactly."
+  (when-let ((attempt (e-board-pickup-attempt pickup)))
+    (and (equal (e-board-delivery-attempt-endpoint-token attempt)
+                (e-board-runtime-attachment-endpoint-token attachment))
+         (equal (e-board-delivery-attempt-composite-generation attempt)
+                (e-board-runtime--attachment-composite-generation attachment)))))
+
+(defun e-board-runtime--consumption-receipt-matches-p
+    (pickup attachment payload)
+  "Return non-nil when PAYLOAD proves PICKUP consumption on ATTACHMENT."
+  (when-let ((attempt (e-board-pickup-attempt pickup)))
+    (and (e-board-runtime--attempt-belongs-to-attachment-p pickup attachment)
+         (equal (plist-get payload :endpoint-token)
+                (e-board-delivery-attempt-endpoint-token attempt))
+         (equal (plist-get payload :endpoint-generation)
+                (e-board-delivery-attempt-composite-generation attempt)))))
 
 (defun e-board-runtime--deliver-to-harness (attachment pickup _message)
   "Deliver PICKUP's MESSAGE through ATTACHMENT's idle harness session.
@@ -1027,8 +1058,16 @@ the new endpoint."
                                    attachment pickup message)))
               (pcase (car-safe result)
                 (:accepted
-                 (e-board-pickup-accept-delivery
-                  source-board delivery-id (cadr result)))
+                 (if (and (e-board-runtime--current-attachment-p attachment)
+                          (e-board-runtime--attempt-belongs-to-attachment-p
+                           pickup attachment))
+                     (e-board-pickup-accept-delivery
+                      source-board delivery-id (cadr result))
+                   (when-let ((next-id
+                               (e-board-pickup-mark-uncertain
+                                source-board delivery-id
+                                'acceptance-endpoint-changed)))
+                     (e-board-runtime--enqueue-pickups board (list next-id)))))
                 (:uncertain
                  (when-let ((next-id
                              (e-board-pickup-mark-uncertain

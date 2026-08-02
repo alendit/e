@@ -1745,6 +1745,33 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                            (e-harness-messages harness "session-1"))
                    '(user assistant user assistant)))))
 
+(ert-deftest e-harness-test-board-consumption-receipt-carries-endpoint-fence ()
+  "A consumed board input reports the accepted token and generation."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (token [endpoint :live 7 "store" "session"])
+         events)
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session")
+    (e-harness-prompt-batch
+     harness "session" "board input"
+     :metadata
+     (list :input-origin 'board
+           :board-delivery-id '("board" "message" "participant")
+           :board-id "board" :board-participant-id "participant"
+           :board-endpoint-token token :board-endpoint-generation '(3 7)))
+    (let* ((event (cl-find-if
+                   (lambda (candidate)
+                     (eq (e-events-type candidate) 'input-consumed))
+                   events))
+           (payload (plist-get event :payload)))
+      (should event)
+      (should (equal (plist-get payload :endpoint-token) token))
+      (should-not (eq (plist-get payload :endpoint-token) token))
+      (should (equal (plist-get payload :endpoint-generation) '(3 7))))))
+
 (ert-deftest e-harness-test-reset-clears-session-messages ()
   "Reset clears transcript messages for a session."
   (let ((harness (e-harness-create
