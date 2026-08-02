@@ -54,6 +54,11 @@
                 (:conc-name e-board-registry-client-))
   id board-id author principal role generation state observer-ids)
 
+(cl-defstruct (e-board-registry-requester-context
+               (:constructor e-board-registry-requester-context--create)
+               (:conc-name e-board-registry-requester-context-))
+  board-id client-id client-generation principal role)
+
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
@@ -269,6 +274,40 @@ LIMIT plus one candidates, rather than materializing the full registry list."
       (setf (e-board-registry-client-state client) 'detached)
       (remhash client-id clients))
     client))
+
+(defun e-board-registry-client-requester-context (board-or-id client-id)
+  "Capture active CLIENT-ID as a generation-fenced requester context."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (client (gethash client-id (e-board-registry-board-clients board))))
+    (unless (and client (eq (e-board-registry-client-state client) 'active))
+      (signal 'e-board-registry-client-missing (list client-id)))
+    (e-board-registry-requester-context--create
+     :board-id (e-board-registry-board-id board)
+     :client-id client-id
+     :client-generation (e-board-registry-client-generation client)
+     :principal (e-board-registry-client-principal client)
+     :role (e-board-registry-client-role client))))
+
+(defun e-board-registry-resolve-requester-principal (board-or-id context)
+  "Return CONTEXT's principal only while its exact client generation is active."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (client-id (and (e-board-registry-requester-context-p context)
+                         (e-board-registry-requester-context-client-id context)))
+         (client (and client-id
+                      (gethash client-id (e-board-registry-board-clients board)))))
+    (unless (and client
+                 (equal (e-board-registry-requester-context-board-id context)
+                        (e-board-registry-board-id board))
+                 (eq (e-board-registry-client-state client) 'active)
+                 (= (e-board-registry-requester-context-client-generation context)
+                    (e-board-registry-client-generation client))
+                 (equal (e-board-registry-requester-context-principal context)
+                        (e-board-registry-client-principal client))
+                 (eq (e-board-registry-requester-context-role context)
+                     (e-board-registry-client-role client)))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) client-id 'stale-requester)))
+    (e-board-registry-client-principal client)))
 
 (cl-defun e-board-registry-install-observer
     (board-or-id client-id selector &key id start-seq

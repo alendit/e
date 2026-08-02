@@ -815,11 +815,16 @@ the new endpoint."
                  (mode 'inject) content reference source-input-key)
   "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
-publications only retry pickups that remain pending."
+publications only retry pickups that remain pending.  REQUESTER, when supplied
+for an exact post, must be an active registry client requester context."
   (let* ((board (e-board-runtime--active-board board-or-id))
+         (requester-principal
+          (and requester to
+               (e-board-registry-resolve-requester-principal board requester)))
          (_authorization
           (and requester to
-               (e-board-registry-authorize-exact-post board requester to)))
+               (e-board-registry-authorize-exact-post
+                board requester-principal to)))
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)

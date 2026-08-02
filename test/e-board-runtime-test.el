@@ -443,15 +443,31 @@
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board" :principal "owner")))
       (e-board-registry-authorize-principal board "owner" "target-owner" 'member)
+      (e-board-registry-authorize-principal board "owner" "member" 'member)
       (let* ((target (e-board-registry-add-participant
                       board :id "target" :principal "target-owner"))
+             (_owner-client (e-board-registry-attach-client
+                             board :id "owner-client" :principal "owner"))
+             (_member-client (e-board-registry-attach-client
+                              board :id "member-client" :principal "member"))
+             (owner-context
+              (e-board-registry-client-requester-context board "owner-client"))
+             (member-context
+              (e-board-registry-client-requester-context board "member-client"))
              (source-board (e-board-registry-board-source-board board)))
         (should-error
-         (e-board-runtime-post-input board :id "denied" :to target :requester "stranger"
+         (e-board-runtime-post-input board :id "bare" :to target :requester "owner"
                                      :content "no")
          :type 'e-board-registry-authorization-denied)
         (should-not (e-board-messages source-board))
-        (e-board-runtime-post-input board :id "allowed" :to target :requester "owner"
+        (should-error
+         (e-board-runtime-post-input board :id "denied" :to target
+                                     :requester member-context
+                                     :content "no")
+         :type 'e-board-registry-authorization-denied)
+        (should-not (e-board-messages source-board))
+        (e-board-runtime-post-input board :id "allowed" :to target
+                                    :requester owner-context
                                     :content "yes")
         (should (equal (e-board-message-content (car (e-board-messages source-board)))
                        "yes"))))))

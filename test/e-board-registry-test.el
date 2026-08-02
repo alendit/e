@@ -145,6 +145,26 @@
         (should (= (e-board-registry-client-generation replacement) 2))
         (should (eq (e-board-registry-client-state replacement) 'active))))))
 
+(ert-deftest e-board-registry-test-requester-context-is-generation-fenced ()
+  "A requester context authenticates only its captured active client generation."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (client (e-board-registry-attach-client
+                    board :id "client" :principal "owner"))
+           (context (e-board-registry-client-requester-context board "client")))
+      (should (equal (e-board-registry-resolve-requester-principal board context)
+                     "owner"))
+      (e-board-registry-detach-client board (e-board-registry-client-id client))
+      (e-board-registry-attach-client board :id "client" :principal "owner")
+      (should-error
+       (e-board-registry-resolve-requester-principal board context)
+       :type 'e-board-registry-authorization-denied)
+      (should
+       (equal
+        (e-board-registry-resolve-requester-principal
+         board (e-board-registry-client-requester-context board "client"))
+        "owner")))))
+
 (ert-deftest e-board-registry-test-reconnect-fences-old-observer-cursor ()
   "A reconnect cannot operate a cursor installed by its old generation."
   (e-board-registry-test--with-empty-registries
