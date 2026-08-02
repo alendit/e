@@ -569,6 +569,13 @@ the new endpoint."
        (e-board-registry-board-source-board board) 'participant-rebound
        (list :participant-id (e-board-registry-participant-id participant)
              :attachment-generation (e-board-runtime-attachment-generation attachment)))
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (delivery-id (car (e-board--pickup-queue
+                                source-board
+                                (e-board-registry-participant-id participant))))
+             (pickup (and delivery-id (e-board-pickup source-board delivery-id))))
+        (when (and pickup (eq (e-board-pickup-state pickup) 'ready))
+          (e-board-runtime--enqueue-pickups board (list delivery-id))))
       attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
