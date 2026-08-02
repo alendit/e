@@ -711,6 +711,39 @@
         (should (equal reasons '(timed-out)))
         (should (eq (plist-get (e-work-status handle) :state) 'started))))))
 
+(ert-deftest e-board-test-cancelling-prepared-aggregation-fences-its-reply-effect ()
+  "Cancelling a ready aggregation never replies or changes its watched work."
+  (e-board-test--with-empty-registry
+    (let (effects routers replies)
+      (let* ((board (e-board-create
+                     :id "board"
+                     :effect-scheduler (lambda (effect) (push effect effects))
+                     :terminal-classification-scheduler
+                     (lambda (drain) (push drain routers))
+                     :invocation-effect-dispatcher
+                     (lambda (&rest _arguments) (push 'replied replies))))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "cheap" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done")) nil)))
+        (e-board-enroll-work board handle)
+        (e-board-subscribe-aggregation board (list (e-work-handle-id handle)) 'all
+                                       "call" :id "call")
+        (e-work-start-prepared handle)
+        (funcall (pop routers))
+        (let ((activation (e-board-activation board '("board" "call" 1))))
+          (should (eq (e-board-activation-state activation) 'prepared))
+          (e-board-cancel-aggregation board "call")
+          (should (eq (e-board-aggregation-state
+                       (e-board-aggregation board "call"))
+                      'cancelled))
+          (should (eq (e-board-activation-state activation) 'cancelled)))
+        (funcall (pop effects))
+        (should-not replies)
+        (should (eq (e-board-work-state
+                     (e-board-observed-work board (e-work-handle-id handle)))
+                    'finished))))))
+
 (ert-deftest e-board-test-ordinary-subscription-lifecycle-preserves-address-route ()
   "Muting or cancelling an ordinary route cannot alter exact addressing."
   (e-board-test--with-empty-registry

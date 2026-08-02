@@ -390,7 +390,8 @@ has no callback and is observed only."
          (remhash target e-board-runtime--invocations)
          (signal (car err) (cdr err))))
       (lambda ()
-        (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))))))
+        (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))
+        (remhash target e-board-runtime--invocations)))))
 
 (defun e-board-runtime--publish-output (attachment turn-id)
   "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
