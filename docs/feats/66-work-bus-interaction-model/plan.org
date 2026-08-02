@@ -134,6 +134,9 @@ legal state edges to the board core.
 New live observers, including those installed through the registry, now capture
 the current board high watermark by default and begin at its successor;
 retained backfill requires an explicit =start-seq=.
+Observer cursors now also retain their owning client connection generation, so
+reconnecting with the same client id cannot operate a cancelled cursor from an
+older attachment generation.
 Slices 0--4 are private implementation/verification order only.  No board mode,
 feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
 Slice 5 cutover replaces every caller and deletes the superseded interfaces in

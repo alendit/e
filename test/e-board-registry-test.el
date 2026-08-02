@@ -74,6 +74,25 @@
         (should (= (e-board-registry-client-generation replacement) 2))
         (should (eq (e-board-registry-client-state replacement) 'active))))))
 
+(ert-deftest e-board-registry-test-reconnect-fences-old-observer-cursor ()
+  "A reconnect cannot operate a cursor installed by its old generation."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (first (e-board-registry-attach-client board :id "client"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "old")))
+      (should (= (e-board-observer-client-generation observer) 1))
+      (e-board-registry-detach-client board "client")
+      (let* ((replacement (e-board-registry-attach-client board :id "client"))
+             (fresh (e-board-registry-install-observer
+                     board "client" '(:tags (main)) :id "fresh")))
+        (should (= (e-board-registry-client-generation replacement) 2))
+        (should (= (e-board-observer-client-generation fresh) 2))
+        (should-error
+         (e-board-registry-prepare-observer-page board "client" "old")
+         :type 'e-board-registry-error)
+        (should (eq (e-board-registry-client-state first) 'detached))))))
+
 (ert-deftest e-board-registry-test-list-page-is-bounded-and-continuable ()
   "Registry pages keep deterministic order without exposing the whole list."
   (e-board-registry-test--with-empty-registries

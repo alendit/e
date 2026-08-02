@@ -222,10 +222,11 @@ the cursor and selector because it owns ordered message observation."
     (unless client
       (signal 'e-board-registry-client-missing (list client-id)))
     (let ((observer
-           (e-board-observer-subscribe
+            (e-board-observer-subscribe
             (e-board-registry-board-source-board board) client-id selector
             :id (or id (e-board-registry--next-id
                         (e-board-registry-board-id-function board) 'observer))
+            :client-generation (e-board-registry-client-generation client)
             :start-seq start-seq
             :history-before-seq history-before-seq
             :history-floor history-floor)))
@@ -236,15 +237,19 @@ the cursor and selector because it owns ordered message observation."
 
 (defun e-board-registry--observer-for-client (board client-id observer-id)
   "Return BOARD OBSERVER-ID after validating its attached owning CLIENT-ID."
-  (unless (gethash client-id (e-board-registry-board-clients board))
+  (let ((client (gethash client-id (e-board-registry-board-clients board))))
+    (unless client
     (signal 'e-board-registry-client-missing (list client-id)))
-  (let ((observer (or (e-board-observer
-                       (e-board-registry-board-source-board board) observer-id)
-                      (signal 'e-board-observer-missing (list observer-id)))))
-    (unless (equal (e-board-observer-client-id observer) client-id)
-      (signal 'e-board-registry-error
-              (list "Observer belongs to another client" observer-id client-id)))
-    observer))
+    (let ((observer (or (e-board-observer
+                         (e-board-registry-board-source-board board) observer-id)
+                        (signal 'e-board-observer-missing (list observer-id)))))
+      (unless (and (equal (e-board-observer-client-id observer) client-id)
+                   (= (or (e-board-observer-client-generation observer) 0)
+                      (e-board-registry-client-generation client)))
+        (signal 'e-board-registry-error
+                (list "Observer belongs to another client generation"
+                      observer-id client-id)))
+      observer)))
 
 (cl-defun e-board-registry-replace-observer
     (board-or-id client-id observer-id selector &key id (state 'active) start-seq)

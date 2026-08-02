@@ -63,7 +63,8 @@
 (cl-defstruct (e-board-observer
                (:constructor e-board-observer--create)
                (:conc-name e-board-observer-))
-  id board-id client-id selector state next-seq history-before-seq history-floor)
+  id board-id client-id client-generation selector state next-seq
+  history-before-seq history-floor)
 
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
@@ -1091,7 +1092,7 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
             t))))
 
 (cl-defun e-board-observer-subscribe
-    (board client-id selector &key id (state 'active) start-seq
+    (board client-id selector &key id client-generation (state 'active) start-seq
            history-before-seq (history-floor 0))
   "Create an effect-free client observer cursor over BOARD's message sequence.
 Observers deliberately share selector fields with participant subscriptions,
@@ -1108,6 +1109,9 @@ the returned cursor's advancing `next-seq' for later bounded pages."
     (signal 'wrong-type-argument (list 'natnump start-seq)))
   (unless (and (integerp history-floor) (>= history-floor 0))
     (signal 'wrong-type-argument (list 'natnump history-floor)))
+  (when client-generation
+    (unless (and (integerp client-generation) (> client-generation 0))
+      (signal 'wrong-type-argument (list 'plusp client-generation))))
   (when history-before-seq
     (unless (and (integerp history-before-seq)
                  (>= history-before-seq history-floor))
@@ -1117,6 +1121,7 @@ the returned cursor's advancing `next-seq' for later bounded pages."
       (signal 'e-board-id-conflict (list id)))
     (let ((observer (e-board-observer--create
                      :id id :board-id (e-board-id board) :client-id client-id
+                     :client-generation client-generation
                      :selector (copy-tree selector) :state state
                      :next-seq start-seq
                      :history-before-seq history-before-seq
@@ -1254,8 +1259,9 @@ request retained backfill explicitly with a lower START-SEQ."
         (e-board--transition-observer board observer 'cancelled))
       (let ((replacement
              (e-board-observer-subscribe
-              board (e-board-observer-client-id observer) selector
+             board (e-board-observer-client-id observer) selector
               :id replacement-id :state state
+              :client-generation (e-board-observer-client-generation observer)
               :start-seq (or start-seq (e-board-observer-next-seq observer)))))
         (e-board--append-event board 'observer-replaced
                                (list :observer-id observer-id
