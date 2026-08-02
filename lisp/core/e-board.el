@@ -309,6 +309,17 @@ Return the newly ready pickup identity, if any."
                                  (list :delivery-id next-id))
           next-id)))))
 
+(defun e-board-pickup-return-ready (board delivery-id err)
+  "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (eq (e-board-pickup-state pickup) 'delivering)
+      (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
+    (setf (e-board-pickup-state pickup) 'ready)
+    (e-board--append-event board 'pickup-delivery-failed
+                           (list :delivery-id delivery-id :error err))
+    pickup))
+
 (defun e-board-observed-work (board work-id)
   "Return BOARD's observed work record for WORK-ID, or nil."
   (gethash work-id (e-board-work-table board)))

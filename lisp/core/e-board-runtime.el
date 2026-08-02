@@ -512,13 +512,17 @@ the conservative idle-only harness delivery port is used."
                   (message (e-board-message source-board
                                             (e-board-pickup-message-id pickup))))
         (e-board-pickup-start-delivery source-board delivery-id)
-        (let ((next-id
-               (progn
-                 (funcall (e-board-runtime-attachment-delivery-function attachment)
-                          attachment pickup message)
-                 (e-board-pickup-complete-delivery source-board delivery-id))))
-          (when next-id
-            (e-board-runtime--enqueue-pickups board (list next-id))))))))
+        (condition-case err
+            (let ((next-id
+                   (progn
+                     (funcall (e-board-runtime-attachment-delivery-function attachment)
+                              attachment pickup message)
+                     (e-board-pickup-complete-delivery source-board delivery-id))))
+              (when next-id
+                (e-board-runtime--enqueue-pickups board (list next-id))))
+          (error
+           (e-board-pickup-return-ready source-board delivery-id err)
+           (signal (car err) (cdr err))))))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)

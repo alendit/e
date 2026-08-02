@@ -28,7 +28,8 @@ runtime drains only the resulting finalized pickup identities later.  Each
 input now exposes its explicit =routing=, =routed=, or =unrouted= projection.
 The board now owns an initial per-participant pickup FIFO: only the head is
 =ready=, delivery atomically fences it, and a synchronous consumed receipt
-promotes its successor.  Harness acceptance/consumption reconciliation remains
+promotes its successor; a failed uncommitted adapter attempt restores the head
+to =ready=.  Harness acceptance/consumption reconciliation remains
 to be generalized in the delivery ledger slice.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
