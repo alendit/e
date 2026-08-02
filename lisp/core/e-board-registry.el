@@ -227,6 +227,39 @@ control grants are deliberately not consulted by this operation."
     (e-board-registry--participant board participant-or-id)
     t))
 
+(defun e-board-registry-authorize-participant-move
+    (source-board-or-id destination-board-or-id requester participant-or-id
+                        destination-participant-id)
+  "Authorize REQUESTER's cross-board move of PARTICIPANT-OR-ID.
+SOURCE-BOARD-OR-ID and DESTINATION-BOARD-OR-ID must name distinct active boards
+currently owned by REQUESTER.  The participant's principal, when present, must
+already have a destination grant, and DESTINATION-PARTICIPANT-ID must remain
+unclaimed there."
+  (let* ((source (e-board-registry--require-active source-board-or-id))
+         (destination
+          (e-board-registry--require-active destination-board-or-id))
+         (participant
+          (e-board-registry--participant source participant-or-id))
+         (destination-id
+          (or destination-participant-id
+              (e-board-registry-participant-id participant)))
+         (principal (e-board-registry-participant-principal participant)))
+    (when (eq source destination)
+      (signal 'e-board-registry-error
+              (list "Participant move requires distinct boards"
+                    (e-board-registry-board-id source))))
+    (e-board-registry--require-owner source requester)
+    (e-board-registry--require-owner destination requester)
+    (when (and principal
+               (null (e-board-registry-principal-role destination principal)))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id destination) principal
+                    'participant)))
+    (when (gethash destination-id
+                   (e-board-registry-board-participants destination))
+      (signal 'e-board-registry-id-conflict (list destination-id)))
+    destination-id))
+
 (defun e-board-registry--owner-count (board)
   "Return the number of current owner grants on BOARD.
 Administrative grant changes may scan this small registry-owned table; hot
@@ -691,6 +724,31 @@ missing current principal grant."
     (e-board--append-event
      source-board 'participant-removed (list :participant-id participant-id))
     participant))
+
+(defun e-board-registry-move-participant
+    (source-board-or-id destination-board-or-id requester participant-or-id
+                        destination-participant-id)
+  "Move PARTICIPANT-OR-ID from SOURCE-BOARD-OR-ID to DESTINATION-BOARD-OR-ID.
+Authorize REQUESTER and require DESTINATION-PARTICIPANT-ID to be free.  The
+destination receives a fresh board-local participant record with the source
+author, principal, and controller.  Cross-target and third-party private grants
+remain source-board facts and are deliberately not copied."
+  (let* ((source (e-board-registry--require-active source-board-or-id))
+         (destination
+          (e-board-registry--require-active destination-board-or-id))
+         (participant
+          (e-board-registry--participant source participant-or-id))
+         (destination-id
+          (e-board-registry-authorize-participant-move
+           source destination requester participant destination-participant-id))
+         (moved
+          (e-board-registry-add-participant
+           destination :id destination-id
+           :author (e-board-registry-participant-author participant)
+           :principal (e-board-registry-participant-principal participant)
+           :controller (e-board-registry-participant-controller participant))))
+    (e-board-registry-remove-participant source participant)
+    moved))
 
 (defun e-board-registry-set-participant-state
     (board-or-id participant-or-id state)

@@ -596,6 +596,179 @@
          (gethash "participant"
                   (e-board-registry-board-participants board)))))))
 
+(ert-deftest e-board-runtime-test-move-participant-reconciles-source-fifo ()
+  "A move tombstones source input and publishes one fresh destination attachment."
+  (e-board-runtime-test--with-empty-state
+    (let* ((source
+            (e-board-registry-create :id "source" :principal "owner"))
+           (destination
+            (e-board-registry-create :id "destination" :principal "owner"))
+           (source-core (e-board-registry-board-source-board source))
+           (destination-core
+            (e-board-registry-board-source-board destination))
+           (harness (e-harness-create))
+           deliveries scheduled old request source-delivery-id)
+      (e-harness-create-session harness :id "session")
+      (setq old
+            (e-board-runtime-attach
+             source harness "session" :participant-id "participant"
+             :delivery-function
+             (lambda (_attachment _pickup message)
+               (push (e-board-message-content message) deliveries))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((publication
+               (e-board-post-input
+                source-core :id "source-input" :to "participant"
+                :content "source history")))
+          (e-board-drain-input-classifications source-core)
+          (setq source-delivery-id
+                (car (e-board-publication-pickup-ids publication))
+                scheduled nil))
+        (setq request
+              (e-board-runtime-move-participant-start
+               source "participant" destination "owner"))
+        (funcall (pop scheduled))
+        (should (eq (e-board-runtime-attachment-state old) 'detaching))
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup source-core source-delivery-id))
+                    'cancelled))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (let* ((new (e-request-lifecycle-terminal-payload request))
+               (moved (e-board-runtime-attachment-participant new)))
+          (should-not (e-board-runtime--current-attachment-p old))
+          (should (e-board-runtime--current-attachment-p new))
+          (should (eq (e-board-runtime-attachment-board new) destination))
+          (should (equal (e-board-registry-participant-id moved) "participant"))
+          (should-not
+           (gethash "participant"
+                    (e-board-registry-board-participants source)))
+          (should (eq moved
+                      (gethash "participant"
+                               (e-board-registry-board-participants destination))))
+          (should (equal (mapcar #'e-board-message-content
+                                 (e-board-messages source-core))
+                         '("source history")))
+          (let ((publication
+                 (e-board-post-input
+                  destination-core :id "destination-input" :to "participant"
+                  :content "destination work")))
+            (e-board-drain-input-classifications destination-core)
+            (e-board-runtime--deliver-pickups
+             destination (e-board-publication-pickup-ids publication))
+            (should (equal deliveries '("destination work")))))))))
+
+(ert-deftest e-board-runtime-test-move-revalidates-destination-after-wait ()
+  "A destination claimed during source quiescence leaves the source attached."
+  (e-board-runtime-test--with-empty-state
+    (let* ((source
+            (e-board-registry-create :id "source" :principal "owner"))
+           (destination
+            (e-board-registry-create :id "destination" :principal "owner"))
+           (harness (e-harness-create))
+           scheduled old request entry)
+      (e-harness-create-session harness :id "session")
+      (setq old
+            (e-board-runtime-attach
+             source harness "session" :participant-id "participant")
+            entry '(:id "turn" :status running))
+      (puthash "session" entry (e-harness-active-turns harness))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (setq request
+              (e-board-runtime-move-participant-start
+               source "participant" destination "owner"))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (should (eq (plist-get (e-request-lifecycle-progress request) :phase)
+                    'awaiting-active-turn))
+        (e-board-registry-add-participant destination :id "participant")
+        (plist-put entry :status 'finished)
+        (e-board-runtime--handle-harness-event
+         old
+         (e-events-make
+          :type 'turn-finished :session-id "session" :turn-id "turn"
+          :payload nil))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-board-registry-id-conflict))
+        (should (eq (e-board-runtime-attachment-state old) 'stale))
+        (should (e-board-runtime--current-attachment-p old))
+        (should (e-board-registry-participant source "participant"))))))
+
+(ert-deftest e-board-runtime-test-move-awaits-source-accepted-receipt ()
+  "A move retains its source binding until the accepted item settles there."
+  (e-board-runtime-test--with-empty-state
+    (let* ((source
+            (e-board-registry-create :id "source" :principal "owner"))
+           (destination
+            (e-board-registry-create :id "destination" :principal "owner"))
+           (source-core (e-board-registry-board-source-board source))
+           (harness (e-harness-create))
+           scheduled old request delivery-id pickup attempt)
+      (e-harness-create-session harness :id "session")
+      (setq old
+            (e-board-runtime-attach
+             source harness "session" :participant-id "participant"
+             :delivery-function
+             (lambda (&rest _arguments) '(:accepted receipt))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((publication
+               (e-board-post-input
+                source-core :id "accepted" :to "participant"
+                :content "accepted")))
+          (e-board-drain-input-classifications source-core)
+          (setq delivery-id (car (e-board-publication-pickup-ids publication))
+                scheduled nil))
+        (e-board-runtime--deliver-pickups source (list delivery-id))
+        (setq pickup (e-board-pickup source-core delivery-id)
+              attempt (e-board-pickup-attempt pickup)
+              request
+              (e-board-runtime-move-participant-start
+               source "participant" destination "owner"))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (should-not scheduled)
+        (should (eq (e-board-pickup-state pickup) 'cancelling))
+        (should (eq (e-request-lifecycle-state request) 'progress))
+        (should (e-board-runtime--current-attachment-p old))
+        (e-board-runtime--handle-harness-event
+         old
+         (e-events-make
+          :type 'input-consumed :session-id "session" :turn-id "turn"
+          :payload
+          (list :delivery-id delivery-id
+                :endpoint-token
+                (e-board-delivery-attempt-endpoint-token attempt)
+                :endpoint-generation
+                (e-board-delivery-attempt-composite-generation attempt))))
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state pickup) 'consumed))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should
+         (e-board-runtime--current-attachment-p
+          (e-request-lifecycle-terminal-payload request)))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants source)))))))
+
 (ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
   "Two harness objects cannot attach the same stable store/session identity."
   (e-board-runtime-test--with-empty-state

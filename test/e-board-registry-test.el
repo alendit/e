@@ -164,6 +164,48 @@
                      (e-board-publication-message publication))
                     'target-unavailable))))))
 
+(ert-deftest e-board-registry-test-move-requires-both-board-owners ()
+  "A move creates fresh destination-local membership only after dual authority."
+  (e-board-registry-test--with-empty-registries
+    (let* ((source
+            (e-board-registry-create :id "source" :principal "owner"))
+           (destination
+            (e-board-registry-create :id "destination" :principal "other")))
+      (e-board-registry-authorize-principal source "owner" "agent" 'member)
+      (e-board-registry-authorize-principal destination "other" "agent" 'member)
+      (let ((participant
+             (e-board-registry-add-participant
+              source :id "participant" :author "author" :principal "agent"
+              :controller "controller")))
+        (should-error
+         (e-board-registry-authorize-participant-move
+          source destination "owner" participant nil)
+         :type 'e-board-registry-authorization-denied)
+        (e-board-registry-authorize-principal destination "other" "owner" 'owner)
+        (e-board-registry-grant-participant-access
+         source "owner" participant "delegate" '(post))
+        (e-board-registry-grant-participant-private-access
+         source "controller" participant "delegate" '(inspect-transcript))
+        (let ((moved
+               (e-board-registry-move-participant
+                source destination "owner" participant nil)))
+          (should-not
+           (gethash "participant"
+                    (e-board-registry-board-participants source)))
+          (should (eq moved
+                      (gethash "participant"
+                               (e-board-registry-board-participants destination))))
+          (should (equal (e-board-registry-participant-author moved) "author"))
+          (should (equal (e-board-registry-participant-principal moved) "agent"))
+          (should (equal (e-board-registry-participant-controller moved)
+                         "controller"))
+          (should-not
+           (e-board-registry-participant-access-rights
+            destination moved "delegate"))
+          (should-not
+           (e-board-registry-participant-private-access-rights
+            destination moved "delegate")))))))
+
 (ert-deftest e-board-registry-test-owner-manages-target-participant-grants ()
   "Cross-target rights live on the target and revoke immediately."
   (e-board-registry-test--with-empty-registries

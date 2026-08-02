@@ -1260,8 +1260,102 @@ read proves the expected authorization and controller are still current."
     (e-board-runtime--enqueue-ready-participant-pickup new)
     (e-request-finish request new)))
 
-(defun e-board-runtime--reconcile-participant-removal (reconciliation)
-  "Advance one bounded inbox or quiescence step for RECONCILIATION."
+(defun e-board-runtime--prepare-move-attachment (reconciliation)
+  "Prepare RECONCILIATION's destination callback before membership mutation."
+  (let* ((old (e-board-runtime-reconciliation-attachment reconciliation))
+         (target (e-board-runtime-reconciliation-target reconciliation))
+         (destination (plist-get target :board))
+         (harness (e-board-runtime-attachment-harness old))
+         (session-id (e-board-runtime-attachment-session-id old))
+         (attachment
+          (e-board-runtime--make-attachment
+           destination nil harness session-id
+           (e-board-runtime-attachment-delivery-function old)
+           (1+ (e-board-runtime-attachment-generation old))
+           :instance-id (e-board-runtime-attachment-instance-id old)
+           :instance-catalog-generation
+           (e-board-runtime-attachment-instance-catalog-generation old)
+           :harness-id (e-board-runtime-attachment-harness-id old)
+           :harness-object-generation
+           (e-board-runtime-attachment-harness-object-generation old)
+           :session-store-id (e-board-runtime-attachment-session-store-id old)
+           :endpoint-token (e-board-runtime-attachment-endpoint-token old))))
+    (condition-case condition
+        (progn
+          (setf (e-board-runtime-attachment-subscription attachment)
+                (e-harness-subscribe
+                 harness
+                 (lambda (event)
+                   (when (e-board-runtime-attachment-participant attachment)
+                     (e-board-runtime--handle-harness-event attachment event)))
+                 :session-id session-id))
+          (e-board-runtime--configure-attachment attachment)
+          attachment)
+      (error
+       (when (e-board-runtime-attachment-subscription attachment)
+         (e-harness-unsubscribe
+          harness (e-board-runtime-attachment-subscription attachment)))
+       (signal (car condition) (cdr condition))))))
+
+(defun e-board-runtime--finish-participant-move (reconciliation)
+  "Commit RECONCILIATION's quiescent cross-board attachment replacement."
+  (let* ((old (e-board-runtime-reconciliation-attachment reconciliation))
+         (request (e-board-runtime-reconciliation-request reconciliation))
+         (requester
+          (e-board-runtime-reconciliation-requester reconciliation))
+         (target (e-board-runtime-reconciliation-target reconciliation))
+         (source (e-board-runtime-attachment-board old))
+         (destination (plist-get target :board))
+         (destination-participant-id (plist-get target :participant-id))
+         (participant (e-board-runtime-attachment-participant old))
+         (harness (e-board-runtime-attachment-harness old))
+         (session-id (e-board-runtime-attachment-session-id old))
+         new moved-participant)
+    (unless (and (e-board-runtime--current-attachment-p old)
+                 (eq (gethash (e-board-registry-participant-id participant)
+                              (e-board-registry-board-participants source))
+                     participant))
+      (signal 'e-board-runtime-error
+              (list "Participant attachment changed during move"
+                    (e-board-registry-participant-id participant))))
+    (e-board-registry-authorize-participant-move
+     source destination requester participant destination-participant-id)
+    (setq new (e-board-runtime--prepare-move-attachment reconciliation))
+    (condition-case condition
+        (setq moved-participant
+              (e-board-registry-move-participant
+               source destination requester participant
+               destination-participant-id))
+      (error
+       (e-harness-unsubscribe
+        harness (e-board-runtime-attachment-subscription new))
+       (signal (car condition) (cdr condition))))
+    (setf (e-board-runtime-attachment-participant new) moved-participant)
+    (e-harness-unsubscribe
+     harness (e-board-runtime-attachment-subscription old))
+    (remhash (e-board-runtime--attachment-key source participant)
+             e-board-runtime--attachments)
+    (remhash (e-board-runtime--attachment-session-key old)
+             e-board-runtime--session-attachments)
+    (remhash (e-board-runtime--session-key harness session-id)
+             e-board-runtime--endpoint-attachments)
+    (cl-incf (e-board-runtime-attachment-generation old))
+    (puthash (e-board-runtime--attachment-key destination moved-participant)
+             new e-board-runtime--attachments)
+    (puthash (e-board-runtime--attachment-session-key new)
+             new e-board-runtime--session-attachments)
+    (puthash (e-board-runtime--session-key harness session-id)
+             new e-board-runtime--endpoint-attachments)
+    (setf (e-board-runtime-attachment-state old) 'dormant
+          (e-board-runtime-attachment-reconciliation old) nil
+          (e-board-runtime-reconciliation-state reconciliation) 'finished)
+    (e-request-finish request new)))
+
+(defun e-board-runtime--reconcile-participant-detach
+    (reconciliation reason finish-function)
+  "Advance one bounded terminal detach step for RECONCILIATION.
+REASON tombstones source-board pickups.  FINISH-FUNCTION commits the final
+membership operation after the old endpoint becomes quiescent."
   (let* ((attachment
           (e-board-runtime-reconciliation-attachment reconciliation))
          (request (e-board-runtime-reconciliation-request reconciliation))
@@ -1281,13 +1375,13 @@ read proves the expected authorization and controller are still current."
                     participant-id)))
     (cond
      ((and pickup (memq (e-board-pickup-state pickup) '(pending ready)))
-      (e-board-cancel-pickup source-board delivery-id 'participant-removed)
+      (e-board-cancel-pickup source-board delivery-id reason)
       (e-request-progress
        request (list :phase 'reconciling-inbox :delivery-id delivery-id))
       (e-board-runtime--schedule-reconciliation reconciliation))
      ((and pickup
            (memq (e-board-pickup-state pickup) '(delivering accepted)))
-      (e-board-cancel-pickup source-board delivery-id 'participant-removed)
+      (e-board-cancel-pickup source-board delivery-id reason)
       (e-request-progress
        request (list :phase 'awaiting-delivery-receipt
                      :delivery-id delivery-id))
@@ -1304,7 +1398,7 @@ read proves the expected authorization and controller are still current."
              (e-board-pickup-attempt pickup))
             (e-board-delivery-attempt-composite-generation
              (e-board-pickup-attempt pickup))
-            'participant-removed))
+            reason))
       (setf (e-board-runtime-reconciliation-state reconciliation) 'waiting)
       (e-request-progress
        request (list :phase 'discarding-session-inbox
@@ -1320,7 +1414,19 @@ read proves the expected authorization and controller are still current."
        request (list :phase 'awaiting-delivery-receipt
                      :delivery-id delivery-id)))
      (t
-      (e-board-runtime--finish-participant-removal reconciliation)))))
+      (funcall finish-function reconciliation)))))
+
+(defun e-board-runtime--reconcile-participant-removal (reconciliation)
+  "Advance one bounded participant-removal RECONCILIATION step."
+  (e-board-runtime--reconcile-participant-detach
+   reconciliation 'participant-removed
+   #'e-board-runtime--finish-participant-removal))
+
+(defun e-board-runtime--reconcile-participant-move (reconciliation)
+  "Advance one bounded cross-board move RECONCILIATION step."
+  (e-board-runtime--reconcile-participant-detach
+   reconciliation 'participant-moved
+   #'e-board-runtime--finish-participant-move))
 
 (defun e-board-runtime--reconcile-participant-rebind (reconciliation)
   "Advance one bounded old-endpoint step for RECONCILIATION."
@@ -1396,7 +1502,13 @@ read proves the expected authorization and controller are still current."
            participant)
           (let ((target (e-board-runtime-reconciliation-target reconciliation)))
             (e-board-runtime--require-rebind-target-free
-             (plist-get target :harness) (plist-get target :session-id)))))
+             (plist-get target :harness) (plist-get target :session-id))))
+         ('move
+          (let ((target (e-board-runtime-reconciliation-target reconciliation)))
+            (e-board-registry-authorize-participant-move
+             board (plist-get target :board)
+             (e-board-runtime-reconciliation-requester reconciliation)
+             participant (plist-get target :participant-id)))))
        (unless (and (e-board-runtime--current-attachment-p attachment)
                     (memq (e-board-runtime-attachment-state attachment)
                           '(active stale)))
@@ -1415,6 +1527,8 @@ read proves the expected authorization and controller are still current."
           (e-board-runtime--reconcile-participant-removal reconciliation))
          ('rebind
           (e-board-runtime--reconcile-participant-rebind reconciliation))
+         ('move
+          (e-board-runtime--reconcile-participant-move reconciliation))
          (_
           (signal 'e-board-runtime-error
                   (list "Unknown reconciliation kind"
@@ -1539,6 +1653,74 @@ their logical identities and become eligible on the replacement attachment."
                    :participant-id
                    (e-board-registry-participant-id participant)
                    :session-id session-id))
+    (e-board-runtime--schedule-reconciliation reconciliation)
+    request))
+
+(cl-defun e-board-runtime-move-participant-start
+    (source-board-or-id participant-or-id destination-board-or-id requester
+                        &key destination-participant-id)
+  "Start REQUESTER's controlled cross-board move of PARTICIPANT-OR-ID.
+SOURCE-BOARD-OR-ID and DESTINATION-BOARD-OR-ID name the membership boundary;
+DESTINATION-PARTICIPANT-ID defaults to the old local id.  The source attachment
+first fences ingress and reconciles its active turn, accepted receipt, and
+bounded FIFO.  The quiescent endpoint then receives a fresh destination
+membership and attachment generation in one scheduled commit.  Source messages
+and pickup tombstones remain on the source board."
+  (let* ((source (e-board-runtime--active-board source-board-or-id))
+         (destination
+          (e-board-runtime--active-board destination-board-or-id))
+         (participant
+          (e-board-registry-participant source participant-or-id))
+         (destination-id
+          (e-board-registry-authorize-participant-move
+           source destination requester participant destination-participant-id))
+         (attachment
+          (gethash (e-board-runtime--attachment-key source participant)
+                   e-board-runtime--attachments))
+         request reconciliation)
+    (unless (and attachment
+                 (e-board-runtime--current-attachment-p attachment)
+                 (memq (e-board-runtime-attachment-state attachment)
+                       '(active stale))
+                 (null (e-board-runtime-attachment-reconciliation attachment)))
+      (signal 'e-board-runtime-error
+              (list "Participant has no movable attachment"
+                    (e-board-registry-participant-id participant))))
+    (setq request
+          (e-request-lifecycle-create
+           :id (format "board-move-participant-%d"
+                       (cl-incf e-board-runtime--control-sequence))
+           :owner 'e-board-runtime-move-participant
+           :session-id (e-board-runtime-attachment-session-id attachment)
+           :generation (e-board-runtime-attachment-generation attachment)
+           :state 'created))
+    (setq reconciliation
+          (e-board-runtime-reconciliation--create
+           :kind 'move :request request :attachment attachment
+           :requester requester
+           :target (list :board destination :participant-id destination-id)
+           :state 'prepared))
+    (setf (e-board-runtime-attachment-reconciliation attachment) reconciliation
+          (e-request-lifecycle-cancel-function request)
+          (lambda (_request)
+            (if (eq (e-board-runtime-reconciliation-state reconciliation)
+                    'prepared)
+                (progn
+                  (setf (e-board-runtime-reconciliation-state reconciliation)
+                        'cancelled)
+                  (when (eq (e-board-runtime-attachment-reconciliation attachment)
+                            reconciliation)
+                    (setf (e-board-runtime-attachment-reconciliation attachment)
+                          nil)))
+              (signal 'e-board-runtime-control-committed
+                      (list (e-request-lifecycle-id request))))))
+    (e-request-start
+     request (list :phase 'scheduled
+                   :participant-id
+                   (e-board-registry-participant-id participant)
+                   :destination-board-id
+                   (e-board-registry-board-id destination)
+                   :destination-participant-id destination-id))
     (e-board-runtime--schedule-reconciliation reconciliation)
     request))
 

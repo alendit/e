@@ -139,6 +139,14 @@ accepted old-endpoint receipt must settle before a prepared replacement
 subscription is published with the next attachment generation in one bounded
 commit.  The immediate rebind path and its uncertain-tombstone shortcut are
 removed; old endpoint events and deferred activity remain generation-fenced.
+Cross-board participant move is likewise controlled and requires the requester
+to own both active boards.  It fences source ingress, tombstones source-board
+FIFO records without rewriting their causal history, and waits for the same
+old-endpoint receipt and active-turn quiescence.  The final scheduled commit
+revalidates the destination grant and participant-id vacancy, then replaces the
+source membership and attachment with a fresh destination-local record and
+attachment generation while retaining the live session transcript.  Board-local
+cross-target grants and third-party private grants do not cross that boundary.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
