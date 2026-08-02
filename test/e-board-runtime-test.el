@@ -468,6 +468,118 @@
                     (e-board-registry-board-participants board))
                    0))))))
 
+(ert-deftest e-board-runtime-test-offline-resume-revalidates-before-atomic-attach ()
+  "Offline activation stays private until a second authorized catalog read."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
+           (factory-calls 0)
+           catalog-requests
+           activation-arguments
+           activation-succeed
+           (catalog
+            (lambda (arguments on-done on-error)
+              (setq catalog-requests
+                    (append catalog-requests
+                            (list (list arguments on-done on-error))))
+              nil))
+           (access-store (lambda (&rest _arguments) 'pending))
+           (activation
+            (lambda (arguments on-done _on-error)
+              (setq activation-arguments arguments
+                    activation-succeed on-done)
+              nil))
+           (row '(:session-id "session" :state dormant
+                  :access-record
+                  (:controller "controller" :version 3
+                   :discover-principals nil :resume-principals ("requester"))
+                  :board-output-sequence 5 :board-activity-sequence 8)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :offline
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :session-activation activation
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-board-runtime-resume-instance-start
+              board :instance "store" "session" "requester" 3
+              :participant-id "participant")))
+        (should (= (length catalog-requests) 1))
+        (funcall (nth 1 (car catalog-requests)) row)
+        (should (equal activation-arguments
+                       '(:session-store-id "store" :session-id "session"
+                         :requester-principal "requester" :expected-version 3)))
+        (should-not (e-harness-registry-get :offline))
+        (should-not
+         (gethash "participant" (e-board-registry-board-participants board)))
+        (let ((harness (e-harness-create)))
+          (e-harness-create-session harness :id "session")
+          (funcall activation-succeed harness)
+          (should (= (length catalog-requests) 2))
+          (should-not (e-harness-registry-get :offline))
+          (should-not
+           (gethash "participant" (e-board-registry-board-participants board)))
+          (funcall (nth 1 (cadr catalog-requests)) row)
+          (should (eq (e-request-lifecycle-state request) 'finished))
+          (should (eq (e-harness-registry-get :offline) harness))
+          (let* ((attachment (e-request-lifecycle-terminal-payload request))
+                 (participant (e-board-runtime-attachment-participant attachment)))
+            (should (equal (e-board-registry-participant-principal participant)
+                           "requester"))
+            (should (equal (e-board-registry-participant-controller participant)
+                           "controller"))))
+        (should (= factory-calls 0))))))
+
+(ert-deftest e-board-runtime-test-offline-resume-revocation-during-load-stays-dormant ()
+  "A version/authorization change during loading prevents registry mutation."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
+           catalog-requests
+           activation-succeed
+           (catalog
+            (lambda (arguments on-done on-error)
+              (setq catalog-requests
+                    (append catalog-requests
+                            (list (list arguments on-done on-error))))
+              nil))
+           (access-store (lambda (&rest _arguments) 'pending))
+           (activation
+            (lambda (_arguments on-done _on-error)
+              (setq activation-succeed on-done)
+              nil))
+           (authorized
+            '(:session-id "session" :state dormant
+              :access-record
+              (:controller "controller" :version 3
+               :discover-principals nil :resume-principals ("requester"))
+              :board-output-sequence 0 :board-activity-sequence 0))
+           (revoked
+            '(:session-id "session" :state dormant
+              :access-record
+              (:controller "controller" :version 4
+               :discover-principals nil :resume-principals nil)
+              :board-output-sequence 0 :board-activity-sequence 0)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :offline
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :session-activation activation)
+      (let ((request
+             (e-board-runtime-resume-instance-start
+              board :instance "store" "session" "requester" 3
+              :participant-id "participant")))
+        (funcall (nth 1 (car catalog-requests)) authorized)
+        (let ((harness (e-harness-create)))
+          (e-harness-create-session harness :id "session")
+          (funcall activation-succeed harness))
+        (funcall (nth 1 (cadr catalog-requests)) revoked)
+        (should (eq (e-request-lifecycle-state request) 'failed))
+        (should (eq (car (e-request-lifecycle-terminal-payload request))
+                    'e-board-runtime-resume-version-conflict))
+        (should-not (e-harness-registry-get :offline))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants board)))))))
+
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."
   (e-board-runtime-test--with-empty-state

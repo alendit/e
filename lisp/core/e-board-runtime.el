@@ -824,15 +824,16 @@ This operation never invokes an instance factory or loads dormant history."
       :session-store-id store-id
       :endpoint-token token))))
 
-(cl-defun e-board-runtime-resume-live-instance-start
+(cl-defun e-board-runtime--resume-instance-start
     (board-or-id instance-id session-store-id session-id requester-principal
-                 expected-version
+                 expected-version activate-offline
                  &key participant-id author delivery-function on-done on-error)
-  "Start authorized resume of an already-live loaded dormant session.
-The operation first performs an exact asynchronous catalog read.  It validates
-store/instance eligibility, dormant access version, and durable resume rights
-before attaching.  It never invokes the instance's legacy synchronous factory;
-an offline instance therefore fails visibly after authorization."
+  "Start controlled resume, optionally activating an offline INSTANCE-ID.
+Every path first validates one exact dormant catalog row.  When
+ACTIVATE-OFFLINE is non-nil and the concrete harness is absent, the named
+instance's asynchronous activation port loads the session without registering
+it.  A second exact catalog read then revalidates version, controller, resume
+rights, and eligibility before one bounded registry/attachment commit."
   (unless (and requester-principal
                (integerp expected-version) (>= expected-version 0))
     (signal 'wrong-type-argument
@@ -842,7 +843,10 @@ an offline instance therefore fails visibly after authorization."
                        (signal 'e-harness-instance-missing (list instance-id))))
          (store (e-harness-instance-session-store session-store-id))
          (eligible (plist-get store :eligible-instance-ids))
-         catalog-request
+         (harness-id (e-harness-instance-harness-id instance))
+         children
+         activated-harness
+         validated-controller
          request)
     (unless (and (equal (e-harness-instance-session-store-id instance)
                         session-store-id)
@@ -854,43 +858,108 @@ an offline instance therefore fails visibly after authorization."
            (when (e-request-fail request condition)
              (when on-error
                (funcall on-error condition))))
-         (catalog-finished (row)
+         (track (child)
+           (push child children)
+           child)
+         (validate-row (row revalidation-p)
+           (let ((access-record (plist-get row :access-record)))
+             (unless (= (plist-get access-record :version) expected-version)
+               (signal 'e-board-runtime-resume-version-conflict
+                       (list session-store-id session-id expected-version
+                             (plist-get access-record :version))))
+             (unless (e-harness-instance-session-access-allows-p
+                      access-record requester-principal 'resume)
+               (signal 'e-board-runtime-resume-denied
+                       (list session-store-id session-id requester-principal)))
+             (unless (memq instance-id (plist-get row :eligible-instance-ids))
+               (signal 'e-board-runtime-instance-ineligible
+                       (list instance-id session-store-id session-id)))
+             (when (and revalidation-p
+                        (not (equal validated-controller
+                                    (plist-get access-record :controller))))
+               (signal 'e-board-runtime-resume-version-conflict
+                       (list session-store-id session-id expected-version
+                             'controller-changed)))
+             access-record))
+         (finish-attachment (access-record)
            (unless (e-request-terminal-p request)
-             (let ((access-record (plist-get row :access-record))
-                   attachment)
+             (let (attachment)
+               (condition-case condition
+                   (setq attachment
+                         (e-board-runtime-attach-instance
+                          board instance-id session-id
+                          :participant-id participant-id :author author
+                          :principal requester-principal
+                          :controller (plist-get access-record :controller)
+                          :delivery-function delivery-function))
+                 (error
+                  (fail condition)))
+               (when (and attachment (e-request-finish request attachment))
+                 (when on-done
+                   (funcall on-done attachment))))))
+         (revalidation-finished (row)
+           (unless (e-request-terminal-p request)
+             (let (access-record current)
                (condition-case condition
                    (progn
-                     (unless (= (plist-get access-record :version)
-                                expected-version)
-                       (signal 'e-board-runtime-resume-version-conflict
-                               (list session-store-id session-id expected-version
-                                     (plist-get access-record :version))))
-                     (unless (e-harness-instance-session-access-allows-p
-                              access-record requester-principal 'resume)
-                       (signal 'e-board-runtime-resume-denied
-                               (list session-store-id session-id
-                                     requester-principal)))
-                     (unless (memq instance-id
-                                   (plist-get row :eligible-instance-ids))
-                       (signal 'e-board-runtime-instance-ineligible
-                               (list instance-id session-store-id session-id)))
+                     (setq access-record (validate-row row t)
+                           current (e-harness-registry-get harness-id))
+                     (when (and current (not (eq current activated-harness)))
+                       (signal 'e-board-runtime-session-busy
+                               (list session-store-id session-id harness-id)))
+                     (unless current
+                       (e-harness-registry-register harness-id activated-harness))
+                     (e-request-progress
+                      request (list :phase 'revalidated
+                                    :session-store-id session-store-id
+                                    :session-id session-id))
+                     (finish-attachment access-record))
+                 (error
+                  (fail condition))))))
+         (activation-finished (harness)
+           (unless (e-request-terminal-p request)
+             (setq activated-harness harness)
+             (e-request-progress
+              request (list :phase 'revalidating
+                            :session-store-id session-store-id
+                            :session-id session-id))
+             (condition-case condition
+                 (track
+                  (e-harness-instance-session-catalog-read-start
+                   session-store-id session-id :principal requester-principal
+                   :on-done #'revalidation-finished :on-error #'fail))
+               (error
+                (fail condition)))))
+         (catalog-finished (row)
+           (unless (e-request-terminal-p request)
+             (let (access-record)
+               (condition-case condition
+                   (progn
+                     (setq access-record (validate-row row nil)
+                           validated-controller
+                           (plist-get access-record :controller))
                      (e-request-progress
                       request (list :phase 'validated
                                     :session-store-id session-store-id
                                     :session-id session-id))
-                     (setq attachment
-                           (e-board-runtime-attach-instance
-                            board instance-id session-id
-                            :participant-id participant-id :author author
-                            :principal requester-principal
-                            :controller (plist-get access-record :controller)
-                            :delivery-function delivery-function)))
+                     (if (e-harness-registry-get harness-id)
+                         (finish-attachment access-record)
+                       (unless activate-offline
+                         (signal 'e-harness-registry-missing (list harness-id)))
+                       (e-request-progress
+                        request (list :phase 'activating
+                                      :session-store-id session-store-id
+                                      :session-id session-id))
+                       (track
+                        (e-harness-instance-session-activation-start
+                         instance-id
+                         (list :session-store-id session-store-id
+                               :session-id session-id
+                               :requester-principal requester-principal
+                               :expected-version expected-version)
+                         :on-done #'activation-finished :on-error #'fail))))
                  (error
-                  (fail condition)))
-               (when (and attachment
-                          (e-request-finish request attachment))
-                 (when on-done
-                   (funcall on-done attachment)))))))
+                  (fail condition)))))))
       (setq request
             (e-request-lifecycle-create
              :id (format "board-resume-%d"
@@ -901,22 +970,49 @@ an offline instance therefore fails visibly after authorization."
              :state 'created
              :cancel-function
              (lambda (_request)
-               (when (and catalog-request
-                          (not (e-request-terminal-p catalog-request)))
-                 (e-request-cancel catalog-request 'resume-cancelled)))))
+               (dolist (child children)
+                 (unless (e-request-terminal-p child)
+                   (e-request-cancel child 'resume-cancelled))))))
       (e-request-start
        request (list :phase 'catalog-read :instance-id instance-id
                      :session-store-id session-store-id :session-id session-id))
       (condition-case condition
-          (setq catalog-request
-                (e-harness-instance-session-catalog-read-start
-                 session-store-id session-id :principal requester-principal
-                 :on-done #'catalog-finished :on-error #'fail))
+          (track
+           (e-harness-instance-session-catalog-read-start
+            session-store-id session-id :principal requester-principal
+            :on-done #'catalog-finished :on-error #'fail))
         (error
          (if (e-request-terminal-p request)
              (signal (car condition) (cdr condition))
            (fail condition))))
       request)))
+
+(cl-defun e-board-runtime-resume-live-instance-start
+    (board-or-id instance-id session-store-id session-id requester-principal
+                 expected-version
+                 &key participant-id author delivery-function on-done on-error)
+  "Start authorized resume of an already-live loaded dormant session.
+The operation never invokes either the legacy factory or dormant activation
+port.  An offline instance therefore fails visibly after authorization."
+  (e-board-runtime--resume-instance-start
+   board-or-id instance-id session-store-id session-id requester-principal
+   expected-version nil
+   :participant-id participant-id :author author
+   :delivery-function delivery-function :on-done on-done :on-error on-error))
+
+(cl-defun e-board-runtime-resume-instance-start
+    (board-or-id instance-id session-store-id session-id requester-principal
+                 expected-version
+                 &key participant-id author delivery-function on-done on-error)
+  "Start authorized dormant resume through the named configured instance.
+Offline loading uses only the instance's asynchronous activation port.  The
+loaded harness remains unregistered and unattached until a second exact catalog
+read proves the expected authorization and controller are still current."
+  (e-board-runtime--resume-instance-start
+   board-or-id instance-id session-store-id session-id requester-principal
+   expected-version t
+   :participant-id participant-id :author author
+   :delivery-function delivery-function :on-done on-done :on-error on-error))
 
 (defun e-board-runtime--make-attachment
     (board participant harness session-id delivery-function generation
