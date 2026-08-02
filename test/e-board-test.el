@@ -410,6 +410,20 @@
         (should (eq (e-board-pickup-state (e-board-pickup board first)) 'expired))
         (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))))))
 
+(ert-deftest e-board-test-failing-delivering-pickup-releases-fifo-successor ()
+  "A permanent adapter failure becomes a terminal head tombstone."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "first" :to "one"))))
+             (second (car (e-board-publication-pickup-ids
+                           (e-board-post-input board :id "second" :to "one")))))
+        (e-board-pickup-start-delivery board first)
+        (should (equal (e-board-fail-pickup board first 'permanent-rejection) second))
+        (should (eq (e-board-pickup-state (e-board-pickup board first)) 'failed))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))))))
+
 (ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
   "Observer muting, terminal states, and replacement never route input."
   (e-board-test--with-empty-registry

@@ -443,6 +443,32 @@ next FIFO record."
                                    (list :delivery-id next-id))
             next-id))))))
 
+(defun e-board-fail-pickup (board delivery-id reason)
+  "Record a permanent failure for DELIVERY-ID and release its FIFO successor.
+The delivery adapter may use this only when it proves the logical pickup cannot
+be delivered through the selected endpoint.  A transient uncommitted failure
+uses `e-board-pickup-return-ready' instead."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (memq (e-board-pickup-state pickup) '(pending ready delivering))
+      (signal 'e-board-error
+              (list "Pickup failure requires pending, ready, or delivering state"
+                    delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id))
+           (head-p (equal (car queue) delivery-id)))
+      (setf (e-board-pickup-state pickup) 'failed)
+      (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
+      (e-board--append-event board 'pickup-failed
+                             (list :delivery-id delivery-id :reason reason))
+      (when head-p
+        (when-let ((next-id (car (e-board--pickup-queue board participant-id))))
+          (let ((next (e-board-pickup board next-id)))
+            (setf (e-board-pickup-state next) 'ready)
+            (e-board--append-event board 'pickup-ready
+                                   (list :delivery-id next-id))
+            next-id))))))
+
 (defun e-board-pickup-return-ready (board delivery-id err)
   "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR.
 When a cancellation already fenced the in-flight attempt, a proven

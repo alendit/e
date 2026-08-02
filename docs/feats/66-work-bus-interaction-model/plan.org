@@ -50,6 +50,9 @@ The board core also bounds each participant's pending tail and records excess
 as =overflowed=; explicit pending/ready expiry records =expired= and promotes
 only the affected head's successor.  Scheduled expiry/rebind reconciliation
 remains in the delivery-ledger slice.
+Adapters can also record a proven permanent pickup failure as =failed=, which
+tombstones that delivery and advances only its FIFO successor; uncommitted
+transient adapter faults still return the head to =ready= for retry.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.
