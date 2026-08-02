@@ -177,6 +177,14 @@ resume, participant control, and input root; only the opaque token for the
 current closed epoch may reopen it.  Work accepted before closure may finish
 through internal continuations.  Direct pre-cutover harness callers are not yet
 fenced, so this foundation deliberately does not claim process quiescence.
+The first owner-local unsettled projection now lives in =e-board-runtime=.
+It reports control requests, exact invocation targets, deferred carrier hooks,
+activity mailboxes, and queued pickup attempts from fixed counters or the
+owning deduplication tables in constant time.  A monotonic change generation
+and one private hard-bounded notification port advance on the same enqueue,
+pop, admission, and terminal transitions; no preflight scan reconstructs them.
+The harness, board core, and persistence owners still need equivalent local
+contributions before runtime quiescence can be authorized.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most

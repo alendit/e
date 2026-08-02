@@ -193,6 +193,77 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:conc-name e-board-runtime-invocation-))
   target attachment attachment-generation callback state)
 
+(defvar e-board-runtime--unsettled-control-count 0
+  "Number of nonterminal board-runtime control requests.")
+
+(defvar e-board-runtime--unsettled-invocation-count 0
+  "Number of open or applying exact invocation targets.")
+
+(defvar e-board-runtime--unsettled-deferred-hook-count 0
+  "Number of queued deferred carrier hook receipts.")
+
+(defvar e-board-runtime--unsettled-generation 0
+  "Monotonic generation of owner-local unsettled runtime state.")
+
+(defvar e-board-runtime--unsettled-change-function nil
+  "Private hard-bounded callback for owner-local unsettled transitions.")
+
+(defun e-board-runtime-unsettled-state ()
+  "Return a constant-time snapshot of board-runtime unsettled state."
+  (list :generation e-board-runtime--unsettled-generation
+        :control-requests e-board-runtime--unsettled-control-count
+        :invocations e-board-runtime--unsettled-invocation-count
+        :deferred-hooks e-board-runtime--unsettled-deferred-hook-count
+        :activity-mailboxes
+        (hash-table-count e-board-runtime--pending-activity-set)
+        :pickup-attempts
+        (hash-table-count e-board-runtime--pending-pickup-set)))
+
+(defun e-board-runtime--unsettled-changed ()
+  "Record and publish one owner-local unsettled transition."
+  (cl-incf e-board-runtime--unsettled-generation)
+  (when e-board-runtime--unsettled-change-function
+    (funcall e-board-runtime--unsettled-change-function
+             (e-board-runtime-unsettled-state))))
+
+(defun e-board-runtime--adjust-unsettled-count (class delta)
+  "Adjust runtime unsettled CLASS by DELTA and publish its transition."
+  (let ((value
+         (pcase class
+           ('control
+            (cl-incf e-board-runtime--unsettled-control-count delta))
+           ('invocation
+            (cl-incf e-board-runtime--unsettled-invocation-count delta))
+           ('deferred-hook
+            (cl-incf e-board-runtime--unsettled-deferred-hook-count delta))
+           (_
+            (signal 'e-board-runtime-error
+                    (list "Unknown unsettled runtime class" class))))))
+    (when (< value 0)
+      (signal 'e-board-runtime-error
+              (list "Negative unsettled runtime count" class value)))
+    (e-board-runtime--unsettled-changed)
+    value))
+
+(defun e-board-runtime--track-control-request (request)
+  "Count REQUEST until its first terminal transition."
+  (let ((cleanup (e-request-lifecycle-cleanup-trigger request)))
+    (e-board-runtime--adjust-unsettled-count 'control 1)
+    (setf (e-request-lifecycle-cleanup-trigger request)
+          (lambda (settled)
+            (unwind-protect
+                (when cleanup
+                  (funcall cleanup settled))
+              (e-board-runtime--adjust-unsettled-count 'control -1)))))
+  request)
+
+(defun e-board-runtime--drop-invocation (target)
+  "Remove TARGET and retire it from unsettled accounting when necessary."
+  (when-let ((invocation (gethash target e-board-runtime--invocations)))
+    (when (memq (e-board-runtime-invocation-state invocation) '(open applying))
+      (e-board-runtime--adjust-unsettled-count 'invocation -1))
+    (remhash target e-board-runtime--invocations)))
+
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
   (list (e-board-registry-board-id board)
@@ -280,6 +351,7 @@ endpoint by session identity."
               :callback callback
               :state 'open)
              e-board-runtime--invocations)
+    (e-board-runtime--adjust-unsettled-count 'invocation 1)
     target))
 
 (defun e-board-runtime--apply-invocation-effect (_board target state payload)
@@ -293,16 +365,18 @@ endpoint by session identity."
       (unless (= (e-board-runtime-invocation-attachment-generation invocation)
                  (e-board-runtime-attachment-generation attachment))
         (setf (e-board-runtime-invocation-state invocation) 'unavailable)
+        (e-board-runtime--adjust-unsettled-count 'invocation -1)
         (signal 'e-board-runtime-error
                 (list "Original invocation endpoint is unavailable" target)))
       (setf (e-board-runtime-invocation-state invocation) 'applying)
       (condition-case err
-          (progn
-            (funcall (e-board-runtime-invocation-callback invocation) state payload)
-            (setf (e-board-runtime-invocation-state invocation) 'committed))
+          (funcall (e-board-runtime-invocation-callback invocation) state payload)
         (error
          (setf (e-board-runtime-invocation-state invocation) 'failed)
-         (signal (car err) (cdr err)))))))
+         (e-board-runtime--adjust-unsettled-count 'invocation -1)
+         (signal (car err) (cdr err))))
+      (setf (e-board-runtime-invocation-state invocation) 'committed)
+      (e-board-runtime--adjust-unsettled-count 'invocation -1))))
 
 (defun e-board-runtime--drain-deferred-hooks ()
   "Start one bounded page of deferred carrier hooks outside settlement.
@@ -315,6 +389,7 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
                 (< processed e-board-runtime-deferred-hook-drain-limit))
       (pcase-let ((`(,generation ,_receipt ,thunk)
                    (pop e-board-runtime--deferred-hook-head)))
+        (e-board-runtime--adjust-unsettled-count 'deferred-hook -1)
         (unless e-board-runtime--deferred-hook-head
           (setq e-board-runtime--deferred-hook-tail nil))
         (cl-incf processed)
@@ -331,6 +406,7 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
         (setcdr e-board-runtime--deferred-hook-tail cell)
       (setq e-board-runtime--deferred-hook-head cell))
     (setq e-board-runtime--deferred-hook-tail cell))
+  (e-board-runtime--adjust-unsettled-count 'deferred-hook 1)
   (unless e-board-runtime--deferred-hook-drain-scheduled
     (setq e-board-runtime--deferred-hook-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks)))
@@ -343,7 +419,8 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
       (if e-board-runtime--pending-activity-tail
           (setcdr e-board-runtime--pending-activity-tail cell)
         (setq e-board-runtime--pending-activity-head cell))
-      (setq e-board-runtime--pending-activity-tail cell)))
+      (setq e-board-runtime--pending-activity-tail cell))
+    (e-board-runtime--unsettled-changed))
   (unless e-board-runtime--activity-drain-scheduled
     (setq e-board-runtime--activity-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes)))
@@ -362,7 +439,10 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
              (mailbox (gethash work-id e-board-runtime--work-activity-mailboxes)))
         (unless e-board-runtime--pending-activity-head
           (setq e-board-runtime--pending-activity-tail nil))
-        (remhash work-id e-board-runtime--pending-activity-set)
+        (let ((counted (gethash work-id e-board-runtime--pending-activity-set)))
+          (remhash work-id e-board-runtime--pending-activity-set)
+          (when counted
+            (e-board-runtime--unsettled-changed)))
         (remhash work-id e-board-runtime--work-activity-mailboxes)
         (cl-incf processed)
         (when mailbox
@@ -440,7 +520,8 @@ will consume the mailbox under its own bounded drain."
           (if e-board-runtime--pending-pickup-tail
               (setcdr e-board-runtime--pending-pickup-tail cell)
             (setq e-board-runtime--pending-pickup-head cell))
-          (setq e-board-runtime--pending-pickup-tail cell)))))
+          (setq e-board-runtime--pending-pickup-tail cell))
+        (e-board-runtime--unsettled-changed))))
   (unless e-board-runtime--pickup-drain-scheduled
     (setq e-board-runtime--pickup-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-pickups)))
@@ -454,7 +535,10 @@ will consume the mailbox under its own bounded drain."
       (let ((key (pop e-board-runtime--pending-pickup-head)))
         (unless e-board-runtime--pending-pickup-head
           (setq e-board-runtime--pending-pickup-tail nil))
-        (remhash key e-board-runtime--pending-pickup-set)
+        (let ((counted (gethash key e-board-runtime--pending-pickup-set)))
+          (remhash key e-board-runtime--pending-pickup-set)
+          (when counted
+            (e-board-runtime--unsettled-changed)))
         (cl-incf processed)
         (let ((board (condition-case nil
                          (e-board-registry-get (car key))
@@ -496,7 +580,7 @@ has no callback and is observed only."
               (e-board-enroll-invocation-work
                board handle invocation-id target :metadata metadata)
             (error
-             (remhash target e-board-runtime--invocations)
+             (e-board-runtime--drop-invocation target)
              (signal (car err) (cdr err)))))
         (e-board-enroll-work board handle :metadata metadata)))))
 
@@ -521,11 +605,11 @@ has no callback and is observed only."
                  board (mapcar #'e-work-handle-id handles) mode target
                  :id invocation-id :timeout timeout))
         (error
-         (remhash target e-board-runtime--invocations)
+         (e-board-runtime--drop-invocation target)
          (signal (car err) (cdr err))))
       (lambda ()
         (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))
-        (remhash target e-board-runtime--invocations)))))
+        (e-board-runtime--drop-invocation target)))))
 
 (defun e-board-runtime--publish-output (attachment turn-id)
   "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
@@ -1056,18 +1140,19 @@ rights, and eligibility before one bounded registry/attachment commit."
                  (error
                   (fail condition)))))))
       (setq request
-            (e-request-lifecycle-create
-             :id (format "board-resume-%d"
-                         (cl-incf e-board-runtime--control-sequence))
-             :owner 'e-board-runtime-resume
-             :session-id session-id
-             :generation (e-harness-instance-generation)
-             :state 'created
-             :cancel-function
-             (lambda (_request)
-               (dolist (child children)
-                 (unless (e-request-terminal-p child)
-                   (e-request-cancel child 'resume-cancelled))))))
+            (e-board-runtime--track-control-request
+             (e-request-lifecycle-create
+              :id (format "board-resume-%d"
+                          (cl-incf e-board-runtime--control-sequence))
+              :owner 'e-board-runtime-resume
+              :session-id session-id
+              :generation (e-harness-instance-generation)
+              :state 'created
+              :cancel-function
+              (lambda (_request)
+                (dolist (child children)
+                  (unless (e-request-terminal-p child)
+                    (e-request-cancel child 'resume-cancelled)))))))
       (e-request-start
        request (list :phase 'catalog-read :instance-id instance-id
                      :session-store-id session-store-id :session-id session-id))
@@ -1624,13 +1709,14 @@ changed.  Cancellation is accepted only before the scheduled detach commit."
               (list "Participant has no removable attachment"
                     (e-board-registry-participant-id participant))))
     (setq request
-          (e-request-lifecycle-create
-           :id (format "board-remove-participant-%d"
-                       (cl-incf e-board-runtime--control-sequence))
-           :owner 'e-board-runtime-remove-participant
-           :session-id (e-board-runtime-attachment-session-id attachment)
-           :generation (e-board-runtime-attachment-generation attachment)
-           :state 'created))
+          (e-board-runtime--track-control-request
+           (e-request-lifecycle-create
+            :id (format "board-remove-participant-%d"
+                        (cl-incf e-board-runtime--control-sequence))
+            :owner 'e-board-runtime-remove-participant
+            :session-id (e-board-runtime-attachment-session-id attachment)
+            :generation (e-board-runtime-attachment-generation attachment)
+            :state 'created)))
     (setq reconciliation
           (e-board-runtime-reconciliation--create
            :kind 'remove :request request :attachment attachment
@@ -1686,13 +1772,14 @@ their logical identities and become eligible on the replacement attachment."
               (list "Participant has no rebindable attachment"
                     (e-board-registry-participant-id participant))))
     (setq request
-          (e-request-lifecycle-create
-           :id (format "board-rebind-participant-%d"
-                       (cl-incf e-board-runtime--control-sequence))
-           :owner 'e-board-runtime-rebind-participant
-           :session-id session-id
-           :generation (e-board-runtime-attachment-generation attachment)
-           :state 'created))
+          (e-board-runtime--track-control-request
+           (e-request-lifecycle-create
+            :id (format "board-rebind-participant-%d"
+                        (cl-incf e-board-runtime--control-sequence))
+            :owner 'e-board-runtime-rebind-participant
+            :session-id session-id
+            :generation (e-board-runtime-attachment-generation attachment)
+            :state 'created)))
     (setq reconciliation
           (e-board-runtime-reconciliation--create
            :kind 'rebind :request request :attachment attachment
@@ -1754,13 +1841,14 @@ and pickup tombstones remain on the source board."
               (list "Participant has no movable attachment"
                     (e-board-registry-participant-id participant))))
     (setq request
-          (e-request-lifecycle-create
-           :id (format "board-move-participant-%d"
-                       (cl-incf e-board-runtime--control-sequence))
-           :owner 'e-board-runtime-move-participant
-           :session-id (e-board-runtime-attachment-session-id attachment)
-           :generation (e-board-runtime-attachment-generation attachment)
-           :state 'created))
+          (e-board-runtime--track-control-request
+           (e-request-lifecycle-create
+            :id (format "board-move-participant-%d"
+                        (cl-incf e-board-runtime--control-sequence))
+            :owner 'e-board-runtime-move-participant
+            :session-id (e-board-runtime-attachment-session-id attachment)
+            :generation (e-board-runtime-attachment-generation attachment)
+            :state 'created)))
     (setq reconciliation
           (e-board-runtime-reconciliation--create
            :kind 'move :request request :attachment attachment

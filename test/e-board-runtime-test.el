@@ -23,6 +23,11 @@
           (e-board-runtime--invocations (make-hash-table :test 'equal))
           (e-board-runtime--admission-open-p t)
           (e-board-runtime--admission-epoch 0)
+          (e-board-runtime--unsettled-control-count 0)
+          (e-board-runtime--unsettled-invocation-count 0)
+          (e-board-runtime--unsettled-deferred-hook-count 0)
+          (e-board-runtime--unsettled-generation 0)
+          (e-board-runtime--unsettled-change-function nil)
           (e-board-runtime--control-sequence 0)
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
@@ -46,6 +51,89 @@
           (e-harness-instance--session-stores (make-hash-table :test 'equal))
           (e-harness-instance--generation 0))
      ,@body))
+
+(ert-deftest e-board-runtime-test-unsettled-queues-publish-owner-transitions ()
+  "Runtime queue counts change with enqueue/pop rather than a later scan."
+  (e-board-runtime-test--with-empty-state
+    (let ((board (e-board-registry-create :id "board"))
+          scheduled snapshots)
+      (setq e-board-runtime--unsettled-change-function
+            (lambda (snapshot) (push snapshot snapshots)))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--schedule-deferred-hook nil 'receipt #'ignore)
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :deferred-hooks)
+                   1))
+        (funcall (pop scheduled))
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :deferred-hooks)
+                   0))
+        (e-board-runtime--enqueue-activity-flush "work")
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :activity-mailboxes)
+                   1))
+        (funcall (pop scheduled))
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :activity-mailboxes)
+                   0))
+        (e-board-runtime--enqueue-pickups board '("pickup"))
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :pickup-attempts)
+                   1))
+        (funcall (pop scheduled))
+        (should (= (plist-get (e-board-runtime-unsettled-state)
+                              :pickup-attempts)
+                   0))
+        (should (= (plist-get (e-board-runtime-unsettled-state) :generation)
+                   6))
+        (should (= (length snapshots) 6))))))
+
+(ert-deftest e-board-runtime-test-unsettled-controls-and-invocations-settle-once ()
+  "Control and invocation counts retire on their owning terminal transition."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           scheduled callback-state)
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant"
+              :principal "owner")))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (push (lambda () (apply function arguments)) scheduled))))
+          (let ((request
+                 (e-board-runtime-remove-participant-start
+                  board "participant" "owner")))
+            (should (= (plist-get (e-board-runtime-unsettled-state)
+                                  :control-requests)
+                       1))
+            (e-request-cancel request 'test-cancel)
+            (should (= (plist-get (e-board-runtime-unsettled-state)
+                                  :control-requests)
+                       0))
+            (funcall (pop scheduled))
+            (should (= (plist-get (e-board-runtime-unsettled-state)
+                                  :control-requests)
+                       0))))
+        (let ((target
+               (e-board-runtime--register-invocation
+                attachment "turn" "call"
+                (lambda (state _payload) (setq callback-state state)))))
+          (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
+                     1))
+          (e-board-runtime--apply-invocation-effect board target 'completed nil)
+          (should (eq callback-state 'completed))
+          (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
+                     0))
+          (should-error
+           (e-board-runtime--apply-invocation-effect
+            board target 'completed nil)
+           :type 'e-board-runtime-error)
+          (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
+                     0)))))))
 
 (ert-deftest e-board-runtime-test-admission-close-is-bounded-and-token-fenced ()
   "One exact closed epoch rejects new roots and only its token reopens it."
