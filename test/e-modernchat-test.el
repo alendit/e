@@ -171,6 +171,95 @@ messages so the transcript reads as one clean answer."
         (should (equal (plist-get (cdr called) :attributes)
                        '(:m t :references (r1))))))))
 
+(ert-deftest e-chat-service-test-opens-existing-board-and-routes-generic-posts ()
+  "Board-first clients can reconnect, tag, address, and expose zero matches."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal)))
+    (let* ((board (e-board-registry-create :id "shared"))
+           (harness (e-harness-create :enabled-layer-ids nil)))
+      (e-harness-create-session harness :id "one")
+      (e-harness-create-session harness :id "two")
+      (let* ((one (e-chat-service-open-board
+                   board harness "one" :participant-id "one"))
+             (_two (e-chat-service-open-board
+                    board harness "two" :participant-id "two"))
+             (source (e-board-registry-board-source-board board)))
+        (e-board-registry-install-subscription
+         board "two" '(:tags (review)) :id "two-review")
+        (let ((tagged (e-chat-service-post one "review" :tags '(review)))
+              (exact (e-chat-service-post one "self" :to "one"))
+              (unrouted (e-chat-service-post one "nobody" :tags '(missing))))
+          (while (e-board-input-classifications source)
+            (e-board-runtime--drain-input-routing
+             board (lambda () (e-board-drain-input-classifications source))))
+          (should (equal (e-board-message-matching-participant-ids
+                          (e-board-message source tagged))
+                         '("two")))
+          (should (equal (e-board-message-matching-participant-ids
+                          (e-board-message source exact))
+                         '("one")))
+          (should (eq (e-board-message-routing-state
+                       (e-board-message source unrouted))
+                      'unrouted)))))))
+
+(ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
+  "Subscriber failure cannot advance another client's cursor or lose identity."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        good-events)
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((good (e-chat-service-subscribe
+                      harness "main" (lambda (event) (push event good-events))))
+               (bad (e-chat-service-subscribe
+                     harness "main" (lambda (_event) (error "subscriber failed")))))
+          (should-not (equal
+                       (e-board-registry-client-id
+                        (e-chat-service-subscription-client good))
+                       (e-board-registry-client-id
+                        (e-chat-service-subscription-client bad))))
+          (e-board-post-fact
+           (e-board-registry-board-source-board board)
+           :id "fact" :tags '(main) :content "visible"
+           :source-fact-key '(test fact 1))
+          (e-chat-service--drain-subscription bad)
+          (e-chat-service--drain-subscription good)
+          (should (eq (car (e-chat-service-subscription-state bad)) 'faulted))
+          (should (= (e-board-observer-next-seq
+                      (e-chat-service-subscription-observer bad))
+                     0))
+          (let ((event (car good-events)))
+            (should (equal (plist-get event :board-id)
+                           (e-board-registry-board-id board)))
+            (should (equal (plist-get event :message-id) "fact"))
+            (should (integerp (plist-get event :board-seq))))
+          (setq good-events nil)
+          (e-chat-service-replace-selector good '(:tags (subagent)) :start-seq 0)
+          (e-board-post-fact
+           (e-board-registry-board-source-board board)
+           :id "child" :tags '(subagent) :content "child activity"
+           :source-fact-key '(test fact 2))
+          (e-chat-service--drain-subscription good)
+          (should (equal (plist-get (car good-events) :message-id) "child")))))))
+
 (ert-deftest e-chat-service-test-board-chat-end-to-end ()
   "Board ingress, harness delivery, board output, and observation round-trip."
   (let ((e-board--registry (make-hash-table :test 'equal))

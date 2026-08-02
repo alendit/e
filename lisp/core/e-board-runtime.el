@@ -223,7 +223,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
-  turn-activity turn-tags instance-id instance-catalog-generation harness-id harness-object-generation
+  turn-activity turn-tags turn-delivery-ids instance-id instance-catalog-generation harness-id harness-object-generation
   session-store-id endpoint-token state reconciliation)
 
 (cl-defstruct (e-board-runtime-reconciliation
@@ -942,10 +942,17 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
                :author (format "participant:%s" participant-id)
                :subject-participant-id participant-id
                :source-turn-id (plist-get mailbox :turn-id)
-               :activity-kind 'work-progress
+               :activity-kind (or (plist-get mailbox :activity-kind)
+                                  'work-progress)
+               :tags (copy-tree (plist-get mailbox :tags))
                :attributes (list :work-id work-id)
                :content (e-board-runtime--activity-content
                          (plist-get mailbox :payload))
+               :caused-by-delivery-ids
+               (copy-tree
+                (gethash (plist-get mailbox :turn-id)
+                         (e-board-runtime-attachment-turn-delivery-ids
+                          attachment)))
                :source-activity-key (plist-get mailbox :source-key)))))))
     (when e-board-runtime--pending-activity-head
       (setq e-board-runtime--activity-drain-scheduled t)
@@ -964,6 +971,7 @@ will consume the mailbox under its own bounded drain."
     (puthash work-id
              (list :attachment attachment
                    :turn-id (plist-get (e-work-handle-context handle) :turn-id)
+                   :activity-kind 'work-progress
                    :payload payload
                    :source-key
                    (list participant-id
@@ -971,6 +979,33 @@ will consume the mailbox under its own bounded drain."
                          sequence))
              e-board-runtime--work-activity-mailboxes)
     (e-board-runtime--enqueue-activity-flush work-id)))
+
+(defun e-board-runtime--capture-turn-progress (attachment event)
+  "Coalesce high-frequency reasoning EVENT into one latest-value mailbox."
+  (let* ((turn-id (plist-get event :turn-id))
+         (activity-kind (e-events-type event))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant attachment)))
+         (mailbox-id
+          (list 'turn-progress participant-id
+                (e-board-runtime-attachment-generation attachment)
+                turn-id activity-kind))
+         (sequence
+          (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+    (puthash mailbox-id
+             (list :attachment attachment :turn-id turn-id
+                   :activity-kind activity-kind
+                   :tags (copy-tree
+                          (gethash turn-id
+                                   (e-board-runtime-attachment-turn-tags attachment)))
+                   :payload (plist-get event :payload)
+                   :source-key
+                   (list participant-id
+                         (e-board-runtime-attachment-generation attachment)
+                         sequence))
+             e-board-runtime--work-activity-mailboxes)
+    (e-board-runtime--enqueue-activity-flush mailbox-id)))
 
 (defun e-board-runtime--install-work-hooks (attachment handle)
   "Install the private board-runtime hook classification on prepared HANDLE."
@@ -1124,6 +1159,10 @@ has no callback and is observed only."
                              (e-board-runtime-attachment-turn-tags attachment)))
                    '(main))
          :content (plist-get message :content)
+         :caused-by-delivery-ids
+         (copy-tree
+          (gethash turn-id
+                   (e-board-runtime-attachment-turn-delivery-ids attachment)))
          :source-output-key
          (list participant-id
                (e-board-runtime-attachment-generation attachment)
@@ -1188,6 +1227,10 @@ these terminal states have no output to close the board-owned open projection."
         (when-let ((source-event-id
                     (plist-get event :activity-entry-id)))
           (list :source-event-id source-event-id)))
+       :caused-by-delivery-ids
+       (copy-tree
+        (gethash turn-id
+                 (e-board-runtime-attachment-turn-delivery-ids attachment)))
        :source-activity-key
        (e-board-runtime--event-activity-source-key attachment event activity-kind)))))
 
@@ -1218,6 +1261,10 @@ these terminal states have no output to close the board-owned open projection."
           (when-let ((source-event-id
                       (plist-get event :activity-entry-id)))
             (list :source-event-id source-event-id)))
+         :caused-by-delivery-ids
+         (copy-tree
+          (gethash turn-id
+                   (e-board-runtime-attachment-turn-delivery-ids attachment)))
          :source-activity-key
          (e-board-runtime--event-activity-source-key attachment event activity-kind))))))
 
@@ -1270,6 +1317,10 @@ these terminal states have no output to close the board-owned open projection."
                  (when-let ((source-event-id
                              (plist-get event :activity-entry-id)))
                    (list :source-event-id source-event-id)))
+         :caused-by-delivery-ids
+         (copy-tree
+          (gethash turn-id
+                   (e-board-runtime-attachment-turn-delivery-ids attachment)))
          :source-activity-key
          (e-board-runtime--event-activity-source-key attachment event 'turn-summary))))))
 
@@ -1299,6 +1350,8 @@ these terminal states have no output to close the board-owned open projection."
   "Publish attached output and reconcile board-delivery receipts from EVENT."
   (when (e-board-runtime--current-attachment-p attachment)
     (let ((type (e-events-type event)))
+      (when (memq type '(reasoning-delta reasoning-raw-delta))
+        (e-board-runtime--capture-turn-progress attachment event))
       (e-board-runtime--observe-turn-activity attachment event)
       (e-board-runtime--publish-harness-activity attachment event)
       (cond
@@ -1307,6 +1360,8 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-runtime--publish-turn-summary attachment event 'finished)
         (remhash (plist-get event :turn-id)
                  (e-board-runtime-attachment-turn-tags attachment))
+        (remhash (plist-get event :turn-id)
+                 (e-board-runtime-attachment-turn-delivery-ids attachment))
         (e-board-runtime--settle-producer-turn attachment event 'done)
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
        ((memq type '(turn-failed turn-cancelled))
@@ -1314,6 +1369,8 @@ these terminal states have no output to close the board-owned open projection."
         (e-board-runtime--publish-turn-summary attachment event type)
         (remhash (plist-get event :turn-id)
                  (e-board-runtime-attachment-turn-tags attachment))
+        (remhash (plist-get event :turn-id)
+                 (e-board-runtime-attachment-turn-delivery-ids attachment))
         (e-board-runtime--settle-producer-turn
          attachment event (if (eq type 'turn-cancelled) 'cancelled 'failed))
         (e-board-runtime--enqueue-ready-participant-pickup attachment))
@@ -1324,6 +1381,8 @@ these terminal states have no output to close the board-owned open projection."
                (board (e-board-registry-board-source-board registry-board))
                (pickup (e-board-pickup board delivery-id)))
           (when (and pickup (plist-get event :turn-id))
+            (puthash (plist-get event :turn-id) (list delivery-id)
+                     (e-board-runtime-attachment-turn-delivery-ids attachment))
             (puthash (plist-get event :turn-id)
                      (copy-tree
                       (plist-get (e-board-pickup-cause-metadata pickup)
@@ -1790,6 +1849,7 @@ read proves the expected authorization and controller are still current."
    :activity-sequence 0 :generation generation :state 'active
    :turn-activity (make-hash-table :test 'equal)
    :turn-tags (make-hash-table :test 'equal)
+   :turn-delivery-ids (make-hash-table :test 'equal)
    :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
    :instance-id (plist-get metadata :instance-id)
    :instance-catalog-generation

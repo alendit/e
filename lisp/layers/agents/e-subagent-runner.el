@@ -132,6 +132,7 @@ Returns a handle plist carrying a `:cancel' function that aborts the child's
 active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
   (e-subagent--seed-child child-harness child-session-id seed-messages)
   (let ((settled nil)
+        (last-assistant nil)
         subscription)
     (cl-labels
         ((finish
@@ -145,11 +146,14 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
             (e-chat-service-subscribe
              child-harness child-session-id
              (lambda (event)
+               (when-let* ((message (plist-get (plist-get event :payload) :message))
+                           ((eq (plist-get message :role) 'assistant))
+                           (content (plist-get message :content)))
+                 (setq last-assistant content))
                (pcase (plist-get event :type)
                  ('turn-finished
                   (finish 'done
-                          :summary (e-subagent--last-assistant-text
-                                    child-harness child-session-id)))
+                          :summary last-assistant))
                  ('turn-failed
                   (finish 'failed
                           :error (or (plist-get (plist-get event :payload)
@@ -167,15 +171,6 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
               (ignore-errors
                 (e-chat-service-abort-session
                  child-harness child-session-id)))))))
-
-(defun e-subagent--last-assistant-text (harness session-id)
-  "Return the last assistant message text for SESSION-ID in HARNESS, or nil."
-  (let ((content
-         (cl-some (lambda (message)
-                    (and (eq (plist-get message :role) 'assistant)
-                         (plist-get message :content)))
-                  (reverse (e-chat-service-messages harness session-id)))))
-    (and (stringp content) content)))
 
 (defun e-subagent--work-spec ()
   "Return the cooperative work spec that wraps a spawned child turn.
@@ -269,11 +264,17 @@ returns a handle plist carrying `:cancel'."
   (let* ((type (e-subagent--normalize-type type))
          (instance (e-subagent--type-instance type))
          (child-harness (e-subagent--child-harness instance))
+         (parent-binding
+          (e-chat-service-ensure-binding parent-harness parent-session-id))
+         (parent-board (e-chat-service-binding-board parent-binding))
          (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
          (metadata (e-subagent--child-metadata
                     instance parent-session-id lineage-id label))
-         (child-session (e-chat-service-create-session
-                         :harness child-harness :metadata metadata))
+         (child-session
+          (e-chat-service-create-participant
+           parent-board child-harness :metadata metadata
+           :pickup-selector '(:tags (subagent))
+           :observer-selector :self :default-tags '(subagent) :default-to :self))
          (child-session-id (plist-get child-session :id))
          (schedule (or schedule 'direct))
          (producer-binding

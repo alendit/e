@@ -128,6 +128,8 @@
                        '("context note")))
         (e-board-runtime-drain-producers)
         (let* ((binding (e-chat-service-binding parent "parent-1"))
+               (child-binding
+                (e-chat-service-binding child-harness child-session-id))
                (messages (e-board-messages
                           (e-board-registry-board-source-board
                            (e-chat-service-binding-board binding))))
@@ -135,6 +137,15 @@
                        (lambda (message)
                          (eq (e-board-message-kind message) 'fact))
                        messages)))
+          (should (eq (e-chat-service-binding-board child-binding)
+                      (e-chat-service-binding-board binding)))
+          (should (equal
+                   (e-chat-service-binding-default-to child-binding)
+                   (e-board-registry-participant-id
+                    (e-board-runtime-attachment-participant
+                     (e-chat-service-binding-attachment child-binding)))))
+          (should (equal (e-chat-service-binding-default-tags child-binding)
+                         '(subagent)))
           (should (>= (length facts) 2))
           (should (cl-every
                    (lambda (message)

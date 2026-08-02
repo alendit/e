@@ -356,6 +356,17 @@ Exercise opening an empty board, reconnecting to an existing board, default
 unrouted state, two matching participants, and widening the same chat observer
 to a subagent stream.
 
+*** Current remediation note
+
+The application service now exposes board-first create/open, participant
+creation, generic tagged and exact posting, and selector replacement APIs.
+Each subscription owns an independently attached registry client and observer;
+subscriber failure faults that lane without advancing its cursor.  Focused
+tests cover opening one existing board with two participants, generic and exact
+routing, visible zero-match state, independent clients, and selector widening
+with backfill.  The finding remains open until shell-local identity and replay
+are board-owned rather than session-owned compatibility projections.
+
 ** TODO High: Chat observation and replay are not board-faithful or causally safe
 
 *** Expected
@@ -443,7 +454,18 @@ history/live overlap, selector widening, subscriber failure, and expired-cursor
 resnapshot.  Make transcript/activity reads fail during every chat rendering
 test.
 
-** TODO High: Subagents do not join the parent's board
+*** Current remediation note
+
+Observer events now preserve board id, sequence, retained message id, subject
+participant, source turn, and delivery causes.  Turn correlation follows the
+retained pickup caused by the source input instead of the former pending-input
+FIFO, and failed/cancelled summaries remain visible.  Reasoning updates cross
+the board through one latest-value mailbox per participant/turn/kind, so rapid
+deltas coalesce before bounded publication.  The finding remains open while
+chat replay/state helpers can still read private session transcript/activity
+state instead of reconstructing exclusively from bounded board pages.
+
+** DONE High: Subagents do not join the parent's board
 
 *** Expected
 
@@ -480,6 +502,28 @@ for a new board.
 One E2E test must show parent input, child pickup, child thinking/tool/summary/
 output, selector widening, and exact/tagged result return on the same board and
 in board sequence, with no transcript scan.
+
+*** Resolution
+
+Subagent spawn now resolves the parent's chat binding and creates the child as
+a participant on that same board.  The child has descriptive =subagent=
+pickup/output tags and an exact default destination, while the parent's
+default =main= observer remains quiet until its selector is widened.  Result
+capture consumes the child's board observer stream; the private transcript
+scan has been removed.
+
+*** Evidence
+
+- =test/e-subagent-runner-test.el= proves parent and child share one board and
+  checks the child's default exact destination and descriptive tags.
+- =test/e-modernchat-test.el= widens an existing independent observer to the
+  =subagent= stream with backfill.
+- =test/e-board-runtime-test.el= proves rapid reasoning deltas coalesce to one
+  bounded retained board activity message.
+
+#+begin_src sh
+rtk eldev test test/e-modernchat-test.el test/e-subagent-runner-test.el test/e-board-runtime-test.el
+#+end_src
 
 ** DONE High: Bundled work producers publish inert facts and task completion is false
 

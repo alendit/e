@@ -2187,6 +2187,35 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
+(ert-deftest e-board-runtime-test-reasoning-deltas-coalesce-on-board ()
+  "Latest reasoning is board-visible without appending every high-rate delta."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           scheduled)
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant")))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (push (lambda () (apply function arguments)) scheduled))))
+          (dolist (content '("first" "latest"))
+            (e-board-runtime--handle-harness-event
+             attachment
+             (e-events-make :type 'reasoning-delta :session-id "session"
+                            :turn-id "turn" :payload (list :content content))))
+          (should (= (hash-table-count e-board-runtime--pending-activity-set) 1))
+          (e-board-runtime--drain-activity-mailboxes)
+          (let ((message
+                 (car (e-board-messages
+                       (e-board-registry-board-source-board board)))))
+            (should (eq (e-board-message-activity-kind message)
+                        'reasoning-delta))
+            (should (string-match-p "latest" (e-board-message-content message)))
+            (should-not (string-match-p "first"
+                                        (e-board-message-content message)))))))))
+
 (ert-deftest e-board-runtime-test-authorized-exact-input-checks-requester-before-post ()
   "An explicit requester cannot create an unauthorized exact board input."
   (e-board-runtime-test--with-empty-state
