@@ -318,21 +318,18 @@
         (e-board-registry-authorize-principal board "owner" "member" 'member)
         (e-board-registry-grant-participant-access
          board "owner" target "member" '(post))
-        (let* ((exact (e-board-post-input
-                       source :id "exact" :to "target"
-                       :requester-actor "member"))
-               (message (e-board-publication-message exact))
-               (frozen
-                (copy-e-board-subscription
-                 (e-board-find-subscription
-                  source
-                  (e-board-participant-create-pickup-subscription-id
-                   (e-board-registry-participant-source-participant target))))))
-          (e-board-registry-revoke-participant-access
-           board "owner" target "member")
-          (e-board--finalize-input-classification
-           source message exact (list frozen) nil)
-          (should-not (e-board-publication-pickup-ids exact)))
+        (let ((e-board-input-classification-drain-limit 1))
+          (let ((exact (e-board-post-input
+                        source :id "exact" :to "target"
+                        :requester-actor "member")))
+            ;; Admit the frozen address match, then revoke before the separately
+            ;; paged pickup-finalization authorization step.
+            (funcall (pop scheduled))
+            (e-board-registry-revoke-participant-access
+             board "owner" target "member")
+            (while scheduled
+              (funcall (pop scheduled)))
+            (should-not (e-board-publication-pickup-ids exact))))
         (e-board-registry-authorize-principal board "owner" "member" 'member)
         (e-board-registry-install-subscription
          board target '(:kind input :tags (follow))

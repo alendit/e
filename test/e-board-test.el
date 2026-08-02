@@ -277,6 +277,41 @@
         (should (eq (e-board-message-routing-state message) 'unrouted))
         (should-not (e-board-publication-pickup-ids publication))))))
 
+(ert-deftest e-board-test-routing-finalization-pages-and-rejects-fanout-over-cap ()
+  "Classification yields between pages and never exposes a partial over-cap fan-out."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0))
+    (let ((e-board-input-classification-drain-limit 8)
+          scheduled)
+      (let ((board
+             (e-board-create
+              :id "board"
+              :input-classification-scheduler
+              (lambda (drain) (setq scheduled (append scheduled (list drain)))))))
+        (dotimes (index (1+ e-board-input-fanout-limit))
+          (let ((participant-id (format "p%d" index)))
+            (e-board-add-participant
+             board :id participant-id
+             :create-pickup-subscription-id (format "exact-%d" index))
+            (e-board-subscribe board participant-id '(:tags (main))
+                               :id (format "tag-%d" index))))
+        (let* ((publication (e-board-post-input board :id "input" :tags '(main)))
+               (message (e-board-publication-message publication))
+               (heartbeats 0))
+          (while scheduled
+            (let ((drain (pop scheduled)))
+              (cl-incf heartbeats)
+              (funcall drain)
+              (unless (eq (e-board-message-routing-state message) 'routing-failed)
+                (should (eq (e-board-message-routing-state message) 'routing))
+                (should (= (hash-table-count (e-board-pickups board)) 0)))))
+          (should (> heartbeats 2))
+          (should (eq (e-board-message-routing-state message) 'routing-failed))
+          (should (eq (e-board-message-unrouted-reason message)
+                      'fanout-limit-exceeded))
+          (should-not (e-board-publication-pickup-ids publication))
+          (should (= (hash-table-count (e-board-pickups board)) 0)))))))
+
 (ert-deftest e-board-test-core-routing-fault-is-visible-without-partial-pickups ()
   "A malformed trusted selector fails one routing attempt before commit."
   (e-board-test--with-empty-registry

@@ -83,6 +83,12 @@
 (defconst e-board-input-classification-drain-limit 32
   "Maximum frozen input subscription clauses classified per drain.")
 
+(defconst e-board-input-fanout-limit 64
+  "Maximum participants one input may address in one atomic routing commit.")
+
+(defconst e-board-pickup-subscription-limit 64
+  "Maximum matching subscription clauses retained by one logical pickup.")
+
 (defconst e-board-subscription-replay-drain-limit 32
   "Maximum retained records classified for explicit continuation replay.")
 
@@ -169,7 +175,16 @@
 (cl-defstruct (e-board-input-classification
                (:constructor e-board-input-classification--create)
                (:conc-name e-board-input-classification-))
-  message publication subscription-count index matches post-subscriptions post-index)
+  message publication subscription-count index
+  matches matches-tail post-subscriptions post-subscriptions-tail
+  phase cursor by-participant participant-ids participant-ids-tail participant-count
+  prepared-pickups prepared-pickups-tail pickup-ids pickup-ids-tail
+  overflow-reason)
+
+(cl-defstruct (e-board-subscription-bucket
+               (:constructor e-board-subscription-bucket--create)
+               (:conc-name e-board-subscription-bucket-))
+  ids tail count)
 
 (cl-defstruct (e-board-subscription-replay
                (:constructor e-board-subscription-replay--create)
@@ -812,6 +827,7 @@ uncommitted failure settles that cancellation instead of retrying it."
         (setcdr tail cell)
       (setf (e-board-aggregation-deadlines board) cell))
     (setf (e-board-aggregation-deadline-tail board) cell))
+  (e-board--adjust-unsettled board 'routing 1)
   (e-board--schedule-aggregation-deadline board))
 
 (defun e-board-drain-aggregation-deadlines (board)
@@ -820,6 +836,7 @@ uncommitted failure settles that cancellation instead of retrying it."
   (let ((remaining e-board-aggregation-deadline-drain-limit))
     (while (and (> remaining 0) (e-board-aggregation-deadlines board))
       (let ((aggregation-id (pop (e-board-aggregation-deadlines board))))
+        (e-board--adjust-unsettled board 'routing -1)
         (unless (e-board-aggregation-deadlines board)
           (setf (e-board-aggregation-deadline-tail board) nil))
         (when-let ((aggregation (e-board-aggregation board aggregation-id)))
@@ -898,6 +915,7 @@ effect records and never synchronously enter a tool or harness callback."
           (setcdr tail cell)
         (setf (e-board-terminal-classifications board) cell))
       (setf (e-board-terminal-classification-tail board) cell))
+    (e-board--adjust-unsettled board 'routing 1)
     (e-board--schedule-terminal-classification board)))
 
 (defun e-board-drain-terminal-classifications (board)
@@ -922,8 +940,9 @@ effect records and never synchronously enter a tool or harness callback."
                          (e-board--aggregation-ready-p board aggregation))
                 (e-board--settle-aggregation board aggregation 'complete)))))
          (t
-          (setf (e-board-terminal-classifications board)
+         (setf (e-board-terminal-classifications board)
                 (cdr (e-board-terminal-classifications board)))
+          (e-board--adjust-unsettled board 'routing -1)
           (unless (e-board-terminal-classifications board)
             (setf (e-board-terminal-classification-tail board) nil))))
         (cl-decf remaining)))
@@ -2442,94 +2461,192 @@ fact publications."
     (apply #'vector (mapcar #'e-board--copy-envelope-value value)))
    (t value)))
 
-(defun e-board--finalize-input-classification
-    (board message publication subscriptions post-subscriptions)
-  "Commit MESSAGE's deferred pickups and continuation effects.
-Only input records receive a routing projection or create pickups; every
-message kind may schedule its frozen explicit continuation matches."
-  (let ((subscriptions (nreverse subscriptions))
-        (post-subscriptions (nreverse post-subscriptions))
-        (by-participant (make-hash-table :test 'equal))
-        participant-ids pickup-ids)
-    (setq subscriptions
-          (cl-remove-if-not
-           (lambda (subscription)
+(defun e-board--classification-append-match (record subscription post-p)
+  "Append frozen SUBSCRIPTION to RECORD's ordinary or POST-P match FIFO."
+  (let ((cell (list subscription)))
+    (if post-p
+        (progn
+          (if (e-board-input-classification-post-subscriptions-tail record)
+              (setcdr (e-board-input-classification-post-subscriptions-tail record)
+                      cell)
+            (setf (e-board-input-classification-post-subscriptions record) cell))
+          (setf (e-board-input-classification-post-subscriptions-tail record) cell))
+      (if (e-board-input-classification-matches-tail record)
+          (setcdr (e-board-input-classification-matches-tail record) cell)
+        (setf (e-board-input-classification-matches record) cell))
+      (setf (e-board-input-classification-matches-tail record) cell))))
+
+(defun e-board--classification-append-participant (record participant-id)
+  "Append PARTICIPANT-ID to RECORD's unique bounded fan-out FIFO."
+  (let ((cell (list participant-id)))
+    (if (e-board-input-classification-participant-ids-tail record)
+        (setcdr (e-board-input-classification-participant-ids-tail record) cell)
+      (setf (e-board-input-classification-participant-ids record) cell))
+    (setf (e-board-input-classification-participant-ids-tail record) cell)
+    (cl-incf (e-board-input-classification-participant-count record))))
+
+(defun e-board--classification-group-subscription (record subscription)
+  "Group one authorized SUBSCRIPTION into RECORD with fixed clause/fan-out caps."
+  (let* ((participant-id (e-board-subscription-participant-id subscription))
+         (table (e-board-input-classification-by-participant record))
+         (bucket (gethash participant-id table)))
+    (unless bucket
+      (if (>= (e-board-input-classification-participant-count record)
+              e-board-input-fanout-limit)
+          (setf (e-board-input-classification-overflow-reason record)
+                'fanout-limit-exceeded)
+        (setq bucket (e-board-subscription-bucket--create :count 0))
+        (puthash participant-id bucket table)
+        (e-board--classification-append-participant record participant-id)))
+    (when bucket
+      (if (>= (e-board-subscription-bucket-count bucket)
+              e-board-pickup-subscription-limit)
+          (setf (e-board-input-classification-overflow-reason record)
+                'subscription-clause-limit-exceeded)
+        (let ((cell (list (e-board-subscription-id subscription))))
+          (if (e-board-subscription-bucket-tail bucket)
+              (setcdr (e-board-subscription-bucket-tail bucket) cell)
+            (setf (e-board-subscription-bucket-ids bucket) cell))
+          (setf (e-board-subscription-bucket-tail bucket) cell)
+          (cl-incf (e-board-subscription-bucket-count bucket)))))))
+
+(defun e-board--classification-prepare-pickup (board record participant-id)
+  "Prepare PARTICIPANT-ID's pickup off-registry for RECORD."
+  (let* ((message (e-board-input-classification-message record))
+         (bucket (gethash participant-id
+                          (e-board-input-classification-by-participant record)))
+         (delivery-id (list (e-board-id board)
+                            (e-board-message-id message)
+                            participant-id))
+         (pickup
+          (e-board-pickup--create
+           :delivery-id delivery-id :board-id (e-board-id board)
+           :participant-id participant-id :message-id (e-board-message-id message)
+           :subscription-ids (copy-sequence (e-board-subscription-bucket-ids bucket))
+           :event-seq-range (list (e-board-message-seq message)
+                                  (e-board-message-seq message))
+           :mode (e-board-message-mode message)
+           :requester-actor
+           (e-board--copy-envelope-value (e-board-message-requester-actor message))
+           :addressed-p (and (e-board-message-to message) t)
+           :cause-metadata
+           (e-board--copy-envelope-value (e-board--pickup-cause-metadata message))
+           :content (e-board--copy-envelope-value (e-board-message-content message))
+           :reference
+           (e-board--copy-envelope-value (e-board-message-reference message))))
+         (pickup-cell (list pickup))
+         (id-cell (list delivery-id)))
+    (if (e-board-input-classification-prepared-pickups-tail record)
+        (setcdr (e-board-input-classification-prepared-pickups-tail record)
+                pickup-cell)
+      (setf (e-board-input-classification-prepared-pickups record) pickup-cell))
+    (setf (e-board-input-classification-prepared-pickups-tail record) pickup-cell)
+    (if (e-board-input-classification-pickup-ids-tail record)
+        (setcdr (e-board-input-classification-pickup-ids-tail record) id-cell)
+      (setf (e-board-input-classification-pickup-ids record) id-cell))
+    (setf (e-board-input-classification-pickup-ids-tail record) id-cell)))
+
+(defun e-board--classification-commit-routing (board record)
+  "Atomically expose RECORD's fixed-cap pickup set and routing projection."
+  (let* ((message (e-board-input-classification-message record))
+         (publication (e-board-input-classification-publication record))
+         (participant-ids (e-board-input-classification-participant-ids record))
+         (pickup-ids (e-board-input-classification-pickup-ids record))
+         (overflow (e-board-input-classification-overflow-reason record)))
+    (cond
+     (overflow
+      (setf (e-board-message-unrouted-reason message) overflow
+            (e-board-message-routing-state message) 'routing-failed)
+      (e-board--append-event board 'input-routing-failed
+                             (list :message-id (e-board-message-id message)
+                                   :reason overflow)))
+     ((null participant-ids)
+      (let ((reason (if (e-board-message-to message)
+                        'target-unavailable
+                      'no-matching-subscription)))
+        (setf (e-board-message-unrouted-reason message) reason
+              (e-board-message-routing-state message) 'unrouted)
+        (e-board--append-event board 'input-unrouted
+                               (list :message-id (e-board-message-id message)
+                                     :reason reason))))
+     (t
+      ;; The fixed fan-out cap makes this publication transaction a constant
+      ;; upper bound while keeping every prepared pickup invisible until here.
+      (dolist (pickup (e-board-input-classification-prepared-pickups record))
+        (puthash (e-board-pickup-delivery-id pickup) pickup (e-board-pickups board))
+        (e-board--enqueue-pickup board pickup))
+      (setf (e-board-message-matching-participant-ids message) participant-ids
+            (e-board-message-pickup-ids message) pickup-ids
+            (e-board-message-routing-state message) 'routed)
+      (e-board--append-event board 'input-routed
+                             (list :message-id (e-board-message-id message)
+                                   :participant-ids participant-ids
+                                   :pickup-ids pickup-ids))))
+    (let ((cell (list (list (e-board-message-id message) pickup-ids))))
+      (if (e-board-routed-pickup-results-tail board)
+          (setcdr (e-board-routed-pickup-results-tail board) cell)
+        (setf (e-board-routed-pickup-results board) cell))
+      (setf (e-board-routed-pickup-results-tail board) cell))
+    (setf (e-board-publication-pickup-ids publication) pickup-ids)))
+
+(defun e-board--advance-input-finalization (board record)
+  "Advance RECORD by one bounded finalization unit; return non-nil when done."
+  (let ((message (e-board-input-classification-message record)))
+    (pcase (e-board-input-classification-phase record)
+      ('nil
+       (setf (e-board-input-classification-phase record) 'authorize-pickups
+             (e-board-input-classification-cursor record)
+             (e-board-input-classification-matches record)
+             (e-board-input-classification-by-participant record)
+             (make-hash-table :test 'equal)
+             (e-board-input-classification-participant-count record) 0)
+       nil)
+      ('authorize-pickups
+       (if-let ((cursor (e-board-input-classification-cursor record)))
+           (let ((subscription (car cursor)))
+             (setf (e-board-input-classification-cursor record) (cdr cursor))
              (when-let ((current
                          (e-board--classification-subscription-current-p
                           board subscription)))
-               (e-board--authorize-classification
-                board current message 'pickup-finalization)))
-           subscriptions))
-    (when (eq (e-board-message-kind message) 'input)
-      ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
-      (dolist (subscription subscriptions)
-        (let ((participant-id (e-board-subscription-participant-id subscription)))
-          (puthash participant-id
-                   (append (gethash participant-id by-participant)
-                           (list (e-board-subscription-id subscription)))
-                   by-participant)
-          (unless (member participant-id participant-ids)
-            (setq participant-ids (append participant-ids (list participant-id))))))
-      (if (null participant-ids)
-          (let ((reason (if (e-board-message-to message)
-                            'target-unavailable
-                          'no-matching-subscription)))
-            (setf (e-board-message-unrouted-reason message) reason
-                  (e-board-message-routing-state message) 'unrouted)
-            (e-board--append-event board 'input-unrouted
-                                   (list :message-id (e-board-message-id message)
-                                         :reason reason)))
-        (dolist (participant-id participant-ids)
-          (let* ((delivery-id (list (e-board-id board)
-                                    (e-board-message-id message)
-                                    participant-id))
-                 (pickup
-                  (e-board-pickup--create
-                   :delivery-id delivery-id :board-id (e-board-id board)
-                   :participant-id participant-id
-                   :message-id (e-board-message-id message)
-                   :subscription-ids
-                   (copy-sequence (gethash participant-id by-participant))
-                   :event-seq-range (list (e-board-message-seq message)
-                                          (e-board-message-seq message))
-                   :mode (e-board-message-mode message)
-                   :requester-actor
-                   (e-board--copy-envelope-value
-                    (e-board-message-requester-actor message))
-                   :addressed-p (and (e-board-message-to message) t)
-                   :cause-metadata
-                   (e-board--copy-envelope-value
-                    (e-board--pickup-cause-metadata message))
-                   :content
-                   (e-board--copy-envelope-value
-                    (e-board-message-content message))
-                   :reference
-                   (e-board--copy-envelope-value
-                    (e-board-message-reference message)))))
-            (puthash delivery-id pickup (e-board-pickups board))
-            (e-board--enqueue-pickup board pickup)
-            (setq pickup-ids (append pickup-ids (list delivery-id)))))
-        (setf (e-board-message-matching-participant-ids message) participant-ids
-              (e-board-message-pickup-ids message) pickup-ids
-              (e-board-message-routing-state message) 'routed)
-        (e-board--append-event board 'input-routed
-                               (list :message-id (e-board-message-id message)
-                                     :participant-ids participant-ids
-                                     :pickup-ids pickup-ids))))
-    (dolist (subscription post-subscriptions)
-      (when-let ((current
-                  (e-board--classification-subscription-current-p
-                   board subscription)))
-        (when (e-board--authorize-classification
-               board current message 'effect-finalization)
-          (e-board--accept-post-input-match board current message))))
-    (when (eq (e-board-message-kind message) 'input)
-      (let ((cell (list (list (e-board-message-id message) pickup-ids))))
-        (if (e-board-routed-pickup-results-tail board)
-            (setcdr (e-board-routed-pickup-results-tail board) cell)
-          (setf (e-board-routed-pickup-results board) cell))
-        (setf (e-board-routed-pickup-results-tail board) cell))
-      (setf (e-board-publication-pickup-ids publication) pickup-ids))))
+               (when (e-board--authorize-classification
+                      board current message 'pickup-finalization)
+                 (when (eq (e-board-message-kind message) 'input)
+                   (e-board--classification-group-subscription record current)))))
+         (if (eq (e-board-message-kind message) 'input)
+             (setf (e-board-input-classification-phase record) 'prepare-pickups
+                   (e-board-input-classification-cursor record)
+                   (and (not (e-board-input-classification-overflow-reason record))
+                        (e-board-input-classification-participant-ids record)))
+           (setf (e-board-input-classification-phase record) 'authorize-effects
+                 (e-board-input-classification-cursor record)
+                 (e-board-input-classification-post-subscriptions record))))
+       nil)
+      ('prepare-pickups
+       (if-let ((cursor (e-board-input-classification-cursor record)))
+           (progn
+             (setf (e-board-input-classification-cursor record) (cdr cursor))
+             (e-board--classification-prepare-pickup board record (car cursor)))
+         (setf (e-board-input-classification-phase record) 'commit-routing))
+       nil)
+      ('commit-routing
+       (e-board--classification-commit-routing board record)
+       (setf (e-board-input-classification-phase record) 'authorize-effects
+             (e-board-input-classification-cursor record)
+             (e-board-input-classification-post-subscriptions record))
+       nil)
+      ('authorize-effects
+       (if-let ((cursor (e-board-input-classification-cursor record)))
+           (let ((subscription (car cursor)))
+             (setf (e-board-input-classification-cursor record) (cdr cursor))
+             (when-let ((current
+                         (e-board--classification-subscription-current-p
+                          board subscription)))
+               (when (e-board--authorize-classification
+                      board current message 'effect-finalization)
+                 (e-board--accept-post-input-match board current message))))
+         (setf (e-board-input-classification-phase record) 'done))
+       nil)
+      ('done t))))
 
 (defun e-board--schedule-input-classification (board)
   "Schedule BOARD's frozen input classifier once after append returns."
@@ -2548,7 +2665,7 @@ the same bounded queue solely to classify explicit continuation subscriptions."
                 :message message
                 :subscription-count (e-board-subscription-count board)
                 :index 0 :publication publication
-                :matches nil :post-subscriptions nil :post-index 0))))
+                :matches nil :post-subscriptions nil))))
     (if (e-board-input-classification-tail board)
         (setcdr (e-board-input-classification-tail board) cell)
       (setf (e-board-input-classifications board) cell))
@@ -2593,20 +2710,18 @@ the same bounded queue solely to classify explicit continuation subscriptions."
               (condition-case err
                   (when (e-board--message-subscription-matches-p board subscription message)
                     (if (eq (e-board-subscription-effect subscription) 'create-pickup)
-                        (push subscription (e-board-input-classification-matches record))
-                      (push subscription
-                            (e-board-input-classification-post-subscriptions record))))
+                        (e-board--classification-append-match record subscription nil)
+                      (e-board--classification-append-match record subscription t)))
                 (error
                  (e-board--fail-input-classification board record err))))
-          (e-board--finalize-input-classification
-           board message (e-board-input-classification-publication record)
-           (e-board-input-classification-matches record)
-           (e-board-input-classification-post-subscriptions record))
-          (setf (e-board-input-classifications board)
-                (cdr (e-board-input-classifications board)))
-          (e-board--adjust-unsettled board 'routing -1)
-          (unless (e-board-input-classifications board)
-            (setf (e-board-input-classification-tail board) nil)))
+          (condition-case err
+              (when (e-board--advance-input-finalization board record)
+                (setf (e-board-input-classifications board)
+                      (cdr (e-board-input-classifications board)))
+                (e-board--adjust-unsettled board 'routing -1)
+                (unless (e-board-input-classifications board)
+                  (setf (e-board-input-classification-tail board) nil)))
+            (error (e-board--fail-input-classification board record err))))
         (cl-decf remaining)))
     (when (e-board-input-classifications board)
       (e-board--schedule-input-classification board))))

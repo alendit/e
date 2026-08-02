@@ -238,6 +238,28 @@
           (e-board-runtime-reopen-admission
            (e-board-runtime-quiescence-admission-token quiescence)))))))
 
+(ert-deftest e-board-runtime-test-quiescence-waits-for-terminal-and-deadline-queues ()
+  "Deferred board reducers remain blockers until their bounded drains retire."
+  (e-board-runtime-test--with-empty-state
+    (let* ((scheduled nil)
+           (board (e-board-registry-create :id "board"))
+           (source (e-board-registry-board-source-board board)))
+      (setf (e-board-terminal-classification-scheduler source)
+            (lambda (drain) (setq scheduled (append scheduled (list drain))))
+            (e-board-aggregation-deadline-scheduler source)
+            (lambda (drain) (setq scheduled (append scheduled (list drain)))))
+      (e-board--queue-terminal-classification source "work" '("invocation") nil)
+      (e-board--queue-aggregation-deadline source "aggregation")
+      (let* ((quiescence (e-board-runtime-request-quiescence))
+             (request (e-board-runtime-quiescence-request quiescence)))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (= (plist-get (e-board-unsettled-state source) :routing) 2))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should (= (plist-get (e-board-unsettled-state source) :routing) 0))))))
+
 (ert-deftest e-board-runtime-test-cancelled-quiescence-keeps-admission-closed ()
   "Cancelling observation never silently reopens the fenced admission epoch."
   (e-board-runtime-test--with-empty-state

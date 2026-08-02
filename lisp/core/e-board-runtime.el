@@ -2378,18 +2378,21 @@ must be an active registry client requester context; exact posts additionally
 require authority for their target participant."
   (e-board-runtime--require-admission)
   (let* ((board (e-board-runtime--active-board board-or-id))
+         (target (and to (e-board-registry-participant board to)))
          (requester-principal
           (and requester
                (e-board-registry-resolve-requester-principal board requester)))
          (_authorization
-          (and requester to
+          (and requester target
                (e-board-registry-authorize-exact-post
-                board requester-principal to)))
+                board requester-principal target)))
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
             :id id :author author :requester-actor requester-principal
-           :tags tags :attributes attributes :to to :mode mode :content content
+            :tags tags :attributes attributes
+           :to (and target (e-board-registry-participant-id target))
+           :mode mode :content content
            :reference reference :source-input-key source-input-key)))
     (e-board-runtime--enqueue-pickups
      board (e-board-publication-pickup-ids publication))

@@ -591,6 +591,15 @@ restart scenario on a disposable old-schema store, including rollback and a
 current-schema readback.  A production instance missing any required port must
 fail registration/activation.
 
+*** Current remediation note
+
+Board-owned terminal classification and aggregation-deadline queues now adjust
+the same constant-time routing unsettled counter used by runtime quiescence.
+=e-board-runtime-test-quiescence-waits-for-terminal-and-deadline-queues= holds
+both reducers independently and proves the request remains started until the
+last bounded drain retires.  The finding remains open for producer/domain
+writers and the production preparation/preflight/restart activation service.
+
 ** TODO High: Main-thread bounds remain incomplete
 
 *** Expected
@@ -649,6 +658,30 @@ Use a fake scheduler to hold and step each carrier while a heartbeat and
 composer edit run between pages.  Cover fan-out over the cap, large payload,
 large transcript, writer backlog/restart, large =await= set/result, and prove
 zero full-log/registry scans on every hot path.
+
+*** Current remediation note
+
+Input routing finalization is now a resumable cursor.  Match collection,
+authorization rechecks, participant grouping, pickup preparation, and
+continuation finalization consume the existing fixed drain budget with O(1)
+FIFO accumulation.  One input has hard 64-participant and 64-clause-per-pickup
+caps.  Pickups are prepared off-registry and become visible together only in a
+fixed-cap commit; overflow fails visibly with zero partial pickups.
+
+=e-board-test-routing-finalization-pages-and-rejects-fanout-over-cap= drives a
+65-participant match through a fake scheduler, observes multiple intervening
+heartbeats, proves the pickup registry remains empty between pages, and ends in
+=fanout-limit-exceeded= with no pickup ids.  The finding remains open for
+board-only history projection, task/session writers, and bounded =await=
+materialization.
+
+#+begin_src sh
+rtk eldev test test/e-board-test.el test/e-board-registry-test.el test/e-board-runtime-test.el
+#+end_src
+
+#+begin_example
+Ran 160 tests, 160 results as expected, 0 unexpected
+#+end_example
 
 ** DONE High: Retained board messages are not immutable
 
