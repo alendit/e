@@ -137,6 +137,45 @@
                      '(post control)))
       (should-not (e-board-registry-participant-access-rights board target "member")))))
 
+(ert-deftest e-board-registry-test-controller-manages-private-participant-grants ()
+  "Private transcript/control rights do not follow board ownership or post grants."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "board-owner"))
+           (participant (e-board-registry-add-participant
+                         board :id "participant" :principal "board-owner"
+                         :controller "controller")))
+      (should (e-board-registry-authorize-participant-private-access
+               board "controller" participant 'inspect-transcript))
+      (should (e-board-registry-authorize-participant-private-access
+               board "controller" participant 'control-session))
+      (should-error
+       (e-board-registry-grant-participant-private-access
+        board "board-owner" participant "delegate" '(inspect-transcript))
+       :type 'e-board-registry-authorization-denied)
+      (e-board-registry-grant-participant-private-access
+       board "controller" participant "delegate" '(inspect-transcript))
+      (should (e-board-registry-authorize-participant-private-access
+               board "delegate" participant 'inspect-transcript))
+      (should-error
+       (e-board-registry-authorize-participant-private-access
+        board "delegate" participant 'control-session)
+       :type 'e-board-registry-authorization-denied)
+      (let ((rights (e-board-registry-participant-private-access-rights
+                     board participant "delegate")))
+        (setcar rights 'mutated))
+      (should (equal
+               (e-board-registry-participant-private-access-rights
+                board participant "delegate")
+               '(inspect-transcript)))
+      (should (equal
+               (e-board-registry-revoke-participant-private-access
+                board "controller" participant "delegate")
+               '(inspect-transcript)))
+      (should-error
+       (e-board-registry-revoke-participant-private-access
+        board "controller" participant "controller")
+       :type 'e-board-registry-authorization-denied))))
+
 (ert-deftest e-board-registry-test-delayed-routing-rechecks-current-grants ()
   "Revocation fences protected selectors and pickup commit after publication."
   (e-board-registry-test--with-empty-registries

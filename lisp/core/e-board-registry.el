@@ -62,7 +62,11 @@
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
-  id board-id author principal controller role access-grants source-participant)
+  id board-id author principal controller role access-grants private-grants source-participant)
+
+(defconst e-board-registry-participant-private-rights
+  '(inspect-transcript control-session)
+  "Closed set of session-private participant access rights.")
 
 (defun e-board-registry--next-id (id-function kind)
   "Return an identity for KIND from ID-FUNCTION or the local fallback."
@@ -485,6 +489,14 @@ board, with its identity supplied by this registry's id generator."
              :author author :principal principal
              :controller (or controller principal) :role role
              :access-grants (make-hash-table :test 'equal)
+             :private-grants
+             (let ((grants (make-hash-table :test 'equal)))
+               (when-let ((controller (or controller principal)))
+                 (puthash controller
+                          (copy-sequence
+                           e-board-registry-participant-private-rights)
+                          grants))
+               grants)
              :source-participant source-participant)))
       (puthash id participant participants)
       participant)))
@@ -519,6 +531,76 @@ board, with its identity supplied by this registry's id generator."
          (participant (e-board-registry--participant board participant-or-id)))
     (copy-sequence
      (gethash principal (e-board-registry-participant-access-grants participant)))))
+
+(defun e-board-registry--require-participant-controller
+    (participant requester)
+  "Signal unless REQUESTER is PARTICIPANT's durable controlling principal."
+  (unless (and requester
+               (equal requester
+                      (e-board-registry-participant-controller participant)))
+    (signal 'e-board-registry-authorization-denied
+            (list (e-board-registry-participant-board-id participant)
+                  requester (e-board-registry-participant-id participant)
+                  'manage-private-access))))
+
+(defun e-board-registry-grant-participant-private-access
+    (board-or-id requester participant-or-id principal rights)
+  "Grant PRINCIPAL private session RIGHTS as PARTICIPANT's controller."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id)))
+    (e-board-registry--require-participant-controller participant requester)
+    (unless (and principal (listp rights) rights
+                 (cl-every (lambda (right)
+                             (memq right
+                                   e-board-registry-participant-private-rights))
+                           rights))
+      (signal 'wrong-type-argument
+              (list 'participant-private-rights rights)))
+    (puthash principal (copy-sequence rights)
+             (e-board-registry-participant-private-grants participant))
+    rights))
+
+(defun e-board-registry-revoke-participant-private-access
+    (board-or-id requester participant-or-id principal)
+  "Revoke PRINCIPAL's private session rights as PARTICIPANT's controller."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (grants (e-board-registry-participant-private-grants participant))
+         (rights (gethash principal grants)))
+    (e-board-registry--require-participant-controller participant requester)
+    (when (equal principal (e-board-registry-participant-controller participant))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) principal
+                    (e-board-registry-participant-id participant)
+                    'controller-private-access)))
+    (remhash principal grants)
+    rights))
+
+(defun e-board-registry-participant-private-access-rights
+    (board-or-id participant-or-id principal)
+  "Return immutable private session rights for PRINCIPAL on PARTICIPANT-OR-ID."
+  (let* ((board (e-board-registry--resolve board-or-id))
+         (participant (e-board-registry--participant board participant-or-id)))
+    (copy-sequence
+     (gethash principal
+              (e-board-registry-participant-private-grants participant)))))
+
+(defun e-board-registry-authorize-participant-private-access
+    (board-or-id requester participant-or-id right)
+  "Authorize REQUESTER's private RIGHT on PARTICIPANT-OR-ID."
+  (unless (memq right e-board-registry-participant-private-rights)
+    (signal 'wrong-type-argument
+            (list 'participant-private-right right)))
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (rights (gethash requester
+                          (e-board-registry-participant-private-grants
+                           participant))))
+    (unless (memq right rights)
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) requester
+                    (e-board-registry-participant-id participant) right)))
+    t))
 
 (defun e-board-registry-authorize-exact-post
     (board-or-id requester participant-or-id)
