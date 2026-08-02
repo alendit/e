@@ -17,6 +17,8 @@ and visibly faulted trusted predicates.
 Exact invocation effects now retain only an opaque target in the board; the
 private runtime owns the captured loop completion service and its original
 attachment generation.
+Terminal work publication now freezes indexed invocation/aggregation candidates
+and defers their activation classification to a bounded board drain.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime

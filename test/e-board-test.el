@@ -235,11 +235,13 @@
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
-    (let (effects replies)
+    (let (effects routers replies)
       (let* ((board (e-board-create
                      :id "board"
                      :effect-scheduler
                      (lambda (effect) (push effect effects))
+                     :terminal-classification-scheduler
+                     (lambda (drain) (push drain routers))
                      :invocation-effect-dispatcher
                      (lambda (_board target state payload)
                        (should (equal target "turn-1/call-1"))
@@ -262,7 +264,10 @@
                      (e-board-observed-work board (e-work-handle-id handle)))
                     'finished))
         (should (equal (mapcar #'e-board-event-type (e-board-events board))
-                       '(posted subscription-added finished activation-prepared)))
+                       '(posted subscription-added finished)))
+        (should (= (length routers) 1))
+        (funcall (pop routers))
+        (should (= (length effects) 1))
         (funcall (pop effects))
         (should (equal replies '((finished "done"))))
         (should (eq (e-board-invocation-state
@@ -275,10 +280,12 @@
 (ert-deftest e-board-test-aggregation-replies-after-all-observed-work-settles ()
   "Ordered aggregation waits for every watched terminal board fact."
   (e-board-test--with-empty-registry
-    (let (effects reasons)
+    (let (effects routers reasons)
       (let* ((board (e-board-create :id "board"
                                     :effect-scheduler
-                                    (lambda (effect) (push effect effects))))
+                                    (lambda (effect) (push effect effects))
+                                    :terminal-classification-scheduler
+                                    (lambda (drain) (push drain routers))))
              (first (e-work-prepare
                      (e-work-spec-create
                       :id "first" :execution 'render :interactive-policy 'async
@@ -297,6 +304,8 @@
         (e-work-finish first "one")
         (should-not effects)
         (e-work-finish second "two")
+        (should (= (length routers) 1))
+        (funcall (pop routers))
         (should (= (length effects) 1))
         (funcall (pop effects))
         (should (equal reasons '(complete)))

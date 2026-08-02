@@ -143,6 +143,7 @@
           (should-not (functionp (e-board-invocation-effect-target invocation))))
         (e-work-start-prepared handle)
         (should-not reply)
+        (e-board-drain-terminal-classifications source-board)
         (e-board-drain-effects source-board)
         (should (equal reply '(finished "done")))
         (should (eq (e-board-invocation-state

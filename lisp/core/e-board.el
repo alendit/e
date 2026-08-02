@@ -60,6 +60,9 @@
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
 
+(defconst e-board-terminal-classification-drain-limit 16
+  "Maximum indexed terminal subscription clauses classified per drain.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -85,12 +88,18 @@
                 (:conc-name e-board-aggregation-))
   id work-ids mode state callback timer activation-id)
 
+(cl-defstruct (e-board-terminal-classification
+               (:constructor e-board-terminal-classification--create)
+               (:conc-name e-board-terminal-classification-))
+  work-id invocation-ids aggregation-ids invocation-index aggregation-index)
+
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
   observers pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
-  effect-scheduler invocation-effect-dispatcher)
+  effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
+  terminal-classifications terminal-classification-scheduled terminal-classification-scheduler)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -152,7 +161,8 @@ The board object remains valid for inspection by its holder."
                             (format "%s" (e-board-id right)))))))
 
 (cl-defun e-board-create
-    (&key id id-function effect-scheduler invocation-effect-dispatcher (register t))
+    (&key id id-function effect-scheduler invocation-effect-dispatcher
+          terminal-classification-scheduler (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
 explicit ids to individual operations takes precedence over this generator."
@@ -174,7 +184,12 @@ explicit ids to individual operations takes precedence over this generator."
                    :aggregations (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effect-scheduler effect-scheduler
-                  :invocation-effect-dispatcher invocation-effect-dispatcher)))
+                  :invocation-effect-dispatcher invocation-effect-dispatcher
+                  :invocation-work-index (make-hash-table :test 'equal)
+                  :aggregation-work-index (make-hash-table :test 'equal)
+                  :terminal-classifications nil
+                  :terminal-classification-scheduled nil
+                  :terminal-classification-scheduler terminal-classification-scheduler)))
     (when register (e-board-register board))
     board))
 
@@ -236,6 +251,68 @@ effect records and never synchronously enter a tool or harness callback."
     (setf (e-board-pending-effects board) nil)
     (dolist (effect effects)
       (funcall effect))))
+
+(defun e-board--index-work-subscription (index work-id subscription-id)
+  "Add SUBSCRIPTION-ID to WORK-ID's exact INDEX without scanning its peers."
+  (puthash work-id (append (gethash work-id index) (list subscription-id)) index))
+
+(defun e-board--schedule-terminal-classification (board)
+  "Schedule BOARD's bounded terminal classifier once after settlement returns."
+  (unless (e-board-terminal-classification-scheduled board)
+    (setf (e-board-terminal-classification-scheduled board) t)
+    (if-let ((scheduler (e-board-terminal-classification-scheduler board)))
+        (funcall scheduler (lambda () (e-board-drain-terminal-classifications board)))
+      (run-at-time 0 nil (lambda () (e-board-drain-terminal-classifications board))))))
+
+(defun e-board--queue-terminal-classification
+    (board work-id &optional invocation-ids aggregation-ids)
+  "Freeze indexed terminal candidates for WORK-ID and schedule their classifier."
+  (let ((record (e-board-terminal-classification--create
+                 :work-id work-id
+                 :invocation-ids (copy-sequence
+                                  (or invocation-ids
+                                      (gethash work-id (e-board-invocation-work-index board))))
+                 :aggregation-ids (copy-sequence
+                                   (or aggregation-ids
+                                       (gethash work-id (e-board-aggregation-work-index board))))
+                 :invocation-index 0 :aggregation-index 0)))
+    (setf (e-board-terminal-classifications board)
+          (append (e-board-terminal-classifications board) (list record)))
+    (e-board--schedule-terminal-classification board)))
+
+(defun e-board-drain-terminal-classifications (board)
+  "Classify one bounded page of frozen terminal subscription candidates."
+  (setf (e-board-terminal-classification-scheduled board) nil)
+  (let ((remaining e-board-terminal-classification-drain-limit))
+    (while (and remaining (> remaining 0) (e-board-terminal-classifications board))
+      (let* ((record (car (e-board-terminal-classifications board)))
+             (work (e-board-observed-work board
+                                          (e-board-terminal-classification-work-id record)))
+             (state (and work (e-board-work-state work)))
+             (payload (and work (e-board-work-terminal-payload work))))
+        (cond
+         ((< (e-board-terminal-classification-invocation-index record)
+             (length (e-board-terminal-classification-invocation-ids record)))
+          (let* ((index (e-board-terminal-classification-invocation-index record))
+                 (id (nth index (e-board-terminal-classification-invocation-ids record))))
+            (setf (e-board-terminal-classification-invocation-index record) (1+ index))
+            (when-let ((invocation (e-board-invocation board id)))
+              (e-board--settle-invocation board invocation state payload))))
+         ((< (e-board-terminal-classification-aggregation-index record)
+             (length (e-board-terminal-classification-aggregation-ids record)))
+          (let* ((index (e-board-terminal-classification-aggregation-index record))
+                 (id (nth index (e-board-terminal-classification-aggregation-ids record))))
+            (setf (e-board-terminal-classification-aggregation-index record) (1+ index))
+            (when-let ((aggregation (e-board-aggregation board id)))
+              (when (and (eq (e-board-aggregation-state aggregation) 'open)
+                         (e-board--aggregation-ready-p board aggregation))
+                (e-board--settle-aggregation board aggregation 'complete)))))
+         (t
+          (setf (e-board-terminal-classifications board)
+                (cdr (e-board-terminal-classifications board)))))
+        (cl-decf remaining)))
+    (when (e-board-terminal-classifications board)
+      (e-board--schedule-terminal-classification board))))
 
 (defun e-board--settle-invocation (board invocation state payload)
   "Commit INVOCATION's exact reply effect for terminal STATE and PAYLOAD."
@@ -342,6 +419,9 @@ the reason `complete' or `timed-out'."
                         :id id :work-ids (copy-sequence work-ids) :mode mode
                         :state 'open :callback callback)))
       (puthash id aggregation (e-board-aggregations board))
+      (dolist (work-id work-ids)
+        (e-board--index-work-subscription (e-board-aggregation-work-index board)
+                                          work-id id))
       (e-board--append-event
        board 'subscription-added
        (list :subscription-id id :work-ids (copy-sequence work-ids)
@@ -353,7 +433,10 @@ the reason `complete' or `timed-out'."
                            (lambda ()
                              (e-board--settle-aggregation board aggregation 'timed-out)))))
       (when (e-board--aggregation-ready-p board aggregation)
-        (e-board--settle-aggregation board aggregation 'complete))
+        ;; Keep an already-ready subscription on the same later classifier
+        ;; path as a fresh terminal publication.
+        (e-board--queue-terminal-classification
+         board (car work-ids) nil (list id)))
       aggregation)))
 
 (defun e-board-cancel-aggregation (board aggregation-id)
@@ -370,7 +453,7 @@ the reason `complete' or `timed-out'."
   t)
 
 (defun e-board--observe-work-terminal (board work state payload)
-  "Append WORK's terminal fact, then freeze every exact invocation reply."
+  "Append WORK's terminal fact and queue its frozen indexed classifier."
   (unless (e-board-work-terminal-seq work)
     (let ((event (e-board--append-event
                   board state
@@ -379,20 +462,7 @@ the reason `complete' or `timed-out'."
       (setf (e-board-work-state work) state
             (e-board-work-terminal-seq work) (e-board-event-seq event)
             (e-board-work-terminal-payload work) payload)
-       (maphash
-        (lambda (_id invocation)
-         (when (equal (e-board-invocation-work-id invocation)
-                      (e-board-work-id work))
-            (e-board--settle-invocation board invocation state payload)))
-        (e-board-invocations board))
-       (maphash
-        (lambda (_id aggregation)
-          (when (and (eq (e-board-aggregation-state aggregation) 'open)
-                     (member (e-board-work-id work)
-                             (e-board-aggregation-work-ids aggregation))
-                     (e-board--aggregation-ready-p board aggregation))
-            (e-board--settle-aggregation board aggregation 'complete)))
-        (e-board-aggregations board)))))
+      (e-board--queue-terminal-classification board (e-board-work-id work)))))
 
 (cl-defun e-board-enroll-work (board handle &key metadata)
   "Enroll prepared HANDLE in BOARD before its runner may start.
@@ -434,6 +504,8 @@ target after the start stack unwinds."
                        :id id :work-id work-id :state 'open
                        :effect-target effect-target)))
       (puthash id invocation (e-board-invocations board))
+      (e-board--index-work-subscription (e-board-invocation-work-index board)
+                                        work-id id)
       (e-board--append-event board 'subscription-added
                              (list :subscription-id id :work-id work-id
                                    :effect 'reply-to-invocation))
@@ -442,9 +514,7 @@ target after the start stack unwinds."
       ;; frozen activation without scanning unrelated history.
       (let ((work (e-board-observed-work board work-id)))
         (when (e-board-work-terminal-seq work)
-          (e-board--settle-invocation board invocation
-                                      (e-board-work-state work)
-                                      (e-board-work-terminal-payload work))))
+          (e-board--queue-terminal-classification board work-id (list id))))
       invocation)))
 
 (cl-defun e-board-enroll-invocation-work
