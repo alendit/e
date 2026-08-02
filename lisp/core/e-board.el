@@ -84,6 +84,10 @@
 (defconst e-board-default-pickup-pending-limit 16
   "Maximum FIFO pickups allowed behind one participant's active head.")
 
+(defconst e-board--aggregation-modes
+  '(all any all-terminal first-terminal on-success on-failure on-terminal)
+  "Accepted private aggregation readiness modes.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -767,12 +771,23 @@ effect records and never synchronously enter a tool or harness callback."
   "Return non-nil when AGGREGATION's observed work has reached its policy."
   (let ((work-ids (e-board-aggregation-work-ids aggregation)))
     (pcase (e-board-aggregation-mode aggregation)
-      ('all (cl-every (lambda (id)
-                        (e-board-work-terminal-seq (e-board-observed-work board id)))
-                      work-ids))
-      ('any (cl-some (lambda (id)
-                       (e-board-work-terminal-seq (e-board-observed-work board id)))
-                     work-ids))
+      ((or 'all 'all-terminal)
+       (cl-every (lambda (id)
+                   (e-board-work-terminal-seq (e-board-observed-work board id)))
+                 work-ids))
+      ((or 'any 'first-terminal)
+       (cl-some (lambda (id)
+                  (e-board-work-terminal-seq (e-board-observed-work board id)))
+                work-ids))
+      ('on-success
+       (eq (e-board-work-state (e-board-observed-work board (car work-ids)))
+           'finished))
+      ('on-failure
+       (eq (e-board-work-state (e-board-observed-work board (car work-ids)))
+           'failed))
+      ('on-terminal
+       (e-board-work-terminal-seq
+        (e-board-observed-work board (car work-ids))))
       (_ (signal 'e-board-error
                  (list "Unknown aggregation mode" (e-board-aggregation-mode aggregation)))))))
 
@@ -831,13 +846,21 @@ effect records and never synchronously enter a tool or harness callback."
 (cl-defun e-board-subscribe-aggregation
     (board work-ids mode effect-target &key id timeout)
   "Install an ordered work aggregation reply subscription on BOARD.
-WORK-IDS must name currently observed work.  MODE is `all' or `any'.
+WORK-IDS must name currently observed work.  MODE is `all'/`all-terminal',
+`any'/`first-terminal', `on-success', `on-failure', or `on-terminal'.
 EFFECT-TARGET remains opaque to the board and receives a later frozen reason
 through the injected invocation effect dispatcher."
-  (unless (and (listp work-ids) work-ids)
-    (signal 'e-board-error (list "Aggregation requires at least one work id")))
-  (unless (memq mode '(all any))
+  (unless (listp work-ids)
+    (signal 'e-board-error (list "Aggregation work ids must be a list")))
+  (unless (memq mode e-board--aggregation-modes)
     (signal 'e-board-error (list "Unknown aggregation mode" mode)))
+  (when (and (memq mode '(any first-terminal on-success on-failure on-terminal))
+             (null work-ids))
+    (signal 'e-board-error (list "Aggregation requires at least one work id")))
+  (when (and (memq mode '(on-success on-failure on-terminal))
+             (/= (length work-ids) 1))
+    (signal 'e-board-error
+            (list "Exact readiness requires one work id" mode work-ids)))
   (unless effect-target
     (signal 'e-board-error (list "Aggregation effect target is required")))
   (dolist (work-id work-ids)
@@ -856,7 +879,10 @@ through the injected invocation effect dispatcher."
       (e-board--append-event
        board 'subscription-added
        (list :subscription-id id :work-ids (copy-sequence work-ids)
-             :readiness (if (eq mode 'all) 'all-terminal 'first-terminal)
+             :readiness (pcase mode
+                          ('all 'all-terminal)
+                          ('any 'first-terminal)
+                          (_ mode))
              :effect 'reply-to-invocation))
       (when timeout
         (setf (e-board-aggregation-timer aggregation)
@@ -866,9 +892,12 @@ through the injected invocation effect dispatcher."
                               board (e-board-aggregation-id aggregation))))))
       (when (e-board--aggregation-ready-p board aggregation)
         ;; Keep an already-ready subscription on the same later classifier
-        ;; path as a fresh terminal publication.
-        (e-board--queue-terminal-classification
-         board (car work-ids) nil (list id)))
+        ;; path as a fresh terminal publication, except an empty all-terminal
+        ;; set which has no source terminal record to classify.
+        (if work-ids
+            (e-board--queue-terminal-classification
+             board (car work-ids) nil (list id))
+          (e-board--settle-aggregation board aggregation 'complete)))
       aggregation)))
 
 (defun e-board-cancel-aggregation (board aggregation-id)

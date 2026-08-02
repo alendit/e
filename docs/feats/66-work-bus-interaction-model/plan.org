@@ -23,6 +23,10 @@ queue; only =input= records can create pickups or receive routing projections.
 The shared observer/orchestration selector now filters by record =kind=,
 =activity-kind=, and exact subject participant identity as well as its existing
 author, attribute, and tag clauses.
+The exact work aggregation reducer now recognizes =on-success=, =on-failure=,
+and =on-terminal= readiness alongside the invocation-facing =all=/=any=
+aliases; an empty =all-terminal= set reaches its deferred effect without a
+synthetic terminal event.
 Muting or cancelling its subscription fences every still-=prepared= activation,
 so a deferred effect released afterwards becomes a no-op rather than appending
 new input.

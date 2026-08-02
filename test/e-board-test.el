@@ -686,6 +686,77 @@
                      (e-board-activation board '("board" "turn-1/call-1" 1)))
                     'committed))))))
 
+(ert-deftest e-board-test-exact-aggregation-readiness-filters-terminal-outcomes ()
+  "Exact readiness policies react only to their declared terminal outcome."
+  (e-board-test--with-empty-registry
+    (let (effects routers replies)
+      (let* ((board (e-board-create
+                     :id "board"
+                     :effect-scheduler (lambda (effect) (push effect effects))
+                     :terminal-classification-scheduler (lambda (drain) (push drain routers))
+                     :invocation-effect-dispatcher
+                     (lambda (_board target state reason)
+                       (push (list target state reason) replies))))
+             (successful (e-work-prepare
+                          (e-work-spec-create
+                           :id "successful" :execution 'render :interactive-policy 'async
+                           :runner (lambda (_arguments _context) :never)) nil))
+             (failed (e-work-prepare
+                      (e-work-spec-create
+                       :id "failed" :execution 'render :interactive-policy 'async
+                       :runner (lambda (_arguments _context) :never)) nil)))
+        (e-board-enroll-work board successful)
+        (e-board-enroll-work board failed)
+        (e-board-subscribe-aggregation board (list (e-work-handle-id successful))
+                                       'on-success "success" :id "success")
+        (e-board-subscribe-aggregation board (list (e-work-handle-id failed))
+                                       'on-failure "failure" :id "failure")
+        (e-board-subscribe-aggregation board (list (e-work-handle-id failed))
+                                       'on-terminal "terminal" :id "terminal")
+        (e-work-start-prepared successful)
+        (e-work-start-prepared failed)
+        (e-work-fail failed (list 'e-work-error "failed"))
+        (funcall (pop routers))
+        ;; The board schedules one bounded effect drain, which applies both
+        ;; ready exact activations in FIFO order.
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (= (length replies) 2))
+        (e-work-finish successful "done")
+        (funcall (pop routers))
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (equal (sort (mapcar #'car replies) #'string<)
+                       '("failure" "success" "terminal")))
+        (should (cl-every (lambda (reply)
+                            (and (eq (nth 1 reply) 'aggregation)
+                                 (eq (nth 2 reply) 'complete)))
+                          replies))
+        (should-error
+         (e-board-subscribe-aggregation
+          board (list (e-work-handle-id successful) (e-work-handle-id failed))
+          'on-success "invalid")
+         :type 'e-board-error)))))
+
+(ert-deftest e-board-test-empty-all-terminal-aggregation-is-ready-without-a-terminal-event ()
+  "An empty all-terminal set reaches its deferred effect without a fake work id."
+  (e-board-test--with-empty-registry
+    (let (effects replies)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (effect) (push effect effects))
+                    :invocation-effect-dispatcher
+                    (lambda (_board target state reason)
+                      (push (list target state reason) replies)))))
+        (e-board-subscribe-aggregation board nil 'all-terminal "empty" :id "empty")
+        (should (eq (e-board-aggregation-state (e-board-aggregation board "empty"))
+                    'prepared))
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (equal replies '(("empty" aggregation complete))))
+        (should (eq (e-board-aggregation-state (e-board-aggregation board "empty"))
+                    'committed))))))
+
 (ert-deftest e-board-test-exact-invocation-failure-records-its-activation-state ()
   "A failed exact reply is visible on both its invocation and activation."
   (e-board-test--with-empty-registry
