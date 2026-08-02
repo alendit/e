@@ -870,23 +870,15 @@
            (should (eq (e-board-activation-state activation) 'committed))
            (should (equal (e-board-pickup-participant-id pickup) "one")))))))
 
-(ert-deftest e-board-test-continuations-classify-output-activity-and-fact-off-append-stack ()
+(ert-deftest e-board-test-continuations-classify-output-activity-and-fact ()
   "Explicit continuations can derive input from every non-input board record."
   (e-board-test--with-empty-registry
-    (let (routers effects)
-      (cl-letf (((symbol-function 'e-board--schedule-input-classification)
-                 (lambda (board)
-                   (unless (e-board-input-classification-scheduled board)
-                     (setf (e-board-input-classification-scheduled board) t)
-                     (push (lambda () (e-board-drain-input-classifications board))
-                           routers)))))
-        (let ((board (e-board-create
-                      :id "board"
-                      :effect-scheduler (lambda (effect) (push effect effects)))))
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (effect) (push effect effects)))))
         (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
-        (e-board-subscribe
-         board "one" '(:tags (source)) :id "continuation"
-         :effect '(:post-input :to "one" :content "derived"))
+        (e-board-subscribe board "one" '(:tags (source)) :id "continuation"
+                           :effect '(:post-input :to "one" :content "derived"))
         (let ((output (e-board-post-output
                        board :id "output" :author "worker" :tags '(source)
                        :source-output-key '(worker 1 1)))
@@ -898,28 +890,49 @@
               (fact (e-board-post-fact
                      board :id "fact" :tags '(source)
                      :source-fact-key '(fact 1 1))))
-          (dolist (publication (list output activity fact))
-            (should (e-board--message-subscription-matches-p
-                     board (e-board-find-subscription board "continuation")
-                     (e-board-publication-message publication))))
-          (should (= (length (e-board-input-classifications board)) 3))
-          (should-not effects)
-          (should (= (length routers) 1))
-          (while routers
-            (funcall (pop routers)))
-          (should-not (e-board-input-classifications board))
-          ;; One scheduled drain owns all three prepared activation effects.
           (should (= (length effects) 1))
-          (should-not (e-board-message-routing-state
-                       (e-board-publication-message output)))
-          (should-not (e-board-message-routing-state
-                       (e-board-publication-message activity)))
-          (should-not (e-board-message-routing-state
-                       (e-board-publication-message fact)))
-          (while effects
-            (funcall (pop effects)))
+          (dolist (publication (list output activity fact))
+            (should-not (e-board-message-routing-state
+                         (e-board-publication-message publication))))
+          (funcall (pop effects))
+          (should (e-board-activation board '("board" "continuation" "output")))
+          (should (e-board-activation board '("board" "continuation" "activity")))
+          (should (e-board-activation board '("board" "continuation" "fact")))
           (should (equal (mapcar #'e-board-message-kind (e-board-messages board))
-                         '(output activity fact input input input)))))))))
+                         '(output activity fact input input input))))))))
+
+(ert-deftest e-board-test-selectors-filter-continuations-and-observers-by-record-kind ()
+  "Kind, activity-kind, and subject selectors apply to both subscription classes."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (let ((selector '(:kind activity :activity-kind tool-started
+                          :subject-participant-id "one")))
+          (e-board-subscribe board "one" selector :id "continuation"
+                             :effect '(:post-input :to "one" :content "derived"))
+          (let ((observer (e-board-observer-subscribe
+                           board "client" selector :id "observer" :start-seq 0)))
+            (e-board-post-output board :id "output" :author "worker"
+                                 :source-output-key '(worker 1 1))
+            (e-board-post-activity
+             board :id "progress" :author "participant:one"
+             :subject-participant-id "one" :source-turn-id "turn"
+             :activity-kind 'tool-progress :source-activity-key '(one 1 1))
+            (e-board-post-activity
+             board :id "started" :author "participant:one"
+             :subject-participant-id "one" :source-turn-id "turn"
+             :activity-kind 'tool-started :source-activity-key '(one 1 2))
+            (e-board-post-activity
+             board :id "other" :author "participant:two"
+             :subject-participant-id "two" :source-turn-id "turn"
+             :activity-kind 'tool-started :source-activity-key '(two 1 1))
+            (should (= (length effects) 1))
+            (should (e-board-activation board '("board" "continuation" "started")))
+            (should (equal (mapcar #'e-board-message-id
+                                   (e-board-observer-read-page board "observer"))
+                           '("started")))))))))
 
 (ert-deftest e-board-test-effect-drain-yields-after-its-bounded-page ()
   "Queued effects retain FIFO order while each scheduler turn stays bounded."

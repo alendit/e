@@ -141,7 +141,7 @@
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
   activations activation-subscription-index pickup-queues pickup-pending-limit
-  open-activities closed-activities)
+  open-activities closed-activities retention-floor)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -207,6 +207,7 @@ The board object remains valid for inspection by its holder."
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler
           (pickup-pending-limit e-board-default-pickup-pending-limit)
+          (retention-floor 0)
           (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
@@ -214,6 +215,8 @@ explicit ids to individual operations takes precedence over this generator.
 PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   (unless (and (integerp pickup-pending-limit) (>= pickup-pending-limit 0))
     (signal 'wrong-type-argument (list 'natnump pickup-pending-limit)))
+  (unless (and (integerp retention-floor) (>= retention-floor 0))
+    (signal 'wrong-type-argument (list 'natnump retention-floor)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -236,6 +239,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :pickup-pending-limit pickup-pending-limit
                   :open-activities (make-hash-table :test 'equal)
                   :closed-activities (make-hash-table :test 'equal)
+                  :retention-floor retention-floor
                   :pending-effects nil
                   :effects-scheduled nil
                   :effect-scheduler effect-scheduler
@@ -268,6 +272,22 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   "Return BOARD events whose sequence is strictly greater than SEQ."
   (cl-remove-if (lambda (event) (<= (e-board-event-seq event) seq))
                 (e-board-events board)))
+
+(defun e-board-advance-retention-floor (board floor)
+  "Advance BOARD's logical retained-message floor to FLOOR.
+The reducer never scans observers here.  A live observer whose cursor is now
+behind this floor transitions to `expired' only when it next requests a page,
+at which point that page requires a fresh snapshot."
+  (unless (and (integerp floor) (>= floor 0))
+    (signal 'wrong-type-argument (list 'natnump floor)))
+  (when (> floor (e-board-next-seq board))
+    (signal 'e-board-error (list "Retention floor exceeds board sequence" floor)))
+  (when (< floor (e-board-retention-floor board))
+    (signal 'e-board-error (list "Retention floor cannot move backwards" floor)))
+  (when (> floor (e-board-retention-floor board))
+    (setf (e-board-retention-floor board) floor)
+    (e-board--append-event board 'retention-floor-advanced (list :floor floor)))
+  board)
 
 (defun e-board-message (board message-id)
   "Return BOARD message MESSAGE-ID, or nil when it is not retained."
@@ -1008,10 +1028,10 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup))
   "Install an ordinary immutable subscription for PARTICIPANT-ID.
-SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
-   effects are `create-pickup' and declarative `(:post-input ...)'.  New
- subscriptions inspect future board records; only `create-pickup' is restricted
- to input records."
+SELECTOR supports kind, activity-kind, identity, attribute, and tag clauses.
+Slice 1's effects are `create-pickup' and declarative `(:post-input ...)'.
+New subscriptions inspect future board records; only `create-pickup' is
+restricted to input records."
   (unless (e-board-participant board participant-id)
     (signal 'e-board-error (list "Unknown participant" participant-id)))
   (unless (or (eq effect 'create-pickup)
@@ -1077,10 +1097,18 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
 (defun e-board--selector-matches-p (board subscription message)
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
-    (and (or (not (plist-member selector :to))
+    (and (or (not (plist-member selector :kind))
+             (equal (plist-get selector :kind) (e-board-message-kind message)))
+         (or (not (plist-member selector :activity-kind))
+             (equal (plist-get selector :activity-kind)
+                    (e-board-message-activity-kind message)))
+         (or (not (plist-member selector :to))
              (equal (plist-get selector :to) (e-board-message-to message)))
-          (or (not (plist-member selector :author))
-              (equal (plist-get selector :author) (e-board-message-author message)))
+         (or (not (plist-member selector :author))
+             (equal (plist-get selector :author) (e-board-message-author message)))
+         (or (not (plist-member selector :subject-participant-id))
+             (equal (plist-get selector :subject-participant-id)
+                    (e-board-message-subject-participant-id message)))
           (e-board--selector-attributes-match-p selector message)
           (e-board--tags-match-p selector message)
           (if-let ((predicate (plist-get selector :predicate)))
@@ -1187,6 +1215,9 @@ Return =:messages= plus a =:before-seq= receipt for
   (let ((selector (e-board-observer-selector observer)))
     (and (or (not (plist-member selector :kind))
              (equal (plist-get selector :kind) (e-board-message-kind message)))
+         (or (not (plist-member selector :activity-kind))
+             (equal (plist-get selector :activity-kind)
+                    (e-board-message-activity-kind message)))
          (or (not (plist-member selector :to))
              (equal (plist-get selector :to) (e-board-message-to message)))
          (or (not (plist-member selector :author))
@@ -1279,17 +1310,28 @@ it accepts this page.  Trusted predicates run here, never from append."
                       (signal 'e-board-observer-missing (list observer-id))))
         (inspected 0)
         (through-seq nil)
-        matches)
+        matches
+        (resnapshot-required nil))
+    (when (and (eq (e-board-observer-state observer) 'active)
+               (< (e-board-observer-next-seq observer)
+                  (1- (e-board-retention-floor board))))
+      (e-board--transition-observer board observer 'expired)
+      (setq resnapshot-required t))
+    (when (eq (e-board-observer-state observer) 'expired)
+      (setq resnapshot-required t))
     (when (eq (e-board-observer-state observer) 'active)
       (dolist (message (e-board-messages board))
         (when (and (< inspected limit)
                    (> (e-board-message-seq message)
-                      (e-board-observer-next-seq observer)))
+                      (e-board-observer-next-seq observer))
+                   (>= (e-board-message-seq message)
+                       (e-board-retention-floor board)))
           (cl-incf inspected)
           (setq through-seq (e-board-message-seq message))
           (when (e-board--observer-matches-p board observer message)
             (push message matches)))))
-    (list :messages (nreverse matches) :through-seq through-seq)))
+    (list :messages (nreverse matches) :through-seq through-seq
+          :resnapshot-required resnapshot-required)))
 
 (defun e-board-observer-accept-page (board observer-id through-seq)
   "Advance OBSERVER-ID through accepted page receipt THROUGH-SEQ.

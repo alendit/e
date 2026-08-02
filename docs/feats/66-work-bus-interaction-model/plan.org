@@ -20,6 +20,9 @@ states alongside its append event.
 Explicit =post-input= continuations now classify every unaddressed board record
 (=input=, =output=, =activity=, or =fact=) through the same bounded deferred
 queue; only =input= records can create pickups or receive routing projections.
+The shared observer/orchestration selector now filters by record =kind=,
+=activity-kind=, and exact subject participant identity as well as its existing
+author, attribute, and tag clauses.
 Muting or cancelling its subscription fences every still-=prepared= activation,
 so a deferred effect released afterwards becomes a no-op rather than appending
 new input.
