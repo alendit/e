@@ -164,6 +164,13 @@ repeated continuation cursor, and returns a bounded count summary.  Cancellation
 reaches the sole active child page, a registry remap fences later completion,
 and no harness factory is consulted.  This validates prepared catalog schema;
 Slice 5's separate runtime-quiescence preflight remains outstanding.
+The repository-side blocker audit is recorded in =cutover-audit.org=.  The
+current process has no authoritative bounded aggregate for admission, active
+turn/inbox state, board receipts/effects, control requests, and persistence
+outboxes, while several production callers can still start work directly.
+Therefore runtime-quiescence preflight remains deliberately unimplemented until
+owner-local transition counters and one O(1) admission epoch make a positive
+result race-free; a full-table scan would be neither complete nor acceptable.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most

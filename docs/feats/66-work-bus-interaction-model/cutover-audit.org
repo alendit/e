@@ -1,0 +1,104 @@
+#+title: Work bus cutover blocker audit
+
+* Scope
+
+This audit records the repository state after controlled participant
+remove/rebind/move, offline store preparation, and configured-store catalog
+preflight landed.  It identifies what must exist before the Slice 5
+runtime-quiescence preflight can truthfully authorize a board-only restart.
+
+The audit is repository-side only.  The running Emacs and user session stores
+were not inspected, reloaded, prepared, or mutated.
+
+* Result
+
+The catalog-schema half of preflight now has a bounded controlled request, but
+runtime quiescence cannot yet be proven from bounded authoritative indexes.
+Adding a scan-shaped predicate over today's registries would be both incomplete
+and a main-thread latency regression, so Slice 5 must not expose a green
+preflight result yet.
+
+* Evidence and blockers
+
+** Admission is not centralized
+
+Production code still calls direct harness session/create/input operations from
+chat, background sessions, task queue, subagent, Org canvas, debug, and layer
+paths.  The structural search currently finds direct harness create, fork,
+prompt, queue, steer, reset, compact, state, message/activity read, or subscribe
+references in these non-test areas:
+
+| Area | Matching references |
+|------+---------------------|
+| =lisp/shells/chat/e-chat.el= | 17 |
+| =lisp/layers/harness/e-bayesian-reasoning.el= | 10 |
+| =lisp/layers/agents/e-subagent-runner.el= | 8 |
+| =lisp/layers/chat/e-chat-session.el= | 6 |
+| =lisp/core/e-task-queue.el= | 5 |
+| =lisp/shells/e-org-canvas.el= | 5 |
+| =lisp/shells/e-background-session.el= | 3 |
+| =lisp/shells/modernchat/e-modernchat-view-model.el= | 3 |
+
+Several smaller shell/layer/default files also retain one or two references.
+Until these starts pass through one admission owner, a preflight fence cannot
+prove that new work did not enter after its snapshot.
+
+** Unsettled state has several owners but no aggregate index
+
+- Each concrete harness owns an =active-turns= hash and per-session queued or
+  steering input.  There is no generation-fenced aggregate count for all live
+  harnesses, nor one transition event covering every empty/non-empty edge.
+- =e-board-runtime= separately owns attachment reconciliations, invocation
+  targets, deferred carrier hooks, pickup work, and activity mailboxes/queues.
+  These collections have drain-local flags but no single control-request or
+  unsettled-count index.
+- Board cores own accepted/cancelling physical delivery receipts and pending
+  effects/subscriptions.  The existing page/drain APIs are authoritative, but
+  no preflight projection summarizes all boards at a frozen admission epoch.
+- Session persistence exposes queued writes per store/controller.  Controllers
+  are reached through individual session stores; there is no global durability
+  barrier or bounded aggregate of writer outboxes and retry/checkpoint timers.
+
+Scanning these tables after closing admission would still race later callbacks
+unless every mutation contributes to the same frozen epoch and count contract.
+
+** Presentation and legacy paths still retain harness state
+
+Chat and modern-chat code still subscribe to harness events and read transcript,
+activity, and active-turn state directly.  These paths are expected before the
+atomic Slice 5 source cut, but they mean the current process cannot be declared
+board-only and cannot be carried across the cut with =e-dev-reload=.
+
+** Variable controls remain incomplete
+
+Participant remove/rebind/move and dormant resume are controlled requests.
+Catalog pages/access mutations/activation/preflight and harness compaction also
+have explicit pending identities.  Board-aware close, fork/spawn, reset,
+transcript read, and bulk invalidation still need consumer-shaped controlled
+operations; synchronous public helpers are not acceptable substitutes.
+
+* Required implementation order
+
+1. Add one board-runtime admission epoch/gate used by every board-bound root and
+   participant/session-control start.  Closing it must be an O(1) commit.
+2. Add owner-local unsettled counters and transition hooks at the harness,
+   board core/runtime, control-request, and persistence seams.  Counters must be
+   updated with the owning state transition, not reconstructed by preflight.
+3. Build a controlled runtime-quiescence request that freezes the admission
+   epoch, reads only those bounded counters, and waits on their transition
+   events.  A nonzero class reports exact named blockers; it never polls or
+   scans for eventual emptiness.
+4. Land controlled close/fork/spawn/reset/transcript/bulk-invalidation paths and
+   route all remaining callers through the gate.
+5. Run structural preflight tests proving no forbidden direct path remains,
+   then perform the chat/presentation source cut and full restart described in
+   =plan.org=.
+
+* Exit criterion
+
+Slice 5 may start only when one closed admission epoch plus bounded owner-local
+indexes can prove: no active turn; open invocation; live tool/work carrier;
+queued inbox/steering item; unresolved pickup/receipt/effect; participant or
+board control request; pending session/task writer; publication mailbox; or
+bulk invalidation.  The result must remain valid until the offline store handoff
+or fail visibly when its frozen generation changes.
