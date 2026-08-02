@@ -49,7 +49,7 @@
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
                 (:conc-name e-board-registry-client-))
-  id board-id author principal generation state)
+  id board-id author principal generation state observer-ids)
 
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
@@ -188,7 +188,7 @@ LIMIT plus one candidates, rather than materializing the full registry list."
            (client (e-board-registry-client--create
                     :id id :board-id (e-board-registry-board-id board)
                     :author author :principal principal
-                    :generation generation :state 'active)))
+                    :generation generation :state 'active :observer-ids nil)))
       (puthash id generation generations)
       (puthash id client (e-board-registry-board-clients board))
       client)))
@@ -199,14 +199,14 @@ LIMIT plus one candidates, rather than materializing the full registry list."
          (clients (e-board-registry-board-clients board))
          (client (gethash client-id clients)))
     (when client
-      (maphash
-       (lambda (_observer-id observer)
-         (when (and (equal (e-board-observer-client-id observer) client-id)
-                    (memq (e-board-observer-state observer) '(active muted)))
-           (e-board-set-observer-state
-            (e-board-registry-board-source-board board)
-            (e-board-observer-id observer) 'cancelled)))
-       (e-board-observers (e-board-registry-board-source-board board)))
+      (dolist (observer-id (e-board-registry-client-observer-ids client))
+        (when-let ((observer (e-board-observer
+                              (e-board-registry-board-source-board board)
+                              observer-id)))
+          (when (memq (e-board-observer-state observer) '(active muted))
+            (e-board-set-observer-state
+             (e-board-registry-board-source-board board) observer-id 'cancelled))))
+      (setf (e-board-registry-client-observer-ids client) nil)
       (setf (e-board-registry-client-state client) 'detached)
       (remhash client-id clients))
     client))
@@ -221,13 +221,18 @@ the cursor and selector because it owns ordered message observation."
          (client (gethash client-id (e-board-registry-board-clients board))))
     (unless client
       (signal 'e-board-registry-client-missing (list client-id)))
-    (e-board-observer-subscribe
-     (e-board-registry-board-source-board board) client-id selector
-     :id (or id (e-board-registry--next-id
-                 (e-board-registry-board-id-function board) 'observer))
-     :start-seq start-seq
-     :history-before-seq history-before-seq
-     :history-floor history-floor)))
+    (let ((observer
+           (e-board-observer-subscribe
+            (e-board-registry-board-source-board board) client-id selector
+            :id (or id (e-board-registry--next-id
+                        (e-board-registry-board-id-function board) 'observer))
+            :start-seq start-seq
+            :history-before-seq history-before-seq
+            :history-floor history-floor)))
+      (setf (e-board-registry-client-observer-ids client)
+            (append (e-board-registry-client-observer-ids client)
+                    (list (e-board-observer-id observer))))
+      observer)))
 
 (defun e-board-registry--observer-for-client (board client-id observer-id)
   "Return BOARD OBSERVER-ID after validating its attached owning CLIENT-ID."
@@ -248,12 +253,20 @@ The source board owns the old cursor cancellation and the new cursor's
 explicit START-SEQ backfill semantics; this registry only validates client
 ownership before delegating that ordered transition."
   (let ((board (e-board-registry--require-active board-or-id)))
-    (e-board-registry--observer-for-client board client-id observer-id)
-    (e-board-replace-observer
-     (e-board-registry-board-source-board board) observer-id selector
-     :id (or id (e-board-registry--next-id
-                 (e-board-registry-board-id-function board) 'observer))
-     :state state :start-seq start-seq)))
+    (let* ((observer (e-board-registry--observer-for-client
+                      board client-id observer-id))
+           (client (gethash client-id (e-board-registry-board-clients board)))
+           (replacement
+            (e-board-replace-observer
+             (e-board-registry-board-source-board board) observer-id selector
+             :id (or id (e-board-registry--next-id
+                         (e-board-registry-board-id-function board) 'observer))
+             :state state :start-seq start-seq)))
+      (setf (e-board-registry-client-observer-ids client)
+            (append (delete (e-board-observer-id observer)
+                            (e-board-registry-client-observer-ids client))
+                    (list (e-board-observer-id replacement))))
+      replacement)))
 
 (defun e-board-registry-set-observer-state
     (board-or-id client-id observer-id state)

@@ -342,6 +342,8 @@
                     board (e-board-registry-client-id client) "subagent" :limit 8)))
         (should (eq (e-board-observer-state observer) 'cancelled))
         (should (equal (e-board-observer-client-id replacement) "client"))
+        (should (equal (e-board-registry-client-observer-ids client)
+                       '("subagent")))
         (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
                        '("subagent")))))))
 
@@ -375,6 +377,7 @@
                       board "client" '(:tags (main)) :id "observer")))
       (e-board-registry-detach-client board (e-board-registry-client-id client))
       (should (eq (e-board-observer-state observer) 'cancelled))
+      (should-not (e-board-registry-client-observer-ids client))
       (should-not (gethash "client" (e-board-registry-board-clients board)))
       (should-not (e-board-observer-read-page
                    (e-board-registry-board-source-board board) "observer")))))
