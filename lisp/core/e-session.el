@@ -1370,6 +1370,7 @@ behavior.  Interactive mutation paths must not call this function."
                             :session-events nil
                          :messages nil
                          :board-output-sequence 0
+                         :board-activity-sequence 0
                             :activity-events nil
                             :branch-summaries nil
                             :current-branch nil
@@ -1428,20 +1429,28 @@ behavior.  Interactive mutation paths must not call this function."
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
-        (let ((event
-               (e-session--normalize-entry-from-record
-                session
-                'activity-event
-                (e-session--normalize-activity-event
-                 (list :id (plist-get record :id)
-                       :parent-id (plist-get record :parent-id)
-                       :turn-id (plist-get record :turn-id)
-                       :event-type (plist-get record :event-type)
-                       :payload (plist-get record :payload)
-                       :created-at timestamp))
-                timestamp
-                record)))
+        (let* ((event-data
+                (list :id (plist-get record :id)
+                      :parent-id (plist-get record :parent-id)
+                      :turn-id (plist-get record :turn-id)
+                      :event-type (plist-get record :event-type)
+                      :payload (plist-get record :payload)
+                      :created-at timestamp))
+               (_ (when (plist-member record :board-activity-sequence)
+                    (plist-put event-data :board-activity-sequence
+                               (plist-get record :board-activity-sequence))))
+               (event
+                (e-session--normalize-entry-from-record
+                 session
+                 'activity-event
+                 (e-session--normalize-activity-event event-data)
+                 timestamp
+                 record)))
           (e-session--prepend-replayed-item session :activity-events event)
+          (when-let ((sequence (plist-get event :board-activity-sequence)))
+            (plist-put session :board-activity-sequence
+                       (max (or (plist-get session :board-activity-sequence) 0)
+                            sequence)))
           (e-session--update-activity-derived-fields session event))
          (e-session--touch store session timestamp)))
       ("branch-summary"
@@ -1938,6 +1947,8 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :metadata metadata
                         :session-events nil
                         :messages nil
+                        :board-output-sequence 0
+                        :board-activity-sequence 0
                         :activity-events nil
                         :branch-summaries nil
                         :current-branch nil
@@ -2280,6 +2291,14 @@ the updated message, or nil when no such message exists."
                        :payload payload
                        :created-at timestamp)
                  timestamp)))
+    (unless (plist-member event :board-activity-sequence)
+      (let ((sequence
+             (1+ (or (plist-get session :board-activity-sequence)
+                     (cl-loop for entry in (plist-get session :activity-events)
+                              maximize (or (plist-get entry :board-activity-sequence) 0))
+                     0))))
+        (setq event (plist-put event :board-activity-sequence sequence))
+        (plist-put session :board-activity-sequence sequence)))
     (e-session--append-list-item session :activity-events event)
     (e-session--update-activity-derived-fields session event)
     (e-session--index-entry store session-id event)
@@ -2291,6 +2310,7 @@ the updated message, or nil when no such message exists."
            :id (plist-get event :id)
            :parent-id (plist-get event :parent-id)
            :turn-id turn-id
+           :board-activity-sequence (plist-get event :board-activity-sequence)
            :timestamp timestamp
            :event-type event-type
            :payload payload))

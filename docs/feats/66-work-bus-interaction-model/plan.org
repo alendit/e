@@ -118,6 +118,10 @@ one source-keyed =turn-summary= with bounded terminal counts only after a turn
 entered provider activity; its duration is measured from the first provider
 request event to the terminal event, and empty turns produce no fabricated
 summary.
+Durable session activity entries now also receive a stable monotonically
+increasing =board-activity-sequence= that survives replay, matching assistant
+entries' existing =board-output-sequence= foundation for later publication
+retry wiring.
 The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/

@@ -115,6 +115,33 @@
             (should (= (plist-get message :board-output-sequence) 2))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-append-activity-allocates-board-activity-sequence ()
+  "Durable activity entries receive one stable session-local publication sequence."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "activity-sequence")
+    (let ((first (e-session-append-activity-event
+                  store "activity-sequence" "turn" 'tool-started nil))
+          (second (e-session-append-activity-event
+                   store "activity-sequence" "turn" 'tool-finished nil)))
+      (should (= (plist-get first :board-activity-sequence) 1))
+      (should (= (plist-get second :board-activity-sequence) 2)))))
+
+(ert-deftest e-session-test-board-activity-sequence-continues-after-replay ()
+  "Reopened sessions retain their durable activity publication high watermark."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "activity-replay")
+          (e-session-append-activity-event
+           store "activity-replay" "turn" 'tool-started nil)
+          (e-session-flush store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (event (e-session-append-activity-event
+                         reopened "activity-replay" "turn" 'tool-finished nil)))
+            (should (= (plist-get event :board-activity-sequence) 2))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-append-message-stamps-created-at ()
   "Appended messages carry their creation timestamp."
   (let ((store (e-session-store-create)))
