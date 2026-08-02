@@ -388,20 +388,31 @@ has no callback and is observed only."
          :source-output-key (list participant-id 1 sequence))))))
 
 (defun e-board-runtime--handle-harness-event (attachment event)
-  "Publish an attached participant's durable final output from EVENT."
-  (pcase (e-events-type event)
-    ('turn-finished
-     (e-board-runtime--publish-output attachment (plist-get event :turn-id)))
-    ('input-consumed
-     (let* ((payload (plist-get event :payload))
-            (delivery-id (plist-get payload :delivery-id))
-            (board (e-board-registry-board-source-board
-                    (e-board-runtime-attachment-board attachment))))
-       (when-let ((pickup (e-board-pickup board delivery-id)))
-         (when (eq (e-board-pickup-state pickup) 'accepted)
-           (when-let ((next-id (e-board-pickup-complete-delivery board delivery-id)))
-             (e-board-runtime--enqueue-pickups
-              (e-board-runtime-attachment-board attachment) (list next-id)))))))))
+  "Publish attached output and reconcile board-delivery receipts from EVENT."
+  (let ((type (e-events-type event)))
+    (cond
+     ((eq type 'turn-finished)
+      (e-board-runtime--publish-output attachment (plist-get event :turn-id)))
+     ((eq type 'input-consumed)
+      (let* ((payload (plist-get event :payload))
+             (delivery-id (plist-get payload :delivery-id))
+             (registry-board (e-board-runtime-attachment-board attachment))
+             (board (e-board-registry-board-source-board registry-board))
+             (pickup (e-board-pickup board delivery-id)))
+        (when (and pickup (eq (e-board-pickup-state pickup) 'accepted))
+          (when-let ((next-id (e-board-pickup-complete-delivery board delivery-id)))
+            (e-board-runtime--enqueue-pickups registry-board (list next-id))))))
+     ((eq type 'session-reset)
+      (let* ((registry-board (e-board-runtime-attachment-board attachment))
+             (board (e-board-registry-board-source-board registry-board))
+             (participant-id (e-board-registry-participant-id
+                              (e-board-runtime-attachment-participant attachment)))
+             (delivery-id (car (e-board--pickup-queue board participant-id)))
+             (pickup (and delivery-id (e-board-pickup board delivery-id))))
+        (when (and pickup (eq (e-board-pickup-state pickup) 'accepted))
+          (when-let ((next-id
+                      (e-board-pickup-discard-delivery board delivery-id 'session-reset)))
+            (e-board-runtime--enqueue-pickups registry-board (list next-id)))))))))
 
 (defun e-board-runtime--active-board (board-or-id)
   "Return active registry BOARD-OR-ID."

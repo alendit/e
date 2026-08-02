@@ -319,6 +319,28 @@ Return the newly ready pickup identity, if any."
     (e-board--append-event board 'pickup-accepted (list :delivery-id delivery-id))
     pickup))
 
+(defun e-board-pickup-discard-delivery (board delivery-id reason)
+  "Record accepted DELIVERY-ID as discarded and promote its FIFO successor."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (eq (e-board-pickup-state pickup) 'accepted)
+      (signal 'e-board-error (list "Pickup is not accepted" delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id)))
+      (unless (equal (car queue) delivery-id)
+        (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (setf (e-board-pickup-state pickup) 'discarded)
+      (e-board--append-event board 'pickup-discarded
+                             (list :delivery-id delivery-id :reason reason))
+      (setq queue (cdr queue))
+      (puthash participant-id queue (e-board-pickup-queues board))
+      (when-let ((next-id (car queue)))
+        (let ((next (e-board-pickup board next-id)))
+          (setf (e-board-pickup-state next) 'ready)
+          (e-board--append-event board 'pickup-ready
+                                 (list :delivery-id next-id))
+          next-id)))))
+
 (defun e-board-pickup-return-ready (board delivery-id err)
   "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR."
   (let ((pickup (or (e-board-pickup board delivery-id)
