@@ -415,6 +415,42 @@
     (should (e-harness-instance-session-access-allows-p
              record "resumer" 'resume))))
 
+(ert-deftest e-harness-instances-test-session-activation-is-held-and-factory-free ()
+  "Dormant loading uses the async activation port, never the legacy factory."
+  (e-harness-instances-test--with-empty-registries
+    (let* (arguments succeed fail
+           (factory-calls 0)
+           (catalog (lambda (&rest _arguments) 'pending))
+           (access-store (lambda (&rest _arguments) 'pending))
+           (activation
+            (lambda (request on-done on-error)
+              (setq arguments request
+                    succeed on-done
+                    fail on-error)
+              nil)))
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store
+       :session-activation activation
+       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
+      (let ((request
+             (e-harness-instance-session-activation-start
+              :instance '(:session-store-id "store" :session-id "session"))))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (equal (plist-get arguments :session-id) "session"))
+        (should (= factory-calls 0))
+        (should-not (e-harness-registry-get :live))
+        (should (functionp succeed))
+        (should (functionp fail))
+        (let ((harness (e-harness-create)))
+          (e-harness-create-session harness :id "session")
+          (funcall succeed harness)
+          (should (eq (e-request-lifecycle-state request) 'finished))
+          (should (eq (e-request-lifecycle-terminal-payload request) harness))
+          (should-not (e-harness-registry-get :live))
+          (should (= factory-calls 0)))))))
+
 (ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
   "A declared durable store cannot silently omit a required port."
   (e-harness-instances-test--with-empty-registries

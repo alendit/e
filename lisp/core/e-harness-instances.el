@@ -40,6 +40,13 @@
 (define-error 'e-harness-instance-session-access-stale
   "Harness instance catalog changed while a session access request was pending"
   'e-harness-instance-session-request-stale)
+(define-error 'e-harness-instance-session-activation-missing
+  "Harness instance has no asynchronous dormant-session activation port")
+(define-error 'e-harness-instance-session-activation-invalid-result
+  "Session activation port returned no concrete harness")
+(define-error 'e-harness-instance-session-activation-stale
+  "Harness instance catalog changed while session activation was pending"
+  'e-harness-instance-session-request-stale)
 
 (defconst e-harness-instance-session-access-operations
   '(create grant revoke transfer)
@@ -60,7 +67,8 @@
   layer-config
   session-store-id
   session-catalog
-  session-access-store)
+  session-access-store
+  session-activation)
 
 (defvar e-harness-instance--instances (make-hash-table :test 'equal)
   "Harness instance records keyed by instance id.")
@@ -165,7 +173,8 @@ metadata without comparing against its retired record."
 (cl-defun e-harness-instance-register
     (&key id name kind factory harness-id metadata default
           description (context-visibility 'always) subagent
-          layers layer-config session-store-id session-catalog session-access-store)
+          layers layer-config session-store-id session-catalog session-access-store
+          session-activation)
   "Register a configured harness instance.
 ID is the stable user-facing target id.  KIND identifies the role the
 instance plays, such as `chat' or `reviewer'.  FACTORY, when non-nil, is
@@ -192,6 +201,7 @@ declarative selection metadata; the factory still builds the live harness."
     (signal 'wrong-type-argument (list 'stringp session-store-id)))
   (e-harness-instance--validate-session-port 'session-catalog session-catalog)
   (e-harness-instance--validate-session-port 'session-access-store session-access-store)
+  (e-harness-instance--validate-session-port 'session-activation session-activation)
   (when (and session-store-id (not (and session-catalog session-access-store)))
     (signal 'e-harness-instance-store-conflict
             (list session-store-id 'missing-required-port)))
@@ -217,7 +227,8 @@ declarative selection metadata; the factory still builds the live harness."
                      :layer-config layer-config
                      :session-store-id session-store-id
                      :session-catalog session-catalog
-                     :session-access-store session-access-store)))
+                     :session-access-store session-access-store
+                     :session-activation session-activation)))
       (when previous
         (e-harness-instance--unindex-session-store previous))
       (puthash id instance e-harness-instance--instances)
@@ -493,6 +504,43 @@ The configured port receives no transcript or live harness object."
      (lambda (result)
        (e-harness-instance--normalize-session-access-result entry result))
      'e-harness-instance-session-access-stale
+     :on-done on-done :on-error on-error)))
+
+(cl-defun e-harness-instance-session-activation-start
+    (instance-id arguments &key on-done on-error)
+  "Start INSTANCE-ID's asynchronous dormant-session factory/load path.
+ARGUMENTS must identify the instance's configured =:session-store-id= and a
+=:session-id=.  The activation port receives the immutable request and settles
+with a concrete harness containing the loaded session.  This operation neither
+registers that harness nor attaches it to a board."
+  (let* ((instance (or (e-harness-instance-get instance-id)
+                       (signal 'e-harness-instance-missing (list instance-id))))
+         (store-id (e-harness-instance-session-store-id instance))
+         (activation (e-harness-instance-session-activation instance)))
+    (unless activation
+      (signal 'e-harness-instance-session-activation-missing
+              (list instance-id)))
+    (unless (and (listp arguments)
+                 (equal (plist-get arguments :session-store-id) store-id)
+                 (plist-get arguments :session-id))
+      (signal 'wrong-type-argument
+              (list 'session-activation-arguments arguments)))
+    (e-harness-instance--session-request-start
+     (list :session-store-id store-id :session-activation activation)
+     :session-activation 'e-harness-instance-session-activation
+     "session-activation" (copy-tree arguments)
+     (lambda (harness)
+       (unless (and (e-harness-p harness)
+                    (condition-case nil
+                        (progn
+                          (e-harness-state harness
+                                           (plist-get arguments :session-id))
+                          t)
+                      (error nil)))
+         (signal 'e-harness-instance-session-activation-invalid-result
+                 (list instance-id store-id)))
+       harness)
+     'e-harness-instance-session-activation-stale
      :on-done on-done :on-error on-error)))
 
 (cl-defun e-harness-instance-list-subagents (&key visibility)
