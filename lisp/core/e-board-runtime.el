@@ -480,51 +480,96 @@ When omitted, the conservative idle-only harness delivery port is used."
          (key (e-board-runtime--attachment-key board participant)))
     (when (gethash key e-board-runtime--attachments)
       (signal 'e-board-runtime-attachment-exists (list key)))
+    (e-board-runtime--activate-attachment
+     (e-board-runtime--make-attachment
+      board participant harness session-id delivery-function 1))))
+
+(defun e-board-runtime--make-attachment
+    (board participant harness session-id delivery-function generation)
+  "Construct one immutable-generation attachment without registering it."
+  (e-board-runtime-attachment--create
+   :board board :participant participant :harness harness :session-id session-id
+   :activity-sequence 0 :generation generation
+   :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)))
+
+(defun e-board-runtime--configure-attachment (attachment)
+  "Install the private board/harness ports required by ATTACHMENT."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (source-board (e-board-registry-board-source-board board))
+         (harness (e-board-runtime-attachment-harness attachment)))
+    (setf (e-board-effect-scheduler source-board)
+          (lambda (effect) (run-at-time 0 nil (lambda () (funcall effect))))
+          (e-board-invocation-effect-dispatcher source-board)
+          #'e-board-runtime--apply-invocation-effect
+          (e-board-input-classification-scheduler source-board)
+          (lambda (drain)
+            (run-at-time 0 nil
+                         (lambda ()
+                           (e-board-runtime--drain-input-routing board drain)))))
+    (e-harness-set-work-enrollment-function
+     harness (lambda (handle &optional callback)
+               (e-board-runtime--enroll-work harness handle callback)))
+    (e-harness-set-board-aggregation-function
+     harness (lambda (handles mode timeout callback invocation-context)
+               (e-board-runtime--subscribe-aggregation
+                harness handles mode timeout callback invocation-context)))))
+
+(defun e-board-runtime--activate-attachment (attachment)
+  "Subscribe and register ATTACHMENT after its ownership checks pass."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (participant (e-board-runtime-attachment-participant attachment))
+         (harness (e-board-runtime-attachment-harness attachment))
+         (session-id (e-board-runtime-attachment-session-id attachment))
+         (key (e-board-runtime--attachment-key board participant))
+         (session-key (e-board-runtime--session-key harness session-id)))
+    (when (gethash session-key e-board-runtime--session-attachments)
+      (signal 'e-board-runtime-session-busy (list session-key)))
+    (setf (e-board-runtime-attachment-subscription attachment)
+          (e-harness-subscribe
+           harness (lambda (event) (e-board-runtime--handle-harness-event attachment event))
+           :session-id session-id))
+    (puthash key attachment e-board-runtime--attachments)
+    (puthash session-key attachment e-board-runtime--session-attachments)
+    (e-board-runtime--configure-attachment attachment)
+    attachment))
+
+(cl-defun e-board-runtime-rebind
+    (board-or-id participant-or-id harness session-id &key delivery-function)
+  "Move an existing participant to live HARNESS SESSION-ID.
+The logical participant and its board pickups survive.  The old attachment is
+generation-fenced and unsubscribed, so its late events cannot resolve against
+the new endpoint."
+  (unless (e-harness-p harness)
+    (signal 'wrong-type-argument (list 'e-harness-p harness)))
+  (unless (or (null delivery-function) (functionp delivery-function))
+    (signal 'wrong-type-argument (list 'functionp delivery-function)))
+  (e-board-runtime--require-live-session harness session-id)
+  (let* ((board (e-board-runtime--active-board board-or-id))
+         (participant (e-board-registry-participant board participant-or-id))
+         (key (e-board-runtime--attachment-key board participant))
+         (old (gethash key e-board-runtime--attachments)))
+    (unless old
+      (signal 'e-board-runtime-error (list "Participant is not attached" participant-or-id)))
+    (when (gethash (e-board-runtime--session-key harness session-id)
+                   e-board-runtime--session-attachments)
+      (signal 'e-board-runtime-session-busy (list harness session-id)))
+    (e-harness-unsubscribe (e-board-runtime-attachment-harness old)
+                           (e-board-runtime-attachment-subscription old))
+    (remhash (e-board-runtime--session-key
+              (e-board-runtime-attachment-harness old)
+              (e-board-runtime-attachment-session-id old))
+             e-board-runtime--session-attachments)
+    (cl-incf (e-board-runtime-attachment-generation old))
     (let ((attachment
-           (e-board-runtime-attachment--create
-            :board board
-             :participant participant
-            :harness harness
-            :session-id session-id
-            :activity-sequence 0
-            :generation 1
-            :delivery-function (or delivery-function
-                                    #'e-board-runtime--deliver-to-harness))))
-       (setf (e-board-runtime-attachment-subscription attachment)
-             (e-harness-subscribe
-              harness
-              (lambda (event)
-                (e-board-runtime--handle-harness-event attachment event))
-              :session-id session-id))
-        (puthash key attachment e-board-runtime--attachments)
-        (puthash (e-board-runtime--session-key harness session-id) attachment
-                 e-board-runtime--session-attachments)
-        (setf (e-board-effect-scheduler
-               (e-board-registry-board-source-board board))
-              (lambda (effect)
-                (run-at-time
-                 0 nil
-                 (lambda ()
-                   (funcall effect)))))
-        (setf (e-board-invocation-effect-dispatcher
-               (e-board-registry-board-source-board board))
-              #'e-board-runtime--apply-invocation-effect)
-        (setf (e-board-input-classification-scheduler
-               (e-board-registry-board-source-board board))
-              (lambda (drain)
-                (run-at-time 0 nil
-                             (lambda ()
-                               (e-board-runtime--drain-input-routing board drain)))))
-         (e-harness-set-work-enrollment-function
-         harness
-         (lambda (handle &optional callback)
-           (e-board-runtime--enroll-work harness handle callback)))
-        (e-harness-set-board-aggregation-function
-         harness
-         (lambda (handles mode timeout callback invocation-context)
-           (e-board-runtime--subscribe-aggregation
-            harness handles mode timeout callback invocation-context)))
-        attachment)))
+           (e-board-runtime--make-attachment
+            board participant harness session-id delivery-function
+            (e-board-runtime-attachment-generation old))))
+      (e-board-runtime--activate-attachment attachment)
+      (e-board--append-event
+       (e-board-registry-board-source-board board) 'participant-rebound
+       (list :participant-id (e-board-registry-participant-id participant)
+             :attachment-generation (e-board-runtime-attachment-generation attachment)))
+      attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
   "Deliver BOARD's frozen ready PICKUP-IDS through their attachments."

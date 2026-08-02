@@ -91,6 +91,33 @@
                          ("board" "tagged" "first")
                          ("board" "tagged" "second"))))))))
 
+(ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
+  "A participant rebind retains its logical identity and uses the new endpoint."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           (deliveries nil))
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (e-board-runtime-attach board old-harness "old" :participant-id "participant")
+      (let ((attachment
+             (e-board-runtime-rebind
+              board "participant" new-harness "new"
+              :delivery-function
+              (lambda (_attachment _pickup message)
+                (push (e-board-message-content message) deliveries)))))
+        (should (eq (e-board-runtime-attachment-harness attachment) new-harness))
+        (should-not (gethash (e-board-runtime--session-key old-harness "old")
+                             e-board-runtime--session-attachments))
+        (e-board-runtime-post-input board :id "after-rebind" :to "participant"
+                                    :content "new endpoint")
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications
+                           (e-board-registry-board-source-board board))))
+        (e-board-runtime--drain-pickups)
+        (should (equal deliveries '("new endpoint")))))))
+
 (ert-deftest e-board-runtime-test-default-queue-delivery-enters-idle-follow-up-queue ()
   "Default queue delivery uses the harness queue without starting a turn."
   (e-board-runtime-test--with-empty-state
