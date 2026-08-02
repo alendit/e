@@ -37,6 +37,9 @@ partial: queued delivery stays =accepted= until the harness appends its user
 message and emits a correlated =input-consumed= receipt, while inject appends
 and consumes synchronously.  Discard/uncertain/rebind reconciliation remains
 to be generalized in the delivery ledger slice.
+Pending or ready pickup cancellation now records a =cancelled= tombstone and
+releases only the affected FIFO position; accepted/delivering cancellation
+races remain part of the later receipt reconciliation work.
 The invocation-only =await= request now requires a non-empty all-resolved
 reference list and an exact finite timeout within the configured hard maximum;
 invalid requests install no aggregation subscription.

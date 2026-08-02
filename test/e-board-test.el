@@ -301,6 +301,22 @@
         (should (eq (e-board-pickup-state (e-board-pickup board first-id)) 'consumed))
         (should (eq (e-board-pickup-state (e-board-pickup board second-id)) 'ready))))))
 
+(ert-deftest e-board-test-cancelling-pickup-releases-only-its-fifo-position ()
+  "Pending cancellation does not overtake work; head cancellation promotes once."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "first" :to "one"))))
+             (second (car (e-board-publication-pickup-ids
+                           (e-board-post-input board :id "second" :to "one"))))
+             (third (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "third" :to "one")))))
+        (should-not (e-board-cancel-pickup board second 'owner-cancelled))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'cancelled))
+        (should (equal (e-board-cancel-pickup board first 'owner-cancelled) third))
+        (should (eq (e-board-pickup-state (e-board-pickup board third)) 'ready))))))
+
 (ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
   "Observer muting, terminal states, and replacement never route input."
   (e-board-test--with-empty-registry

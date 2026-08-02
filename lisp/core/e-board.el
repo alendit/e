@@ -341,6 +341,29 @@ Return the newly ready pickup identity, if any."
                                  (list :delivery-id next-id))
           next-id)))))
 
+(defun e-board-cancel-pickup (board delivery-id &optional reason)
+  "Cancel pending or ready DELIVERY-ID without affecting watched work.
+Return a newly ready successor when cancellation releases the FIFO head."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (memq (e-board-pickup-state pickup) '(pending ready))
+      (signal 'e-board-error
+              (list "Pickup cancellation requires pending or ready state" delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id))
+           (head-p (equal (car queue) delivery-id)))
+      (setf (e-board-pickup-state pickup) 'cancelled)
+      (puthash participant-id (delete delivery-id queue) (e-board-pickup-queues board))
+      (e-board--append-event board 'pickup-cancelled
+                             (list :delivery-id delivery-id :reason reason))
+      (when head-p
+        (when-let ((next-id (car (e-board--pickup-queue board participant-id))))
+          (let ((next (e-board-pickup board next-id)))
+            (setf (e-board-pickup-state next) 'ready)
+            (e-board--append-event board 'pickup-ready
+                                   (list :delivery-id next-id))
+            next-id))))))
+
 (defun e-board-pickup-return-ready (board delivery-id err)
   "Return uncommitted delivering DELIVERY-ID to its FIFO head after ERR."
   (let ((pickup (or (e-board-pickup board delivery-id)
