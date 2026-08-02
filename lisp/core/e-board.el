@@ -1126,17 +1126,17 @@ request retained backfill explicitly with a lower START-SEQ."
                                      :replacement-id replacement-id))
         replacement))))
 
-(cl-defun e-board-observer-read-page (board observer-id &key (limit 32))
-  "Advance OBSERVER-ID through at most LIMIT records and return matches.
-This is a non-consuming read cursor.  The caller chooses scheduling/paging;
-the board mutates only the cursor after each inspected record, so filtered gaps
-are preserved and retrying a later page cannot produce an earlier record.
-Trusted predicates run only here, never from message append or work settlement."
+(cl-defun e-board-observer-prepare-page (board observer-id &key (limit 32))
+  "Prepare one bounded observer page without advancing its live cursor.
+Return a plist with =:messages= and an opaque =:through-seq= acceptance
+receipt.  A client queue must call `e-board-observer-accept-page' only after
+it accepts this page.  Trusted predicates run here, never from append."
   (unless (and (integerp limit) (> limit 0))
     (signal 'wrong-type-argument (list 'plusp limit)))
   (let ((observer (or (e-board-observer board observer-id)
                       (signal 'e-board-observer-missing (list observer-id))))
         (inspected 0)
+        (through-seq nil)
         matches)
     (when (eq (e-board-observer-state observer) 'active)
       (dolist (message (e-board-messages board))
@@ -1144,11 +1144,40 @@ Trusted predicates run only here, never from message append or work settlement."
                    (> (e-board-message-seq message)
                       (e-board-observer-next-seq observer)))
           (cl-incf inspected)
-          (setf (e-board-observer-next-seq observer)
-                (e-board-message-seq message))
+          (setq through-seq (e-board-message-seq message))
           (when (e-board--observer-matches-p board observer message)
             (push message matches)))))
-    (nreverse matches)))
+    (list :messages (nreverse matches) :through-seq through-seq)))
+
+(defun e-board-observer-accept-page (board observer-id through-seq)
+  "Advance OBSERVER-ID through accepted page receipt THROUGH-SEQ.
+The receipt may only move the observer forward, so a stale client acceptance
+cannot rewind or consume another observer's cursor."
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (unless (and (integerp through-seq)
+                 (>= through-seq (e-board-observer-next-seq observer)))
+      (signal 'e-board-error
+              (list "Invalid observer page acceptance" observer-id through-seq)))
+    (when (> through-seq (e-board-next-seq board))
+      (signal 'e-board-error
+              (list "Observer receipt exceeds board sequence" observer-id through-seq)))
+    (when (and (eq (e-board-observer-state observer) 'active)
+               (> through-seq (e-board-observer-next-seq observer)))
+      (setf (e-board-observer-next-seq observer) through-seq)
+      (e-board--append-event board 'observer-page-accepted
+                             (list :observer-id observer-id :through-seq through-seq)))
+    observer))
+
+(cl-defun e-board-observer-read-page (board observer-id &key (limit 32))
+  "Synchronously prepare and accept one bounded page for OBSERVER-ID.
+Asynchronous client adapters should instead use `e-board-observer-prepare-page'
+and acknowledge only after their queue accepts the returned page."
+  (let* ((page (e-board-observer-prepare-page board observer-id :limit limit))
+         (through-seq (plist-get page :through-seq)))
+    (when through-seq
+      (e-board-observer-accept-page board observer-id through-seq))
+    (plist-get page :messages)))
 
 (defun e-board--eligible-subscription-p (board subscription)
   "Return non-nil when SUBSCRIPTION is active and its participant can receive."

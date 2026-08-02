@@ -294,6 +294,27 @@
                                                            (e-board-observer-id observer)))
                        '("new")))))))
 
+(ert-deftest e-board-test-observer-page-advances-only-after-acceptance ()
+  "Prepared client pages leave the live cursor unchanged until acknowledged."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (let ((observer (e-board-observer-subscribe
+                       board "client" '(:tags (main)) :id "observer" :start-seq 0)))
+        (e-board-post-fact board :id "first" :tags '(main)
+                           :source-fact-key '(producer 1 1))
+        (e-board-post-fact board :id "second" :tags '(main)
+                           :source-fact-key '(producer 1 2))
+        (let ((page (e-board-observer-prepare-page board "observer" :limit 1)))
+          (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
+                         '("first")))
+          (should (= (e-board-observer-next-seq observer) 0))
+          (e-board-observer-accept-page board "observer" (plist-get page :through-seq))
+          (should (= (e-board-observer-next-seq observer)
+                     (plist-get page :through-seq))))
+        (should (equal (mapcar #'e-board-message-id
+                               (e-board-observer-read-page board "observer"))
+                       '("second")))))))
+
 (ert-deftest e-board-test-pickups-preserve-participant-fifo-order ()
   "Only a participant's oldest pickup may become deliverable."
   (e-board-test--with-empty-registry
