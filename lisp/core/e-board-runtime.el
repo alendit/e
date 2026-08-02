@@ -574,6 +574,18 @@ the new endpoint."
     (when (gethash (e-board-runtime--session-key harness session-id)
                    e-board-runtime--session-attachments)
       (signal 'e-board-runtime-session-busy (list harness session-id)))
+    (let* ((source-board (e-board-registry-board-source-board board))
+           (delivery-id (car (e-board--pickup-queue
+                              source-board
+                              (e-board-registry-participant-id participant))))
+           (pickup (and delivery-id (e-board-pickup source-board delivery-id))))
+      ;; The old endpoint owns the only evidence for an in-flight or accepted
+      ;; mutation.  Once it is fenced, that uncertainty is terminal rather
+      ;; than permission to submit the same logical pickup to a new session.
+      (when (and pickup
+                 (memq (e-board-pickup-state pickup)
+                       '(delivering accepted cancelling)))
+        (e-board-pickup-mark-uncertain source-board delivery-id 'endpoint-rebound)))
     (e-harness-unsubscribe (e-board-runtime-attachment-harness old)
                            (e-board-runtime-attachment-subscription old))
     (remhash (e-board-runtime--session-key

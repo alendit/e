@@ -136,6 +136,42 @@
         (should (equal (nreverse deliveries)
                        '("preserved pickup" "new endpoint"))))))))
 
+(ert-deftest e-board-runtime-test-rebind-tombstones-unresolved-accepted-head ()
+  "A replacement endpoint never receives an old accepted pickup again."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           deliveries)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (e-board-runtime-attach
+       board old-harness "old" :participant-id "participant"
+       :delivery-function (lambda (&rest _arguments) '(:accepted receipt)))
+      (let* ((first (e-board-runtime-post-input board :id "first" :to "participant"
+                                                :content "first"))
+             (second (e-board-runtime-post-input board :id "second" :to "participant"
+                                                 :content "second"))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source-board)))
+        (e-board-runtime--drain-pickups)
+        (let ((first-id (car (e-board-publication-pickup-ids first)))
+              (second-id (car (e-board-publication-pickup-ids second))))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board first-id))
+                      'accepted))
+          (e-board-runtime-rebind
+           board "participant" new-harness "new"
+           :delivery-function
+           (lambda (_attachment _pickup message)
+             (push (e-board-message-content message) deliveries)))
+          (e-board-runtime--drain-pickups)
+          (should (eq (e-board-pickup-state (e-board-pickup source-board first-id))
+                      'uncertain))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board second-id))
+                      'consumed))
+          (should (equal deliveries '("second"))))))))
+
 (ert-deftest e-board-runtime-test-default-queue-delivery-enters-idle-follow-up-queue ()
   "Default queue delivery uses the harness queue without starting a turn."
   (e-board-runtime-test--with-empty-state
