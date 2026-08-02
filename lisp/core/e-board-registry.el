@@ -28,6 +28,9 @@
 (define-error 'e-board-registry-participant-missing
   "e board registry participant is missing"
   'e-board-registry-error)
+(define-error 'e-board-registry-client-missing
+  "e board registry client is missing"
+  'e-board-registry-error)
 
 (defvar e-board-registry--id-sequence 0
   "Process-local fallback sequence for registry-owned identities.")
@@ -164,6 +167,21 @@ The source board is registered with `e-board' under the same board identity."
     (when client
       (remhash client-id clients))
     client))
+
+(cl-defun e-board-registry-install-observer
+    (board-or-id client-id selector &key id (start-seq 0))
+  "Install an effect-free board observer owned by attached CLIENT-ID.
+The registry validates board-local client ownership; the source board retains
+the cursor and selector because it owns ordered message observation."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (client (gethash client-id (e-board-registry-board-clients board))))
+    (unless client
+      (signal 'e-board-registry-client-missing (list client-id)))
+    (e-board-observer-subscribe
+     (e-board-registry-board-source-board board) client-id selector
+     :id (or id (e-board-registry--next-id
+                 (e-board-registry-board-id-function board) 'observer))
+     :start-seq start-seq)))
 
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal (state 'active))

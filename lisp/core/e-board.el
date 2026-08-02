@@ -20,6 +20,7 @@
 (define-error 'e-board-missing "e board is not registered" 'e-board-error)
 (define-error 'e-board-invalid-source-key "Invalid board source key" 'e-board-error)
 (define-error 'e-board-invalid-activity "Invalid board activity message" 'e-board-error)
+(define-error 'e-board-observer-missing "Unknown board observer" 'e-board-error)
 
 (defvar e-board--id-sequence 0
   "Process-local fallback sequence for board identities.")
@@ -50,6 +51,11 @@
                (:constructor e-board-subscription--create)
                (:conc-name e-board-subscription-))
   id board-id participant-id selector effect state built-in-p)
+
+(cl-defstruct (e-board-observer
+               (:constructor e-board-observer--create)
+               (:conc-name e-board-observer-))
+  id board-id client-id selector state next-seq)
 
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
@@ -83,7 +89,7 @@
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
-  pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
+  observers pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
   effect-scheduler)
 
 (defun e-board--next-id (board kind)
@@ -158,6 +164,7 @@ explicit ids to individual operations takes precedence over this generator."
                  :message-table (make-hash-table :test 'equal)
                  :participants (make-hash-table :test 'equal)
                  :subscriptions nil
+                 :observers (make-hash-table :test 'equal)
                   :pickups (make-hash-table :test 'equal)
                   :source-high-watermarks (make-hash-table :test 'equal)
                   :source-recent (make-hash-table :test 'equal)
@@ -206,6 +213,10 @@ explicit ids to individual operations takes precedence over this generator."
 (defun e-board-aggregation (board aggregation-id)
   "Return BOARD's aggregation subscription for AGGREGATION-ID, or nil."
   (gethash aggregation-id (e-board-aggregations board)))
+
+(defun e-board-observer (board observer-id)
+  "Return BOARD's client observer cursor OBSERVER-ID, or nil."
+  (gethash observer-id (e-board-observers board)))
 
 (defun e-board--schedule-effect (board effect)
   "Schedule BOARD EFFECT after the initiating work-start stack unwinds."
@@ -515,6 +526,20 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
     (and (cl-every (lambda (tag) (member tag tags)) all)
          (or (null any) (cl-some (lambda (tag) (member tag tags)) any)))))
 
+(defun e-board--selector-attributes-match-p (selector message)
+  "Return non-nil when SELECTOR's bounded attribute clauses match MESSAGE."
+  (cl-every (lambda (pair)
+              (equal (plist-get (e-board-message-attributes message) (car pair))
+                     (cdr pair)))
+            (let ((attributes (plist-get selector :attributes)))
+              (cond ((null attributes) nil)
+                    ((and (listp attributes) (keywordp (car attributes)))
+                     (cl-loop for (key value) on attributes by #'cddr
+                              collect (cons key value)))
+                    ((listp attributes) attributes)
+                    (t (signal 'wrong-type-argument
+                               (list 'listp attributes)))))))
+
 (defun e-board--selector-matches-p (board subscription message)
   "Return non-nil when SUBSCRIPTION's immutable selector matches MESSAGE."
   (let ((selector (e-board-subscription-selector subscription)))
@@ -523,18 +548,7 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
               (equal (plist-get selector :to) (e-board-message-to message)))
           (or (not (plist-member selector :author))
               (equal (plist-get selector :author) (e-board-message-author message)))
-          (cl-every (lambda (pair)
-                      (equal (plist-get (e-board-message-attributes message)
-                                        (car pair))
-                             (cdr pair)))
-                    (let ((attributes (plist-get selector :attributes)))
-                      (cond ((null attributes) nil)
-                            ((and (listp attributes) (keywordp (car attributes)))
-                             (cl-loop for (key value) on attributes by #'cddr
-                                      collect (cons key value)))
-                            ((listp attributes) attributes)
-                            (t (signal 'wrong-type-argument
-                                       (list 'listp attributes))))))
+          (e-board--selector-attributes-match-p selector message)
           (e-board--tags-match-p selector message)
           (if-let ((predicate (plist-get selector :predicate)))
               (condition-case err
@@ -547,6 +561,82 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
                         :error err))
                  nil))
             t))))
+
+(cl-defun e-board-observer-subscribe
+    (board client-id selector &key id (state 'active) (start-seq 0))
+  "Create an effect-free client observer cursor over BOARD's message sequence.
+Observers deliberately share selector fields with participant subscriptions,
+but they cannot activate effects, create pickups, alter routedness, or consume
+messages.  START-SEQ is an explicit retained-history cursor; live callers use
+the returned cursor's advancing `next-seq' for later bounded pages."
+  (unless (listp selector)
+    (signal 'wrong-type-argument (list 'listp selector)))
+  (unless (memq state '(active muted cancelled expired faulted))
+    (signal 'wrong-type-argument
+            (list '(member active muted cancelled expired faulted) state)))
+  (unless (and (integerp start-seq) (>= start-seq 0))
+    (signal 'wrong-type-argument (list 'natnump start-seq)))
+  (let ((id (or id (e-board--next-id board 'observer))))
+    (when (e-board-observer board id)
+      (signal 'e-board-id-conflict (list id)))
+    (let ((observer (e-board-observer--create
+                     :id id :board-id (e-board-id board) :client-id client-id
+                     :selector (copy-tree selector) :state state
+                     :next-seq start-seq)))
+      (puthash id observer (e-board-observers board))
+      (e-board--append-event board 'observer-added
+                             (list :observer-id id :client-id client-id
+                                   :start-seq start-seq))
+      observer)))
+
+(defun e-board--observer-matches-p (board observer message)
+  "Return non-nil when OBSERVER can observe MESSAGE, faulting only itself."
+  (let ((selector (e-board-observer-selector observer)))
+    (and (or (not (plist-member selector :kind))
+             (equal (plist-get selector :kind) (e-board-message-kind message)))
+         (or (not (plist-member selector :to))
+             (equal (plist-get selector :to) (e-board-message-to message)))
+         (or (not (plist-member selector :author))
+             (equal (plist-get selector :author) (e-board-message-author message)))
+         (or (not (plist-member selector :subject-participant-id))
+             (equal (plist-get selector :subject-participant-id)
+                    (e-board-message-subject-participant-id message)))
+         (e-board--selector-attributes-match-p selector message)
+         (e-board--tags-match-p selector message)
+         (if-let ((predicate (plist-get selector :predicate)))
+             (condition-case err
+                 (funcall predicate message)
+               (error
+                (setf (e-board-observer-state observer) 'faulted)
+                (e-board--append-event
+                 board 'observer-faulted
+                 (list :observer-id (e-board-observer-id observer) :error err))
+                nil))
+           t))))
+
+(cl-defun e-board-observer-read-page (board observer-id &key (limit 32))
+  "Advance OBSERVER-ID through at most LIMIT records and return matches.
+This is a non-consuming read cursor.  The caller chooses scheduling/paging;
+the board mutates only the cursor after each inspected record, so filtered gaps
+are preserved and retrying a later page cannot produce an earlier record.
+Trusted predicates run only here, never from message append or work settlement."
+  (unless (and (integerp limit) (> limit 0))
+    (signal 'wrong-type-argument (list 'plusp limit)))
+  (let ((observer (or (e-board-observer board observer-id)
+                      (signal 'e-board-observer-missing (list observer-id))))
+        (inspected 0)
+        matches)
+    (when (eq (e-board-observer-state observer) 'active)
+      (dolist (message (e-board-messages board))
+        (when (and (< inspected limit)
+                   (> (e-board-message-seq message)
+                      (e-board-observer-next-seq observer)))
+          (cl-incf inspected)
+          (setf (e-board-observer-next-seq observer)
+                (e-board-message-seq message))
+          (when (e-board--observer-matches-p board observer message)
+            (push message matches)))))
+    (nreverse matches)))
 
 (defun e-board--eligible-subscription-p (board subscription)
   "Return non-nil when SUBSCRIPTION is active and its participant can receive."

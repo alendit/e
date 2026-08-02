@@ -23,6 +23,9 @@ run on the work-settlement stack.
 The same private runtime now flushes that latest-value mailbox in bounded pages
 as source-keyed, participant/turn-qualified =activity= records; final output
 records carry the corresponding participant and source-turn identity.
+The board core also has the first effect-free client observer cursor: bounded
+forward pages use the common selector fields and cannot route, consume, or
+create participant input.
 Slices 0--4 are private implementation/verification order only.  No board mode,
 feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
 Slice 5 cutover replaces every caller and deletes the superseded interfaces in

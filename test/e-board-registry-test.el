@@ -129,6 +129,19 @@
        :type 'e-board-error)
       (should (e-board-find-subscription source "main")))))
 
+(ert-deftest e-board-registry-test-attached-client-owns-observer-cursor ()
+  "Observation is available only through a board-local attached client."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (observer (e-board-registry-install-observer
+                      board (e-board-registry-client-id client)
+                      '(:tags (main)) :id "observer")))
+      (should (equal (e-board-observer-client-id observer) "client"))
+      (should-error (e-board-registry-install-observer
+                     board "missing" '(:tags (main)))
+                    :type 'e-board-registry-client-missing))))
+
 (provide 'e-board-registry-test)
 
 ;;; e-board-registry-test.el ends here

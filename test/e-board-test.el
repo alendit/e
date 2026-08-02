@@ -206,6 +206,32 @@
                        :source-activity-key '(one 1 2))
                       :type 'e-board-invalid-activity)))))
 
+(ert-deftest e-board-test-observer-cursor-pages-without-routing-or-consuming ()
+  "Client observation uses the common selector fields without side effects."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (e-board-subscribe board "one" '(:tags (main)) :id "main")
+      (let ((observer (e-board-observer-subscribe
+                       board "client" '(:tags (main)) :id "observer")))
+        (e-board-post-input board :id "input" :tags '(main))
+        (e-board-post-activity
+         board :id "activity" :author "participant:one"
+         :subject-participant-id "one" :source-turn-id "turn"
+         :activity-kind 'thinking :tags '(main)
+         :source-activity-key '(one 1 1))
+        (e-board-post-fact board :id "fact" :tags '(other)
+                           :source-fact-key '(producer 1 1))
+        (let ((first-page (e-board-observer-read-page board "observer" :limit 1))
+              (second-page (e-board-observer-read-page board "observer" :limit 2)))
+          (should (equal (mapcar #'e-board-message-id first-page) '("input")))
+          (should (equal (mapcar #'e-board-message-id second-page) '("activity")))
+          (should (= (e-board-observer-next-seq observer) 7))
+          ;; Observation does not affect input pickup state or routedness.
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup board '("board" "input" "one")))
+                      'pending)))))))
+
 (ert-deftest e-board-test-enrolled-work-publishes-before-exact-invocation-effect ()
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
