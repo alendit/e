@@ -199,6 +199,43 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
       (e-work-cancel a)
       (e-work-cancel b))))
 
+(ert-deftest e-await-tool-test-rejects-reference-set-over-hard-cap ()
+  "Reference resolution work is bounded before any resolver is called."
+  (let ((calls 0)
+        result)
+    (let ((e-waitable--resolvers (make-hash-table :test 'equal)))
+      (e-waitable-register-resolver
+       "fake" (lambda (_id) (setq calls (1+ calls)) nil))
+      (setq result
+            (e-await-tool-test--run
+             (list :refs
+                   (vconcat
+                    (mapcar (lambda (index) (format "fake:%d" index))
+                            (number-sequence 0 e-await-tool-max-references)))))))
+    (should (= calls 0))
+    (should (eq (plist-get result :status) 'error))))
+
+(ert-deftest e-await-tool-test-large-results-become-reference-tombstones ()
+  "Await never embeds a result beyond its fixed callback report budget."
+  (let ((handle (e-await-tool-test--pending-handle)))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "large" handle))
+          (let* ((registry (e-tools-registry-create))
+                 result)
+            (e-await-tool-register registry)
+            (e-tools-start
+             registry
+             '(:id "c" :name "await" :arguments (:refs ["fake:large"]))
+             :on-done (lambda (value) (setq result value)))
+            (e-work-finish
+             handle
+             (make-string (1+ e-await-tool-max-inline-result-bytes) ?x))
+            (let* ((entry (car (plist-get (plist-get result :content) :results)))
+                   (reported (plist-get entry :result)))
+              (should (plist-get reported :omitted))
+              (should (equal (plist-get reported :result-ref) "fake:large")))))
+      (e-work-cancel handle))))
+
 (provide 'e-await-tool-test)
 
 ;;; e-await-tool-test.el ends here

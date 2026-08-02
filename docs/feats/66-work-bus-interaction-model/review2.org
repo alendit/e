@@ -750,8 +750,17 @@ heartbeats, proves the pickup registry remains empty between pages, and ends in
 board-only history projection, task/session writers, and bounded =await=
 materialization.
 
+The =await= seam is now bounded independently: one invocation accepts at most
+32 references, and callback result projection stops after a fixed 128-node or
+4096-string-byte budget.  Oversized values become a result-reference tombstone
+instead of being serialized into the tool reply.  Tests prove an over-cap set
+invokes zero resolvers and a large settled result remains out of line.  The
+finding remains open for board-only history and asynchronous task/session
+writers.
+
 #+begin_src sh
 rtk eldev test test/e-board-test.el test/e-board-registry-test.el test/e-board-runtime-test.el
+rtk eldev test test/e-await-tool-test.el
 #+end_src
 
 #+begin_example

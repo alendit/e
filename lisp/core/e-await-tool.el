@@ -37,6 +37,15 @@ Explicit requests above this ceiling are rejected."
   :type 'number
   :group 'e)
 
+(defconst e-await-tool-max-references 32
+  "Maximum number of references accepted by one await invocation.")
+
+(defconst e-await-tool-max-inline-result-bytes 4096
+  "Maximum aggregate string bytes retained in one inline await result.")
+
+(defconst e-await-tool-max-inline-result-nodes 128
+  "Maximum aggregate Lisp nodes inspected for one inline await result.")
+
 (define-error 'e-await-tool-invalid-request "Invalid await request")
 
 (defun e-await-tool--effective-timeout (arguments)
@@ -67,6 +76,43 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
           :result (plist-get status :result)
           :error (plist-get status :error))))
 
+(defun e-await-tool--inline-value-p (value)
+  "Return non-nil when VALUE fits the fixed inline report budget.
+The traversal stops at the first byte or node overflow, so an await callback
+never serializes or walks an unbounded result on the Emacs main thread."
+  (let ((pending (list value))
+        (nodes 0)
+        (bytes 0)
+        overflow)
+    (while (and pending (not overflow))
+      (let ((item (pop pending)))
+        (setq nodes (1+ nodes))
+        (cond
+         ((> nodes e-await-tool-max-inline-result-nodes)
+          (setq overflow t))
+         ((stringp item)
+          (setq bytes (+ bytes (string-bytes item)))
+          (when (> bytes e-await-tool-max-inline-result-bytes)
+            (setq overflow t)))
+         ((consp item)
+          (push (car item) pending)
+          (push (cdr item) pending))
+         ((vectorp item)
+          (let ((index 0)
+                (length (length item)))
+            (if (> (+ nodes length) e-await-tool-max-inline-result-nodes)
+                (setq overflow t)
+              (while (< index length)
+                (push (aref item index) pending)
+                (setq index (1+ index)))))))))
+    (not overflow)))
+
+(defun e-await-tool--inline-or-reference (value ref)
+  "Return VALUE when bounded, otherwise one tombstone referring to REF."
+  (if (e-await-tool--inline-value-p value)
+      value
+    (list :omitted t :result-ref ref :reason 'inline-budget-exceeded)))
+
 (defun e-await-tool--resolve-references (refs)
   "Resolve every REF in REFS, rejecting the complete request on any failure."
   (let (pairs errors)
@@ -85,15 +131,18 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
 (defun e-await-tool--result-entry (ref handle)
   "Return the report entry for REF backed by HANDLE."
   (let* ((snapshot (e-await-tool--handle-status handle))
-         (result (plist-get snapshot :result)))
+         (result (plist-get snapshot :result))
+         (summary (and (listp result) (plist-get result :summary)))
+         (outputs (and (listp result) (plist-get result :outputs))))
     (list :ref ref
           :state (plist-get snapshot :state)
           ;; Surface a subsystem-normalized summary/outputs when the work result
           ;; carries them; otherwise expose the raw result under :result.
-          :summary (and (listp result) (plist-get result :summary))
-          :outputs (and (listp result) (plist-get result :outputs))
-          :result result
-          :error (plist-get snapshot :error))))
+          :summary (e-await-tool--inline-or-reference summary ref)
+          :outputs (e-await-tool--inline-or-reference outputs ref)
+          :result (e-await-tool--inline-or-reference result ref)
+          :error (e-await-tool--inline-or-reference
+                  (plist-get snapshot :error) ref))))
 
 (defun e-await-tool--report (mode reason pairs)
   "Return the compact await report for MODE, REASON, and frozen PAIRS."
@@ -114,9 +163,11 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
              (timeout (e-await-tool--effective-timeout arguments))
              (pairs (progn
                       (unless (and (or (listp refs) (vectorp refs))
-                                   (> (length refs) 0))
+                                   (> (length refs) 0)
+                                   (<= (length refs)
+                                       e-await-tool-max-references))
                         (signal 'e-await-tool-invalid-request
-                                (list "Await requires a non-empty reference list")))
+                                (list "Await requires a non-empty bounded reference list")))
                       (e-await-tool--resolve-references refs)))
              (handles (mapcar #'cdr pairs)))
         (cond
@@ -177,6 +228,7 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
    :parameters '(:type "object"
                  :properties
                  (:refs (:type "array"
+                         :maxItems 32
                          :items (:type "string"))
                   :mode (:type "string"
                          :enum ["all" "any"])
