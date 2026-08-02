@@ -183,6 +183,34 @@ the cursor and selector because it owns ordered message observation."
                  (e-board-registry-board-id-function board) 'observer))
      :start-seq start-seq)))
 
+(defun e-board-registry--observer-for-client (board client-id observer-id)
+  "Return BOARD OBSERVER-ID after validating its attached owning CLIENT-ID."
+  (unless (gethash client-id (e-board-registry-board-clients board))
+    (signal 'e-board-registry-client-missing (list client-id)))
+  (let ((observer (or (e-board-observer
+                       (e-board-registry-board-source-board board) observer-id)
+                      (signal 'e-board-observer-missing (list observer-id)))))
+    (unless (equal (e-board-observer-client-id observer) client-id)
+      (signal 'e-board-registry-error
+              (list "Observer belongs to another client" observer-id client-id)))
+    observer))
+
+(cl-defun e-board-registry-prepare-observer-page
+    (board-or-id client-id observer-id &key (limit 32))
+  "Prepare OBSERVER-ID's page for attached CLIENT-ID without cursor advance."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-observer-prepare-page
+     (e-board-registry-board-source-board board) observer-id :limit limit)))
+
+(defun e-board-registry-accept-observer-page
+    (board-or-id client-id observer-id through-seq)
+  "Record attached CLIENT-ID's accepted observer page receipt THROUGH-SEQ."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--observer-for-client board client-id observer-id)
+    (e-board-observer-accept-page
+     (e-board-registry-board-source-board board) observer-id through-seq)))
+
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal (state 'active))
   "Add a board-local participant to active BOARD-OR-ID.

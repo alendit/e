@@ -168,6 +168,31 @@
                      board "missing" '(:tags (main)))
                     :type 'e-board-registry-client-missing))))
 
+(ert-deftest e-board-registry-test-client-acknowledges-only-its-observer-page ()
+  "An attached client explicitly accepts its own prepared observer page."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (other (e-board-registry-attach-client board :id "other"))
+           (observer (e-board-registry-install-observer
+                      board "client" '(:tags (main)) :id "observer" :start-seq 0))
+           (source-board (e-board-registry-board-source-board board)))
+      (e-board-post-fact source-board :id "fact" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let ((page (e-board-registry-prepare-observer-page
+                   board (e-board-registry-client-id client) "observer" :limit 1)))
+        (should (= (e-board-observer-next-seq observer) 0))
+        (should-error
+         (e-board-registry-accept-observer-page
+          board (e-board-registry-client-id other) "observer"
+          (plist-get page :through-seq))
+         :type 'e-board-registry-error)
+        (e-board-registry-accept-observer-page
+         board (e-board-registry-client-id client) "observer"
+         (plist-get page :through-seq))
+        (should (= (e-board-observer-next-seq observer)
+                   (plist-get page :through-seq)))))))
+
 (provide 'e-board-registry-test)
 
 ;;; e-board-registry-test.el ends here
