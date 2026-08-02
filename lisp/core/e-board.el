@@ -113,6 +113,11 @@
                (:conc-name e-board-activation-))
   id subscription-id message-id effect state)
 
+(cl-defstruct (e-board-open-activity
+               (:constructor e-board-open-activity--create)
+               (:conc-name e-board-open-activity-))
+  participant-id turn-id message-id seq activity-kind)
+
 (cl-defstruct (e-board-terminal-classification
                (:constructor e-board-terminal-classification--create)
                (:conc-name e-board-terminal-classification-))
@@ -134,7 +139,8 @@
   input-classifications input-classification-scheduled input-classification-scheduler
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
-  activations activation-subscription-index pickup-queues pickup-pending-limit)
+  activations activation-subscription-index pickup-queues pickup-pending-limit
+  open-activities closed-activities)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -227,6 +233,8 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :activation-subscription-index (make-hash-table :test 'equal)
                   :pickup-queues (make-hash-table :test 'equal)
                   :pickup-pending-limit pickup-pending-limit
+                  :open-activities (make-hash-table :test 'equal)
+                  :closed-activities (make-hash-table :test 'equal)
                   :pending-effects nil
                   :effects-scheduled nil
                   :effect-scheduler effect-scheduler
@@ -518,6 +526,42 @@ uncommitted failure settles that cancellation instead of retrying it."
 (defun e-board-activation (board activation-id)
   "Return BOARD's frozen effect activation for ACTIVATION-ID, or nil."
   (gethash activation-id (e-board-activations board)))
+
+(defun e-board--open-activity-key (participant-id turn-id)
+  "Return the board-owned open-activity projection key."
+  (list participant-id turn-id))
+
+(defun e-board-open-activity (board participant-id turn-id)
+  "Return BOARD's current open activity for PARTICIPANT-ID and TURN-ID."
+  (gethash (e-board--open-activity-key participant-id turn-id)
+           (e-board-open-activities board)))
+
+(defun e-board--terminal-activity-kind-p (activity-kind)
+  "Return non-nil when ACTIVITY-KIND closes a visible turn projection."
+  (memq activity-kind '(turn-finished turn-failed turn-cancelled turn-summary)))
+
+(defun e-board--record-open-activity (board message)
+  "Update BOARD's derived open-activity projection from activity MESSAGE."
+  (let* ((participant-id (e-board-message-subject-participant-id message))
+         (turn-id (e-board-message-source-turn-id message))
+         (key (e-board--open-activity-key participant-id turn-id)))
+    (if (e-board--terminal-activity-kind-p (e-board-message-activity-kind message))
+        (e-board--close-open-activity board participant-id turn-id message)
+      (unless (gethash key (e-board-closed-activities board))
+        (puthash key
+                 (e-board-open-activity--create
+                  :participant-id participant-id :turn-id turn-id
+                  :message-id (e-board-message-id message)
+                  :seq (e-board-message-seq message)
+                  :activity-kind (e-board-message-activity-kind message))
+                 (e-board-open-activities board))))))
+
+(defun e-board--close-open-activity (board participant-id turn-id message)
+  "Close BOARD's activity projection for PARTICIPANT-ID and TURN-ID at MESSAGE."
+  (when (and participant-id turn-id)
+    (let ((key (e-board--open-activity-key participant-id turn-id)))
+      (remhash key (e-board-open-activities board))
+      (puthash key (e-board-message-id message) (e-board-closed-activities board)))))
 
 (defun e-board-observer (board observer-id)
   "Return BOARD's client observer cursor OBSERVER-ID, or nil."
@@ -1733,6 +1777,8 @@ at-most-once.  Outputs never create participant pickups."
                        caused-by-delivery-ids nil nil subject-participant-id
                        source-turn-id nil)))
         (e-board--remember-source board 'output source-output-key message)
+        (e-board--close-open-activity
+         board subject-participant-id source-turn-id message)
         (e-board-publication--create :status 'posted :message message
                                      :pickup-ids nil))))
 
@@ -1760,6 +1806,7 @@ an activity tag by itself cannot re-enter a participant inbox."
                source-activity-key nil subject-participant-id source-turn-id
                activity-kind)))
         (e-board--remember-source board 'activity source-activity-key message)
+        (e-board--record-open-activity board message)
         (e-board-publication--create :status 'posted :message message
                                      :pickup-ids nil))))
 

@@ -29,6 +29,9 @@ board activation records that advance through =prepared=, =applying=, and
 The process-local registry now also exposes a deterministic bounded board-list
 page with an opaque continuation identity; the old full-list helper remains
 private until the cutover removes superseded interfaces.
+Client attachments now retain an explicit active/detached state and a monotonic
+per-client connection generation across reattachment, supplying the stable
+fence identity for later observer handoff callbacks.
 Terminal work publication now freezes indexed invocation/aggregation candidates
 and defers their activation classification to a bounded board drain.
 Input append now freezes a private subscription snapshot and returns before
@@ -105,6 +108,9 @@ run on the work-settlement stack.
 The same private runtime now flushes that latest-value mailbox in bounded pages
 as source-keyed, participant/turn-qualified =activity= records; final output
 records carry the corresponding participant and source-turn identity.
+The board now owns the latest open-activity projection per participant/turn;
+terminal activity or output closes it, and a later stale progress record cannot
+reopen the visible state while remaining retained for audit.
 The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/

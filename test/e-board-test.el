@@ -253,6 +253,41 @@
                        :source-activity-key '(one 1 2))
                       :type 'e-board-invalid-activity)))))
 
+(ert-deftest e-board-test-open-activity-projection-closes-on-terminal-or-output ()
+  "The board tracks latest active work and suppresses it at either terminal edge."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-activity
+       board :id "progress" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-one" :activity-kind 'thinking
+       :source-activity-key '(one 1 1))
+      (let ((open (e-board-open-activity board "one" "turn-one")))
+        (should (equal (e-board-open-activity-message-id open) "progress"))
+        (should (eq (e-board-open-activity-activity-kind open) 'thinking)))
+      (e-board-post-output
+       board :id "output" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-one" :source-output-key '(one 1 1))
+      (should-not (e-board-open-activity board "one" "turn-one"))
+      (e-board-post-activity
+       board :id "late-progress" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-one" :activity-kind 'work-progress
+       :source-activity-key '(one 1 2))
+      (should-not (e-board-open-activity board "one" "turn-one"))
+      (e-board-post-activity
+       board :id "progress-two" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-two" :activity-kind 'work-progress
+       :source-activity-key '(one 1 2))
+      (e-board-post-activity
+       board :id "terminal" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-two" :activity-kind 'turn-failed
+       :source-activity-key '(one 1 3))
+      (should-not (e-board-open-activity board "one" "turn-two"))
+      (e-board-post-activity
+       board :id "late-progress-two" :author "participant:one" :subject-participant-id "one"
+       :source-turn-id "turn-two" :activity-kind 'work-progress
+       :source-activity-key '(one 1 4))
+      (should-not (e-board-open-activity board "one" "turn-two")))))
+
 (ert-deftest e-board-test-observer-cursor-pages-without-routing-or-consuming ()
   "Client observation uses the common selector fields without side effects."
   (e-board-test--with-empty-registry
