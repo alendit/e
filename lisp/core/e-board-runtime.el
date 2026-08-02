@@ -466,8 +466,8 @@ frozen pending pickup addressed to the participant.  It must perform one
 delivery or signal; normal return marks that pickup delivered.  Returning
 =(:accepted RECEIPT)= waits for a later consumption receipt; returning
 =(:uncertain REASON)= records an ambiguous original-endpoint attempt without
-retrying it.  When omitted, the conservative idle-only harness delivery port
-is used."
+retrying it; returning =(:discarded REASON)= records a proven non-commit.
+When omitted, the conservative idle-only harness delivery port is used."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
   (unless (or (null delivery-function) (functionp delivery-function))
@@ -549,6 +549,12 @@ is used."
                  (when-let ((next-id
                              (e-board-pickup-mark-uncertain
                               source-board delivery-id (or (cadr result) 'delivery-uncertain))))
+                   (e-board-runtime--enqueue-pickups board (list next-id))))
+                (:discarded
+                 (e-board-pickup-accept-delivery source-board delivery-id)
+                 (when-let ((next-id
+                             (e-board-pickup-discard-delivery
+                              source-board delivery-id (or (cadr result) 'delivery-discarded))))
                    (e-board-runtime--enqueue-pickups board (list next-id))))
                 (_
                  (when-let ((next-id (e-board-pickup-complete-delivery
