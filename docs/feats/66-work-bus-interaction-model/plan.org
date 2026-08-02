@@ -16,8 +16,16 @@ ordered aggregation reducer have landed.  Slice 3 has begun with deferred
 and visibly faulted trusted predicates.
 The async-interactive carrier-hook/cancellation hardening and dedicated bounded
 activity-observer seam identified by this review are explicit remaining Slice
-1 foundation work; current generic =e-work= still invokes those legacy hooks
+1 foundation work; current generic =e-work= still invokes those general hooks
 inline and is not yet board-ready at that seam.
+Slices 0--4 are private implementation/verification order only.  No board mode,
+feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
+Slice 5 cutover replaces every caller and deletes the superseded interfaces in
+the same change set.
+Until then the supported product remains wholly on its pre-cutover interfaces;
+no command, action, tool, or chat path may reach the private board services.
+The slice completion/progress labels above describe private foundation code and
+tests, not public board-surface readiness.
 The explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).
@@ -143,10 +151,9 @@ A later board input uses one of two modes:
 | =inject= | Add the message only at a future safe point in an =accepting= turn for the same board; otherwise use that participant's inbox |
 | =queue= | Keep the message in the session inbox until the session is idle |
 
-The existing =wait_for= race remains until this path is built.
+The =wait_for= race is defined by this path.
 If the terminal event commits before the deadline transition, the tool call receives its result even when later routing/effect work crosses the wall-clock deadline.
 If the deadline transition commits first, the tool call receives =work:<id>= and stops waiting.
-A temporary =:notify= compatibility option may still compile to a later =post-input= continuation while callers migrate.
 
 Follow-up posts can target the same participant, a child, a sibling, or a parent participant by identity, or any matching subscriber by conditions.
 Several subscriptions may use the same result.
@@ -269,11 +276,13 @@ The normal interaction path is:
 5. Chat's non-consuming observer subscription yields every matching =input=, =activity=, and =output= in board sequence; no session-to-chat backchannel is needed.
 
 The common source high-watermark/recent-map rule makes output publication bounded and at-most-once: a retained duplicate returns the existing output, while a retry older than retained history returns =source-history-expired= and cannot append a duplicate.
-=e-session= owns a per-session next-output counter and allocates the sequence logically atomically with assistant transcript append; it submits the entry field and counter to session persistence without making board publication wait for physical storage in this process-local first version.
+=e-session= owns current-schema per-session next-output/activity counters and allocates each sequence logically atomically with transcript/activity append.
+The offline cutover preparation initializes and persists both counters for every resumable stored session; post-cutover attachment requires them and never defaults a missing field.
+Pre-cutover transcript entries remain private context and are never publication candidates, so no history scan or per-entry format branch is needed.
+It submits each new entry field and counter to session persistence without making board publication wait for physical storage in this process-local first version.
 In board mode, the persistence timer may only coalesce and submit an immutable bounded snapshot/reference to a configured asynchronous persistence controller/writer; serialization and file I/O never run in that timer or publication callback, and missing asynchronous persistence is a visible configuration failure rather than permission to use the synchronous fallback.
-Legacy entries without the field are pre-board history and are never retroactively published; loading them seeds the counter from the greatest recorded field (or zero), and the first new assistant entry receives the next value.
 A repeated completion callback rereads the same entry field, so reload, output-pending retry, and recent-map eviction cannot allocate a second source identity.
-Chat subscriber/render failure is isolated after board append and does not retry publication, and old runtime-generation callbacks cannot publish.
+Chat subscriber/render failure is isolated after board append and does not retry publication, and stale runtime-generation callbacks cannot publish.
 Transcript/turn settlement creates a bounded =output-pending= projection record and does not wait on chat rendering.
 If board append itself fails, the runtime retries that record with the same source key or records visible =output-publication-failed= without resettling the turn.
 Only the exact final assistant entry selected by successful turn completion is publishable.
@@ -314,7 +323,7 @@ Appending a correlated =output= or any terminal activity closes/suppresses the o
 Every board message is rendered idempotently by =message-id=.
 When selector replacement/backfill redelivers overlap, chat reuses its board-scoped rendered-message index rather than inserting a second =main= record; a fresh snapshot rebuilds that index incrementally from the retained history pages while the independent live lane continues.
 
-The normalized =activity-kind= values preserve the current visible contract: turn start/terminal state, provider request start/finish, board-safe reasoning summary/deltas, tool start/progress/finish, action start/finish/fail, steering/hook/compaction status needed by the shell, an assistant-streaming marker, and terminal =turn-summary=.
+The normalized =activity-kind= values define the required visible behavior: turn start/terminal state, provider request start/finish, board-safe reasoning summary/deltas, tool start/progress/finish, action start/finish/fail, steering/hook/compaction status needed by the shell, an assistant-streaming marker, and terminal =turn-summary=.
 The terminal summary is an idempotent board message with structured status, duration, and tool/action counts; chat does not synthesize it from private session activity.
 Raw reasoning, endpoint tokens, transcript messages, unbounded tool arguments/results, and partial final-answer text are never published; the final answer exists only as =output=.
 Only animation ticks, focus, expansion, tool-list selection, and =e-ui-work= redraw/coalescing jobs remain shell-local.
@@ -337,7 +346,7 @@ The shell tracks independent =output-seen= and =summary-seen= facts: output owns
 Output-first renders once, stops the matching spinner, and retains its accumulated activity provisionally until the summary arrives; summary-first finalizes the existing activity block and waits for a later output without synthesizing one.
 The reducer folds later activity messages for a turn into the activity block anchored by that stream's earliest visible board sequence, without reordering unrelated board messages; canonical =output= content always stays at its own board-sequence position, and its summary decorates by correlation rather than relocating it.
 Failure/cancellation are no-output terminal activity/summary and anchor at their own board sequence when no earlier activity is visible.
-Transcript callbacks and the old missed-final fallback are not board publishers, so canonical board input/output cannot duplicate.
+The direct transcript presentation callback and missed-final transcript fallback are deleted at cutover and cannot feed chat or publish board records, so canonical board input/output cannot duplicate.
 
 ** Executable operations
 
@@ -367,17 +376,15 @@ It prevents invocation identity, durable domain identity, and executable-work id
 | Tool invocation waiting for work | Pair =(turn-id, tool-call-id)= | A waiting-invocation relation, not another operation record | Its exact effect target is the invocation; its selector may watch one work id or an ordered set, and =e-loop= appends its result exactly once |
 | =wait_for= inline or detached execution | The executable child's =work-id= in both cases | One operation record throughout | A deadline settles only the waiting invocation with =work:<work-id>=; it does not settle, rename, or replace the work |
 | =await= join | The open =(turn-id, tool-call-id)= invocation plus its subscription id; no dummy =work-id= | One aggregation subscription whose effect target is that exact invocation | It executes no carrier work; timeout/cancel closes the invocation subscription, while watched work continues |
-| Compatibility detachable wrapper | Its temporary handle id, marked =kind= =invocation-adapter= and =visibility= =internal= | Not enrolled or addressable by a subscription | It maps legacy callers to the canonical child =work-id= and is removed when Slice 2 completes |
 | Task or subagent attempt | Attempt =work-id= plus existing =task:<id>= or =subagent:<id>= =domain-ref= | Work state is observed; the domain registry remains authoritative | A retry is a new child attempt; the durable task/subagent id never substitutes for a work id |
 | External fact | Board =(board-id, seq)= | Event only | It may carry =caused-by-work-ids= or =caused-by-event-seqs=, but gets no dummy handle |
 | Deferred carrier hook/cancellation request | Stable =(work-id, hook-number)=; substantial internal carrier work may additionally have its own internal child =work-id= | One =carrier-hook-changed= attempt/receipt, not another parent operation | The receipt deduplicates local side effects; it cannot resettle the parent or directly create a live board consequence |
-| Rendering-local =e-ui-work= job | Its ordinary =e-work= handle id | Not enrolled by default | Buffer/window scheduling stays outside the board; only the semantic activity that caused it is a board message |
+| Rendering-local =e-ui-work= job | Its ordinary =e-work= handle id | Never enrolled | Buffer/window scheduling stays outside the board; only the semantic activity that caused it is a board message |
 
 The common start path is explicitly two-phase: =e-work-prepare= allocates a prepared handle without invoking its runner, and once-only =e-work-start-prepared= invokes that runner after owner enrollment succeeds.
 The names may be refined during implementation, but exposing the prepared handle and preventing early runner execution are normative.
 A prepared handle may be cancelled/failed before start; =e-work-start-prepared= refuses a settled or already-started handle and can invoke the carrier at most once.
 When =e-work= terminal-publication/activity observers are present, the board-enrolled start service enrolls that =work-id=, its terminal-publication outbox slot, and bounded activity mailbox identity before starting the runner, which keeps cheap and asynchronous work on the same identity path.
-The explicit exception is =visibility= =internal=: an invocation adapter is not enrolled and propagates its observation/invocation/continuation intent only to the already-preallocated canonical child.
 
 *** Bus selector and aggregation truth table
 
@@ -397,12 +404,17 @@ The board subscription reducer supplies readiness and aggregation over those ser
 | =latest-after-quiet= | Condition selector plus one latest snapshot/timer | After no newer match arrives for the declared quiet period | Latest source event id/snapshot | A newer match replaces the accumulator and resets the timer |
 
 =all-terminal= over an empty set is immediately ready with an empty input; =first-terminal= over an empty set fails subscription installation.
-These meanings intentionally match current =e-work-await-set= =all=/=any= behavior, but the live implementation is board subscription state rather than an =e-work= combinator.
 An =await= tool is the intentional invocation-only exception to executable =:work= tools: it installs one aggregation subscription whose =reply-to-invocation= effect targets its own exact open call.
 It gets no dummy graph-result/await-work handle, while every tool that actually executes a carrier still has one canonical =work-id=.
-Its adapter freezes the declared reference order as =(ref, resolved-work-id-or-resolution-error)= entries.
-At =all-terminal=/=first-terminal= readiness or a serialized timeout transition it freezes the inputs for the existing structured report from the cardinality-bounded declared entries and each resolved work's bounded current snapshot/reference, including still-pending snapshots in =any= mode; scheduled report construction preserves =:settled=, =:reason=, =:mode=, =:results=, per-reference errors, and ordinary outer =e-tools= shaping without materializing unbounded results in the source/timer callback.
-Empty input or zero resolvable references is immediately ready and queues one activation/reply containing the empty/error report; it does not fail generic =first-terminal= installation and does not bypass the scheduled invocation effect path.
+Its canonical request requires a non-empty bounded ordered reference list whose members all resolve before installation.
+Omitted =mode= means =all=; an explicit mode must be exactly =all= or =any=.
+Omitted =timeout= means the configured default (120 seconds initially); an explicit timeout must be a finite positive number no greater than the configured hard maximum (900 seconds initially), and is never clamped or coerced.
+Invalid mode/timeout, empty input, or any unresolved reference returns one bounded setup error and creates no subscription.
+The service freezes =(ref, work-id)= entries in declared order.
+At =all-terminal=/=first-terminal= readiness or a serialized timeout transition it freezes inputs for one canonical bounded report: =(:reason complete|timed-out :mode all|any :outcomes (...) :pending (...))=.
+Each outcome contains the input reference, canonical work id, terminal state, and bounded result/error reference; =pending= contains unresolved-in-time input references in declared order.
+Scheduled report construction never materializes unbounded results in the source/timer callback.
+=e-tools= wraps that report exactly once in the ordinary structured tool-result envelope; the carrier returns no pre-wrapped result, lifted =:summary=/=:outputs= aliases, or unbounded raw result field.
 Subscription deadline, expiry, maximum-delay, and quiet-period timers carry a generation and only enqueue one bounded serialized control request before returning; readiness, report construction, activation, and effect work occur in later budgeted scheduler turns.
 
 Stored/model-created effects are deliberately small:
@@ -425,14 +437,14 @@ The normative live ordering is:
 2. The board service atomically enrolls the operation, allocates its terminal-publication outbox slot, and installs any applicable exact invocation/continuation subscriptions plus dedicated =e-work= terminal-publication and bounded activity observers.
 3. =e-work-start-prepared= invokes the runner once; cheap work may settle before it returns.
 4. Progress invokes only the dedicated demonstrably hard-bounded activity observer to replace/enqueue a mailbox reference before general progress hooks defer; settlement freezes lifecycle/result once, invokes only the dedicated demonstrably hard-bounded publication observer, and appends or records the terminal outbox item plus one routing token by stable source key.
-5. The terminal append captures the immutable subscription view but does not scan it; settlement returns after its fixed hook-count/work-unit budget, while carrier cleanup and general/legacy callbacks classified as variable start through a generation-fenced asynchronous/cooperative hook lane.
+5. The terminal append captures the immutable subscription view but does not scan it; settlement returns after its fixed hook-count/work-unit budget, while carrier cleanup and general callbacks classified as variable start through a generation-fenced asynchronous/cooperative hook lane.
 6. A scheduled bounded router drain classifies that terminal record, freezes matching activations in board sequence, and schedules their effects.
 7. Idempotent board effects start only in later bounded scheduler turns after the initiating start stack unwinds.
 
 There is no direct live-continuation fallback when terminal publication fails.
 The preallocated board-registry/runtime outbox slot freezes terminal source identity =(board-id, work-id, terminal-state)= and payload on settlement.
 The =e-work= state remains settled, while a pinned visible =terminal-publication-pending=/=terminal-publication-failed= projection drives retry/reconciliation; otherwise a second callback graph would silently diverge from the bus.
-Its injected stable =e-work= publication-observer trampoline resolves the current registry/runtime generation at settlement, so compatible reload may replace drain callbacks without losing a later terminal event; generation-specific scheduled callbacks still become no-ops.
+Its injected stable =e-work= publication-observer trampoline resolves the current registry/runtime generation at settlement, so a post-cutover schema-unchanged reload may replace drain callbacks without losing a later terminal event; generation-specific scheduled callbacks still become no-ops.
 Board-enrolled work must not use =:on-done= or =e-work-on-settle= to advance live coordination.
 More generally, cancel, cleanup, result-shaper, =:on-progress=, =:on-event=, =:on-done=, =:on-error=, and =e-work-on-settle= hooks on board-enrolled/interactive work declare =hard-bounded= or =deferred= execution.
 A hard-bounded hook is trusted, non-blocking, side-effect-bounded, subject to a fixed per-settlement hook/work-unit cap, and may not start provider/storage/process work or publish/deliver a live consequence; a deferred hook is an idempotent generation-fenced cooperative chunk or asynchronous starter whose later callback commits only bounded local state.
@@ -470,7 +482,7 @@ High-frequency provider/reasoning/tool progress is coalesced before append into 
 Every semantic update exposed to chat is nevertheless an accepted board message/event with its own =message-id=/=seq=; the runtime cannot bypass board publication with a client-only frame.
 Every board mutation commits its typed transition event(s) and new projection version atomically; there is no mutable subscription, cursor, activation, effect, pickup, physical attempt, board-enrolled carrier-hook attempt, wake count, observation, output-pending, activity-publication, or open-activity state that exists only outside this contract.
 
-The session activity log may remain the runtime's internal normalization/retry source, but board messages and the board's open-activity projection are the sole chat-facing replay source.
+The session activity log is the runtime's single internal normalization/retry source for one idempotent publisher; chat never queries it, and board messages plus the board's open-activity projection are the sole chat-facing replay source.
 Spinner ticks and other redraw-only state are not semantic messages and remain local to the shell.
 
 Compaction writes an atomic typed checkpoint at =checkpoint-seq= containing board lifecycle/identity, retained messages/tombstones including terminal activity summaries, memberships, source high-watermarks, work projections, terminal-publication outbox records, subscriptions/observer cursors/accumulators, frozen match sets, activation/effect attempts and receipts, deferred carrier-hook/cancellation attempts and receipts, causal lineages/publication budgets, exact-invocation receipts, pickup queues, delivery ledgers, wake counts, observations, output-pending/activity-publication records, current open-activity projections, and retention pins.
@@ -493,7 +505,7 @@ yield:
 | Boundary | Allowed in one serialized/main-thread step | Must run after returning control |
 |----------+--------------------------------------------+----------------------------------|
 | Producer publication or work settlement | Validate already-bounded fields, authorize through indexed state, allocate ids/sequence, update one source-key/projection record, append one typed fact, and enqueue drain tokens | Payload discovery, unbounded formatting/sanitization, selector fan-out, callbacks, delivery, wake, provider work, and storage |
-| =e-work= carrier lifecycle | A proven hard-bounded runner/shaper or fixed-count cancellation fence, terminal publication observer, bounded activity-mailbox observer, and classified hook bookkeeping | Variable result shaping, carrier cancel, cleanup, progress/general/settle hooks, activity normalization/publication, and bulk abort, through generation-fenced cooperative/asynchronous lanes; no legacy hook may advance a live workflow |
+| =e-work= carrier lifecycle | A proven hard-bounded runner/shaper or fixed-count cancellation fence, terminal publication observer, bounded activity-mailbox observer, and classified hook bookkeeping | Variable result shaping, carrier cancel, cleanup, progress/general/settle hooks, activity normalization/publication, and bulk abort, through generation-fenced cooperative/asynchronous lanes; no carrier hook may advance a live workflow |
 | Routing/subscriptions | Classify only the configured record/byte/clause/predicate budget against a frozen subscription view and commit its cursor/decisions | Remaining candidates, activations, or predicates in later fair scheduler turns; no whole-registry scan |
 | Effect/pickup/delivery | Freeze one bounded idempotent attempt/receipt transition and enqueue its adapter start; a later drain may call at most the configured number of non-blocking adapter starters | Any work after a starter returns, acknowledgement/reconciliation, queue advancement, participant wake, and provider turn; a callback commits the result later |
 | Observer snapshot/live drain | Install cursor plus high-watermark, classify/enqueue message ids within one configured record/byte page, and hand one bounded page to the client queue | Retained-history filtering/backfill, later client reduction/rendering, and further live pages; a slow client never runs in board commit or pins unbounded history |
@@ -518,7 +530,7 @@ commit and never mutate board, session, or UI state directly.
 
 The async-interactive =e-work= policy classifies every carrier cancel,
 cleanup, result-shaper, progress/event/done/error, and settle hook.
-Unclassified legacy hooks are rejected for board-enrolled work rather than
+Unclassified carrier hooks are rejected for board-enrolled work rather than
 invoked inline; hard-bounded hooks share a fixed count/work-unit budget, while
 deferred hooks use one non-reentrant generation-fenced lane and exactly-once
 receipts.
@@ -581,7 +593,6 @@ The core stores only three orchestration effect kinds at first:
 - =create-pickup= :: create/coalesce a pickup only for the participant that owns the matching input subscription.
 
 There is no destination-specific callback form and no arbitrary continuation Elisp stored in board state.
-A temporary =:notify= surface is compatibility sugar that compiles to a one-shot =post-input= subscription and is removed after callers migrate.
 Ordinary in-process code may sequence its own local functions after starting or awaiting work, but any live cross-turn/cross-session consequence re-enters through one of these board effects.
 
 A selector may conjunctively match record kind/activity-kind, exact work/message/author/=to=/=subject-participant-id= identity, terminal state, =tags-all=, =tags-any=, causal fields, and an optional ordinary trusted predicate function.
@@ -594,7 +605,7 @@ Model-facing actions accept declarative selector clauses only, while trusted in-
 Each orchestration subscription has one immutable selector, readiness/accumulator policy, declarative effect, cursor, lifetime/firing/publication budgets, owning consumer, and provenance.
 Each observer subscription has one immutable selector, forward live cursor, optional reverse history cursor/pin, client owner/generation, buffer/history bounds, and provenance, but no readiness, activation, or effect.
 Changing either subscription's matcher, or an orchestration subscription's effect, cancels and replaces it; the first process-local version needs no named/versioned predicate registry.
-Compatible code reload leaves the installed predicate closure active until its subscription is explicitly replaced or cancelled; it performs no automatic migration or reinstallation, and any retired closure remains pinned only for already-captured views until their decisions are frozen.
+After cutover, a schema-unchanged code reload leaves the installed predicate closure active until its subscription is explicitly replaced or cancelled; it performs no reinstallation, and any retired closure remains pinned only for already-captured views until their decisions are frozen.
 Every append-captured subscription view pins the exact selector/effect/predicate closure and source-sequence state/eligibility versions until all classifiers that captured it pass that subscription; replacement/cancellation may end future eligibility but cannot free or rewrite those historical bytes early.
 Physical scheduler delay never reorders semantics: after reconstructing a source-sequence match, the reducer applies every later mute/cancel/replace/timeout transition in board sequence before effect start.
 Thus =source(A) -> cancel(B) -> delayed-classify(A)= records the same match and immediately-cancelled prepared activation that in-order execution would have produced, and no effect/pickup starts; mute/replacement use the same suppression rule, cursor advances remain explicit, and replay never calls the old closure again.
@@ -612,7 +623,7 @@ This is a pre-start setup rejection, not a direct fallback after enrolled work s
 This ordering is required because a cheap runner may settle before =e-work-start-prepared= returns.
 After runner invocation begins, later board publication/subscription faults cannot change operation settlement.
 Installing a subscription for already-terminal work captures the indexed terminal snapshot in the same bounded mutation and queues at most one classification without rescanning unrelated history.
-The scheduled classifier creates at most one activation, and that activation, including an immediate empty/already-ready =await= reply, is applied only in a later scheduler turn after the subscription-installing stack unwinds.
+The scheduled classifier creates at most one activation, and that activation, including an already-ready =await= reply, is applied only in a later scheduler turn after the subscription-installing stack unwinds.
 Enrollment necessarily creates the invocation receipt slot, freezes its endpoint snapshot, installs subscriptions, and allocates the outbox before runner entry.
 Effect application is scheduled after the initiating start stack unwinds: no tool-result append/invocation close, queue advancement, input delivery, or new provider turn occurs before =e-work-start-prepared= returns.
 
@@ -920,7 +931,7 @@ A later completion remains visible in the board current-state view and reaches a
 =wait_for: 0= returns the detached reference immediately.
 
 Small work must never cost two tool calls.
-Use =:then (:post-input ...)= for work meant to cause a later turn; =:notify= is temporary compatibility sugar only.
+Use =:then (:post-input ...)= for work meant to cause a later turn.
 
 * The scope above sessions
 
@@ -935,6 +946,8 @@ The board runtime owns an explicit attachment record whose state is =active=, =d
 Creating, resuming, forking, or spawning a live session must create its board attachment atomically before that session can accept input.
 Removing or moving that attachment first enters =detaching= and returns a pending handle, rejects new input, and asynchronously fences or drains its active turn, inbox items, and receipts before making the session dormant or atomically attaching it to the replacement board in a later bounded commit.
 Durable transcript history is never deleted merely because the live attachment becomes dormant.
+When a dormant session is attached after cutover, its earlier transcript remains private model context only.
+Those entries are not imported, backfilled, or rendered as board =input=/=activity=/=output= history, and the runtime has no transcript-to-board conversion branch; only messages accepted by the current board schema appear in board observers.
 
 Recommendation: *board*.
 It is plain, unused in the codebase, and names the shared interaction place without transport vocabulary: clients post messages, sessions pick them up, and executable work remains visible there.
@@ -989,15 +1002,16 @@ The pure registry stores ids and board state but does not require =e-harness=.
 It is composed only after the board registry and harness registry exist, keeping the board core independent of the concrete session runtime.
 
 Configured =e-harness-instance= records gain a stable =session-store-id=, an asynchronous paged read-only =session-catalog= port, and a narrow asynchronous optimistic =session-access-store= mutation port, all usable without invoking the harness factory.
-The catalog lists/reads bounded pages of dormant session summaries and access records; the access-store port supports only expected-version create/legacy-migrate/grant/revoke/transfer operations on those records and exposes no transcript or live-session mutation.
+The catalog lists/reads bounded pages of dormant session summaries and current-schema access records; the access-store port supports only expected-version create/grant/revoke/transfer operations on those records and exposes no transcript or live-session mutation.
 Several instances may expose the same store.
-Registrations that share a =session-store-id= must expose compatible catalog/access-store identities or are rejected; the host catalog deduplicates them and returns each dormant =(session-store-id, session-id)= once with its explicit =eligible-instance-ids=.
+Registrations that share a =session-store-id= must expose the identical catalog/access-store identity or are rejected; the host catalog deduplicates them and returns each dormant =(session-store-id, session-id)= once with its explicit =eligible-instance-ids=.
 Each session access record contains a durable controlling principal, discover/resume principal ACLs, and an optimistic version; resume implies discovery.
 New-session creation stores it atomically with the session metadata.
 The controller may grant/revoke discover/resume access, and may transfer control only while the session is dormant through an expected-version store operation; transfer revokes the old controller's implicit rights and never silently rewrites board-local private grants.
 Resume names one eligible instance and the destination board; ownership/resume authorization, dormant state, access-record version, store identity, and instance eligibility are checked before any factory invocation, after which the activation service may asynchronously invoke only that instance's factory/load path and atomically attach the session in a later bounded commit.
 Catalog reads themselves never call =get-or-create=, and rejected direct resume calls create no harness, grant, or attachment even when the caller supplies a hidden/stale session id.
-Instances without the required catalog/access-store ports do not participate in dormant discovery/resume, and target lookup never substitutes catalog activation for an absent live endpoint.
+Every configured harness instance eligible for session create/resume/attachment must expose the required catalog/access-store ports; missing ports fail instance registration and the global cutover preflight, and no participant operation may target that instance.
+Target lookup never substitutes catalog activation for an absent live endpoint.
 
 *** Clients, participants, and authorization
 
@@ -1023,8 +1037,8 @@ That controller may grant/revoke them for other principals; board ownership alon
 Sanitized activity is board-visible by default and is authorized before publication; anything that cannot be exposed to ordinary authorized board readers is not posted and remains behind transcript/control boundaries.
 Revoking a private grant commits one immediate fence for new reads/calls; revoking board/client read access commits the client-generation fence and schedules bounded observer-subscription closure before any later delivery, without removing already-committed board records or rolling back a control mutation.
 Board-local private grants expire with the participant/board; the durable controller does not.
-Legacy dormant sessions receive a synthesized access record only through the trusted local migration policy of their configured catalog, never from a client-supplied owner id.
-Listing remains read-only; the first authorized explicit resume persists that access record before any harness factory runs.
+Every catalog row must already have the current access record and persisted output/activity counters before the board runtime starts.
+A missing/outdated record or counter is a cutover preflight error: listing/resume never synthesizes, translates, defaults, or infers it, and no harness factory runs.
 
 The requester identity comes from a generation-checked authenticated client/principal context or participant attachment token and is never accepted as an arbitrary model-supplied id.
 The board id is an address, not a credential.
@@ -1058,11 +1072,12 @@ A board cannot become =closed= while any accepted delivery is unresolved; each m
 
 The first version is process-local and is not restored across Emacs restarts.
 A dormant persisted session becomes live only by joining a newly created or explicitly selected live board.
-Within one process, compatible code reload keeps board registry state.
+The initial board-only cutover requires a quiescent full Emacs restart; no live registry, timer, callback, or in-flight invocation crosses that architecture boundary, and =e-dev-reload= is not a cutover mechanism.
+After that fresh process starts, a schema-unchanged code reload may keep board registry state under the generation rules below; a board-core or persisted-schema change again requires close/restart rather than state translation.
 =e-harness-instances= owns a monotonic generation for logical instance-to-harness mapping; =e-harness-registry= owns a separate monotonic generation for each concrete live harness object.
 Re-registering the identical startup mapping/object or synchronizing metadata in place preserves the relevant generation, while remap, replacement, or clear synchronously records the generation bump and enqueues bounded invalidation/reconciliation work; it never fans out across attachments inline.
 The board registry stores only the composite snapshot; =e-board-runtime= resolves and compares it.
-Board timers and callbacks also carry a board-runtime generation; reload installs one fresh scheduler/subscription set and old-generation callbacks become no-ops.
+Board timers and callbacks also carry a board-runtime generation; reload installs exactly one fresh timer/drain/runtime-listener generation over the existing registry-owned subscriptions, cursors, predicate closures, and ready records, while stale-generation callbacks become no-ops.
 Target resolution uses a non-creating live lookup and never calls a lazy get-or-create path for a missing harness or session.
 Invalidation moves the attachment through =stale= /=detaching=, fences new ingress, and reconciles active turns/inbox receipts.
 Explicit authorized rebind captures the new endpoint generation only after asynchronous quiescence/reconciliation; the public operation returns a pending handle and there is no immediate silent takeover of a still-live old endpoint.
@@ -1087,9 +1102,9 @@ The ordinary bootstrap atomically creates the first participant with a subscript
 Chat does not select a root/session by creation order and does not normally name the agent that should pick up work.
 Diagnostic/session shells may select a participant transcript inside that board, but cannot prompt it outside board ingress.
 
-Legacy APIs that create or prompt sessions directly are temporary adapters.
-They require an explicit board, use an already-live session's sole attachment, or atomically create a new board for the authenticated caller; they never select by creation order.
-They route input through board ingress during migration, then are removed once every shell and internal caller uses the top-level board path.
+At the atomic cutover, direct live-session create/prompt/queue/steer entry points are deleted and every in-repository caller changes in the same change set.
+Required harness plumbing uses separately named private attachment-token-checked ports, never the old entry points.
+There is no wrapper that infers/creates a board, reuses a session attachment, or translates an old call into board ingress; callers explicitly create/open a board and invoke the board/runtime surface.
 
 Scope rules follow from membership: =session=-scoped work is visible only to its poster, =board=-scoped work to every participant.
 Cross-board delivery to a session is not a thing.
@@ -1101,9 +1116,9 @@ Following the project's action/tool split, action versus tool is a semantic/API 
 Only hard-bounded indexed state operations finish synchronously as capability actions from =run_elisp=; an action needing I/O, a collection scan, history/transcript loading, compaction, fork/spawn, quiescence, or reconciliation starts =e-work=/an application request and returns its accepted/pending reference immediately.
 Only operations that intentionally hold a model turn open are tools.
 
-- Existing tools remain the way to start executable operations.
-  Their registration converges on one =:work= contract, =wait_for= chooses an inline result or a detached reference, and =:then (:post-input ...)= requests a later board post; =:notify= is migration sugar.
-- =await= remains the model-facing join over work references through one narrow subscription-backed invocation contract; because it executes no carrier, it intentionally creates no dummy =e-work= handle.
+- Executable tools register through exactly one =:work= contract; =wait_for= chooses an inline result or detached reference, and =:then (:post-input ...)= declares a later board post.
+- =await= registers through the sole =:invocation-subscription= contract and implements the canonical join report above; because it executes no carrier, it intentionally creates no dummy =e-work= handle.
+  =e-tools-register= accepts neither =:handler= nor =:start= after cutover, and no generic callback registration substitutes for either canonical contract.
 - Participant turns use the =board= capability actions =close=, =principals=, =authorize-principal=, =revoke-principal=, =add-participant=, =remove-participant=, =move-participant=, =rebind-participant=, =post-message=, =route-message=, =messages=, =install-subscription=, =mute-subscription=, =resume-subscription=, =cancel-subscription=, =subscriptions=, =activations=, =events=, =mark-observed=, and =post-fact= on their sole board.
   Membership-changing actions enforce registry roles; there is no unauthenticated self-service =join=.
 - Chat has no harness/action context, so =e-chat= calls authenticated =e-board-runtime= host APIs rather than keeping a harness endpoint.
@@ -1112,10 +1127,23 @@ Only operations that intentionally hold a model turn open are tools.
   Board-scoped participant-control APIs preserve rename, model/reasoning-effort selection, output mode, compact, abort, reset, fork/spawn, and bounded transcript inspection for an authorized selected participant; controls with variable work return pending handles and settle later.
   The board observation API returns an asynchronously paged selector-filtered snapshot/cursor and bounded live continuation in board sequence; it exposes neither a harness object nor an input path, and thinking/progress/turn-summary activity reaches chat only after ordinary board publication.
   These surfaces enforce board visibility plus the participant's remaining controller/private grants, delegate to the same registry/application services and trusted actor contract, and never tunnel client identity through =e-actions-call=.
-- The first slices expose built-in selector clauses, readiness policies, and declarative continuation effects; trusted in-process callers may additionally install an ordinary demonstrably-cheap predicate closure that only the scheduled classifier invokes.
+- The post-cutover first-version surface exposes built-in selector clauses, readiness policies, and declarative continuation effects; trusted in-process callers may additionally install an ordinary demonstrably-cheap predicate closure that only the scheduled classifier invokes.
 - Resource =board://<board-id>/= exposes lifecycle, messages, outstanding work, recent terminal snapshots, events, subscriptions, activations/effects, causal projections, clients, participants, grants, budgets, and per-operation detail through indexed point reads or mandatory cursor/record/byte-bounded pages; storage-backed or computed pages are asynchronous.
 - A compact dynamic-context segment shows only ids, states, counts, and bounded summaries for the current participant's attached board, outstanding work, and live subscriptions/effects; full events and results remain references behind paged =board://<board-id>/...= reads rather than foreground full materialization.
 - Chat/application entry points create or open a board first and post board messages; session-management entry points create/select participants inside that board.
+
+** Cutover interface-retirement manifest
+
+After Slice 5 the complete public live-interaction allowlist is the executable-tool =:work= contract, the invocation-only =:invocation-subscription= contract, authenticated board-runtime/registry application operations, board capability actions, and board observation/resources.
+All bundled callers use that allowlist, and custom layers that still register or call a retired form fail registration/preflight; there is no deprecated alias or translation period.
+
+The cutover deletes the public =:handler= and executable =:start= tool registration branches, direct live-session create/prompt/queue/steer entry points, the detachable parent wrapper, destination-specific tool =:on-done=/=:on-error=/=:on-event= continuation routing, generic harness-to-client presentation subscriptions, and chat reads of harness messages/session activity/active-turn state.
+The continuation declaration schema is closed; every unknown key, including =:notify=, fails ordinary schema validation and receives no special branch or adapter.
+If concrete harness plumbing still needs an operation that resembles a deleted entry point, it receives a new private name and an attachment-token-required, consumer-shaped contract; the old public symbol is not retained privately.
+
+The narrow private survivor allowlist is: separately named session prepare/create/load/activate/detach/rebind/fork/spawn and selected-control ports gated by a board-runtime request or attachment token as their phase permits; attachment-token-checked =e-harness-deliver-input= and exact invocation-result commit ports; an install/remove port for the one-way bounded harness-activity sink (never a generic presentation subscription); the injected fixed-contract =e-work= terminal-publication and bounded activity observers; carrier-local lifecycle hooks that cannot publish, deliver, reply, wake, or advance a provider/tool queue; and asynchronous adapter completion callbacks that commit only their named bounded receipt.
+These ports are installed only by the board runtime or owning carrier, are unreachable from model-facing registration and ordinary application producers, and are covered by structural call-graph tests.
+Raw/off-board =e-work-start= remains available only to carrier internals, non-interactive batch utilities, tests, and rendering-local =e-ui-work=; an attached session, turn, or tool cannot use it to create a live consequence.
 
 Model-facing tool count does not grow.
 
@@ -1134,12 +1162,13 @@ Model-facing tool count does not grow.
   It binds the registry to non-creating harness lookup, explicit dormant-session catalog/resume, authenticated participant controls, normalized/sanitized idempotent participant-activity publication, runtime attachment records, atomic live-session attach/detach/move, stable operation/output/activity-publication trampolines/outbox drains, timers, wake scheduling, waiting-invocation and =post-input= effect adapters, explicit forks/spawns, and input delivery.
   It also owns generation-fenced non-reentrant ready queues and fair budgeted drains for routing continuations, effects, observer handoff, publication retry, pickup attempts, wakes, deferred carrier hooks, and board-scoped cancellation/abort requests; a zero-delay timer only enqueues one bounded control/drain token as a yield boundary and never licenses draining a queue to empty.
 - =e-harness-instances= retains the logical instance catalog, stable session-store/catalog/access-store ports, eligible-instance mapping, and mapping generation, while =e-harness-registry= retains concrete harness objects and object generations plus replacement/clear invalidation events.
-- =e-session= owns session names, transcript/activity-entry schema, stable durable activity-entry ids, and atomically assigns/submits monotonic =board-output-seq= and =board-activity-seq= publication counters/entry fields; legacy entries remain valid without them and are not retroactively published.
+- =e-session= owns session names, the one current transcript/activity-entry schema, stable durable activity-entry ids, and atomically assigns/submits monotonic =board-output-seq= and =board-activity-seq= publication counters/entry fields; only entries emitted by the canonical board-aware completion/activity paths are publication candidates.
 - The session-store layer exposes a stable opaque =session-store-id= shared by every harness view over that store and persists each session's controller/discover/resume access record, next-output/activity counters, and ordinary durable activity through its asynchronous persistence controller/writer; its debounce timer only submits, and it does not gain a board dependency.
 - =e-harness= owns active turns, session inboxes, transcript mutation, forks, and provider calls.
   Together with =e-loop=, it owns exact open-invocation slots, original endpoint/turn-generation binding, and local effect-id receipts; =e-tools= retains structured result/error shaping.
-  The harness/session store remains authoritative for raw live turn state and may support internal activity-publication retry/recovery; it is never a chat-facing replay source, does not authorize clients, and gains no board dependency.
-  Its private activation/invocation/delivery/control/subscription methods require a board-runtime attachment token, and =e-harness-deliver-input= handles the explicit delivery-phase table and local idempotency ledger without a reverse dependency on board modules.
+  The harness/session store remains authoritative for raw live turn state and durable activity source entries, but board runtime/registry alone owns board-publication retry/reconciliation; the harness/store never starts or retries a board publication.
+  It is never a chat-facing replay source, does not authorize clients, and gains no board dependency.
+  Its separately named private prepare/activation/invocation/delivery/control and one-way activity-sink ports require the board-runtime request/attachment token declared in the survivor manifest, and =e-harness-deliver-input= handles the explicit delivery-phase table and local idempotency ledger without a reverse dependency on board modules.
 - Existing capability/session-config owners retain model, reasoning-effort, and output-mode semantics; the board runtime only authorizes and dispatches those controls and does not absorb their policy.
 - Task queue, cron, subagents, and annotation producers post facts, while chat clients post input messages; each domain keeps its own registry and policy.
   Task queue retains FIFO dispatch, retries, persistence, and concurrency control, with physical persistence owned by its asynchronous domain writer rather than a board callback/timer.
@@ -1156,25 +1185,31 @@ It yields between bounded mutations but does not perform background computation,
 
 * Slices
 
+Slices 0--4 are private construction and verification order, not public migration stages.
+Their new entry points remain package-private/test-only until every cutover dependency is ready; the running product continues wholly on its supported pre-cutover path without calling into a partially built board runtime.
+Slice 5 is one atomic public cutover change set: update every repository caller, enable the board-only runtime, and delete every superseded symbol/registration/data source in the same merge.
+There is no feature flag, dual dispatch/write/read, translation wrapper, inferred-board fallback, or supported mixed state.
+Cutover-only data preparation takes a restorable snapshot; rollback after activation restores that snapshot together with the pre-cutover source, never a mixed runtime.
+
 ** Slice 0 -- Canonical executable identity and lifecycle
 
 Land the operation-identity contract without introducing execution-graph combinators.
-Add the concrete two-phase =e-work-prepare= /=e-work-start-prepared= contract and dedicated publication-observer slot; make every executable =:work= and compatibility =:start=/=:handler= carrier path use it so the canonical child identity exists before any runner can settle it.
+Add the concrete two-phase =e-work-prepare= /=e-work-start-prepared= contract and dedicated publication-observer slot; private converted fixtures/implementations register only through the canonical =:work= contract so the child identity exists before any runner can settle it, while bundled public registration changes atomically in Slice 5.
 Invoke that =e-work= publication observer in a new settlement phase after lifecycle/result commit but before =e-work--cleanup=; neither =:on-event= nor =e-work-on-settle= is an acceptable implementation because both are currently too late.
-Add a turn work handle, use parent/root/cause metadata consistently, and keep current call/result and =wait_for= behavior through a marked internal compatibility adapter.
+Add a turn work handle and use parent/root/cause metadata consistently; the canonical =wait_for= path binds the invocation directly to the child handle without another wrapper identity.
 Normalize terminal state, result/progress, cancellation, and =e-work= publication-observer ordering across cheap and asynchronous work.
 
-Standalone value: tools, turns, provider requests, task attempts, and subagent attempts share one inspectable lifecycle and stable identity even if later work stops.
+Private stopping value: focused tests prove that tools, turns, provider requests, task attempts, and subagent attempts share one inspectable lifecycle and stable identity even if later private construction stops.
 
 ** Slice 1 -- Board identity, registry, subscriptions, and one participant
 
 Add generated board/client/participant/subscription ids, =e-board=, the process-level registry, stable roles/grants, board lifecycle, attachment identity/tokens, board =input=/=activity=/=output=/fact records, an append-efficient ordered sequence, terminal work projections/outbox slots with a reload-stable publication trampoline, source-key idempotency, and paged/indexed =board://<board-id>/= current-state resources.
-Establish the hard invariant that every live session is atomically attached as exactly one participant of exactly one board; loading history remains dormant.
-Guard every live-producing create/resume/fork/subagent/prompt/queue/steer path on the attachment token, with temporary public adapters routing through board ingress.
-Before board enrollment becomes live, add the dedicated pre-start =e-work= activity-observer slot plus the generic async-interactive hook policy: the observer only performs bounded mailbox capture; cancel/cleanup/result-shaper/general progress/event/done/error/settle hooks are classified hard-bounded or deferred, unclassified legacy hooks reject, inline hook count/work units are capped, and deferred hooks plus cancellation starters use the injected generation-fenced non-reentrant scheduler with stable receipts.
+Establish inside the private board runtime the hard invariant that every live session is atomically attached as exactly one participant of exactly one board; loading history remains dormant.
+Build the attachment-token guards and board ingress as private runtime services; do not expose wrappers from existing live-producing create/resume/fork/subagent/prompt/queue/steer calls into them before Slice 5.
+Before board enrollment becomes live, add the dedicated pre-start =e-work= activity-observer slot plus the generic async-interactive hook policy: the observer only performs bounded mailbox capture; cancel/cleanup/result-shaper/general progress/event/done/error/settle hooks are classified hard-bounded or deferred, unclassified general hooks reject, inline hook count/work units are capped, and deferred hooks plus cancellation starters use the injected generation-fenced non-reentrant scheduler with stable receipts.
 
 Implement the common immutable selector/subscription schema, frozen subscription-view generations, =routing=/=routed=/=unrouted=/=routing-failed=/=routing-cancelled=/=routing-expired= projection, and indexed basic matcher for record kind, exact =to=/author/subject identity, plus tags/attributes.
-From this slice onward, producer/settlement append only a bounded record plus ready token; replace synchronous post-and-deliver and drain-all paths with generation-fenced non-reentrant queues whose explicit record/byte/work-unit budgets yield before fan-out, effects, pickup delivery, observer callbacks, wakes, or provider start.
+Within the private board runtime from this slice onward, producer/settlement append only a bounded record plus ready token; replace synchronous post-and-deliver and drain-all paths with generation-fenced non-reentrant queues whose explicit record/byte/work-unit budgets yield before fan-out, effects, pickup delivery, observer callbacks, wakes, or provider start.
 Land basic client-owned observer subscriptions with independent forward-live and reverse-history cursor/pin lanes, asynchronous paged snapshot/live delivery, and no readiness, activation, effect, pickup, routedness, or consumption semantics.
 Land the minimal prepared/committed =create-pickup= activation reducer and replay records in this slice; the exact invocation skeleton in Slice 2 and full state machine in Slice 3 generalize the same schema.
 Participant creation installs its built-in exact-address subscription; the ordinary first-participant bootstrap atomically installs a =main= subscription, and ordinary chat-style input defaults to tag =main=.
@@ -1182,7 +1217,7 @@ Freeze the consumed input routing tags into each turn and copy them to every par
 Freeze match/participant sets, produce one deduplicated pickup per participant, record every matching subscription id, keep zero matches visibly unrouted, and never replay old input on later subscription creation.
 Record causal parent/root/hop/lineage/publication-budget fields from the first derived record, including visible cycle/budget stops.
 
-Add the minimal configured-harness adapter and idempotent single-participant pickup path using existing idle/queue and accepting/inject lanes.
+Add the private configured-harness runtime port and idempotent single-participant pickup path using the idle/queue and accepting/inject lanes.
 Add per-session source-sequence allocation and the minimal single-configured-harness =source-turn-id=-qualified activity/output publisher needed to prove turn/provider boundaries plus terminal summary, alongside stable session-store/catalog/access ports needed for atomic resume, bounded board retention/open-activity projection, and the runtime-concepts update.
 Generalize resource tool registration/dispatch in this slice so any method, including a =read= method, can declare asynchronous =e-work=; board storage-backed/computed pages use that path, and only hard-bounded indexed point reads remain inline.
 Slice 1 carries transcript/activity publication counters through queued session-persistence submission and owns visible =output-pending=/activity-publication pending/failure state for board publication itself.
@@ -1191,7 +1226,7 @@ Leave the full activity-kind set, high-frequency coalescing, cross-harness gener
 Publish only the completion-selected final assistant entry, carrying its frozen originating board/participant/generation tuple; generic transcript append and intermediate assistant/tool-call entries are never publication triggers.
 Expose the compact ids/states/counts/summaries context projection and explicit conservative configuration defaults, including subscriber, routing/drain, page/byte, observer-lag, queue, and aggregation limits; keep full events/results behind paged board resources.
 
-Standalone value: one board is a real top-level interaction context; chat-like tagged input can reach a subscribed session and its output returns to the board without any standalone-session path.
+Private stopping value: provider-free tests exercise one complete board-scoped input/activity/output path without exposing a supported board mode or standalone-session bridge.
 
 ** Slice 2 -- Exact invocation subscriptions and =wait_for=
 
@@ -1199,21 +1234,20 @@ Record each open tool call by turn id/tool-call id and bind it to the preallocat
 Before the runner starts, atomically enroll the work, install the exact one-shot invocation subscription, and append =posted=.
 If that setup transaction rejects, return one synchronous tool setup error, fail the prepared handle locally, and publish no board operation/terminal event.
 Land the minimal common prepared/applying/committed/failed/uncertain effect skeleton and idempotent receipt needed for this exact path; Slice 3 generalizes it to other/repeating effects.
-Extract the lexical =e-loop= finish path into the private attachment/turn-generation-checked invocation service, preserving =e-tools= structured result/error shaping and binding every effect attempt to its original endpoint generation.
+Extract the lexical =e-loop= finish path into the private attachment/turn-generation-checked invocation service with one canonical structured result/error contract, binding every effect attempt to its original endpoint generation.
 On settlement, append only the terminal event/routing token, then classify and apply =reply-to-invocation= through later bounded scheduler turns and that service; do not convert the result into participant input or tag it =main=, and never re-resolve a lost-ack attempt to a replacement endpoint.
 A timeout is a serialized deadline transition rather than a direct timer-side close: the lower terminal/deadline board sequence reserves the result or detached reference respectively, so later classification/effect latency cannot change the winner, and timeout cannot append a second result later.
-Move =await= to the narrow invocation-only aggregation subscription contract, landing the exact ordered-set =all-terminal=/=first-terminal= readiness and timeout it needs, with no dummy work handle.
-Preserve its ordered reference/error mapping, all-current-snapshots =any= report, timeout fields, empty/no-resolvable success, and outer tool-result shaping through the reply effect.
-Make terminal-publication pending/failure visible and retryable with no direct callback fallback, then remove the detachable wrapper after all coordinator callers use the exact relation.
+Implement =await= directly on the sole =:invocation-subscription= registration contract with the non-empty/all-resolved request and canonical outcome/pending report above; it gets no dummy work handle.
+Make terminal-publication pending/failure visible and retryable with no direct callback fallback; no detachable wrapper exists in this design.
 
-Standalone value: inline and detached calls share one work/event identity and preserve the one-call fast path through the same board bus.
+Private stopping value: focused tests prove that inline and detached calls share one work/event identity and preserve the one-call fast path through the same private board bus.
 
 ** Slice 3 -- Full subscription/effect and inbox settlement
 
 Generalize Slice 2's exact effect skeleton to all orchestration subscription/activation/effect states, cursor/accumulator replay, selector authorization-before-predicate, ordinary demonstrably-cheap trusted predicate closures invoked only by scheduled classification, replacement/mute/resume/cancel/expiry, match freezing, and idempotent effect receipts.
 Complete fair per-turn routing/effect/pickup/observer drains with committed cursors, one scheduled-successor flag, error isolation, and no full-table rescans or recursive derived-post routing.
 Complete the effect-free observer lifecycle: bounded high-watermark capture, asynchronous record/byte-paged snapshot/live handoff, read-through cursor after client-queue acceptance, explicit retained =start-seq= backfill when selectors widen, filtered sequence gaps, client-generation fencing, bounded buffer/lag, =message-id= render deduplication across replacement overlap, and =resnapshot-required= on expired history.
-Keep installed predicate closures across compatible reload until explicit replacement/cancellation, with no registry or automatic migration.
+Implement and test the post-cutover schema-unchanged reload rule that keeps installed predicate closures until explicit replacement/cancellation, with no registry or reinstallation path.
 Add =post-input= continuations with exact =to= or tags; generalize Slice 2's =all-terminal=/=first-terminal= join readiness to =on-success=, =on-failure=, =on-terminal=, =batch=, and =latest-after-quiet= subscriptions.
 Ensure effect success is the board append rather than downstream pickup; keep zero-match posts visible and do not autospawn.
 
@@ -1221,12 +1255,16 @@ Extend participant pickup with the complete generation-neutral FIFO/cap/expiry s
 Add the single idle-transition warning for newly unobserved terminal work without creating an input message.
 Build checkpoints and replay tails asynchronously or in resumable bounded pages, then atomically install only a completed generation-checked checkpoint; replay never reruns historical predicates/effect preparation.
 
-Standalone value: any operation or board fact can deterministically cause an exact reply or generic tagged follow-up, and every causal edge remains inspectable and idempotent.
+Private stopping value: reducer tests prove that an operation or board fact can deterministically cause an exact reply or generic tagged follow-up, with every causal edge inspectable and idempotent.
 
 ** Slice 4 -- Cross-harness runtime and explicit participant creation
 
 Extend the minimal attachment plumbing into full qualified participant resolution and generation reconciliation across harness instances.
 Complete non-activating session-catalog/session-access-store/store-id coverage, shared-store validation/deduplication, authenticated ACL administration, explicit-instance dormant resume, private participant controls, cross-target grants, and rebind/revoke/move reconciliation.
+Add a one-shot offline cutover-preparation command outside the live runtime.
+Build and test it in this private slice, but do not run it while the pre-cutover runtime may admit work or write session/task stores.
+Slice 5 runs it in a separate non-interactive batch process under exclusive store access after quiescence; it takes an explicit trusted controller/ACL manifest, records a restorable pre-change data snapshot, creates the current access record and initializes/persists output/activity counters for every resumable catalog row, and fails if any row or policy is missing or already ambiguous.
+After it verifies the complete current-schema catalog, its code and command are removed in Slice 5; catalog listing/resume contains no preparation, old-format branch, or lazy write.
 Land explicit request/controlled-future state machines for catalog/access-store/factory calls and every variable resume, close, move/rebind, compact, reset, fork/spawn, transcript-read, or bulk-invalidation control, each with one pending identity and bounded completion/failure commit.
 Route turn abort/board-close cancellation through indexed work queues with record/work-unit budgets, one terminal fence/enqueue per operation, and no inline scan or carrier-cancel callback.
 Generalize Slice 1's minimal harness-to-board activity publisher across harnesses and the full event set: use bounded latest-value mailboxes whose callbacks never format unbounded values or reach chat, normalize/sanitize in scheduled flushes, snapshot the current/final turn routing tags/causes, assign monotonic publication keys plus separate source-event/progress identities, coalesce before append, flush/supersede progress before terminal ordering, idempotently publish terminal =turn-summary=, fence stale endpoint generations, retain publication failures for retry/reconciliation, and maintain the board-owned open-activity projection.
@@ -1235,45 +1273,39 @@ Require an explicit transcript-entry =:at= for forks in the first version.
 Supply the cross-generation board ledger, stale/dormant bounded pending delivery, lost-ack reconciliation, and stale/uncertain handling for the generation-neutral state machine from Slice 3.
 Add fork caps, but no routing-triggered fork/spawn and no general autospawn.
 
-Standalone value: subscriptions can reach an already-declared participant across harness instances, while participant creation remains an explicit auditable decision.
+Private stopping value: tests prove that subscriptions can reach an already-declared participant across harness instances while participant creation remains an explicit auditable decision, and cutover preflight can validate every stored row without activating it.
 
-** Slice 5 -- Board-first chat and standalone-session removal
+** Slice 5 -- Atomic board-only cutover
 
-Migrate =e-chat= to connect to/open/render a board, default new posts and its observer selector to tag =main=, optionally post to or observe an explicitly selected participant/tag, and display every matched =input=/=activity=/=output= message; it retains no harness endpoint and calls no session prompt path.
+First stop new pre-cutover-runtime and producer admission, then run an asynchronous quiescence preflight that requires no active turn, open invocation, live tool/work package, pending session/task writer, or other unsettled control request.
+It also requires every queued prompt, inbox/steering item, delivery attempt/receipt, and producer-admission item to be drained/reconciled or explicitly discarded/tombstoned by its owning pre-cutover service; the preflight itself returns pending and refuses cutover rather than waiting on the main thread or silently dropping accepted memory state.
+Only after quiescence, acquire exclusive store access, run the separate batch preparation and pre-change snapshot, verify every current access/counter schema, apply the complete source change set, and perform a full Emacs restart.
+The fresh process starts only the board runtime; no old timer, callback, closure, registry, or in-flight request survives, and neither =e-dev-reload= nor a same-process handoff may cross this boundary.
+In one change set, switch =e-chat= to connect to/open/render a board, default new posts and its observer selector to tag =main=, optionally post to or observe an explicitly selected participant/tag, and display every matched =input=/=activity=/=output= message; it retains no harness endpoint and calls no session prompt path.
 Observer callbacks accept/enqueue bounded immutable message references only; a sequence reducer then applies every accepted semantic message exactly once, while generation-fenced =e-ui-work= jobs mutate buffers/windows in record/byte-bounded pages and yield between them.
 Route dormant-session discovery/resume and selected-participant controls through authenticated host APIs, while all in-progress activity arrives through the ordinary board observer subscription.
 Split the current mixed renderer into canonical board-message rendering plus an activity reducer whose only semantic inputs are board =activity= messages.
-Reuse the existing =Thinking=/=Thought=, reasoning/tool/action rows, progress coalescing, summary expansion/navigation, terminal =Turn took ...= summary, and =e-ui-work= behavior, but replace direct =e-harness-subscribe=, =e-harness-messages=, =e-harness-session-activity-events=, and active-turn reads with the asynchronous paged board snapshot/cursor/live contract.
+Retain the product's =Thinking=/=Thought=, reasoning/tool/action rows, progress coalescing, summary expansion/navigation, terminal =Turn took ...= summary, and =e-ui-work= behavior, while deleting direct =e-harness-subscribe=, =e-harness-messages=, =e-harness-session-activity-events=, and active-turn reads in favor of the asynchronous paged board snapshot/cursor/live contract.
 Use newest bounded page first plus cooperative backfill, keep semantic activity coalescing distinct from UI redraw coalescing, and never let a redraw coalesce away an accepted =output=, summary, or cursor advance.
 Correlate participant output with =turn-summary= through required =source-turn-id=, handle summary-first/output-first arrival idempotently across simultaneous main/subagent streams, and remove the missed-final transcript fallback from board mode.
-Replace remaining session create/resume/fork/spawn, prompt, follow-up, steering, and background-session callers with registry/runtime/board ingress operations.
+Replace every session create/resume/fork/spawn, prompt, follow-up, steering, and background-session caller with registry/runtime/board ingress operations in this same change set.
 Post each participant's final assistant response as idempotent board =output= without recursively routing it as input.
-Remove direct live-session creation/prompt paths and structurally forbid new standalone or multi-board live-session callers.
+Post cron fires, file-notify and annotation triggers, domain-operation events, task-queue changes, and subagent changes to explicitly configured boards with descriptive tags and stable source keys; every in-repository producer is board-wired or explicitly disabled before activation.
+Keep task/subagent registries authoritative and make board propagation/wake failure incapable of weakening their mutation ordering.
+Move task persistence behind the required asynchronous domain writer/controller: its timer only coalesces/submits an immutable bounded snapshot/reference, board propagation never waits for it, and missing writer setup fails preflight.
+Delete the synchronous flush surface; batch/finalization uses the writer's explicit pending close/finalize request, process exit performs no hidden main-thread flush, and a domain that defines durable commit publishes its dependent fact only from the writer's asynchronous acknowledgement.
+Delete direct live-session create/prompt/queue/steer paths, =:handler=/=:start= tool registration, the missed-final transcript fallback, direct session presentation feeds, duplicate session-input paths, every destination-specific callback continuation, and the one-shot cutover-preparation command; structurally forbid their symbols/registration keys and standalone or multi-board live-session callers.
+Require current session/access-store/counter schemas in cutover preflight and refuse activation on missing/outdated records; runtime never synthesizes or translates them.
+There is no compatibility window: tests must pass only with the board runtime active and all removed interfaces absent.
 
-Standalone value: the board is the only top-level interaction model; sessions remain private transcript-owning consumers and cannot run independently.
+Cutover value: the board is the only top-level interaction model; all live callers and producers use it, while sessions remain private transcript-owning consumers and cannot run independently.
 
-** Slice 6 -- External and domain producer integration
+** Slice 6 -- Post-cutover measurement and tuning
 
-Post cron fires, file-notify triggers, annotation triggers, and domain-operation events to an explicitly configured board id with descriptive tags and stable source keys.
-Bridge task queue and subagents through their existing push change streams while their registries remain authoritative for domain fields.
-Board propagation/wake delivery cannot weaken or redefine task-queue mutation/persistence ordering when its budget stops.
-Preserve the task domain's immediate in-memory mutation plus best-effort/debounced persistence semantics, but move the debounced physical serialization/write behind its asynchronous domain writer/controller: its timer only coalesces/submits an immutable bounded snapshot/reference and returns, and the integration rejects a missing async port instead of falling back to main-thread I/O.
-The existing explicit synchronous flush remains a non-interactive batch/process-exit compatibility operation outside board/chat/runtime callbacks; interactive close/teardown returns a pending handle and uses the asynchronous writer.
-Board propagation never waits for that writer and this feature adds no new per-mutation durability acknowledgement; a domain that explicitly defines commit as durable must instead report that commit from the writer's asynchronous callback before publishing the dependent fact.
-Tune retention, propagation/wake budgets, batching, and participant limits against real sessions.
+Measure real board/chat, multi-participant, producer, and persistence workloads after cutover.
+Tune retention, propagation/wake budgets, batching, observer lag, and participant limits without changing public contracts or reintroducing an alternate path.
 
-Standalone value: external causes and authoritative domain changes become routable board facts without turning the board into another scheduler.
-
-** Slice 7 -- Tool and ingress compatibility cleanup
-
-Remove broad =:handler=/=:start= runtime branches after executable registrations normalize to =:work= and =await= alone uses the narrow subscription-backed invocation contract.
-Migrate/remove =:notify= after callers use declarative =:then (:post-input ...)=, remove old direct input adapters after Slice 5, and add structural guards against reviving standalone session, callback-graph, synchronous post-and-deliver, drain-to-empty, interactive-await, unclassified interactive =e-work= hooks, or live consequences from legacy callbacks.
-
-Do not migrate proven hard-bounded pre-tool/post-tool/turn policy-hook sequencing merely to put it on the board in this feature.
-Any hook that waits, performs I/O, or does variable/unbounded work already violates the non-blocking runtime contract and must start asynchronous/cooperative work independently of this bus migration.
-That is local application sequencing unless and until a concrete cross-turn board effect is required; routing it through tagged board messages would add indirection without semantic benefit.
-
-Standalone value: the final runtime has one executable lifecycle and one board bus for live consequences, with temporary compatibility paths removed rather than institutionalized.
+Post-cutover value: production defaults are evidence-backed while the board-only architecture remains unchanged.
 
 * Non-goals
 
@@ -1281,14 +1313,17 @@ Standalone value: the final runtime has one executable lifecycle and one board b
   Stable in-process delivery receipts exist only to make board-to-harness mutation idempotent.
 - No durable board across Emacs restarts in the first slices.
 - No standalone or multi-board live session; dormant persisted session history is activated in exactly one board at a time.
+- No public feature flag, mixed mode, dual dispatch/write/read, deprecated alias, translation adapter, inferred-board path, or hot same-process cutover.
+- No source/API compatibility for custom =:handler=, executable =:start=, direct-session, or destination-callback integrations; they must adopt the new contracts or fail registration/preflight.
+- No runtime schema conversion or transcript-to-board import/backfill; the offline cutover preparation must finish before the fresh process starts, and earlier transcript content remains private session context.
 - No future hand-off/assignment state machine is designed in this feature; its identity, exclusivity, settlement, and capacity semantics remain open until broadcast delivery is proven.
 - No automatic participant creation, routing-triggered fork/spawn, or general autospawn when a generic selector matches nobody; zero matches remain visibly unrouted.
-- No =e-work= execution/callback graph beside the board bus; =e-work= settles executable lifecycle and the board records/routs every live consequence.
+- No =e-work= execution/callback graph beside the board bus; =e-work= settles executable lifecycle and the board records/routes every live consequence.
 - No concurrent tool-call execution in =e-loop=.
   Concurrency comes from detached work; sequential tool slots are what keep the transcript readable.
 - No context merging.
   A fork reports back only through an explicit exact-or-tagged board input.
-- No migration of proven hard-bounded local policy-hook sequencing merely to route it through the board; this is not an exemption for waiting, I/O, or variable/unbounded hook work.
+- No forced relocation of proven hard-bounded local policy-hook sequencing merely to route it through the board; this is not an exemption for waiting, I/O, or variable/unbounded hook work.
 - No replacement for =await=.
   Inline joining stays a tool.
 - No board enrollment for rendering-local =e-ui-work=, spinner timer ticks, focus, expansion, or selection state.
@@ -1314,19 +1349,19 @@ Pure-function level:
 Bus selector, readiness, and effect level:
 
 - subscription lifecycle :: orchestration install, replacement-by-cancel, mute/resume-future-only, explicit replay, completion, predicate/readiness fault, cancellation, expiry, and firing/publication limits take only declared paths; a held classifier over source A followed by cancel/mute/replace B still uses A's pinned selector/effect/predicate closure and source-state versions to record its historical decision, then applies B in board sequence so no cancelled/suppressed activation effect or pickup starts and the pin releases exactly once; observer install/snapshot/live, mute/replace/cancel, explicit =start-seq= backfill, read-through advancement, client-generation fencing, bounded lag, and =resnapshot-required= never enter activation/effect state.
-- prepared start :: prepare-without-start invokes no runner; start-prepared is once-only; pre-start cancellation/enrollment failure never runs the carrier; atomic enrollment rejection produces exactly one synchronous setup-error tool result, a locally failed prepared handle, and no board operation/outbox/terminal event; every executable =:work= and compatibility =:start=/=:handler= path exposes/enrolls the canonical id before runner entry.
+- prepared start :: prepare-without-start invokes no runner; start-prepared is once-only; pre-start cancellation/enrollment failure never runs the carrier; atomic enrollment rejection produces exactly one synchronous setup-error tool result, a locally failed prepared handle, and no board operation/outbox/terminal event; every executable =:work= path exposes/enrolls the canonical id before runner entry, while =:start=/=:handler= registration is structurally rejected.
 - exact invocation :: installation precedes runner start; inline success/failure/cancel commits one terminal fact/routing token and a later scheduled effect commits one transcript result; terminal commit before the serialized deadline transition reserves success even when the effect lands after the wall-clock deadline, while a lower-sequence deadline closes/detaches before a later terminal and neither race appends a second result; the same lower-sequence rule covers the last required =await= readiness event versus its timeout.
 - exact participant :: the non-mutable membership-owned identity subscription routes active and validly stale/dormant participants; missing/revoked/detaching membership is visibly =target-unavailable= and creates/spawns nothing; descriptive tags on an exact post cannot fan out.
 - generic dispatch :: zero matches is visibly =no-matching-subscription=, one match routes once, N matches broadcast, and several matches owned by one participant deduplicate to one pickup recording all subscription ids; classification split across several drain budgets creates no pickup/delivery before one all-or-nothing finalization, while injected classifier failure, cancellation, expiry, or fan-out/byte-cap overflow commits =routing-failed=/=routing-cancelled=/=routing-expired= with no partial pickup.
 - routing sequence :: an original source owns =posted-seq=, a reroute request owns =route-attempt-seq= only, and =routed-seq= appears only on the final successful =input-routed= commit with its complete logical pickup set; replay and cancellation/expiry at every intermediate cursor reproduce the same outcome without assigning a premature routed sequence.
 - eligibility :: active, dormant/stale-valid, detaching, revoked, and each subscription terminal/muted state follow the eligibility truth table; later joins do not replay implicitly.
-- aggregation :: generic all-terminal/first-terminal handle empty/already-terminal/tied/late-member cases deterministically; late losers remain visible and are not cancelled implicitly; =await= additionally preserves declared ref order, resolution errors, all current snapshots in =any=, timeout/report fields, and immediately-ready but scheduled empty/no-resolvable reply semantics.
+- aggregation :: generic all-terminal/first-terminal handle empty/already-terminal/tied/late-member cases deterministically; late losers remain visible and are not cancelled implicitly; =await= maps omitted mode to =all= and omitted timeout to 120 seconds, accepts only explicit =all=/=any= and finite positive timeout through the 900-second maximum, rejects every other mode/timeout plus an empty list or any unresolved reference as one bounded setup error with no subscription, preserves declared ref order after successful resolution, and emits only the canonical bounded =:reason=/:mode=/:outcomes=/:pending= report from a later scheduled effect.
 - causality :: source -> activation -> effect -> invocation receipt/transcript result or post/pickup -> turn -> work links survive projection without timestamp inference; the canonical effect-declaration cycle fingerprint excludes dynamic result bytes, survives checkpoint/replay, stops an immediate router-only repeat, and resets after declared turn/work/external-root boundaries; exhausted publication and provider wake budgets remain independent visible stops.
 - ordering/isolation :: cheap and asynchronous settlement both follow settle -> bounded terminal append/routing token -> returned stack -> scheduled classification -> frozen activation -> scheduled effect; a board observer/orchestration-subscription failure cannot resettle work, retry a producer message, or suppress unrelated subscriptions.
-- terminal publication :: successful prepare/enroll/outbox bind precedes runner entry; lifecycle/result commit invokes only the dedicated hard-bounded =e-work= publication observer before returning/scheduling cleanup and general callbacks under their declared hook policy; output/activity append failure pins a visible retry/failure and never invokes a direct client/session callback fallback; compatible reload uses the stable trampoline/current runtime drain exactly once.
+- terminal publication :: successful prepare/enroll/outbox bind precedes runner entry; lifecycle/result commit invokes only the dedicated hard-bounded =e-work= publication observer before returning/scheduling cleanup and general callbacks under their declared hook policy; output/activity append failure pins a visible retry/failure and never invokes a direct client/session callback fallback; a post-cutover schema-unchanged reload uses the stable trampoline/current runtime drain exactly once.
 - effect idempotency :: reentrant calls, lost acknowledgements, restartable drains, and old endpoint generations commit one invocation receipt or one source-keyed board post; post success does not depend on downstream pickup.
 - non-blocking commit boundary :: posting, inline cheap settlement, cancellation fence, dedicated activity-observer mailbox capture, and observer open return after their bounded commit and before any fake predicate, variable result shaper/cancel/cleanup/general/settle hook, activity normalization/publication, effect, client callback, harness/provider, store/catalog/checkpoint, or =e-ui-work= port is invoked; hot-path structural checks forbid polling, =accept-process-output=, =sit-for=, sleep, synchronous process/URL/file scans, batch awaits/drains, local event loops, and asynchronous board-originated buffer mutation outside =e-ui-work=.
-- carrier hooks :: a cheap runner plus hard-bounded result shaper stays within the declared hook/work-unit cap; unclassified async-interactive hooks reject before runner entry, while deferred result shaping, cancel, cleanup, general progress/event/done/error, and already-terminal/new =on-settle= registrations enqueue once and return; held controlled hook futures permit an independent heartbeat/composer edit, per-handle lifecycle/registration order survives budget yields, cancellation while shaping fences the later shaped result, late/stale generations no-op, hook failure is visible exactly once, cleanup/cancel receipts prevent duplicate side effects, and structural/call-stack sentinels prove no legacy hook publishes/delivers input/activity, replies to an invocation, advances a provider/tool queue, or recursively starts live work.
+- carrier hooks :: a cheap runner plus hard-bounded result shaper stays within the declared hook/work-unit cap; unclassified async-interactive hooks reject before runner entry, while deferred result shaping, cancel, cleanup, general progress/event/done/error, and already-terminal/new =on-settle= registrations enqueue once and return; held controlled hook futures permit an independent heartbeat/composer edit, per-handle lifecycle/registration order survives budget yields, cancellation while shaping fences the later shaped result, late/stale generations no-op, hook failure is visible exactly once, cleanup/cancel receipts prevent duplicate side effects, and structural/call-stack sentinels prove no carrier hook publishes/delivers input/activity, replies to an invocation, advances a provider/tool queue, or recursively starts live work.
 - activity observer :: board enrollment installs one immutable generation-fenced observer before runner entry; a progress storm proves each raw callback only replaces a bounded reference/latest mailbox and schedules at most one flush, never copies/formats/sanitizes/publishes/renders inline, while later budgeted normalization produces the expected board activity sequence and terminal supersession without losing intermittent chat updates; no general =:on-progress=/=:on-event= hook can substitute for this seam.
 - drain fairness :: with more ready records/candidates/effects/pickups/observers/wakes/carrier-hooks/bulk-cancellations or bytes than one configured budget, a scheduler turn processes exactly at most that budget, commits its cursor, schedules one successor, and permits an independent board/user heartbeat job before completion; injected failure of one item is contained and later eligible lanes continue in board/FIFO order.
 - no recursive consequence :: a deferred =post-input= appends/enqueues once but cannot route, apply its next effect, deliver, or wake recursively on that callback stack; cheap work settlement, invocation receipt, carrier hook, and cancellation starter similarly cannot advance a tool queue, start a provider, or create another live consequence inline.
@@ -1340,10 +1375,10 @@ Bus selector, readiness, and effect level:
 
 Board identity, registry, and top-level interaction level:
 
-- identity :: trusted principal identifiers and generated client/board/participant ids occupy distinct namespaces, a board id is never a session alias, collision injection is rejected, compatible reload preserves live ids, and absent historical ids fail instead of resolving to new state.
+- identity :: trusted principal identifiers and generated client/board/participant ids occupy distinct namespaces, a board id is never a session alias, collision injection is rejected, a post-cutover schema-unchanged reload preserves live ids, and absent historical ids fail instead of resolving to new state.
 - namespace :: equal session ids under distinct store ids remain distinct, multiple harness views over one store/session resolve to one stable attachment key, participant ids survive authorized quiescent endpoint rebind, and duplicate active attachment across boards/generations is rejected.
-- catalog :: asynchronous paged listing of configured dormant stores invokes no harness factory and returns before a held fake store responds; compatible duplicate store ports yield one session row with every eligible instance, conflicting same-store port registrations fail, and unauthorized legacy/private sessions are absent; direct resume with a hidden/stale session, wrong store/version, denied principal, active session, or ineligible instance fails before any factory/grant/attachment, while an authorized resume invokes only the named eligible instance and persists any legacy access migration before a later bounded atomic attachment.
-- catalog access :: the narrow access-store port performs versioned create/migrate/grant/revoke/transfer without activating a harness or exposing transcript mutation; durable controller/discover/resume ACLs survive board removal/restart, ownership transfer is allowed only while dormant, and the old controller loses implicit catalog rights without rewriting expired or unrelated board-local grants.
+- catalog :: asynchronous paged listing of configured dormant stores invokes no harness factory and returns before a held fake store responds; duplicate registrations with identical catalog/access-store identity yield one session row with every eligible instance, conflicting same-store registrations fail, and any configured instance/store missing required ports or any row missing a current access record/counters fails global board-runtime activation so no partial catalog becomes live; direct resume with a hidden/stale session, wrong store/version, denied principal, active session, or ineligible instance fails before any factory/grant/attachment, while an authorized current-schema resume invokes only the named eligible instance before a later bounded atomic attachment and performs no write-on-read upgrade.
+- catalog access :: the narrow access-store port performs versioned create/grant/revoke/transfer without activating a harness or exposing transcript mutation; durable controller/discover/resume ACLs survive board removal/restart, ownership transfer is allowed only while dormant, and the former controller loses implicit catalog rights without rewriting expired or unrelated board-local grants.
 - atomicity :: a board may publish with an owner principal and no session; every session create/resume/fork/subagent operation publishes participant membership, attachment token, and live endpoint together or exposes neither.
 - invariant :: loading history stays dormant; every live session has exactly one active attachment; logical envelopes record board/participant but no endpoint generation, while each physical attempt and accepted inbox/turn/action/tool/work projection records the composite generation; detach/move cannot lose queued input, rewrite history, or leave a promptable unbound session.
 - chat boundary :: structural tests forbid =e-chat= from =e-actions-call=, retaining/subscribing to a harness endpoint, reading transcript/session activity/active-turn state, or direct session prompting; authenticated host APIs attach a client/principal, open a board, default input and the observer selector to tag =main=, optionally address/observe explicit participants or tags, preserve dormant-session discovery/resume plus selected-participant controls, and render only matched board messages.
@@ -1360,7 +1395,7 @@ Board identity, registry, and top-level interaction level:
 - private grants :: a matrix proves =inspect-transcript= and =control-session= authorize only their named surfaces; board membership grants neither private right, selective revoke leaves the other intact, and a child/fork copies the controller but no third-party grant.
 - binding :: participant context always resolves its sole board, client context is explicit, a mismatched board delivery is rejected, and moving a session changes only future turn binding.
 - dependency :: board core and registry load/test with fake runtime ports and no harness/provider/UI dependency.
-- restart/reload :: old runtime-generation callbacks cannot deliver twice, historical board ids never resolve to new boards after restart, and resumed persisted sessions attach before becoming live.
+- restart/reload :: a post-cutover schema-unchanged reload installs exactly one current timer/drain/runtime-listener set over unchanged registry subscription identities, cursors, predicate closures, and ready records; stale generations no-op, queued work resumes exactly once without lost/duplicate delivery, historical board ids never resolve to new boards after restart, and resumed persisted sessions attach before becoming live.
 
 Board message, subscription/effect, and retention level:
 
@@ -1395,10 +1430,11 @@ Target and invocation level:
 - participant creation :: explicit fork/spawn uses a typed transcript mark/config, creates membership before becoming live, never occurs as a selector side effect, and any return summary is a separately source-keyed exact/tagged board input.
 - rights :: non-members, stale requester/control endpoints, denied exact cross-target/private grants, and private work fail before predicates/effect payloads/read/control and identify the requester; a stale-but-valid target membership may still match and hold only its bounded pending pickup.
 - invocation generation :: =reply-to-invocation= freezes original attachment token/participant/endpoint/turn generation, reconciles lost acknowledgement only against that endpoint's effect-id receipt, and becomes uncertain rather than delivering to a replacement generation; abort fences the invocation before cancelling owned work.
-- wait matrix :: inline success/failure/cancel, detach, cancel before/after detach, and late completion all use one preallocated canonical executable work id plus exactly one transcript tool result; =await= uses an invocation/aggregation subscription and intentionally no dummy work handle; no invocation-adapter operation remains after Slice 2.
+- wait matrix :: inline success/failure/cancel, detach, cancel before/after detach, and late completion all use one preallocated canonical executable work id plus exactly one transcript tool result; =await= uses an invocation/aggregation subscription and intentionally no dummy work handle.
 - producer acceptance :: cron/file/annotation/domain producers require an explicit configured board, tag/attributes, and stable source key; retry is idempotent, facts get no dummy work, and authoritative domain mutation persists even when propagation/wake delivery stops.
-- cleanup guards :: after Slice 7, structural tests find no broad =:handler=/=:start= registrations, =:notify=, invocation adapter, direct live-session prompt path, callback-graph continuation, unclassified async-interactive =e-work= hook, or legacy callback that advances live coordination; only the dedicated bounded activity observer may enqueue work progress for later board publication, and =await= is the only invocation-only aggregation tool contract.
-- durability boundary :: stopping board propagation/wakes does not skip or reorder the task domain's existing immediate mutation plus best-effort/debounced persistence semantics; a held fake asynchronous writer proves the debounce timer only coalesces/submits an immutable bounded snapshot/reference, returns before serialization/write, permits board events and ordinary UI work to continue, and later writes the submitted snapshot exactly once without retroactively changing propagation; missing async persistence rejects integration instead of falling back to main-thread I/O, synchronous flush is reachable only from an explicit non-interactive batch/process-exit compatibility path, interactive teardown returns a pending handle, and any domain whose own contract requires durable acknowledgement reports commit from its writer callback without a main-thread wait.
+- cutover boundary :: before Slice 5 no supported command/action/tool/chat path reaches the private board services; the cutover test orders admission fence -> asynchronous quiescence of active work, all accepted prompt/inbox/steering/delivery/producer queues, writers, and every other control request -> exclusive-store batch snapshot/preparation -> current-schema verification -> complete source switch -> full restart; failure at any phase prevents activation, the new process begins with no captured timer/callback/registry, and after restart every bundled live caller/producer uses board ingress or is explicitly disabled, every live session requires an attachment token, and nonconforming custom layers fail registration/preflight.
+- cleanup guards :: Slice 5 structural tests find no =:handler=/=:start= registration key or branch, direct live-session create/prompt/queue/steer symbol or path, callback-graph continuation, generic harness presentation subscription, transcript/chat fallback, dual board/session publication or input branch, unclassified async-interactive =e-work= hook, or callback that advances live coordination; closed-schema validation rejects unknown continuation keys such as =:notify= without a special branch, only the private-survivor manifest is reachable, and =await= is the only invocation-only aggregation tool contract.
+- durability boundary :: stopping board propagation/wakes does not skip or reorder the task domain's immediate mutation plus best-effort/debounced persistence semantics; a held fake asynchronous writer proves the debounce timer only coalesces/submits an immutable bounded snapshot/reference, returns before serialization/write, permits board events and ordinary UI work to continue, and later writes the submitted snapshot exactly once without retroactively changing propagation; missing async persistence rejects integration instead of falling back to main-thread I/O, the synchronous flush symbol/path is absent, batch/finalization returns the asynchronous writer's pending close/finalize handle, process exit performs no hidden flush, and any domain whose own contract requires durable acknowledgement reports commit from its writer callback without a main-thread wait.
 
 Then a scripted end-to-end scenario: chat opens a board whose first participant subscribes to =main=, posts one tagged input, and the participant runs two long work packages with a first-terminal continuation; its exact invocation result, tagged follow-up, late second completion, and final output all traverse the declared bus paths.
 Run once with one =main= subscriber, once with two =main= subscribers to prove broadcast/deduplication, and once with an explicitly addressed participant.
@@ -1407,6 +1443,8 @@ Hold the scheduled classifier before it invokes a cheap counted predicate, plus 
 In the exact-address run, install author/subject/=to= observer clauses before posting and prove visibility without requiring the descriptive =main= tag.
 Add one subagent-tagged activity stream: the default chat observer excludes it, widening the selector includes/replays it without duplicating =main=, and interleaved records keep board ordering plus independent turn correlation.
 Prove that chat used no standalone-session path, implicit root selection, harness/session presentation feed, or transcript fallback; exact tool pairing added no redundant tag input, zero generic matches did not autospawn, every causal edge is inspectable, late work remained visible, activity/output observation created no pickup/wake/consumption/implicit feedback, one explicit matching =post-input= continuation created exactly one causally linked input without recursive drain, and no rendering =e-ui-work= was enrolled.
+Resume one offline-prepared dormant session and prove its earlier transcript remains available only as private session/model context, contributes no board message or chat row, and only new board-bound input/activity/output enters the observer sequence.
+Exercise every bundled cron/file/annotation/domain/task/subagent producer or its explicit disabled-state check so the cutover cannot leave an off-board live producer hidden behind an untested caller.
 That question is behavioral and unit tests will not settle it.
 
 * Accepted implementation defaults and deferred follow-ups
@@ -1416,7 +1454,8 @@ The first-version choices are normative and leave no architectural question bloc
 - Context receives ids, states, counts, and bounded summaries; full events and results remain references behind mandatory paged/asynchronous =board://<board-id>/...= reads.
 - Sanitized participant activity and terminal summaries are ordinary board-visible messages; raw reasoning, transcript content, and unbounded payloads are never published, and tags select but never authorize.
 - Chat's default observer selector matches =main=; each participant activity snapshots the turn's current monotonic routing-tag accumulator and terminal summary/output use its final value, while subagent/other views widen the same selector explicitly.
-- Compatible reload retains each installed demonstrably-cheap trusted predicate closure until explicit replacement or cancellation; there is no registry, version protocol, or automatic migration, historical matches remain frozen, and the closure is invoked only by a scheduled classifier outside append/settlement.
+- =await= defaults omitted =mode= to =all= and omitted =timeout= to 120 seconds; explicit mode is only =all=/=any=, explicit timeout is finite and positive through the 900-second maximum, and invalid values fail rather than clamp/coerce.
+- After the full-restart cutover, a schema-unchanged reload retains each installed demonstrably-cheap trusted predicate closure until explicit replacement or cancellation; there is no registry, version protocol, or automatic conversion, historical matches remain frozen, and the closure is invoked only by a scheduled classifier outside append/settlement.
 - Non-blocking means no synchronous wait and no unbounded main-loop occupancy: bounded serialized commits and explicitly hard-bounded hook work may finish inline, while variable carrier shaping/cancel/cleanup/general hooks, bulk abort, routing fan-out, effects, delivery, observers, persistence/catalog work, checkpoint/replay, controls, and UI pages yield through the declared asynchronous/cooperative schedulers.
 - Fork requires an explicit transcript-entry =:at=.
 - Newly unobserved terminal work remains in board current state and produces one warning when the board next becomes idle; it never becomes synthetic participant input.
@@ -1431,7 +1470,7 @@ The following are explicitly deferred and do not block this plan:
 * Required self-check (design-sensitive)
 
 1. *Better off if stopped here?*  Slice 0 gives executable work one stable identity/lifecycle without adding a callback graph.
-   Slice 1 then establishes a real board identity/registry, common selector/subscription core, tagged =main= ingress, and one board-bound session.
+   Slices 1--4 add provider-free private proofs for board identity/registry, common selector/subscription, tagged =main= ingress, exact replies, and cross-harness attachment without exposing a mixed product mode; Slice 5 is the first public stopping point and atomically makes the board the sole live path.
 2. *Final direction?*  The board is the only top-level live interaction context and live routing/observation substrate: chat/producers post there, observer subscriptions read without consuming, orchestration subscriptions correlate or discover consumers, sessions pick up only matched input, =e-work= settles execution, and participant activity/summaries/outputs return to the board.
 3. *Likely to change vs stable?*  Principal/client/board/participant/work/message/subscription identity, exactly-one-board attachment, exact-vs-generic cardinality, input-only pickup, non-consuming observation, effect settlement, board ownership, receipts, and cursor semantics are stable.
    Tag conventions, predicate closures, budget values, retention limits, batch size, and readiness defaults remain local and reversible.
@@ -1447,10 +1486,12 @@ The following are explicitly deferred and do not block this plan:
    "Immediate" means only the bounded lifecycle/terminal/outbox/routing-token commit plus explicitly classified hard-bounded hook budget: raw callbacks use latest-value mailboxes, variable carrier hooks/bulk cancellation and routing/effects/delivery/observers/checkpoints/resources/UI yield under record/byte/work-unit budgets, superseded progress compacts after terminal/cursor safety, rendering ticks do not inflate board history, and deterministic storms justify selector, observer-lag, propagation, wake, paging, queue, and retention defaults before rollout.
 10. *Abstractions real?*  =e-work= represents execution; board records represent facts; selectors choose records; orchestration subscriptions add readiness and one declarative effect; exact invocation receipts represent result correlation; pickups/receipts represent participant input ownership/consumption.
     Orchestration subscriptions add readiness/effects, while observer subscriptions are effect-free read cursors over the same facts; neither can substitute for consuming input pickup, and none of these contracts substitutes for another.
-11. *Compatibility?*  Legacy tool forms, =:notify=, and direct session entry points receive temporary adapters, then leave runtime execution after callers migrate.
-    Stored session history remains resumable, but only by attaching it to a board before activation.
-12. *Legacy to remove?*  Remove =:handler=/=:start= tool branches, the detachable wrapper, =:notify= surface, direct chat/session prompt creation, duplicate session-input paths, and any destination-specific callback continuation after migration.
-    Keep task and subagent registries because they own domain state and already push change facts.
+11. *Compatibility?*  None at the live interface boundary.
+    Slice 5 changes every bundled caller and atomically deletes retired symbols/keys; custom callers adopt =:work=, =:invocation-subscription=, and explicit board ingress or fail.
+    A quiescent full restart activates only current schemas, with no feature flag, alias, wrapper, dual path, lazy upgrade, or same-process handoff.
+    Stored transcript content is durable domain data rather than an interaction interface: after offline preparation and board attachment it may remain private model context, but it is never imported into board/chat history.
+12. *Legacy to remove?*  Slice 5 deletes =:handler=/=:start= tool branches, the detachable wrapper, public direct session create/prompt/queue/steer entry points, direct harness/session presentation feeds, duplicate session-input/publication paths, missed-final transcript fallback, destination-specific callback continuations, synchronous task flush, and the one-shot preparation command.
+    The narrow private-survivor allowlist remains because it owns current carrier/delivery/receipt mechanics, while task and subagent registries remain because they own domain state and push board facts.
 13. *Errors?*  Expected work failures/cancellation settle handles; selector/readiness/effect, terminal/activity/output publication, observer cursor/expiry, routing-cycle/budget, delivery/receipt/discard, and uncertain faults become visible board state without duplicate execution or message publication.
     Unexpected errors surface through the owning operation or runtime adapter; one scheduled item failure is contained so a drain can yield and later independent lanes continue.
 14. *Tests?*  Board core/registry use synthetic work/events plus fake ids, clocks, controlled futures, budgeted schedulers, call-stack sentinels, and ports; selectors/readiness/effects are pure where possible; delivery uses fake harness receipts; structural tests forbid standalone/multi-board session, callback-graph, direct chat-to-harness/session-presentation, interactive await, synchronous post-and-deliver, drain-to-empty, unclassified interactive carrier hooks/live callback consequences outside the dedicated bounded activity mailbox observer, and asynchronous board-originated buffer mutation outside =e-ui-work= paths.
