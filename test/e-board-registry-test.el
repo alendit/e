@@ -487,37 +487,82 @@
                     :type 'wrong-type-argument))))
 
 (ert-deftest e-board-registry-test-close-prevents-further-mutation ()
-  "Closing a board disables routing and leaves registry state unchanged thereafter."
+  "Closing disables roots immediately and later releases registry resources."
   (e-board-registry-test--with-empty-registries
-    (let* ((board (e-board-registry-create :id "board"))
-           (client (e-board-registry-attach-client board :id "client"))
+    (let* ((scheduled nil)
+           (e-board-registry-close-scheduler
+            (lambda (function) (setq scheduled (append scheduled (list function)))))
+           (board (e-board-registry-create :id "board"))
+           (_client (e-board-registry-attach-client board :id "client"))
            (participant (e-board-registry-add-participant board :id "member"))
            (source-board (e-board-registry-board-source-board board)))
-      (e-board-registry-close board)
+      (let ((request (e-board-registry-close board)))
+        (should (eq (e-board-registry-board-state board) 'closing))
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (e-board-get "board"))
+        (while scheduled
+          (funcall (pop scheduled)))
+        (should (eq (e-request-lifecycle-state request) 'finished)))
       (should (eq (e-board-registry-board-state board) 'closed))
       (should-error (e-board-get "board") :type 'e-board-missing)
+      (should-error (e-board-registry-get "board")
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-attach-client board :id "other")
-                    :type 'e-board-registry-closed)
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-detach-client board "client")
-                    :type 'e-board-registry-closed)
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-add-participant board :id "other")
-                    :type 'e-board-registry-closed)
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-remove-participant board participant)
-                    :type 'e-board-registry-closed)
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-install-subscription
                      board participant '(:tags (updates)))
-                    :type 'e-board-registry-closed)
+                    :type 'e-board-registry-missing)
       (should-error (e-board-registry-close board)
-                    :type 'e-board-registry-closed)
-      (should (eq client (gethash "client" (e-board-registry-board-clients board))))
-      (should (eq participant
-                  (gethash "member" (e-board-registry-board-participants board))))
+                    :type 'e-board-registry-missing)
+      (should (= (hash-table-count (e-board-registry-board-clients board)) 0))
+      (should (= (hash-table-count
+                  (e-board-registry-board-participants board))
+                 0))
       (should (eq (e-board-participant-state
                    (e-board-registry-participant-source-participant participant))
                   'closed))
       (should (cl-every (lambda (subscription)
                           (eq (e-board-subscription-state subscription) 'inactive))
                          (e-board-subscriptions source-board))))))
+
+(ert-deftest e-board-registry-test-close-pages-and-waits-for-owner-work ()
+  "Close callbacks have a fixed budget and cannot pass unsettled board work."
+  (e-board-registry-test--with-empty-registries
+    (let* ((scheduled nil)
+           (e-board-registry-close-drain-limit 2)
+           (e-board-registry-close-scheduler
+           (lambda (function) (setq scheduled (append scheduled (list function))))))
+      (let* ((board (e-board-registry-create :id "board"))
+             (source (e-board-registry-board-source-board board)))
+        (dotimes (index 5)
+          (e-board-registry-add-participant
+           board :id (format "participant-%d" index)))
+        (setf (e-board-unsettled-routing-count source) 1)
+        (let ((request (e-board-registry-close board)))
+          (funcall (pop scheduled))
+          (should (eq (e-request-lifecycle-state request) 'started))
+          (should (= (cl-count 'inactive (e-board-subscriptions source)
+                               :key #'e-board-subscription-state)
+                     0))
+          (setf (e-board-unsettled-routing-count source) 0)
+          (let ((previous 0))
+            (while scheduled
+              (funcall (pop scheduled))
+              (let ((current
+                     (+ (cl-count 'inactive (e-board-subscriptions source)
+                                  :key #'e-board-subscription-state)
+                        (cl-count 'closed
+                                  (hash-table-values (e-board-participants source))
+                                  :key #'e-board-participant-state))))
+                (should (<= (- current previous) 2))
+                (setq previous current))))
+          (should (eq (e-request-lifecycle-state request) 'finished)))))))
 
 (ert-deftest e-board-registry-test-controls-ordinary-subscription-lifecycle ()
   "Registry lifecycle operations do not expose the membership-owned route."

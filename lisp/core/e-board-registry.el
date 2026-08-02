@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'avl-tree)
 (require 'e-board)
+(require 'e-request)
 (require 'e-session)
 
 (define-error 'e-board-registry-error "e board registry error")
@@ -97,7 +98,21 @@
   id source-board state author principal principal-grants id-function clients
   client-generations principal-clients client-revocation-head
   client-revocation-tail client-revocation-scheduled client-revocation-scheduler
-  participants)
+  participants client-ids client-ids-tail participant-ids participant-ids-tail
+  close-operation)
+
+(cl-defstruct (e-board-registry-close-operation
+               (:constructor e-board-registry-close-operation--create)
+               (:conc-name e-board-registry-close-operation-))
+  board request phase participants subscriptions client-ids current-client
+  observer-ids scheduled)
+
+(defconst e-board-registry-close-drain-limit 32
+  "Maximum lifecycle records reconciled by one board-close callback.")
+
+(defvar e-board-registry-close-scheduler
+  (lambda (function) (run-at-time 0 nil function))
+  "Function scheduling one later bounded board-close callback.")
 
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
@@ -560,6 +575,11 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                     :generation generation :state 'active :observer-ids nil)))
       (puthash id generation generations)
       (puthash id client (e-board-registry-board-clients board))
+      (let ((cell (list id)))
+        (if-let ((tail (e-board-registry-board-client-ids-tail board)))
+            (setcdr tail cell)
+          (setf (e-board-registry-board-client-ids board) cell))
+        (setf (e-board-registry-board-client-ids-tail board) cell))
       (when principal
         (puthash principal
                  (cons id
@@ -783,6 +803,11 @@ board, with its identity supplied by this registry's id generator."
                grants)
              :source-participant source-participant)))
       (puthash id participant participants)
+      (let ((cell (list id)))
+        (if-let ((tail (e-board-registry-board-participant-ids-tail board)))
+            (setcdr tail cell)
+          (setf (e-board-registry-board-participant-ids board) cell))
+        (setf (e-board-registry-board-participant-ids-tail board) cell))
       participant)))
 
 (defun e-board-registry-grant-participant-access
@@ -1082,21 +1107,135 @@ omitted; this registry supplies only the board-local replacement identity."
            (e-board-registry-board-source-board board)
            subscription-id selector arguments)))
 
-(defun e-board-registry-close (board-or-id)
-  "Close BOARD-OR-ID, disable its routes, and unregister its source board."
-  (let ((board (e-board-registry--require-active board-or-id)))
-    (maphash
-     (lambda (_id participant)
-       (setf (e-board-participant-state
-              (e-board-registry-participant-source-participant participant))
-             'closed))
-     (e-board-registry-board-participants board))
-    (dolist (subscription
-             (e-board-subscriptions (e-board-registry-board-source-board board)))
-      (setf (e-board-subscription-state subscription) 'inactive))
-    (setf (e-board-registry-board-state board) 'closed)
+(defun e-board-registry--close-unsettled-p (source)
+  "Return non-nil when SOURCE still owns accepted nonterminal work."
+  (let ((state (e-board-unsettled-state source)))
+    (> (+ (plist-get state :pickups)
+          (plist-get state :effects)
+          (plist-get state :routing))
+       0)))
+
+(defun e-board-registry--schedule-close (operation)
+  "Schedule OPERATION once for a later bounded drain."
+  (unless (e-board-registry-close-operation-scheduled operation)
+    (setf (e-board-registry-close-operation-scheduled operation) t)
+    (funcall e-board-registry-close-scheduler
+             (lambda () (e-board-registry--drain-close operation)))))
+
+(defun e-board-registry--close-one-client (operation)
+  "Reconcile at most one client or observer from OPERATION."
+  (let* ((board (e-board-registry-close-operation-board operation))
+         (source (e-board-registry-board-source-board board))
+         (client (e-board-registry-close-operation-current-client operation)))
+    (unless client
+      (when-let ((id (pop (e-board-registry-close-operation-client-ids operation))))
+        (setq client (gethash id (e-board-registry-board-clients board)))
+        (setf (e-board-registry-close-operation-current-client operation) client
+              (e-board-registry-close-operation-observer-ids operation)
+              (and client (e-board-registry-client-observer-ids client)))))
+    (cond
+     ((null client) nil)
+     ((e-board-registry-close-operation-observer-ids operation)
+      (let ((observer-id
+             (pop (e-board-registry-close-operation-observer-ids operation))))
+        (when-let ((observer (e-board-observer source observer-id)))
+          (when (memq (e-board-observer-state observer) '(active muted))
+            (e-board-set-observer-state source observer-id 'cancelled))))
+      t)
+     (t
+      (let ((client-id (e-board-registry-client-id client))
+            (principal (e-board-registry-client-principal client)))
+        (setf (e-board-registry-client-observer-ids client) nil
+              (e-board-registry-client-state client) 'detached)
+        (when principal
+          (puthash principal
+                   (delete client-id
+                           (gethash principal
+                                    (e-board-registry-board-principal-clients board)))
+                   (e-board-registry-board-principal-clients board)))
+        (remhash client-id (e-board-registry-board-clients board))
+        (setf (e-board-registry-close-operation-current-client operation) nil))
+      t))))
+
+(defun e-board-registry--finish-close (operation)
+  "Commit OPERATION's final closed state and settle its request."
+  (let* ((board (e-board-registry-close-operation-board operation))
+         (id (e-board-registry-board-id board)))
+    (setf (e-board-registry-board-state board) 'closed
+          (e-board-registry-board-client-ids board) nil
+          (e-board-registry-board-client-ids-tail board) nil
+          (e-board-registry-board-participant-ids board) nil
+          (e-board-registry-board-participant-ids-tail board) nil
+          (e-board-registry-board-close-operation board) nil)
+    (clrhash (e-board-registry-board-participants board))
     (e-board-unregister (e-board-registry-board-source-board board))
-    board))
+    (remhash id e-board-registry--boards)
+    (avl-tree-delete e-board-registry--board-index (cons (format "%s" id) board))
+    (e-request-finish (e-board-registry-close-operation-request operation) board)))
+
+(defun e-board-registry--drain-close (operation)
+  "Advance OPERATION through at most one fixed lifecycle page."
+  (setf (e-board-registry-close-operation-scheduled operation) nil)
+  (let* ((board (e-board-registry-close-operation-board operation))
+         (source (e-board-registry-board-source-board board))
+         (remaining e-board-registry-close-drain-limit))
+    (unless (e-request-terminal-p
+             (e-board-registry-close-operation-request operation))
+      (if (e-board-registry--close-unsettled-p source)
+          (e-board-registry--schedule-close operation)
+        (while (> remaining 0)
+          (pcase (e-board-registry-close-operation-phase operation)
+            ('subscriptions
+             (if-let ((subscription
+                       (pop (e-board-registry-close-operation-subscriptions operation))))
+                 (progn
+                   (setf (e-board-subscription-state subscription) 'inactive)
+                   (setq remaining (1- remaining)))
+               (setf (e-board-registry-close-operation-phase operation)
+                     'participants)))
+            ('participants
+             (if-let* ((participant-id
+                        (pop (e-board-registry-close-operation-participants operation)))
+                       (participant
+                        (gethash participant-id
+                                 (e-board-registry-board-participants board))))
+                 (progn
+                   (setf (e-board-participant-state
+                          (e-board-registry-participant-source-participant
+                           participant))
+                         'closed)
+                   (setq remaining (1- remaining)))
+               (setf (e-board-registry-close-operation-phase operation) 'clients)))
+            ('clients
+             (if (e-board-registry--close-one-client operation)
+                 (setq remaining (1- remaining))
+               (setf (e-board-registry-close-operation-phase operation) 'finish)))
+            ('finish
+             (e-board-registry--finish-close operation)
+             (setq remaining 0))))
+        (unless (e-request-terminal-p
+                 (e-board-registry-close-operation-request operation))
+          (e-board-registry--schedule-close operation))))))
+
+(defun e-board-registry-close (board-or-id)
+  "Begin bounded close of BOARD-OR-ID and return its async request."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (source (e-board-registry-board-source-board board))
+         (request (e-request-lifecycle-create
+                   :id (e-board-registry--next-id
+                        (e-board-registry-board-id-function board) 'close)
+                   :owner 'e-board-registry-close))
+         (operation
+          (e-board-registry-close-operation--create
+           :board board :request request :phase 'subscriptions
+           :subscriptions (e-board-subscriptions source)
+           :participants (e-board-registry-board-participant-ids board)
+           :client-ids (e-board-registry-board-client-ids board))))
+    (setf (e-board-registry-board-state board) 'closing
+          (e-board-registry-board-close-operation board) operation)
+    (e-request-start request (list :board-id (e-board-registry-board-id board)))
+    (e-board-registry--schedule-close operation)
+    request))
 
 (provide 'e-board-registry)
 

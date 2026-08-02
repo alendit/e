@@ -951,8 +951,17 @@ existing monotonic ULID service with distinct prefixes, and the injected id
 function is propagated into the source board only for deterministic tests.
 =e-board-registry-test-default-board-identities-do-not-alias-after-reset= proves
 that resetting process-local registries and counters cannot alias a historical
-board id.  The finding remains open for scheduled =active -> closing -> closed=
-reconciliation and shell-owned detach/expiry/close behavior.
+board id.
+
+Explicit close now returns a started lifecycle request immediately, fences new
+registry roots in =closing=, waits on the source board's constant-time pickup,
+effect, and routing counters, then reconciles subscriptions, participants,
+clients, and observers in fixed 32-record scheduler pages.  Completion removes
+the source board and registry/index entry and leaves no client or participant
+records.  Focused tests hold owner work, step callbacks, enforce the per-page
+budget, and verify terminal cleanup.  The finding remains open only for an
+idle-expiry policy and shell-owned explicit board close; ordinary subscriber
+and binding retirement already detach their registry clients.
 
 ** TODO Medium: Current regression guards certify wrappers rather than the product contract
 
