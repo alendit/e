@@ -98,7 +98,7 @@
 (cl-defstruct (e-board-delivery-attempt
                (:constructor e-board-delivery-attempt--create)
                (:conc-name e-board-delivery-attempt-))
-  number endpoint-token composite-generation state receipt)
+  number endpoint-token composite-generation state receipt reason)
 
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
@@ -359,13 +359,13 @@ at which point that page requires a fresh snapshot."
       (setf (e-board-pickup-state pickup) (if queue 'pending 'ready)))
     (e-board-pickup-state pickup)))
 
-(defun e-board--set-pickup-attempt-state (pickup state &optional receipt)
-  "Move PICKUP's physical attempt to STATE and optionally retain RECEIPT."
+(defun e-board--set-pickup-attempt-state (pickup state &optional reason)
+  "Move PICKUP's physical attempt to STATE and optionally retain REASON."
   (when-let ((attempt (e-board-pickup-attempt pickup)))
     (setf (e-board-delivery-attempt-state attempt) state)
-    (when receipt
-      (setf (e-board-delivery-attempt-receipt attempt)
-            (e-board--copy-envelope-value receipt))))
+    (when reason
+      (setf (e-board-delivery-attempt-reason attempt)
+            (e-board--copy-envelope-value reason))))
   pickup)
 
 (defun e-board-pickup-start-delivery
@@ -442,7 +442,10 @@ Return the newly ready pickup identity, if any."
     (unless (eq (e-board-pickup-state pickup) 'delivering)
       (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
     (setf (e-board-pickup-state pickup) 'accepted)
-    (e-board--set-pickup-attempt-state pickup 'accepted receipt)
+    (e-board--set-pickup-attempt-state pickup 'accepted)
+    (when receipt
+      (setf (e-board-delivery-attempt-receipt (e-board-pickup-attempt pickup))
+            (e-board--copy-envelope-value receipt)))
     (e-board--append-event board 'pickup-accepted (list :delivery-id delivery-id))
     pickup))
 
