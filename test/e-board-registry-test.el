@@ -77,6 +77,20 @@
       (should-error (e-board-registry-revoke-principal board "owner" "owner")
                     :type 'e-board-registry-authorization-denied))))
 
+(ert-deftest e-board-registry-test-named-client-must-hold-a-board-grant ()
+  "A client snapshots the authenticated principal's existing board role."
+  (e-board-registry-test--with-empty-registries
+    (let ((board (e-board-registry-create :id "board" :principal "owner")))
+      (should (eq (e-board-registry-client-role
+                   (e-board-registry-attach-client board :principal "owner"))
+                  'owner))
+      (e-board-registry-authorize-principal board "owner" "member" 'member)
+      (should (eq (e-board-registry-client-role
+                   (e-board-registry-attach-client board :principal "member"))
+                  'member))
+      (should-error (e-board-registry-attach-client board :principal "stranger")
+                    :type 'e-board-registry-authorization-denied))))
+
 (ert-deftest e-board-registry-test-reconnected-client-gets-a-fresh-generation ()
   "Reusing a detached client id never revives its old connection generation."
   (e-board-registry-test--with-empty-registries

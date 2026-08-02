@@ -52,7 +52,7 @@
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
                 (:conc-name e-board-registry-client-))
-  id board-id author principal generation state observer-ids)
+  id board-id author principal role generation state observer-ids)
 
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
@@ -235,14 +235,18 @@ LIMIT plus one candidates, rather than materializing the full registry list."
   "Attach a client to active BOARD-OR-ID and return its local record."
   (let* ((board (e-board-registry--require-active board-or-id))
          (id (or id (e-board-registry--next-id
-                     (e-board-registry-board-id-function board) 'client))))
+                     (e-board-registry-board-id-function board) 'client)))
+         (role (and principal (e-board-registry-principal-role board principal))))
+    (when (and principal (not role))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) principal 'board-read)))
     (when (gethash id (e-board-registry-board-clients board))
       (signal 'e-board-registry-id-conflict (list id)))
     (let* ((generations (e-board-registry-board-client-generations board))
            (generation (1+ (gethash id generations 0)))
            (client (e-board-registry-client--create
                     :id id :board-id (e-board-registry-board-id board)
-                    :author author :principal principal
+                    :author author :principal principal :role role
                     :generation generation :state 'active :observer-ids nil)))
       (puthash id generation generations)
       (puthash id client (e-board-registry-board-clients board))
