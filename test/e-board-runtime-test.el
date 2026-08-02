@@ -21,6 +21,8 @@
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
           (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
+          (e-board-runtime--admission-open-p t)
+          (e-board-runtime--admission-epoch 0)
           (e-board-runtime--control-sequence 0)
           (e-board-runtime--deferred-hook-head nil)
           (e-board-runtime--deferred-hook-tail nil)
@@ -44,6 +46,86 @@
           (e-harness-instance--session-stores (make-hash-table :test 'equal))
           (e-harness-instance--generation 0))
      ,@body))
+
+(ert-deftest e-board-runtime-test-admission-close-is-bounded-and-token-fenced ()
+  "One exact closed epoch rejects new roots and only its token reopens it."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (first-token (e-board-runtime-close-admission)))
+      (e-harness-create-session harness :id "session")
+      (should (equal (e-board-runtime-admission-state)
+                     '(:state closed :epoch 1)))
+      (dolist (root
+               (list
+                (lambda ()
+                  (e-board-runtime-attach
+                   board harness "session" :participant-id "participant"))
+                (lambda () (e-board-runtime-attach-instance nil nil nil))
+                (lambda ()
+                  (e-board-runtime-resume-live-instance-start
+                   nil nil nil nil nil 0))
+                (lambda ()
+                  (e-board-runtime-resume-instance-start nil nil nil nil nil 0))
+                (lambda ()
+                  (e-board-runtime-remove-participant-start nil nil nil))
+                (lambda ()
+                  (e-board-runtime-rebind-start nil nil nil nil nil))
+                (lambda ()
+                  (e-board-runtime-move-participant-start nil nil nil nil))
+                (lambda ()
+                  (e-board-runtime-post-input
+                   board :id "input" :content "blocked"))))
+        (should-error (funcall root) :type 'e-board-runtime-admission-closed))
+      (should (= (hash-table-count
+                  (e-board-registry-board-participants board))
+                 0))
+      (should (equal (e-board-runtime-reopen-admission first-token)
+                     '(:state open :epoch 1)))
+      (let ((second-token (e-board-runtime-close-admission)))
+        (should-error (e-board-runtime-reopen-admission first-token)
+                      :type 'e-board-runtime-error)
+        (should (equal (e-board-runtime-reopen-admission second-token)
+                       '(:state open :epoch 2))))
+      (should
+       (e-board-runtime-attach
+        board harness "session" :participant-id "participant")))))
+
+(ert-deftest e-board-runtime-test-admitted-resume-finishes-after-close ()
+  "Closing admission does not reject a previously accepted resume callback."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           succeed
+           (catalog (lambda (_request on-done _on-error)
+                      (setq succeed on-done)))
+           (access-store (lambda (&rest _arguments) 'pending)))
+      (e-board-registry-authorize-principal board "owner" "resumer" 'member)
+      (e-harness-create-session harness :id "session")
+      (e-harness-instance-register
+       :id :instance :kind 'chat :harness-id :live
+       :session-store-id "store"
+       :session-catalog catalog :session-access-store access-store)
+      (e-harness-registry-register :live harness)
+      (let* ((request
+              (e-board-runtime-resume-live-instance-start
+               board :instance "store" "session" "resumer" 3
+               :participant-id "participant"))
+             (token (e-board-runtime-close-admission)))
+        (funcall succeed
+                 '(:session-id "session" :state dormant
+                   :access-record
+                   (:controller "controller" :version 3
+                    :discover-principals nil :resume-principals ("resumer"))
+                   :board-output-sequence 0 :board-activity-sequence 0))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should
+         (e-board-runtime--current-attachment-p
+          (e-request-lifecycle-terminal-payload request)))
+        (should-error
+         (e-board-runtime-post-input board :id "later" :content "blocked")
+         :type 'e-board-runtime-admission-closed)
+        (e-board-runtime-reopen-admission token)))))
 
 (ert-deftest e-board-runtime-test-deferred-hooks-use-bounded-fifo-drains ()
   "Deferred hooks preserve order and yield after each configured record page."

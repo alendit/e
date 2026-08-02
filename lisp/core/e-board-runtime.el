@@ -43,6 +43,57 @@
 (define-error 'e-board-runtime-control-committed
   "e board runtime control request already committed"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-admission-closed
+  "e board runtime admission is closed"
+  'e-board-runtime-error)
+
+(cl-defstruct (e-board-runtime-admission-token
+               (:constructor e-board-runtime--admission-token-create))
+  "Opaque authority to reopen one exact closed admission epoch."
+  epoch)
+
+(defvar e-board-runtime--admission-open-p t
+  "Non-nil while public board-runtime roots may be admitted.")
+
+(defvar e-board-runtime--admission-epoch 0
+  "Monotonic process-local board-runtime admission epoch.")
+
+(defun e-board-runtime-admission-state ()
+  "Return the current bounded board-runtime admission state."
+  (list :state (if e-board-runtime--admission-open-p 'open 'closed)
+        :epoch e-board-runtime--admission-epoch))
+
+(defun e-board-runtime-close-admission ()
+  "Close admission for new public board-runtime roots in O(1).
+Return the opaque token that alone may reopen this exact closed epoch.
+Operations accepted before this commit may continue to completion."
+  (unless e-board-runtime--admission-open-p
+    (signal 'e-board-runtime-admission-closed
+            (list e-board-runtime--admission-epoch)))
+  (setq e-board-runtime--admission-open-p nil)
+  (e-board-runtime--admission-token-create
+   :epoch (cl-incf e-board-runtime--admission-epoch)))
+
+(defun e-board-runtime-reopen-admission (token)
+  "Reopen the closed board-runtime admission epoch authorized by TOKEN."
+  (unless (e-board-runtime-admission-token-p token)
+    (signal 'wrong-type-argument
+            (list 'e-board-runtime-admission-token-p token)))
+  (unless (and (not e-board-runtime--admission-open-p)
+               (= (e-board-runtime-admission-token-epoch token)
+                  e-board-runtime--admission-epoch))
+    (signal 'e-board-runtime-error
+            (list "Stale board runtime admission token"
+                  (e-board-runtime-admission-token-epoch token)
+                  e-board-runtime--admission-epoch)))
+  (setq e-board-runtime--admission-open-p t)
+  (e-board-runtime-admission-state))
+
+(defun e-board-runtime--require-admission ()
+  "Reject a new public runtime root while admission is closed."
+  (unless e-board-runtime--admission-open-p
+    (signal 'e-board-runtime-admission-closed
+            (list e-board-runtime--admission-epoch))))
 
 (defvar e-board-runtime--attachments (make-hash-table :test 'equal)
   "Live runtime attachments keyed by board and participant identity.")
@@ -782,6 +833,7 @@ delivery or signal; normal return marks that pickup delivered.  Returning
 retrying it; returning =(:discarded REASON)= records a proven non-commit;
 returning =(:failed REASON)= records a permanent endpoint rejection.
 When omitted, the conservative idle-only harness delivery port is used."
+  (e-board-runtime--require-admission)
   (e-board-runtime--attach-resolved
    board-or-id harness session-id
    :participant-id participant-id :author author :principal principal
@@ -827,6 +879,16 @@ When omitted, the conservative idle-only harness delivery port is used."
                  &key participant-id author principal controller delivery-function)
   "Attach an existing live SESSION-ID through configured INSTANCE-ID.
 This operation never invokes an instance factory or loads dormant history."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--attach-instance-resolved
+   board-or-id instance-id session-id
+   :participant-id participant-id :author author :principal principal
+   :controller controller :delivery-function delivery-function))
+
+(cl-defun e-board-runtime--attach-instance-resolved
+    (board-or-id instance-id session-id
+                 &key participant-id author principal controller delivery-function)
+  "Attach one admitted live SESSION-ID through INSTANCE-ID to BOARD-OR-ID."
   (let* ((instance-generation (e-harness-instance-generation))
          (instance (or (e-harness-instance-get instance-id)
                        (signal 'e-harness-instance-missing (list instance-id))))
@@ -919,7 +981,7 @@ rights, and eligibility before one bounded registry/attachment commit."
              (let (attachment)
                (condition-case condition
                    (setq attachment
-                         (e-board-runtime-attach-instance
+                         (e-board-runtime--attach-instance-resolved
                           board instance-id session-id
                           :participant-id participant-id :author author
                           :principal requester-principal
@@ -1027,6 +1089,7 @@ rights, and eligibility before one bounded registry/attachment commit."
   "Start authorized resume of an already-live loaded dormant session.
 The operation never invokes either the legacy factory or dormant activation
 port.  An offline instance therefore fails visibly after authorization."
+  (e-board-runtime--require-admission)
   (e-board-runtime--resume-instance-start
    board-or-id instance-id session-store-id session-id requester-principal
    expected-version nil
@@ -1041,6 +1104,7 @@ port.  An offline instance therefore fails visibly after authorization."
 Offline loading uses only the instance's asynchronous activation port.  The
 loaded harness remains unregistered and unattached until a second exact catalog
 read proves the expected authorization and controller are still current."
+  (e-board-runtime--require-admission)
   (e-board-runtime--resume-instance-start
    board-or-id instance-id session-store-id session-id requester-principal
    expected-version t
@@ -1541,6 +1605,7 @@ The returned request stays pending while the attachment drains an active turn
 or accepted inbox receipt.  Before final removal, undelivered FIFO records are
 retained as explicit cancellation tombstones and the session transcript is not
 changed.  Cancellation is accepted only before the scheduled detach commit."
+  (e-board-runtime--require-admission)
   (let* ((board (e-board-runtime--active-board board-or-id))
          (participant (e-board-registry-participant board participant-or-id))
          (_authorization
@@ -1599,6 +1664,7 @@ PARTICIPANT-OR-ID stops accepting new input in a later scheduled commit.  Its
 old active turn and accepted delivery receipts reconcile before live HARNESS
 SESSION-ID atomically replaces the old endpoint.  Undelivered FIFO records keep
 their logical identities and become eligible on the replacement attachment."
+  (e-board-runtime--require-admission)
   (unless (or (null delivery-function) (functionp delivery-function))
     (signal 'wrong-type-argument (list 'functionp delivery-function)))
   (e-board-runtime--require-rebind-target-free harness session-id)
@@ -1666,6 +1732,7 @@ first fences ingress and reconciles its active turn, accepted receipt, and
 bounded FIFO.  The quiescent endpoint then receives a fresh destination
 membership and attachment generation in one scheduled commit.  Source messages
 and pickup tombstones remain on the source board."
+  (e-board-runtime--require-admission)
   (let* ((source (e-board-runtime--active-board source-board-or-id))
          (destination
           (e-board-runtime--active-board destination-board-or-id))
@@ -1792,6 +1859,7 @@ The returned value is the source board's `e-board-publication'.  Duplicate
 publications only retry pickups that remain pending.  REQUESTER, when supplied,
 must be an active registry client requester context; exact posts additionally
 require authority for their target participant."
+  (e-board-runtime--require-admission)
   (let* ((board (e-board-runtime--active-board board-or-id))
          (requester-principal
           (and requester

@@ -81,6 +81,11 @@ operations; synchronous public helpers are not acceptable substitutes.
 
 1. Add one board-runtime admission epoch/gate used by every board-bound root and
    participant/session-control start.  Closing it must be an O(1) commit.
+   This gate now exists for the private board-runtime entry points.  Its opaque
+   epoch token prevents a stale owner from reopening a later fence, and an
+   accepted asynchronous resume completes through an internal path after the
+   gate closes.  The direct legacy harness starts listed above remain outside
+   the fence, so this step alone does not authorize cutover.
 2. Add owner-local unsettled counters and transition hooks at the harness,
    board core/runtime, control-request, and persistence seams.  Counters must be
    updated with the owning state transition, not reconstructed by preflight.

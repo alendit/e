@@ -171,6 +171,12 @@ outboxes, while several production callers can still start work directly.
 Therefore runtime-quiescence preflight remains deliberately unimplemented until
 owner-local transition counters and one O(1) admission epoch make a positive
 result race-free; a full-table scan would be neither complete nor acceptable.
+The private board runtime now owns that admission epoch.  Closing it is one
+constant-time state transition that rejects every new public runtime attach,
+resume, participant control, and input root; only the opaque token for the
+current closed epoch may reopen it.  Work accepted before closure may finish
+through internal continuations.  Direct pre-cutover harness callers are not yet
+fenced, so this foundation deliberately does not claim process quiescence.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
