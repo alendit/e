@@ -23,7 +23,9 @@
   `(let ((e-harness-registry--instances (make-hash-table :test 'equal))
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
-         (e-harness-instance--defaults (make-hash-table :test 'equal)))
+         (e-harness-instance--defaults (make-hash-table :test 'equal))
+         (e-harness-instance--session-stores (make-hash-table :test 'equal))
+         (e-harness-instance--generation 0))
      ,@body))
 
 (ert-deftest e-harness-instances-test-registers-and-lists-by-kind ()
@@ -154,6 +156,29 @@
         (should (= (length stores) 1))
         (should (equal (plist-get (car stores) :eligible-instance-ids)
                        '(:first :second)))))))
+
+(ert-deftest e-harness-instances-test-replacement-updates-index-and-generation ()
+  "Replacing one instance moves only its store eligibility and fences snapshots."
+  (e-harness-instances-test--with-empty-registries
+    (let ((catalog (lambda (&rest _arguments) 'pending))
+          (access-store (lambda (&rest _arguments) 'pending)))
+      (e-harness-instance-register :id :instance :kind 'chat
+                                   :session-store-id "old"
+                                   :session-catalog catalog
+                                   :session-access-store access-store)
+      (should (= e-harness-instance--generation 1))
+      (e-harness-instance-register :id :instance :kind 'chat
+                                   :session-store-id "new"
+                                   :session-catalog catalog
+                                   :session-access-store access-store)
+      (should (= e-harness-instance--generation 2))
+      (let ((stores (e-harness-instance-session-stores)))
+        (should (equal (mapcar (lambda (entry)
+                                (plist-get entry :session-store-id))
+                              stores)
+                       '("new")))
+        (should (equal (plist-get (car stores) :eligible-instance-ids)
+                       '(:instance)))))))
 
 (ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
   "A declared durable store cannot silently omit a required port."

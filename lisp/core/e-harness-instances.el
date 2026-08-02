@@ -45,6 +45,12 @@
 (defvar e-harness-instance--defaults (make-hash-table :test 'equal)
   "Default harness instance ids keyed by kind.")
 
+(defvar e-harness-instance--session-stores (make-hash-table :test 'equal)
+  "Configured session-store port records keyed by stable store id.")
+
+(defvar e-harness-instance--generation 0
+  "Monotonic generation of the configured harness-instance catalog.")
+
 (defun e-harness-instance--validate-id (id)
   "Signal when ID is not a valid harness instance id."
   (unless (keywordp id)
@@ -71,19 +77,46 @@
   "Require one stable pair of ports for every SESSION-STORE-ID.
 ID's replacement registration is excluded so an instance can update its own
 metadata without comparing against its retired record."
-  (when session-store-id
-    (maphash
-     (lambda (other-id instance)
-       (when (and (not (eq other-id id))
-                  (equal (e-harness-instance-session-store-id instance)
-                         session-store-id)
-                  (not (and (eq (e-harness-instance-session-catalog instance)
-                                session-catalog)
-                            (eq (e-harness-instance-session-access-store instance)
-                                session-access-store))))
-         (signal 'e-harness-instance-store-conflict
-                 (list session-store-id id other-id))))
-     e-harness-instance--instances)))
+  (when-let ((entry (and session-store-id
+                         (gethash session-store-id
+                                  e-harness-instance--session-stores))))
+    (when (and (seq-some (lambda (other-id) (not (eq other-id id)))
+                         (plist-get entry :eligible-instance-ids))
+               (not (and (eq (plist-get entry :session-catalog)
+                             session-catalog)
+                         (eq (plist-get entry :session-access-store)
+                             session-access-store))))
+      (signal 'e-harness-instance-store-conflict
+              (list session-store-id id 'shared-store)))))
+
+(defun e-harness-instance--unindex-session-store (instance)
+  "Remove INSTANCE from its configured session-store eligibility index."
+  (when-let* ((store-id (e-harness-instance-session-store-id instance))
+              (entry (gethash store-id e-harness-instance--session-stores)))
+    (let ((eligible (delq (e-harness-instance-id instance)
+                          (copy-sequence
+                           (plist-get entry :eligible-instance-ids)))))
+      (if eligible
+          (plist-put entry :eligible-instance-ids eligible)
+        (remhash store-id e-harness-instance--session-stores)))))
+
+(defun e-harness-instance--index-session-store (instance)
+  "Add INSTANCE to its configured session-store eligibility index."
+  (when-let ((store-id (e-harness-instance-session-store-id instance)))
+    (let ((entry (gethash store-id e-harness-instance--session-stores)))
+      (if entry
+          (cl-pushnew (e-harness-instance-id instance)
+                      (plist-get entry :eligible-instance-ids)
+                      :test #'eq)
+        (puthash store-id
+                 (list :session-store-id store-id
+                       :session-catalog
+                       (e-harness-instance-session-catalog instance)
+                       :session-access-store
+                       (e-harness-instance-session-access-store instance)
+                       :eligible-instance-ids
+                       (list (e-harness-instance-id instance)))
+                 e-harness-instance--session-stores)))))
 
 (defun e-harness-instance--display-name (id name)
   "Return normalized display NAME for ID."
@@ -128,7 +161,8 @@ declarative selection metadata; the factory still builds the live harness."
             (list session-store-id 'missing-required-port)))
   (e-harness-instance--validate-shared-store-ports
    id session-store-id session-catalog session-access-store)
-  (let ((harness-id (or harness-id id)))
+  (let ((harness-id (or harness-id id))
+        (previous (gethash id e-harness-instance--instances)))
     (e-harness-instance--validate-id harness-id)
     (when factory
       (e-harness-registry-register-factory harness-id factory))
@@ -148,7 +182,11 @@ declarative selection metadata; the factory still builds the live harness."
                      :session-store-id session-store-id
                      :session-catalog session-catalog
                      :session-access-store session-access-store)))
+      (when previous
+        (e-harness-instance--unindex-session-store previous))
       (puthash id instance e-harness-instance--instances)
+      (e-harness-instance--index-session-store instance)
+      (cl-incf e-harness-instance--generation)
       (when (or default
                 (not (gethash kind e-harness-instance--defaults)))
         (puthash kind id e-harness-instance--defaults))
@@ -177,33 +215,19 @@ declarative selection metadata; the factory still builds the live harness."
 
 (defun e-harness-instance-session-stores ()
   "Return deduplicated configured store metadata without activating harnesses."
-  (let ((stores (make-hash-table :test 'equal)))
+  (let (result)
     (maphash
-     (lambda (_id instance)
-       (when-let ((store-id (e-harness-instance-session-store-id instance)))
-         (let ((entry (gethash store-id stores)))
-           (puthash store-id
-                    (if entry
-                        (plist-put entry :eligible-instance-ids
-                                   (cons (e-harness-instance-id instance)
-                                         (plist-get entry :eligible-instance-ids)))
-                      (list :session-store-id store-id
-                            :session-catalog (e-harness-instance-session-catalog instance)
-                            :session-access-store (e-harness-instance-session-access-store instance)
-                            :eligible-instance-ids (list (e-harness-instance-id instance))))
-                    stores))))
-     e-harness-instance--instances)
-    (let (result)
-      (maphash
-       (lambda (_store-id entry)
+     (lambda (_store-id indexed-entry)
+       (let ((entry (copy-tree indexed-entry)))
          (plist-put entry :eligible-instance-ids
                     (sort (plist-get entry :eligible-instance-ids)
-                          (lambda (left right) (string< (symbol-name left) (symbol-name right)))))
-         (push entry result))
-       stores)
-      (sort result (lambda (left right)
-                     (string< (plist-get left :session-store-id)
-                              (plist-get right :session-store-id)))))))
+                          (lambda (left right)
+                            (string< (symbol-name left) (symbol-name right)))))
+         (push entry result)))
+     e-harness-instance--session-stores)
+    (sort result (lambda (left right)
+                   (string< (plist-get left :session-store-id)
+                            (plist-get right :session-store-id))))))
 
 (cl-defun e-harness-instance-list-subagents (&key visibility)
   "Return spawnable subagent instances, optionally filtered by VISIBILITY.
