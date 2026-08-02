@@ -310,7 +310,11 @@ declarative selection metadata; the factory still builds the live harness."
        (plist-get record :controller)
        (plist-member record :version)
        (integerp (plist-get record :version))
-       (>= (plist-get record :version) 0)))
+       (>= (plist-get record :version) 0)
+       (plist-member record :discover-principals)
+       (listp (plist-get record :discover-principals))
+       (plist-member record :resume-principals)
+       (listp (plist-get record :resume-principals))))
 
 (defun e-harness-instance--normalize-session-catalog-row
     (entry row &optional expected-session-id)

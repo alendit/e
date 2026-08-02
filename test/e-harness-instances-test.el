@@ -209,7 +209,9 @@
         (funcall succeed
                  '(:sessions
                    ((:session-id "session" :state dormant
-                     :access-record (:controller "owner" :version 2)
+                     :access-record
+                     (:controller "owner" :version 2
+                      :discover-principals nil :resume-principals nil)
                      :board-output-sequence 4 :board-activity-sequence 7))
                    :next-after "next"))
         (should (eq (e-request-lifecycle-state request) 'finished))
@@ -245,7 +247,9 @@
         (should (= factory-calls 0))
         (funcall succeed
                  '(:session-id "session" :state dormant
-                   :access-record (:controller "owner" :version 3)
+                   :access-record
+                   (:controller "owner" :version 3
+                    :discover-principals nil :resume-principals nil)
                    :board-output-sequence 8 :board-activity-sequence 13))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (let ((row (e-request-lifecycle-terminal-payload request)))
@@ -364,7 +368,9 @@
         (should (functionp succeed))
         (should (functionp fail))
         (funcall succeed
-                 '(:access-record (:controller "owner" :version 4)))
+                 '(:access-record
+                   (:controller "owner" :version 4
+                    :discover-principals nil :resume-principals nil)))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (let ((result (e-request-lifecycle-terminal-payload request)))
           (should (equal (plist-get result :session-store-id) "store"))
