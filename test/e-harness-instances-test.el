@@ -142,6 +142,19 @@
                            (e-harness-instance-list :kind 'chat))
                    '(:chat-alpha)))))
 
+(ert-deftest e-harness-instances-test-session-stores-deduplicate-eligible-instances ()
+  "Host catalog metadata returns a shared store once without starting it."
+  (e-harness-instances-test--with-empty-registries
+    (let ((catalog (lambda (&rest _arguments) 'pending))
+          (access-store (lambda (&rest _arguments) 'pending)))
+      (dolist (id '(:second :first))
+        (e-harness-instance-register :id id :kind 'chat :session-store-id "store"
+                                     :session-catalog catalog :session-access-store access-store))
+      (let ((stores (e-harness-instance-session-stores)))
+        (should (= (length stores) 1))
+        (should (equal (plist-get (car stores) :eligible-instance-ids)
+                       '(:first :second)))))))
+
 (provide 'e-harness-instances-test)
 
 ;;; e-harness-instances-test.el ends here

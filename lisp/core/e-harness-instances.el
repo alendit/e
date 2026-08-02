@@ -172,6 +172,36 @@ declarative selection metadata; the factory still builds the live harness."
             (string< (symbol-name (e-harness-instance-id left))
                      (symbol-name (e-harness-instance-id right)))))))
 
+(defun e-harness-instance-session-stores ()
+  "Return deduplicated configured store metadata without activating harnesses."
+  (let ((stores (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (_id instance)
+       (when-let ((store-id (e-harness-instance-session-store-id instance)))
+         (let ((entry (gethash store-id stores)))
+           (puthash store-id
+                    (if entry
+                        (plist-put entry :eligible-instance-ids
+                                   (cons (e-harness-instance-id instance)
+                                         (plist-get entry :eligible-instance-ids)))
+                      (list :session-store-id store-id
+                            :session-catalog (e-harness-instance-session-catalog instance)
+                            :session-access-store (e-harness-instance-session-access-store instance)
+                            :eligible-instance-ids (list (e-harness-instance-id instance))))
+                    stores))))
+     e-harness-instance--instances)
+    (let (result)
+      (maphash
+       (lambda (_store-id entry)
+         (plist-put entry :eligible-instance-ids
+                    (sort (plist-get entry :eligible-instance-ids)
+                          (lambda (left right) (string< (symbol-name left) (symbol-name right)))))
+         (push entry result))
+       stores)
+      (sort result (lambda (left right)
+                     (string< (plist-get left :session-store-id)
+                              (plist-get right :session-store-id)))))))
+
 (cl-defun e-harness-instance-list-subagents (&key visibility)
   "Return spawnable subagent instances, optionally filtered by VISIBILITY.
 VISIBILITY, when non-nil, is `always' or `hidden'."
