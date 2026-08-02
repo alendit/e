@@ -61,6 +61,19 @@
       (should (string-prefix-p "cli_" (e-board-registry-client-id client)))
       (should (string-prefix-p "ptc_" (e-board-registry-participant-id participant))))))
 
+(ert-deftest e-board-registry-test-reconnected-client-gets-a-fresh-generation ()
+  "Reusing a detached client id never revives its old connection generation."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (first (e-board-registry-attach-client board :id "client")))
+      (should (eq (e-board-registry-client-state first) 'active))
+      (should (= (e-board-registry-client-generation first) 1))
+      (e-board-registry-detach-client board "client")
+      (should (eq (e-board-registry-client-state first) 'detached))
+      (let ((replacement (e-board-registry-attach-client board :id "client")))
+        (should (= (e-board-registry-client-generation replacement) 2))
+        (should (eq (e-board-registry-client-state replacement) 'active))))))
+
 (ert-deftest e-board-registry-test-list-page-is-bounded-and-continuable ()
   "Registry pages keep deterministic order without exposing the whole list."
   (e-board-registry-test--with-empty-registries

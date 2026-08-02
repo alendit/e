@@ -44,12 +44,12 @@
 (cl-defstruct (e-board-registry-board
                 (:constructor e-board-registry-board--create)
                 (:conc-name e-board-registry-board-))
-  id source-board state author principal id-function clients participants)
+  id source-board state author principal id-function clients client-generations participants)
 
 (cl-defstruct (e-board-registry-client
                 (:constructor e-board-registry-client--create)
                 (:conc-name e-board-registry-client-))
-  id board-id author principal)
+  id board-id author principal generation state)
 
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
@@ -127,6 +127,7 @@ The source board is registered with `e-board' under the same board identity."
                   :principal principal
                   :id-function id-function
                   :clients (make-hash-table :test 'equal)
+                  :client-generations (make-hash-table :test 'equal)
                   :participants (make-hash-table :test 'equal))))
       (puthash id board e-board-registry--boards)
       board)))
@@ -182,9 +183,13 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                      (e-board-registry-board-id-function board) 'client))))
     (when (gethash id (e-board-registry-board-clients board))
       (signal 'e-board-registry-id-conflict (list id)))
-    (let ((client (e-board-registry-client--create
-                   :id id :board-id (e-board-registry-board-id board)
-                   :author author :principal principal)))
+    (let* ((generations (e-board-registry-board-client-generations board))
+           (generation (1+ (gethash id generations 0)))
+           (client (e-board-registry-client--create
+                    :id id :board-id (e-board-registry-board-id board)
+                    :author author :principal principal
+                    :generation generation :state 'active)))
+      (puthash id generation generations)
       (puthash id client (e-board-registry-board-clients board))
       client)))
 
@@ -202,6 +207,7 @@ LIMIT plus one candidates, rather than materializing the full registry list."
             (e-board-registry-board-source-board board)
             (e-board-observer-id observer) 'cancelled)))
        (e-board-observers (e-board-registry-board-source-board board)))
+      (setf (e-board-registry-client-state client) 'detached)
       (remhash client-id clients))
     client))
 
