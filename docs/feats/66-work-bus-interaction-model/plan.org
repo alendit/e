@@ -36,6 +36,9 @@ before completing its subscription: that prepared effect still commits, while
 all later matching records are fenced without a second activation.
 Every post-input firing now has the canonical =(board-id, subscription-id,
 continuation, firing-number)= activation identity, including unbatched matches.
+An explicit retained =start-seq= now replays only a =post-input= continuation
+through a bounded, high-watermark-frozen board drain; it never retroactively
+creates a pickup or reroutes an earlier input.
 Ordinary subscriptions may also declare a bounded lifetime; its timer only
 queues a generation-fenced later board drain, where the legal =expired=
 transition is committed even if the subscription was muted in the interim.

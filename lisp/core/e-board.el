@@ -77,6 +77,9 @@
 (defconst e-board-input-classification-drain-limit 32
   "Maximum frozen input subscription clauses classified per drain.")
 
+(defconst e-board-subscription-replay-drain-limit 32
+  "Maximum retained records classified for explicit continuation replay.")
+
 (defconst e-board-aggregation-deadline-drain-limit 16
   "Maximum aggregation deadline transitions committed per drain.")
 
@@ -135,15 +138,21 @@
                (:conc-name e-board-input-classification-))
   message publication subscriptions index matches post-subscriptions post-index)
 
+(cl-defstruct (e-board-subscription-replay
+               (:constructor e-board-subscription-replay--create)
+               (:conc-name e-board-subscription-replay-))
+  subscription next-seq through-seq)
+
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
-  id id-function next-seq events messages message-table participants subscriptions
+  id id-function next-seq events messages message-table message-seq-table participants subscriptions
   observers pickups source-high-watermarks source-recent work-table invocations aggregations
   pending-effects effects-scheduled
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
   terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
   input-classifications input-classification-scheduled input-classification-scheduler
+  subscription-replays subscription-replay-scheduled
   routed-pickup-results
   aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler
   continuation-timer-scheduler subscription-timer-scheduler
@@ -230,8 +239,9 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                  :id-function id-function
                  :next-seq 0
                  :events nil
-                 :messages nil
-                 :message-table (make-hash-table :test 'equal)
+                  :messages nil
+                  :message-table (make-hash-table :test 'equal)
+                  :message-seq-table (make-hash-table :test 'eql)
                  :participants (make-hash-table :test 'equal)
                  :subscriptions nil
                  :observers (make-hash-table :test 'equal)
@@ -260,6 +270,8 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :input-classifications nil
                   :input-classification-scheduled nil
                   :input-classification-scheduler input-classification-scheduler
+                  :subscription-replays nil
+                  :subscription-replay-scheduled nil
                   :routed-pickup-results nil
                   :aggregation-deadlines nil
                   :aggregation-deadline-scheduled nil
@@ -1084,7 +1096,7 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
 
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup)
-           readiness firing-limit lifetime)
+           readiness firing-limit lifetime start-seq)
   "Install an ordinary immutable subscription for PARTICIPANT-ID.
 SELECTOR supports kind, activity-kind, identity, attribute, and tag clauses.
 Effects are `create-pickup' and declarative `(:post-input ...)'.  A post-input
@@ -1093,6 +1105,8 @@ SECONDS)' or `(:policy latest-after-quiet :quiet-period SECONDS)'; otherwise
 every match fires.  FIRING-LIMIT, when non-nil, is the positive number of
 post-input activations permitted before the subscription completes.  LIFETIME,
 when non-nil, is a positive number of seconds before the subscription expires.
+START-SEQ is an explicit retained-history replay cursor for a post-input
+continuation; it never reroutes an existing input or creates a pickup.
 New subscriptions inspect future board records; only `create-pickup' is
 restricted to input records."
   (unless (e-board-participant board participant-id)
@@ -1110,6 +1124,14 @@ restricted to input records."
   (when lifetime
     (unless (and (numberp lifetime) (> lifetime 0))
       (signal 'wrong-type-argument (list 'plusp lifetime))))
+  (when start-seq
+    (unless (and (integerp start-seq)
+                 (>= start-seq (1- (e-board-retention-floor board))))
+      (signal 'e-board-error
+              (list "Replay start is outside retained board history" start-seq)))
+    (unless (and (listp effect) (eq (car effect) :post-input))
+      (signal 'e-board-error
+              (list "Replay requires post-input effect" start-seq))))
   (unless (listp selector)
     (signal 'wrong-type-argument (list 'listp selector)))
   (unless (memq state '(active muted))
@@ -1141,7 +1163,9 @@ restricted to input records."
                board lifetime
                (lambda ()
                  (e-board--queue-subscription-expiry
-                  board id (e-board-subscription-lifetime-generation subscription))))))
+                 board id (e-board-subscription-lifetime-generation subscription))))))
+      (when start-seq
+        (e-board--queue-subscription-replay board subscription start-seq))
       subscription)))
 
 (defun e-board--tags-match-p (selector message)
@@ -1606,6 +1630,59 @@ subscription records the relationship without rewriting its terminal state."
       (funcall scheduler seconds callback)
     (run-at-time seconds nil callback)))
 
+(defun e-board--schedule-subscription-replay (board)
+  "Schedule one bounded retained-continuation replay drain for BOARD."
+  (unless (e-board-subscription-replay-scheduled board)
+    (setf (e-board-subscription-replay-scheduled board) t)
+    (e-board--schedule-effect
+     board (lambda () (e-board-drain-subscription-replays board)))))
+
+(defun e-board--queue-subscription-replay (board subscription start-seq)
+  "Freeze SUBSCRIPTION and queue its explicit retained post-input replay.
+START-SEQ is exclusive.  The captured high watermark isolates the replay from
+ordinary future routing, which retains its existing append-time classifier."
+  (let ((record (e-board-subscription-replay--create
+                 :subscription (copy-e-board-subscription subscription)
+                 :next-seq (1+ start-seq)
+                 :through-seq (e-board-next-seq board))))
+    (setf (e-board-subscription-replays board)
+          (append (e-board-subscription-replays board) (list record)))
+    (e-board--append-event
+     board 'subscription-replay-requested
+     (list :subscription-id (e-board-subscription-id subscription)
+           :start-seq start-seq :through-seq (e-board-subscription-replay-through-seq record)))
+    (e-board--schedule-subscription-replay board)))
+
+(defun e-board-drain-subscription-replays (board)
+  "Classify one bounded page of explicit retained post-input replays."
+  (setf (e-board-subscription-replay-scheduled board) nil)
+  (let ((remaining e-board-subscription-replay-drain-limit))
+    (while (and (> remaining 0) (e-board-subscription-replays board))
+      (let* ((record (car (e-board-subscription-replays board)))
+             (next-seq (e-board-subscription-replay-next-seq record)))
+        (if (> next-seq (e-board-subscription-replay-through-seq record))
+            (progn
+              (setf (e-board-subscription-replays board)
+                    (cdr (e-board-subscription-replays board)))
+              (e-board--append-event
+               board 'subscription-replay-complete
+               (list :subscription-id
+                     (e-board-subscription-id
+                      (e-board-subscription-replay-subscription record)))))
+          (setf (e-board-subscription-replay-next-seq record) (1+ next-seq))
+          (when-let ((message (gethash next-seq (e-board-message-seq-table board))))
+            (condition-case err
+                (when (e-board--message-subscription-matches-p
+                       board (e-board-subscription-replay-subscription record) message)
+                  (e-board--accept-post-input-match
+                   board (e-board-subscription-replay-subscription record) message))
+              (error
+               (e-board--fault-subscription
+                board (e-board-subscription-replay-subscription record) err))))))
+        (cl-decf remaining)))
+    (when (e-board-subscription-replays board)
+      (e-board--schedule-subscription-replay board)))
+
 (defun e-board--queue-subscription-expiry (board subscription-id generation)
   "Queue one generation-fenced expiry transition outside the timer callback."
   (e-board--schedule-effect
@@ -1858,6 +1935,7 @@ Return nil when the key is new and may be appended."
            :activity-kind activity-kind
            :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
+    (puthash (e-board-message-seq message) message (e-board-message-seq-table board))
     (setf (e-board-messages board)
           (append (e-board-messages board) (list message)))
     message))

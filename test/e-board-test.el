@@ -995,6 +995,33 @@
                             :firing-limit 1)
          :type 'e-board-error)))))
 
+(ert-deftest e-board-test-explicit-continuation-replay-is-bounded-and-never-reroutes-history ()
+  "A post-input replay scans only its retained source range through a later drain."
+  (e-board-test--with-empty-registry
+    (let (effects)
+      (let ((board (e-board-create :id "board"
+                                   :effect-scheduler (lambda (effect) (push effect effects)))))
+        (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+        (e-board-post-fact board :id "source" :tags '(source)
+                           :source-fact-key '(test 1 1))
+        (e-board-subscribe board "one" '(:kind fact :tags (source)) :id "replay"
+                           :effect '(:post-input :to "one" :content "derived")
+                           :start-seq 0)
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        ;; Replay classification schedules its derived post for a successor
+        ;; effect drain; it cannot recursively apply it from that scan.
+        (should (= (length effects) 1))
+        (funcall (pop effects))
+        (should (equal (mapcar #'e-board-message-id (e-board-messages board))
+                       '("source" "msg_1")))
+        (should (member 'subscription-replay-complete
+                        (mapcar #'e-board-event-type (e-board-events board))))
+        (should-error
+         (e-board-subscribe board "one" '(:tags (source)) :id "pickup-replay"
+                            :start-seq 0)
+         :type 'e-board-error)))))
+
 (ert-deftest e-board-test-subscription-lifetime-queues-a-fenced-expiry-transition ()
   "A lifetime timer only queues a valid expiry through the board effect drain."
   (e-board-test--with-empty-registry
