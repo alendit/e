@@ -1,0 +1,922 @@
+#+title: Review 2: Board: Top-Level Interaction and Work Coordination
+#+author: e implementation
+#+date: 2026-08-02
+#+startup: overview
+
+* Status
+
+In-review.
+
+This fresh review supersedes the completion conclusion in =review.org= without
+rewriting that earlier audit trail.  The fixes recorded there for deferred
+subscription lifecycle, stale invocation generations, retryable pickup
+ownership, and indexed append/page access are real.  The implementation is
+nevertheless not ready: the user-facing product is still session-first, a live
+session can run outside every board and outside the board admission fence, chat
+still reconstructs presentation from private session state, and several
+accepted cutover, identity, authorization, quiescence, and main-thread bounds
+remain unimplemented.
+
+* Review summary
+
+The implementation contains a useful board foundation, but it has integrated
+that foundation as a transport around the existing session product instead of
+making the board the top-level interaction model.  In the current source:
+
+- chat creates a session first and then creates a private board around it;
+- every chat post and observer is hard-coded to =main=;
+- chat cannot open an existing board, select an exact participant, widen its
+  observer, or independently replay a board history;
+- public harness APIs can create and run standalone sessions even while board
+  admission is closed;
+- subagents get their own boards, and bundled work producers mostly publish
+  inert observation facts rather than dispatchable work;
+- chat history and activity still come from private transcripts/session
+  activity through an adapter that drops board identity and uses unsafe FIFO
+  correlation;
+- quiescence can report success with deferred board work still queued, and no
+  production activation path performs the accepted preflight/preparation gate;
+- final fan-out, persistence, transcript snapshots, and =await= retain
+  unbounded or blocking main-thread work;
+- messages described as immutable retain caller-owned mutable content; and
+- nil requester identity still enters a compatibility authorization bypass.
+
+These are not polish items.  They contradict the defining product invariant
+and the accepted Slice 5 hard cutover.  Ten High findings and one Medium
+coverage finding remain open below.
+
+* Scope reviewed
+
+- =plan.org=, especially the board/chat model at lines 503--634, board identity
+  at 1264 onward, board/session invariants at 1392 onward, the interface
+  retirement manifest, Slices 0--6, and the validation contract at 1641 onward.
+- The historical =review.org= plus =cutover-audit.org= and
+  =cutover-preparation.org=.
+- The implementation commits after the first review: =917baf8= through
+  =9702537=.
+- Board core, registry, runtime, harness/session attachment, chat application
+  service, the Org and modern chat shells, task queue, subagents, bundled
+  producers, persistence, =await=, and their focused tests.
+- Fresh source-only full-suite, focused board/cutover, nonblocking, compile, and
+  bounded behavioral probes.
+- The running Emacs and the visible completed chat surface, inspected without
+  loading, reloading, prompting, or mutating live state.
+- An auxiliary graph of the plan, prior review, cutover audit, and preparation
+  note: 62 nodes, 92 edges, and 6 communities.  It identified =Board as Sole
+  Live Interaction Substrate= as the main bridge across messaging/observation,
+  registry/authorization, atomic restart, and work lifecycle.  That reinforced
+  reviewing the integration invariant across those communities instead of
+  accepting the prior completion claims as separate local fixes.  Lisp
+  findings below still come from direct source, tests, and probes.
+
+* What looks good
+
+- The core distinguishes board, participant, subscription, logical pickup,
+  physical attempt, requester context, client observer, attachment, and work
+  identity.  Those are valuable domain boundaries.
+- Deferred subscription replacement/revocation is rechecked before
+  finalization.  Tests cover mute, cancel, expiry, replacement, and effect
+  cancellation.
+- Invocation effects freeze and revalidate the attachment, endpoint token, and
+  composite generation.  A stale invocation no longer dispatches through a
+  replacement endpoint.
+- Busy/error pickup handling remains scheduler-owned and has explicit retry,
+  exhaustion, and lane-isolation tests.
+- Indexed append and bounded page APIs removed several prior whole-log scans
+  from the board core.
+- Provider-free coverage is broad and currently green.  That makes the
+  remaining failures architectural mismatches rather than basic test-suite
+  instability.
+- A completed =main= turn still renders coherently in the running Emacs: the
+  user input, =[o1] main= heading, =Turn took 0min 3sec.= summary, final answer,
+  and composer were all visible.
+
+* Verification performed during this review pass
+
+** Focused board/runtime selection
+
+#+begin_src sh
+rtk eldev test test/e-board-test.el test/e-board-registry-test.el test/e-board-runtime-test.el test/e-cutover-structure-test.el test/e-task-queue-test.el test/e-session-persistence-test.el test/e-await-tool-test.el
+#+end_src
+
+#+begin_example
+Ran 197 tests, 197 results as expected, 0 unexpected
+#+end_example
+
+** Structural and nonblocking selection
+
+#+begin_src sh
+rtk eldev test test/e-nonblocking-sweep-test.el test/e-ui-work-test.el test/e-cutover-structure-test.el
+#+end_src
+
+#+begin_example
+Ran 20 tests, 20 results as expected, 0 unexpected
+#+end_example
+
+The green result does not close the findings below: the guards scan selected
+consumers for old symbol names, while session-first wrappers and explicitly
+allowlisted blocking paths remain accepted.
+
+** Broader board/cutover selection
+
+#+begin_src sh
+rtk eldev test e-board e-board-registry e-board-runtime e-cutover e-chat-service e-chat-session e-chat-starter e-modernchat e-task-queue e-task-actions e-cron-actions e-background-session e-annotation-answer e-subagent e-tools e-await-tool
+#+end_src
+
+#+begin_example
+Ran 993 tests, 986 results as expected, 0 unexpected, 7 skipped
+#+end_example
+
+Two independently grouped rechecks also passed 218/218 tests for the board,
+runtime, cutover, UI-work, chat-session/starter, and modernchat group, and
+114/120 expected results with 6 skips for task, producer, subagent, tool, and
+=await= coverage.
+
+** Source-only full suite
+
+The authoritative full run used a source-only temporary copy so ignored stale
+bytecode in the working checkout could not affect the result.
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+#+begin_example
+Ran 1951 tests, 1936 results as expected, 0 unexpected, 15 skipped
+#+end_example
+
+One first-run one-second timeout in
+=e-base-tools-test-bash-coalesces-streaming-progress= passed in isolation and
+the complete suite passed on immediate rerun.  It is not treated as a feature
+finding.
+
+** Batch compilation
+
+#+begin_src sh
+rtk eldev compile
+#+end_src
+
+#+begin_example
+Compilation succeeded.
+The existing warning set was two warnings in e-harness-instances.el and one in
+e-openai.el.
+#+end_example
+
+** Bounded semantic probes
+
+The exact probes relevant to individual findings and their outputs are kept
+with those findings below.  In particular they prove that:
+
+- a direct session turn finishes without a board and after board admission is
+  closed;
+- quiescence reports =finished= with terminal classification still queued;
+- a post with no requester bypasses exact-target authorization;
+- chat FIFO correlation assigns the wrong input identity;
+- one bounded classifier completes with an unbounded 128-pickup finalization;
+  and
+- mutating caller-owned content mutates the retained board record.
+
+* UX and performance playthrough
+
+** Completed main-chat view
+
+The attached Emacs window showed one completed chat with =[o1] main=, the user
+message =hi=, =Turn took 0min 3sec.=, the final assistant answer, and the
+composer.  The completed-turn presentation is legible and the composer remains
+available.
+
+This only proves preservation of the old main-session experience.  It does not
+prove the planned board experience: there is no board identity, board picker,
+participant selector, observer selector, or subagent stream affordance visible
+or represented in the chat buffer state.
+
+** Bounded live probes
+
+#+begin_src sh
+emacsclient --eval "(list :feature-board (featurep 'e-board) :feature-chat-service (featurep 'e-chat-service) :chat-buffers (length (seq-filter (lambda (buffer) (string-prefix-p \"*e-chat:\" (buffer-name buffer))) (buffer-list))))"
+#+end_src
+
+#+begin_example
+(:feature-board t :feature-chat-service t :chat-buffers 1)
+#+end_example
+
+The selected chat binding reported one session, hidden board =brd_1=, one
+subscriber, and no board-local variable:
+
+#+begin_example
+(:selected " *e-chat input:*e-chat:Untitled 2026-08-02T20:58:54Z**"
+ :chat "*e-chat:hi*"
+ :session "20260802T205854-372819dbbeb7"
+ :has-board-local nil
+ :binding-board "brd_1"
+ :subscriber-count 1)
+#+end_example
+
+The bounded board/session counts were:
+
+#+begin_example
+(:board-message-count 6 :observer-next-seq 15
+ :session-message-count 2 :session-activity-count 5)
+#+end_example
+
+Session persistence was idle and controller-backed at inspection time:
+
+#+begin_example
+(:persistent t :controller t :queued-writes t :write-queue-count 0
+ :unsettled (:generation 30 :writes 0))
+#+end_example
+
+The running Emacs was left unchanged.  No reload was performed.
+
+** Fan-out performance probe
+
+#+begin_src sh
+rtk eldev eval '(let ((board (e-board-create :id "board")) counts) (dotimes (i 128) (let ((participant-id (format "p%d" i))) (e-board-add-participant board :id participant-id :create-pickup-subscription-id (format "exact-%d" i)) (e-board-subscribe board participant-id (quote (:tags (main))) :id (format "tag-%d" i)))) (let* ((publication (e-board-post-input board :id "input" :tags (quote (main)) :content "work" :source-input-key (list "source" 1 1))) (message (e-board-publication-message publication))) (while (eq (e-board-message-routing-state message) (quote routing)) (e-board-drain-input-classifications board) (push (length (e-board-message-pickup-ids message)) counts)) (list :per-drain-pickups (nreverse counts) :classifier-limit e-board-input-classification-drain-limit)))'
+#+end_src
+
+#+begin_example
+(:per-drain-pickups (0 0 0 0 0 0 0 0 128) :classifier-limit 32)
+#+end_example
+
+Candidate inspection yields, but finalization performs the whole broadcast in
+one callback.  Source inspection also shows repeated =append=/=member= work in
+that callback, so the last step is both unbounded and quadratic in the number
+of matching participants/subscriptions.
+
+* Findings
+
+** TODO High: Standalone sessions still bypass the board-only product and its admission fence
+
+*** Expected
+
+The accepted product invariant is that boards are top-level and there are no
+standalone sessions.  Plan lines 505--508, 1392--1414, 1585--1608, 1742--1743,
+and 1752 require every live session to exist as an attached participant and
+require the one-go cutover to remove direct live create/prompt/queue/steer/abort
+paths.
+
+*** Observed
+
+=e-harness-create-session= remains public at =lisp/core/e-harness.el:685--690=.
+Direct queue, steer, prompt, and abort entry points remain at 1541--1609,
+2853 onward, and 3168--3189.  =test/e-test.el:450--465= explicitly preserves
+those APIs.  =e-chat-service--bind-session= at
+=lisp/core/e-chat-service.el:199--232= takes an existing session and creates a
+board around it; =e-chat-service-create-session= at 275--280 creates the
+session first.
+
+A bounded batch harness probe created a session and called
+=e-harness-prompt-async= directly.  It finished with assistant content
+="standalone answer"= without any board attachment.  After closing
+=e-board-runtime= admission, another direct prompt still finished with
+="after fence"=.
+
+#+begin_example
+(:status done
+ :result (:status done :reason stop :assistant-content "standalone answer")
+ :attachment nil)
+
+(:admission (:state closed :epoch 1)
+ :status done
+ :result (:status done :reason stop :assistant-content "after fence"))
+#+end_example
+
+The current structural guard at =test/e-cutover-structure-test.el:17--59=
+only rejects old symbol names in selected consumers.  It deliberately allows
+the old root APIs to exist and therefore cannot prove the board-only invariant.
+
+*** Why it matters
+
+Boards cannot be the top-level authorization, routing, quiescence, lifecycle,
+or observability boundary while a second live root can start work independently.
+The admission fence is not a cutover fence if direct sessions ignore it.
+
+*** Smallest corrective direction
+
+Create narrow private harness delivery/start/control ports that require a
+current board attachment token.  Move board runtime delivery to those ports,
+then delete the direct live session create/fork/prompt/queue/steer/abort APIs,
+their session-first service wrappers, and compatibility tests.  Session storage
+and transcript APIs may remain as private participant execution context; they
+must not remain live interaction roots.
+
+*** Verification required
+
+- Structural tests prove every retired root symbol/path is absent, not merely
+  absent from a short caller list.
+- A behavioral test proves no live turn starts without a current board,
+  participant, and attachment token.
+- Closing board admission prevents every new root, including custom capability
+  and internal service paths.
+
+** TODO High: Chat is still session-first and cannot operate the top-level board model
+
+*** Expected
+
+Plan lines 505--513 and 576--583 define chat as an authorized board client.
+The default post uses the descriptive =main= tag, but chat must also support
+generic tags/attributes and optional exact =to=.  Lines 607--625 require
+selector widening/replacement and independent observation.  Chat must be able
+to open an existing board rather than manufacture one around a session.
+
+*** Observed
+
+The =e-chat-service-binding= at =lisp/core/e-chat-service.el:43--60= is keyed
+by harness and session id.  Binding at 199--232 creates a new board, client,
+participant, fixed =(:tags (main))= pickup subscription, and fixed
+=(:tags (main))= observer for one existing session.  Posting at 311--333 always
+uses =:tags '(main)= and exposes neither arbitrary tags nor exact destination.
+
+The chat shell still stores harness/session buffer identity and its public open
+and submit functions are session-oriented.  The bounded live probe found no
+board-local identity and only the hidden per-session =brd_1= binding.  There is
+no public board open/list/selector-widen flow and no =board://= resource or
+equivalent board-facing shell surface.
+
+*** Why it matters
+
+The current service preserves the old one-chat/one-session product while using
+a private board as an implementation detail.  It cannot express the intended
+indirection between poster and picker, cannot show a multi-participant board,
+and cannot let a user follow subagents by widening an observer.
+
+*** Smallest corrective direction
+
+Make the application service board/client based.  Create/open the board
+independently, attach participant sessions to it, and store board/client/observer
+identity in the chat buffer.  Expose board-first post operations with generic
+tags/attributes and optional exact participant destination, plus observer
+replace/widen/backfill operations.  Keep =main= only as the default selector,
+not as a hard-coded transport.
+
+*** Verification required
+
+Exercise opening an empty board, reconnecting to an existing board, default
+=main= posting, arbitrary tagged posting, exact posting, zero-match visible
+unrouted state, two matching participants, and widening the same chat observer
+to a subagent stream.
+
+** TODO High: Chat observation and replay are not board-faithful or causally safe
+
+*** Expected
+
+Plan lines 607--634 require one non-consuming board observer as chat's sole
+semantic input.  Every rendered item must preserve its board =message-id= and
+=seq=, and correlation must use =(board, subject-participant, source-turn)=.
+Chat must not reconstruct history from the participant transcript or session
+activity.  Thinking, provider/tool/action progress, terminal summaries,
+failure/cancellation, and final output must arrive as board messages; local
+spinner frames alone remain local.
+
+*** Observed
+
+=e-chat-service--message-event= at
+=lisp/core/e-chat-service.el:105--157= translates immutable board messages into
+legacy session-shaped events.  It drops board id/seq, subject participant, and
+other board identity, invents a new timestamp, and turns only a successful
+=turn-summary= into =turn-finished=; failed/cancelled summaries disappear.
+
+A bounded translation probe used a reasoning activity at board sequence 42
+and a failed summary at sequence 43.  The retained projection contained no
+board identity/sequence/subject/message id and dropped the summary entirely:
+
+#+begin_example
+(:reasoning-event
+ (:type reasoning-delta :session-id "s" :turn-id "turn_x"
+  :created-at <local-float-time> :payload (:content "delta"))
+ :failed-summary-event nil)
+#+end_example
+
+Correlation uses one pending-input FIFO at lines 91--103 and 133--141.  The
+following probe shows why this is invalid when an earlier input is unrouted,
+queued, steered, or picked up by a different participant:
+
+#+begin_src sh
+rtk eldev eval '(progn (require (quote e-chat-service)) (let* ((binding (e-chat-service--binding-create :session-id "s" :turn-map (make-hash-table :test (quote equal)))) (input-a (e-board-message--create :id "input-a" :kind (quote input) :content "a")) (input-b (e-board-message--create :id "input-b" :kind (quote input) :content "b")) (started-b (e-board-message--create :id "activity-b" :kind (quote activity) :source-turn-id "actual-turn-b" :activity-kind (quote turn-started))) event) (e-chat-service--message-event binding input-a) (e-chat-service--message-event binding input-b) (setq event (e-chat-service--message-event binding started-b)) (list :mapped-turn-id (plist-get event :turn-id) :remaining (e-chat-service-binding-pending-input-head binding))))'
+#+end_src
+
+#+begin_example
+(:mapped-turn-id "input-a" :remaining ("input-b"))
+#+end_example
+
+All shell subscribers share one service observer and cursor at
+=e-chat-service.el:159--197, 286--299=.  A subscriber error is swallowed at
+159--167 and the shared observer page is nevertheless accepted, permanently
+losing that item for the failed subscriber.  Late subscribers have no
+independent history lane.
+
+The service still exposes private transcript, activity, queued input, active
+turn, and state reads at 380--418.  =e-chat.el:1882--1920, 8115--8128,
+8429--8443, 9011--9015=, =e-modernchat-view-model.el:186--203=, and
+=e-org-canvas.el:1538--1544= use those reads for replay or presentation.  Some
+paths reverse or reread the complete transcript.
+
+Finally, =e-board-runtime--visible-harness-activity-types= at
+=lisp/core/e-board-runtime.el:193--199= explicitly excludes reasoning and
+high-frequency progress from the board, even though plan validation lines
+1692, 1748 require their bounded/coalesced chat-visible board representation.
+
+*** Why it matters
+
+Board ordering, causal identity, reconnect, independent observation, and
+multi-participant correlation are lost at the presentation boundary.  Passing
+the current chat tests only proves that a legacy reducer can be fed from one
+hidden main board during the live happy path.
+
+*** Smallest corrective direction
+
+Give each shell connection its own registry client and observer lanes.  Deliver
+a frozen board-message DTO preserving board id, message id, seq, kind, tags,
+subject participant, source turn, causes, and bounded attributes.  Deduplicate
+and order by board identity, not local timestamps/FIFO.  Accept an observer
+page only after downstream enqueue/receipt succeeds; fault or retire a failing
+subscriber visibly without advancing its cursor.  Delete transcript/activity
+presentation feeds and rebuild reconnect/history exclusively from bounded
+board pages.
+
+*** Verification required
+
+Run summary-before-output, output-before-summary, failed and cancelled turns,
+two simultaneous participants with equal local turn ids, an unrouted input
+before a routed input, two independent chat clients, late subscribe, reconnect,
+history/live overlap, selector widening, subscriber failure, and expired-cursor
+resnapshot.  Make transcript/activity reads fail during every chat rendering
+test.
+
+** TODO High: Subagents do not join the parent's board
+
+*** Expected
+
+Plan lines 1353--1355 and validation lines 1694, 1737, and 1751 require an
+explicitly spawned child to become a participant on the parent board by
+default.  Default chat excludes the subagent by selector; widening the same
+observer reveals its interleaved activity/output without another transport.
+
+*** Observed
+
+=e-subagent-spawn= in =lisp/layers/agents/e-subagent-runner.el:256--300= calls
+=e-chat-service-create-session=.  That service creates a new child board.
+Only subagent lifecycle facts are published to the parent board, and
+=e-subagent--last-assistant-text= at 171--178 reverses the child private
+transcript to obtain the result.  Existing tests prove lineage metadata and
+parent fact publication but never prove that parent and child share one board.
+
+*** Why it matters
+
+The primary multi-participant scenario is absent.  Chat cannot naturally
+follow a child, the parent board does not contain the child's activity/output,
+and result return still depends on a private backchannel.
+
+*** Smallest corrective direction
+
+Spawn by adding a child participant to the existing board before making the
+child session live.  Tag its pickup/activity/output stream descriptively and
+return any summary as a separately source-keyed exact or tagged board input.
+Do not create a second board unless an explicit future product operation asks
+for a new board.
+
+*** Verification required
+
+One E2E test must show parent input, child pickup, child thinking/tool/summary/
+output, selector widening, and exact/tagged result return on the same board and
+in board sequence, with no transcript scan.
+
+** TODO High: Bundled work producers publish inert facts and task completion is false
+
+*** Expected
+
+Facts are observation-only.  A producer that requests work must post an
+=input= with descriptive tags/attributes or trigger an explicit declarative
+=post-input= continuation.  The task domain should preserve FIFO dispatch,
+retry/concurrency, and settle only when the requested work reaches its terminal
+outcome.  Zero matching subscribers must leave work visibly unrouted rather
+than pretend it completed.
+
+*** Observed
+
+=e-board-runtime-producer-publish-fact= at
+=lisp/core/e-board-runtime.el:382--447= only appends observation facts.
+=e-task-queue-default-runner= at =lisp/core/e-task-queue.el:560--584= publishes
+such a fact and immediately calls =on-settle= with =done=.  Its regression test
+at =test/e-task-queue-test.el:285--316= explicitly accepts done with zero
+participants.
+
+Cron, background file notification, annotation answer, and related producer
+paths likewise publish facts.  A lifecycle fact can be correct for a domain
+notification, but it is not dispatchable work merely because it carries tags.
+
+*** Why it matters
+
+The implementation collapses “work requested” into “notification recorded.”
+No subscribed session picks the task up, and durable task state can claim
+success when no agent acted.
+
+*** Smallest corrective direction
+
+Classify each bundled producer as either a domain fact or a work request.  Keep
+facts as facts.  For work requests, post a board input with stable source key,
+generic tags/attributes, and optional exact target, or install an explicit
+fact-to-input continuation.  Retain the task as running until the causally
+identified board work settles; record visible unrouted/failed/cancelled states.
+
+*** Verification required
+
+For every bundled producer, prove either its intentional observation-only
+contract or its input/pickup/settlement path.  In particular, prove task
+unrouted, one subscriber, broadcast, retry, cancellation, and terminal result
+instead of only successful fact append.
+
+** TODO High: Quiescence and activation can report a false-safe cutover
+
+*** Expected
+
+The accepted cutover order at plan line 1742 is: close all root admission,
+asynchronously quiesce active work, every accepted queue/writer/control request,
+prepare stores exclusively, verify current schemas/access, switch the complete
+source set, and fully restart.  Any missing counter or failed phase must prevent
+activation.
+
+*** Observed
+
+=e-board-unsettled-state= tracks pickups, effects, and routing only.
+Deferred terminal classification, aggregation deadlines, client revocation
+work, task persistence, and other producer/domain timers are not all represented
+in the owner projections aggregated by =e-board-runtime--quiescence-sources= at
+=lisp/core/e-board-runtime.el:456--470=.
+
+The following exact probe leaves terminal classification queued while the
+quiescence request is already finished:
+
+#+begin_example
+(:quiescence-state finished
+ :queued-classifications 1
+ :scheduled-drains 1
+ :board-unsettled (:generation 0 :pickups 0 :effects 0 :routing 0)
+ :work-unsettled (:generation 2 :work-handles 0))
+#+end_example
+
+No production caller invokes =e-board-runtime-request-quiescence=.  Default
+instance registration at =lisp/defaults/e-default-harnesses.el:433--454= omits
+the session-store/catalog/access/activation ports needed by the implemented
+preflight APIs.  The offline preparation command was removed after its source
+and tests were deleted, while =cutover-preparation.org= records that it was not
+run against user data.
+
+Raw runtime attach still accepts harness/session input directly, and session,
+runtime, tools, and authorization retain “legacy”, synthetic, missing-metadata,
+or =private-pre-cutover= branches.  The claimed one-go migration therefore has
+neither an enforced activation gate nor a clean post-cutover schema.
+
+*** Why it matters
+
+A false green can restart or activate while accepted work remains pending.
+Existing user data has no guaranteed preparation path, and compatibility
+fallbacks hide rather than reject an incomplete cutover.
+
+*** Smallest corrective direction
+
+Implement one activation service that closes every root, composes all owner
+counters and async close/finalize handles, obtains exclusive store ownership,
+runs preparation and current-schema/access verification, then enables the board
+runtime only after a full restart.  Wire production instances to its ports.
+Count terminal classification, deadlines, revocation, producer timers, and
+domain writers.  Remove raw attach and every obsolete compatibility/synthesis
+branch; missing current metadata must fail visibly.
+
+*** Verification required
+
+Hold each unsettled class independently and prove quiescence stays pending.
+Prove direct session roots are fenced.  Run the full preparation/preflight/
+restart scenario on a disposable old-schema store, including rollback and a
+current-schema readback.  A production instance missing any required port must
+fail registration/activation.
+
+** TODO High: Main-thread bounds remain incomplete
+
+*** Expected
+
+Plan lines 547--555, 590, 621--634, 1665--1680, 1730, and 1744 require fixed
+record/byte/clause/fan-out budgets.  Timers and callbacks may enqueue bounded
+immutable references only.  Serialization, file I/O, whole-transcript scans,
+large result materialization, and synchronous flush/wait must not run on the
+Emacs main thread.
+
+*** Observed
+
+- =e-board--finalize-input-classification= at
+  =lisp/core/e-board.el:2314--2401= rechecks and groups every match, repeatedly
+  uses =append=/=member=, allocates every pickup, applies every continuation
+  match, and commits the whole fan-out in one callback.  The 128-participant
+  probe above ends with a single 128-pickup step despite a classifier limit of
+  32.
+- Message content/reference have no byte cap and are copied once per pickup at
+  2365--2377.
+- Chat/modernchat/Canvas replay paths read, reverse, and project full private
+  transcripts from timers or render paths.
+- =e-task-queue--write-now= at =lisp/core/e-task-queue.el:616--624= serializes
+  the whole queue and uses =with-temp-file=.  Its timer at 626--638 calls that
+  function on the Emacs thread, and =e-task-queue-flush= at 640--647 remains
+  synchronous.
+- =e-session-persistence--send= at
+  =lisp/core/e-session-persistence.el:79--82= performs unbounded =json-encode=
+  and =process-send-string=, retry resends the sorted whole outbox, and flush at
+  203--220 loops in =accept-process-output=.  =e-session-flush= retains a
+  legacy synchronous fallback at =lisp/core/e-session.el:1317--1324=.
+- =e-await-tool--start= at =lisp/core/e-await-tool.el:70--142= resolves and
+  maps every supplied reference synchronously; its schema at 177--184 has no
+  cardinality cap, and the reply embeds every raw result without a byte cap.
+
+*** Why it matters
+
+The design's central responsiveness guarantee fails under fan-out, long
+history, large tasks, writer backlog, or a large =await=.  Passing the current
+nonblocking sweep does not prove bounded work because that test allowlists or
+does not model these cardinalities.
+
+*** Smallest corrective direction
+
+Make routing finalization a resumable cursor with O(1) accumulation and a hard
+fan-out/byte cap that commits all or none.  Move history to bounded observer
+pages and heavy projection to =e-ui-work=.  Give task/session persistence a
+worker/controller that accepts bounded frozen refs and exposes async finalize;
+delete synchronous flush/fallback paths.  Add hard =await= reference and reply
+byte limits, return result references/tombstones, and materialize reports in
+bounded pages.
+
+*** Verification required
+
+Use a fake scheduler to hold and step each carrier while a heartbeat and
+composer edit run between pages.  Cover fan-out over the cap, large payload,
+large transcript, writer backlog/restart, large =await= set/result, and prove
+zero full-log/registry scans on every hot path.
+
+** TODO High: Retained board messages are not immutable
+
+*** Expected
+
+Plan lines 510 and 547 require bounded immutable board messages before append
+returns.  Later caller mutation must not alter persisted routing, observation,
+or audit facts.
+
+*** Observed
+
+=e-board--make-message= at =lisp/core/e-board.el:2192--2242= copies several
+envelope fields but stores =:content content= and =:reference reference=
+directly at lines 2209--2210.  The following probe mutates the original list
+after publication:
+
+#+begin_src sh
+rtk eldev eval '(let* ((board (e-board-create :id "board")) (payload (list "before"))) (e-board-post-fact board :id "fact" :content payload :source-fact-key (list "producer" 1 1)) (setcar payload "after") (list :stored-content (e-board-message-content (e-board-message board "fact"))))'
+#+end_src
+
+#+begin_example
+(:stored-content ("after"))
+#+end_example
+
+Some other fields use =copy-tree=, which also does not copy mutable strings or
+vectors deeply.
+
+*** Why it matters
+
+Routing, observer replay, idempotent retries, and the audit log can change
+without a board event.  A pickup may see different data from the message that
+was originally appended.
+
+*** Smallest corrective direction
+
+Validate and cap every field, then deep-copy/freeze all mutable envelope values
+before appending the event/message.  Pickups and effects must reference or copy
+only that frozen representation.
+
+*** Verification required
+
+Add mutation regressions for content, reference, tags, attributes, nested conses,
+strings, vectors, requester identity, and cause metadata before and after
+classification and pickup preparation.
+
+** TODO High: Nil requester identity still bypasses authorization
+
+*** Expected
+
+Every public post has a trusted generation-checked requester.  Exact posting
+requires current membership plus target grant, and no legacy compatibility
+path survives the hard cutover.
+
+*** Observed
+
+=e-board-runtime-post-input= at =lisp/core/e-board-runtime.el:2371--2396=
+resolves and checks authorization only when =requester= is non-nil.
+=e-board-registry--delivery-requester-authorized-p= at
+=lisp/core/e-board-registry.el:868--898= explicitly turns nil actor into
+=:private-pre-cutover= and lets that sentinel bypass exact-post grants.
+
+The exact-target probe returned:
+
+#+begin_example
+(:status posted :requester nil :routing routed
+ :pickups (("board" "unauthorized" "target")))
+#+end_example
+
+The newer revocation checks work correctly only after a requester identity was
+captured.
+
+*** Why it matters
+
+Any public or accidentally exposed internal caller that omits requester can
+post to a participant it is not authorized to control.  This also preserves
+the legacy path the plan explicitly removed.
+
+*** Smallest corrective direction
+
+Require requester context in the public board ingress API.  Give trusted
+participant/service producers separately named internal APIs that derive actor
+identity from their authenticated attachment/binding rather than accepting
+nil.  Delete =:private-pre-cutover=.
+
+*** Verification required
+
+Test omitted, stale, revoked, wrong-board, and wrong-generation requester;
+member broadcast; exact target with and without grant; participant-originated
+post; and trusted producer post.  No nil requester should reach a retained
+message.
+
+** TODO High: Production board identity and lifecycle are not durable registry contracts
+
+*** Expected
+
+Boards are top-level, so their identities must not alias across restarts and
+their registry lifecycle must own client/participant/subscription cleanup.
+Plan Slice 1 and validation lines 1698, 1705 require explicit active/closing/
+closed behavior, reconnectable identity, bounded close, and no historical id
+resolving to a new board.
+
+*** Observed
+
+=e-board.el:25--26, 210--225= and =e-board-registry.el:39--40, 125--136= use
+process-local sequential fallback ids such as =brd_1=.  Registry create does
+not inject one production ULID/UUID service into the source board, and chat
+creates production boards without an id provider.
+
+=e-board-registry-close= at =lisp/core/e-board-registry.el:1060--1074=
+synchronously scans all participants/subscriptions and jumps from =active= to
+=closed=.  =e-chat-service--retire-binding= at 74--79 only disables local
+callbacks; it does not detach the observer client or participant, release
+history pins, close/expire the board, or reconcile accepted work.  Production
+shell lifecycle rarely invokes the registry close/detach operations exercised
+by tests.
+
+*** Why it matters
+
+A top-level board identity can silently refer to a different board after
+restart, resources can leak after chat death, and close can block the main
+thread or discard unresolved state.
+
+*** Smallest corrective direction
+
+Use one production opaque-id service for board/client/participant/message
+identity, with deterministic injection only in tests.  Add scheduled bounded
+=active -> closing -> closed= reconciliation with an async close handle.
+Connect buffer/client detach, idle expiry, explicit close, restart restore, and
+participant movement to registry-owned lifecycle operations.
+
+*** Verification required
+
+Prove restart non-aliasing, reconnect, buffer kill, two clients, idle expiry,
+explicit close with pending pickup/effect/history pin, bounded close pages, and
+no leaked registry entry/client/participant/subscription after completion.
+
+** TODO Medium: Current regression guards certify wrappers rather than the product contract
+
+*** Expected
+
+Plan lines 1742--1754 require structural and E2E proof of the hard cutover,
+board-only presentation, main/tag/exact dispatch, multi-client passive
+observation, same-board subagent activity, intermittent updates, asynchronous
+writers, and absence of legacy paths.
+
+*** Observed
+
+=test/e-cutover-structure-test.el= scans a selected file list for a small set of
+old =e-harness-*= names.  Moving the same private read/start behind
+=e-chat-service-*= makes the test green.  Chat tests explicitly preserve
+transcript restoration.  Modernchat tests prove a happy-path input/output and
+the presence of a summary on the board, but not that presentation used only
+the observer or that multiple board clients are independent.  Task tests codify
+fact publication as task completion.  Subagent tests never assert shared board
+identity.
+
+The complete suite therefore passes while the core product invariant is false.
+
+*** Why it matters
+
+Future fixes can continue optimizing the compatibility adapter while tests
+report that the board cutover is complete.
+
+*** Smallest corrective direction
+
+Replace string scans with a retired-interface manifest plus behavioral seams:
+make private transcript/activity/start functions signal if a public shell or
+producer calls them; require attachment tokens at the only live turn port; and
+add one board-first E2E scenario covering default/tag/exact, two clients, a
+subagent, progress/summary/output, reconnect, and async cutover activation.
+
+*** Verification required
+
+The full suite should fail before each architectural correction and pass only
+when the legacy symbol/path is absent or the board-only behavior is observed.
+
+* Plan coverage
+
+| Plan slice | Review state | Evidence and remaining work |
+|------------+--------------+-----------------------------|
+| Slice 0 -- Canonical executable identity and lifecycle | Partial | Work and invocation identities are stronger, but standalone session roots, legacy tool/start forms, and incomplete quiescence remain. |
+| Slice 1 -- Board identity, registry, subscriptions, and one participant | Partial | Registry/subscription primitives exist; production ids, immutable payloads, bounded close, and shell-owned lifecycle do not meet the contract. |
+| Slice 2 -- Exact invocation subscriptions and =wait_for= | Partial | Invocation generation fencing is fixed; =await= cardinality/result materialization is unbounded and legacy tool coverage remains. |
+| Slice 3 -- Full subscription/effect and inbox settlement | Partial | Deferred lifecycle and pickup retries are good; final fan-out is unbounded and task/work production does not use dispatchable input. |
+| Slice 4 -- Cross-harness runtime and explicit participant creation | Not achieved end-to-end | Chat has one hidden participant per board; subagents create separate boards; generic tag/exact multi-participant interaction is absent. |
+| Slice 5 -- Atomic board-only cutover | Not achieved | Direct live session roots, transcript/activity presentation, compatibility authorization/schema paths, missing activation/preparation gate, and synchronous persistence remain. |
+| Slice 6 -- Post-cutover measurement and tuning | Premature | Some counters/pages exist, but the board-only cutover and hard bounds must be real before tuning can close the feature. |
+
+* Architecture review
+
+The board core is directionally useful, but the integration dependency is
+backwards: the supposed top-level board service is constructed from and keyed
+by a concrete session, and chat receives legacy session events translated from
+board records.  Stable policy is therefore still coupled to the old harness
+and presentation contracts.
+
+The clearest ownership correction is:
+
+- registry owns durable board identity, lifecycle, principals, clients,
+  participants, subscriptions, and cursor/retention state;
+- board ingress owns immutable append and bounded routing preparation;
+- board runtime owns token-checked physical delivery and publication adapters;
+- harness/session owns only private participant execution and model context;
+- each chat shell owns a client plus observer cursors and renders board DTOs;
+- producer/domain services decide fact versus work input before crossing board
+  ingress; and
+- writer adapters own serialization/I/O and expose pending/finalize handles to
+  quiescence.
+
+No compatibility requirement applies.  The old live-session roots,
+session-presentation wrappers, synthetic metadata/identity fallbacks,
+=private-pre-cutover= authorization, raw attach, synchronous persistence
+fallbacks, and compatibility tests should be deleted rather than hidden behind
+new service names.
+
+* Design self-check
+
+1. *Useful stopping point?*  The board primitives and fixed pickup/invocation
+   defects are useful, but the feature as marked Done is not a valid stopping
+   point because it exposes two interaction models and a bypassable fence.
+2. *Final direction?*  One board-first product in which sessions are private
+   participants and every interaction, observation, and work dispatch crosses
+   the same bus.
+3. *Stable versus uncertain?*  Board top-level ownership, immutable causal
+   messages, exact/tag dispatch, passive observers, attachment fencing, and
+   async bounded carriers are stable.  Selector UI and future autospawn policy
+   can remain local and deferred.
+4. *Owner?*  Ownership is currently split between session-first chat service
+   and board registry/runtime.  Move each behavior to the owner listed in the
+   architecture section.
+5. *Coupling?*  The adapter increases coupling by preserving legacy session
+   events and reads.  Board DTOs and token-checked private harness ports reduce
+   it.
+6. *Dependency direction?*  Board-facing application policy currently depends
+   on concrete harness/session and legacy presentation shapes.  Reverse that:
+   the runtime adapter may depend on harness ports, while board/chat policy may
+   not.
+7. *Side effects outward?*  Serialization, file writes, provider/session
+   delivery, chat callbacks, and UI projection should be scheduled adapters,
+   never board mutation/finalization work.
+8. *State lifetime?*  Board identity, messages, causal ids, membership,
+   subscriptions, and accepted cursor positions are durable board state.
+   render focus/spinners stay local.  Private transcript remains session state.
+9. *Performance?*  The current fan-out is unbounded/quadratic and several full
+   scans or sync writes remain.  No regression is justified by the domain.
+10. *Real abstractions?*  Board/client/participant/subscription/pickup are real.
+    A session-keyed “board-backed chat binding” is not the top-level board
+    contract and should not be the public abstraction.
+11. *Compatibility?*  None was requested; retained legacy branches violate the
+    one-go migration decision.
+12. *Legacy removal?*  Remove direct live session roots, session presentation
+    feeds/wrappers, raw attach, synthetic metadata/counters, nil-requester
+    bypass, legacy tool start forms, and synchronous writer fallbacks.
+13. *Errors?*  Unrouted input, denied requester, subscriber failure, routing
+    overflow, publication failure, writer failure, and resnapshot requirement
+    must be visible.  Current subscriber errors are swallowed and false task
+    completion hides missing delivery.
+14. *Tests?*  Core board tests are valuable, but product tests must fail closed
+    at private boundaries and exercise board-first E2E behavior independently
+    of transcript/session compatibility helpers.
+
+* Unresolved
+
+- Ten High findings and one Medium finding remain open.
+- The feature must stay =In-review= in =docs/feats/index.org=.
+- The previous =review.org= remains historical evidence for fixes that are
+  genuinely complete, but its final =Done= conclusion is superseded by this
+  review.
+- Repository-side tests pass; that does not satisfy the missing product and
+  architecture contracts.
+- The running Emacs was inspected only and left unchanged.
