@@ -407,13 +407,29 @@ has no callback and is observed only."
                (e-board-runtime-attachment-generation attachment)
                sequence))))))
 
+(defun e-board-runtime--enqueue-ready-participant-pickup (attachment)
+  "Queue ATTACHMENT's current ready FIFO head, if it has one.
+This is the runtime-side wake edge for a pickup that could not enter a busy
+session earlier.  It reads only the owning participant's head rather than
+scanning a board-wide delivery table."
+  (let* ((registry-board (e-board-runtime-attachment-board attachment))
+         (board (e-board-registry-board-source-board registry-board))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant attachment)))
+         (delivery-id (car (e-board--pickup-queue board participant-id)))
+         (pickup (and delivery-id (e-board-pickup board delivery-id))))
+    (when (and pickup (eq (e-board-pickup-state pickup) 'ready))
+      (e-board-runtime--enqueue-pickups registry-board (list delivery-id)))))
+
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
   (when (e-board-runtime--current-attachment-p attachment)
     (let ((type (e-events-type event)))
     (cond
      ((eq type 'turn-finished)
-      (e-board-runtime--publish-output attachment (plist-get event :turn-id)))
+      (e-board-runtime--publish-output attachment (plist-get event :turn-id))
+      (e-board-runtime--enqueue-ready-participant-pickup attachment))
      ((eq type 'input-consumed)
       (let* ((payload (plist-get event :payload))
              (delivery-id (plist-get payload :delivery-id))
@@ -605,13 +621,7 @@ the new endpoint."
        (e-board-registry-board-source-board board) 'participant-rebound
        (list :participant-id (e-board-registry-participant-id participant)
              :attachment-generation (e-board-runtime-attachment-generation attachment)))
-      (let* ((source-board (e-board-registry-board-source-board board))
-             (delivery-id (car (e-board--pickup-queue
-                                source-board
-                                (e-board-registry-participant-id participant))))
-             (pickup (and delivery-id (e-board-pickup source-board delivery-id))))
-        (when (and pickup (eq (e-board-pickup-state pickup) 'ready))
-          (e-board-runtime--enqueue-pickups board (list delivery-id))))
+      (e-board-runtime--enqueue-ready-participant-pickup attachment)
       attachment)))
 
 (defun e-board-runtime--deliver-pickups (board pickup-ids)
@@ -656,7 +666,8 @@ the new endpoint."
                    (e-board-runtime--enqueue-pickups board (list next-id))))))
           (error
            (e-board-pickup-return-ready source-board delivery-id err)
-           (signal (car err) (cdr err))))))))
+           (unless (eq (car err) 'e-board-runtime-session-busy)
+             (signal (car err) (cdr err)))))))))
 
 (cl-defun e-board-runtime-post-input
     (board-or-id &key id author tags attributes to (mode 'inject) content reference source-input-key)

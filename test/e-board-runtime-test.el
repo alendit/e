@@ -220,6 +220,40 @@
                    'consumed))
        (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
 
+(ert-deftest e-board-runtime-test-busy-delivery-retries-after-turn-finished ()
+  "A retryable busy adapter result stays ready until the terminal wake edge."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attempts 0))
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant"
+              :delivery-function
+              (lambda (&rest _arguments)
+                (cl-incf attempts)
+                (when (= attempts 1)
+                  (signal 'e-board-runtime-session-busy '("session")))))))
+        (let* ((publication (e-board-runtime-post-input
+                             board :id "input" :to "participant" :content "queued"))
+               (source-board (e-board-registry-board-source-board board))
+               delivery-id)
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source-board)))
+          (setq delivery-id (car (e-board-publication-pickup-ids publication)))
+          (e-board-runtime--drain-pickups)
+          (should (= attempts 1))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board delivery-id))
+                      'ready))
+          (e-board-runtime--handle-harness-event
+           attachment (e-events-make :type 'turn-finished :session-id "session"
+                                     :turn-id "finished"))
+          (e-board-runtime--drain-pickups)
+          (should (= attempts 2))
+          (should (eq (e-board-pickup-state (e-board-pickup source-board delivery-id))
+                      'consumed)))))))
+
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
   (e-board-runtime-test--with-empty-state
