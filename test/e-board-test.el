@@ -164,6 +164,23 @@
         (should (eq (e-board-message-routing-state message) 'unrouted))
         (should-not (e-board-publication-pickup-ids publication))))))
 
+(ert-deftest e-board-test-core-routing-fault-is-visible-without-partial-pickups ()
+  "A malformed trusted selector fails one routing attempt before commit."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (e-board-subscribe board "one" '(:tags (main)) :id "working")
+      ;; Attribute syntax is core-owned matching schema, unlike a predicate
+      ;; fault which only terminally faults its own subscription.
+      (e-board-subscribe board "one" '(:tags (main) :attributes invalid)
+                         :id "malformed")
+      (let* ((publication (e-board-post-input board :tags '(main)))
+             (message (e-board-publication-message publication)))
+        (should (eq (e-board-message-routing-state message) 'routing-failed))
+        (should-not (e-board-message-pickup-ids message))
+        (should (member 'input-routing-failed
+                        (mapcar #'e-board-event-type (e-board-events board))))))))
+
 (ert-deftest e-board-test-source-key-retries-and-expired-history-do-not-route-twice ()
   "Retained source keys return their pickup; late keys remain explicit failures."
   (e-board-test--with-empty-registry

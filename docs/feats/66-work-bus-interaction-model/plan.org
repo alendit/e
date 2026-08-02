@@ -26,6 +26,9 @@ Input append now freezes a private subscription snapshot and returns before
 matching, pickup creation, continuation effects, or harness delivery; the
 runtime drains only the resulting finalized pickup identities later.  Each
 input now exposes its explicit =routing=, =routed=, or =unrouted= projection.
+An unexpected core selector/index fault now terminates that attempt as visible
+=routing-failed= before any pickup-set commit; trusted predicate faults remain
+subscription-local.
 The board now owns an initial per-participant pickup FIFO: only the head is
 =ready=, delivery atomically fences it, and a synchronous consumed receipt
 promotes its successor; a failed uncommitted adapter attempt restores the head

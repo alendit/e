@@ -1295,6 +1295,16 @@ Return nil when the key is new and may be appended."
                          :matches nil :post-subscriptions nil :post-index 0))))
     (e-board--schedule-input-classification board)))
 
+(defun e-board--fail-input-classification (board record err)
+  "Stop RECORD before pickup commit after a core classifier ERR."
+  (let ((message (e-board-input-classification-message record)))
+    (setf (e-board-message-routing-state message) 'routing-failed)
+    (e-board--append-event
+     board 'input-routing-failed
+     (list :message-id (e-board-message-id message) :error err))
+    (setf (e-board-input-classifications board)
+          (cdr (e-board-input-classifications board)))))
+
 (defun e-board-drain-input-classifications (board)
   "Classify a bounded page of frozen input subscriptions in board order."
   (setf (e-board-input-classification-scheduled board) nil)
@@ -1307,11 +1317,14 @@ Return nil when the key is new and may be appended."
         (if (< index (length subscriptions))
             (let ((subscription (nth index subscriptions)))
               (setf (e-board-input-classification-index record) (1+ index))
-              (when (e-board--input-subscription-matches-p board subscription message)
-                (if (eq (e-board-subscription-effect subscription) 'create-pickup)
-                    (push subscription (e-board-input-classification-matches record))
-                  (push subscription
-                        (e-board-input-classification-post-subscriptions record)))))
+              (condition-case err
+                  (when (e-board--input-subscription-matches-p board subscription message)
+                    (if (eq (e-board-subscription-effect subscription) 'create-pickup)
+                        (push subscription (e-board-input-classification-matches record))
+                      (push subscription
+                            (e-board-input-classification-post-subscriptions record))))
+                (error
+                 (e-board--fail-input-classification board record err))))
           (e-board--finalize-input-classification
            board message (e-board-input-classification-publication record)
            (e-board-input-classification-matches record)
