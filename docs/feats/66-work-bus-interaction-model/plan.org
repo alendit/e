@@ -19,6 +19,9 @@ private runtime owns the captured loop completion service and its original
 attachment generation.
 Terminal work publication now freezes indexed invocation/aggregation candidates
 and defers their activation classification to a bounded board drain.
+Input append now freezes a private subscription snapshot and returns before
+matching, pickup creation, continuation effects, or harness delivery; the
+runtime drains only the resulting finalized pickup identities later.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime

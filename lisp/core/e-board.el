@@ -63,6 +63,9 @@
 (defconst e-board-terminal-classification-drain-limit 16
   "Maximum indexed terminal subscription clauses classified per drain.")
 
+(defconst e-board-input-classification-drain-limit 32
+  "Maximum frozen input subscription clauses classified per drain.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -93,13 +96,20 @@
                (:conc-name e-board-terminal-classification-))
   work-id invocation-ids aggregation-ids invocation-index aggregation-index)
 
+(cl-defstruct (e-board-input-classification
+               (:constructor e-board-input-classification--create)
+               (:conc-name e-board-input-classification-))
+  message publication subscriptions index matches post-subscriptions post-index)
+
 (cl-defstruct (e-board
                (:constructor e-board--create)
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
   observers pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
-  terminal-classifications terminal-classification-scheduled terminal-classification-scheduler)
+  terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
+  input-classifications input-classification-scheduled input-classification-scheduler
+  routed-pickup-results)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -162,7 +172,8 @@ The board object remains valid for inspection by its holder."
 
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
-          terminal-classification-scheduler (register t))
+          terminal-classification-scheduler input-classification-scheduler
+          (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
 explicit ids to individual operations takes precedence over this generator."
@@ -189,7 +200,11 @@ explicit ids to individual operations takes precedence over this generator."
                   :aggregation-work-index (make-hash-table :test 'equal)
                   :terminal-classifications nil
                   :terminal-classification-scheduled nil
-                  :terminal-classification-scheduler terminal-classification-scheduler)))
+                  :terminal-classification-scheduler terminal-classification-scheduler
+                  :input-classifications nil
+                  :input-classification-scheduled nil
+                  :input-classification-scheduler input-classification-scheduler
+                  :routed-pickup-results nil)))
     (when register (e-board-register board))
     board))
 
@@ -923,10 +938,39 @@ Return nil when the key is new and may be appended."
           (append (e-board-messages board) (list message)))
     message))
 
-(defun e-board--route-input (board message)
-  "Freeze MESSAGE routing matches and create at most one pickup per participant."
-  (let ((subscriptions (e-board--matching-subscriptions board message))
-        (post-subscriptions (e-board--post-input-subscriptions board message))
+(defun e-board--input-subscription-matches-p (board subscription message)
+  "Classify one frozen SUBSCRIPTION against MESSAGE in a later router turn."
+  (let ((matches
+         (cond
+          ((eq (e-board-subscription-effect subscription) 'create-pickup)
+           (and (e-board--eligible-subscription-p board subscription)
+                (if-let ((to (e-board-message-to message)))
+                    (and (e-board-subscription-built-in-p subscription)
+                         (equal (e-board-subscription-participant-id subscription) to))
+                  (and (not (e-board-subscription-built-in-p subscription))
+                       (e-board--selector-matches-p board subscription message)))))
+          ((and (not (e-board-message-to message))
+                (eq (e-board-subscription-state subscription) 'active)
+                (not (e-board-subscription-built-in-p subscription))
+                (listp (e-board-subscription-effect subscription))
+                (eq (car (e-board-subscription-effect subscription)) :post-input))
+           (let ((lineage (plist-get (e-board-message-attributes message)
+                                     :board-subscription-lineage)))
+             (and (not (member (e-board-subscription-id subscription) lineage))
+                  (e-board--selector-matches-p board subscription message)))))))
+    ;; Predicate faults are visible on the durable subscription rather than
+    ;; only on the frozen classifier copy.
+    (when (eq (e-board-subscription-state subscription) 'faulted)
+      (when-let ((current (e-board-find-subscription
+                           board (e-board-subscription-id subscription))))
+        (setf (e-board-subscription-state current) 'faulted)))
+    matches))
+
+(defun e-board--finalize-input-classification
+    (board message publication subscriptions post-subscriptions)
+  "Commit MESSAGE's complete pickup fan-out from frozen SUBSCRIPTIONS."
+  (let ((subscriptions (nreverse subscriptions))
+        (post-subscriptions (nreverse post-subscriptions))
         (by-participant (make-hash-table :test 'equal))
         participant-ids pickup-ids)
     ;; Group before allocating pickups so duplicate subscriptions cannot fan out.
@@ -967,12 +1011,66 @@ Return nil when the key is new and may be appended."
                                      :pickup-ids pickup-ids)))
     (dolist (subscription post-subscriptions)
       (e-board--schedule-post-input board subscription message))
-    (e-board-publication--create
-     :status 'posted :message message :pickup-ids pickup-ids)))
+    (setf (e-board-routed-pickup-results board)
+          (append (e-board-routed-pickup-results board)
+                  (list (list (e-board-message-id message) pickup-ids)))
+          (e-board-publication-pickup-ids publication) pickup-ids)))
+
+(defun e-board--schedule-input-classification (board)
+  "Schedule BOARD's frozen input classifier once after append returns."
+  (unless (e-board-input-classification-scheduled board)
+    (setf (e-board-input-classification-scheduled board) t)
+    (if-let ((scheduler (e-board-input-classification-scheduler board)))
+        (funcall scheduler (lambda () (e-board-drain-input-classifications board)))
+      (run-at-time 0 nil (lambda () (e-board-drain-input-classifications board))))))
+
+(defun e-board--queue-input-classification (board message publication)
+  "Freeze BOARD's subscription view for MESSAGE without matching on append."
+  (let ((subscriptions
+         (mapcar #'copy-e-board-subscription (e-board-subscriptions board))))
+    (setf (e-board-input-classifications board)
+          (append (e-board-input-classifications board)
+                  (list (e-board-input-classification--create
+                         :message message :subscriptions subscriptions :index 0
+                         :publication publication
+                         :matches nil :post-subscriptions nil :post-index 0))))
+    (e-board--schedule-input-classification board)))
+
+(defun e-board-drain-input-classifications (board)
+  "Classify a bounded page of frozen input subscriptions in board order."
+  (setf (e-board-input-classification-scheduled board) nil)
+  (let ((remaining e-board-input-classification-drain-limit))
+    (while (and (> remaining 0) (e-board-input-classifications board))
+      (let* ((record (car (e-board-input-classifications board)))
+             (subscriptions (e-board-input-classification-subscriptions record))
+             (index (e-board-input-classification-index record))
+             (message (e-board-input-classification-message record)))
+        (if (< index (length subscriptions))
+            (let ((subscription (nth index subscriptions)))
+              (setf (e-board-input-classification-index record) (1+ index))
+              (when (e-board--input-subscription-matches-p board subscription message)
+                (if (eq (e-board-subscription-effect subscription) 'create-pickup)
+                    (push subscription (e-board-input-classification-matches record))
+                  (push subscription
+                        (e-board-input-classification-post-subscriptions record)))))
+          (e-board--finalize-input-classification
+           board message (e-board-input-classification-publication record)
+           (e-board-input-classification-matches record)
+           (e-board-input-classification-post-subscriptions record))
+          (setf (e-board-input-classifications board)
+                (cdr (e-board-input-classifications board))))
+        (cl-decf remaining)))
+    (when (e-board-input-classifications board)
+      (e-board--schedule-input-classification board))))
+
+(defun e-board-drain-routed-pickups (board)
+  "Return and clear finalized pickup ids for separately scheduled delivery."
+  (prog1 (e-board-routed-pickup-results board)
+    (setf (e-board-routed-pickup-results board) nil)))
 
 (cl-defun e-board-post-input
     (board &key id author tags attributes to (mode 'inject) content reference source-input-key)
-  "Append and route one input message, returning an `e-board-publication'.
+  "Append one input message and queue its routing, returning a publication.
 With TO, only its participant's built-in address subscription is considered.
 Without TO, active ordinary tag subscriptions receive one frozen pickup each.
 SOURCE-INPUT-KEY retries return the existing message; old or out-of-order keys
@@ -984,8 +1082,10 @@ return status `source-history-expired' without appending or routing again."
              (message (e-board--make-message
                         board 'input id author tags attributes to mode content reference
                        source-input-key nil nil nil))
-             (publication (e-board--route-input board message)))
+             (publication (e-board-publication--create
+                           :status 'posted :message message :pickup-ids nil)))
         (e-board--remember-source board 'input source-input-key message)
+        (e-board--queue-input-classification board message publication)
         publication)))
 
 (cl-defun e-board-post-output

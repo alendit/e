@@ -15,7 +15,12 @@
   (declare (indent 0))
   `(let ((e-board--registry (make-hash-table :test 'equal))
          (e-board--id-sequence 0))
-     ,@body))
+     ;; Most behavior tests assert post-classification projections.  Give them
+     ;; an explicit test scheduler while the production default stays deferred.
+     (cl-letf (((symbol-function 'e-board--schedule-input-classification)
+                (lambda (board)
+                  (e-board-drain-input-classifications board))))
+       ,@body)))
 
 (ert-deftest e-board-test-generated-and-injected-identities ()
   "Board creation and member creation support deterministic identities."
@@ -133,6 +138,27 @@
       (should (equal (mapcar #'e-board-event-seq events) '(1 2)))
       (should (equal (mapcar #'e-board-event-type events)
                      '(input-posted input-unrouted))))))
+
+(ert-deftest e-board-test-input-routing-is-deferred-and-freezes-subscriptions ()
+  "Append queues a frozen view; later subscriptions cannot route its message."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        routers)
+    (let ((board (e-board-create
+                  :id "board"
+                  :input-classification-scheduler
+                  (lambda (drain) (push drain routers)))))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((publication (e-board-post-input board :id "input" :tags '(main)))
+             (message (e-board-publication-message publication)))
+        (should-not (e-board-publication-pickup-ids publication))
+        (should-not (e-board-message-matching-participant-ids message))
+        (e-board-subscribe board "one" '(:tags (main)) :id "too-late")
+        (should (= (length routers) 1))
+        (funcall (pop routers))
+        (should (eq (e-board-message-unrouted-reason message)
+                    'no-matching-subscription))
+        (should-not (e-board-publication-pickup-ids publication))))))
 
 (ert-deftest e-board-test-source-key-retries-and-expired-history-do-not-route-twice ()
   "Retained source keys return their pickup; late keys remain explicit failures."

@@ -306,6 +306,13 @@ will consume the mailbox under its own bounded drain."
       (setq e-board-runtime--pickup-drain-scheduled t)
       (run-at-time 0 nil #'e-board-runtime--drain-pickups))))
 
+(defun e-board-runtime--drain-input-routing (board drain)
+  "Run BOARD's bounded classifier, then queue only its finalized pickups."
+  (funcall drain)
+  (dolist (result (e-board-drain-routed-pickups
+                   (e-board-registry-board-source-board board)))
+    (e-board-runtime--enqueue-pickups board (cadr result))))
+
 (defun e-board-runtime--enroll-work (harness handle callback)
   "Enroll HANDLE for its attached HARNESS session before runner entry.
 CALLBACK is the private loop result seam for executable tool work; turn work
@@ -467,6 +474,12 @@ the conservative idle-only harness delivery port is used."
         (setf (e-board-invocation-effect-dispatcher
                (e-board-registry-board-source-board board))
               #'e-board-runtime--apply-invocation-effect)
+        (setf (e-board-input-classification-scheduler
+               (e-board-registry-board-source-board board))
+              (lambda (drain)
+                (run-at-time 0 nil
+                             (lambda ()
+                               (e-board-runtime--drain-input-routing board drain)))))
          (e-harness-set-work-enrollment-function
          harness
          (lambda (handle &optional callback)

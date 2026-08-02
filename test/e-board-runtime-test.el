@@ -76,6 +76,12 @@
         ;; Ingress only appends/enqueues.  A bounded later drain owns all
         ;; harness delivery attempts, so routing cannot start a turn inline.
         (should-not deliveries)
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (should-not deliveries)
         (e-board-runtime--drain-pickups)
         (should (equal (mapcar #'car deliveries) '("first" "first" "second")))
         (should (equal (mapcar #'car (mapcar #'cdr deliveries))
@@ -93,6 +99,11 @@
       (e-board-runtime-post-input board :to "participant" :mode 'queue
                                   :content "queued input")
       (should-not (e-harness-queued-prompts harness "session"))
+      (e-board-runtime--drain-input-routing
+       board
+       (lambda ()
+         (e-board-drain-input-classifications
+          (e-board-registry-board-source-board board))))
       (e-board-runtime--drain-pickups)
       (should (equal (plist-get (car (e-harness-queued-prompts harness "session"))
                                 :prompt)
