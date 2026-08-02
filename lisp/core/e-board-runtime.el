@@ -223,23 +223,24 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
         (remhash work-id e-board-runtime--pending-activity-set)
         (remhash work-id e-board-runtime--work-activity-mailboxes)
         (when mailbox
-          (cl-incf published)
           (let* ((attachment (plist-get mailbox :attachment))
                  (board (e-board-registry-board-source-board
                          (e-board-runtime-attachment-board attachment)))
                  (participant-id
                   (e-board-registry-participant-id
                    (e-board-runtime-attachment-participant attachment))))
-            (e-board-post-activity
-             board
-             :author (format "participant:%s" participant-id)
-             :subject-participant-id participant-id
-             :source-turn-id (plist-get mailbox :turn-id)
-             :activity-kind 'work-progress
-             :attributes (list :work-id work-id)
-             :content (e-board-runtime--activity-content
-                       (plist-get mailbox :payload))
-             :source-activity-key (plist-get mailbox :source-key))))))
+            (when (e-board-runtime--current-attachment-p attachment)
+              (cl-incf published)
+              (e-board-post-activity
+               board
+               :author (format "participant:%s" participant-id)
+               :subject-participant-id participant-id
+               :source-turn-id (plist-get mailbox :turn-id)
+               :activity-kind 'work-progress
+               :attributes (list :work-id work-id)
+               :content (e-board-runtime--activity-content
+                         (plist-get mailbox :payload))
+               :source-activity-key (plist-get mailbox :source-key)))))))
     (when e-board-runtime--pending-activity-head
       (setq e-board-runtime--activity-drain-scheduled t)
       (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes))))

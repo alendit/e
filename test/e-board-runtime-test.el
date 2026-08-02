@@ -118,6 +118,15 @@
         (should (e-board-runtime--current-attachment-p attachment))
         (should-not (gethash (e-board-runtime--session-key old-harness "old")
                              e-board-runtime--session-attachments))
+        (let ((source-board (e-board-registry-board-source-board board)))
+          (puthash "stale-work"
+                   (list :attachment old-attachment :turn-id "turn"
+                         :payload 'stale :source-key '(participant 1 1))
+                   e-board-runtime--work-activity-mailboxes)
+          (e-board-runtime--enqueue-activity-flush "stale-work")
+          (let ((message-count (length (e-board-messages source-board))))
+            (e-board-runtime--drain-activity-mailboxes)
+            (should (= (length (e-board-messages source-board)) message-count))))
         (e-board-runtime-post-input board :id "after-rebind" :to "participant"
                                     :content "new endpoint")
         (e-board-runtime--drain-input-routing
