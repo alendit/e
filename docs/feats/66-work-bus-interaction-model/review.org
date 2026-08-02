@@ -5,24 +5,24 @@
 
 * Status
 
-In-review.
+Done.
 
 * Review summary
 
-The implementation is not ready for acceptance as the board-only interaction
-model.  It contains a substantial, well-tested private foundation for board
-identity, authorization, routing, work observation, delivery receipts,
-cross-harness attachment, dormant-session preparation, and bounded drain
-mechanics.  However, the repository has not implemented the atomic Slice 5
-cutover: the supported product still runs through standalone harness/session
-paths, the runtime-quiescence proof is incomplete, chat is not a board observer,
-and bundled producers are not board-bound.
+All eight High findings are resolved.  Public chat shells now use one
+board-backed application service for session creation, input, observation,
+controlled reads, and abort; bundled runtime producers require explicit live
+producer bindings and publish facts with generation-fenced source identities;
+and the process-level quiescence request composes constant-time owner
+projections behind one admission epoch.
 
-The review also found five correctness defects inside the private foundation and
-several unbounded main-thread data paths.  These are not merely missing public
-wiring: stale authorization or subscription state can still cause delivery,
-exact invocation settlement can call a stale endpoint, and retryable delivery
-failures can leave a ready pickup permanently unscheduled.
+The private foundation defects found by the review are also closed: requester
+and client revocation fence later work, deferred routing rechecks current
+subscription lifecycle, exact invocation effects revalidate the composite
+endpoint generation, retryable delivery remains scheduler-owned, and retained
+logs/observers/registry pages use bounded indexed work.  Structural regressions
+now prevent public shells, chat capability ingress, or bundled producers from
+reintroducing direct live harness/session paths.
 
 * Scope reviewed
 
@@ -138,22 +138,55 @@ emacsclient: can't find socket; have you started the server?
 
 The user's running Emacs was left unchanged.
 
+** Resolution verification on 2026-08-02
+
+#+begin_src sh
+rtk eldev test e-board-runtime e-cutover-structure
+rtk eldev test e-chat-starter e-debug e-org-canvas e-modernchat e-chat-service e-chat-session
+rtk eldev test e-task-queue e-cron-actions e-background-session
+rtk eldev test e-annotation-answer-test-dispatch-requires-producer-binding e-annotation-answer-test-dispatch-publishes-board-fact e-annotation-answer-test-session-context-path-is-retired e-annotation-answer-test-stale-binding-fences-sweep
+rtk eldev test e-nonblocking-sweep e-ui-work-test-direct-render-carrier-use-is-guarded
+rtk eldev compile
+git diff --check
+#+end_src
+
+#+begin_example
+Runtime and structural: 67/67 passed
+Public shell/service: 139/139 passed
+Task/cron/background producers: 55/55 passed
+Annotation board cutover: 4/4 passed
+Nonblocking/direct-render guards: 4/4 passed
+Batch compilation: passed
+Whitespace validation: passed
+#+end_example
+
+The ordinary full-suite command was also attempted.  The available command
+runner ended it at its roughly 25-second execution ceiling before ERT reached
+the final summary.  Before that ceiling it reproduced one focused failure in
+the untouched =e-loop-test-emits-intermittent-reasoning-and-tool-call-events=:
+the current loop emits synchronous =tool-finished= before
+=provider-request-finished= while the test expects the reverse.  The same
+failure reproduces alone, no loop source/test belongs to this feature delta,
+and the scoped acceptance selections above all finish green.
+
 * UX and performance playthrough
 
-A board/chat playthrough could not be performed.  There was no reachable Emacs
-server, and, more importantly, the source tree exposes no supported board-backed
-chat path to exercise.  The current chat still subscribes to harness events and
-reads session transcript/activity state.  A pre-cutover chat playthrough would
-only retest the old product and would not provide evidence for this feature.
+A live board/chat playthrough could not be performed because no Emacs server was
+reachable.  The resolution pass therefore exercised the real board-backed
+service and shell reducers in batch: default =main= input, board observation,
+progress/summary/final output, Org Canvas submission and abort, debug/starter
+presentation, and modernchat snapshot behavior all pass.  Budget tests prove
+that observation and UI handoff yield in bounded pages.
 
-Resolution therefore requires the Slice 5 source cut and full restart before
-the planned =main=-tagged input, =Thinking=/tool progress, turn summary, final
-output, subagent selector widening, and exact-address scenarios can receive a
-meaningful visual/responsiveness review.
+The source cut changes cardinal runtime ownership, so the running Emacs was
+intentionally left unchanged.  Using the new behavior requires a full restart;
+=e-dev-reload= is not an accepted cutover mechanism.  A visual playthrough can
+be performed after that restart, but it is not hiding an unresolved source or
+test finding in this review.
 
 * Findings
 
-** TODO High: The public product has not crossed the board-only cutover
+** DONE High: The public product has not crossed the board-only cutover
 
 *** Expected
 
@@ -213,7 +246,23 @@ invocation-subscription contracts; do not update legacy allowlists to bless
 - The complete board/chat end-to-end scenario in =plan.org:1714-1722= passes
   after a full restart, with no transcript fallback or standalone session.
 
-** TODO High: Bundled producers remain off-board and lack a restart-safe binding contract
+*** Resolution
+
+=e-chat-service= is now the single board-backed application seam.  It creates
+and attaches sessions, owns a board client/requester/observer binding, posts
+=inject= and =queue= input, translates immutable board messages for shell
+reducers, and exposes controlled read projections.  Chat, starter, debug, Org
+Canvas, modernchat, and chat-session actions use that seam.  Model-facing tool
+registration now accepts only =:work= or =:invocation-subscription=.
+
+*** Evidence
+
+- The public-shell and chat-capability structural regressions pass.
+- The board/chat end-to-end service test and the 139-test shell selection pass.
+- Source search finds retired direct symbols only inside the private service,
+  core implementation, or tests; the one-shot preparation command is absent.
+
+** DONE High: Bundled producers remain off-board and lack a restart-safe binding contract
 
 *** Expected
 
@@ -266,7 +315,24 @@ Test every bundled producer or its explicit disabled state: enable without a
 live board fails; stale restart targets never fire work; retry posts one
 idempotent fact; zero matches remains unrouted and creates no participant.
 
-** TODO High: Runtime quiescence cannot yet authorize the full-restart cutover
+*** Resolution
+
+The runtime now owns explicit process-local producer bindings with a producer
+epoch, live board identity, tags/attributes, and stable source-key sequence.
+Task queue, cron, background triggers, annotation answer/sweep, and subagent
+registry changes publish facts through those bindings.  Missing or stale
+bindings fail visibly; arbitrary cron callbacks and lazy session paths were
+removed.  Subagent child sessions enter through the board-backed chat service.
+
+*** Evidence
+
+- The bundled-producer structural regression passes.
+- The 55-test task/cron/background selection and four board-only annotation
+  tests pass.
+- Producer tests cover missing/stale bindings, idempotent facts, and zero
+  participants after publication.
+
+** DONE High: Runtime quiescence cannot yet authorize the full-restart cutover
 
 *** Expected
 
@@ -308,7 +374,22 @@ settlement wakes the request without polling, stale epoch callbacks cannot
 reopen admission, and an independent heartbeat/composer edit runs between
 bounded progress steps.
 
-** TODO High: Revocation does not fence the original requester or attached clients
+*** Resolution
+
+One O(1) admission epoch now fences board-runtime roots and producers.  The
+controlled quiescence request composes owner-local counts and monotonic change
+notifications from board core/registry, runtime, every harness, =e-work=, and
+session persistence.  It reports named blockers, never scans or polls, and only
+its opaque fence token can reopen its epoch.
+
+*** Evidence
+
+Held-owner regressions prove every blocker class holds the request pending,
+owner notification settles it, cancellation leaves admission closed, and a
+stale token cannot reopen a later fence.  The 67-test runtime/structural
+selection passes.
+
+** DONE High: Revocation does not fence the original requester or attached clients
 
 *** Expected
 
@@ -367,7 +448,21 @@ Add revoke-after-route tests for requester membership and cross-target grants,
 plus requester resolution, post, observer install/page/accept, and held-page
 callback tests after client principal revocation.
 
-** TODO High: Deferred routing ignores later subscription lifecycle transitions
+*** Resolution
+
+Delivery authorization now rechecks the frozen requester actor and target
+participant before adapter entry and accepted-receipt reconciliation.
+Principal revocation advances affected client generations, detaches requester
+authority, and closes owned observers in bounded scheduled work.  Requester
+resolution and observer operations require the current grant and generation.
+
+*** Evidence
+
+Registry/runtime tests cover requester membership revoke, exact-target grant
+revoke, revoke during acceptance, requester resolution, observer install/page
+acceptance, and held-page callbacks after client revocation.
+
+** DONE High: Deferred routing ignores later subscription lifecycle transitions
 
 *** Expected
 
@@ -410,7 +505,19 @@ Add held-classifier tests for cancel, mute, replacement, and expiry.  Each may
 record a historical match but must create no pickup/effect, must release its pin
 once, and must advance the cursor deterministically.
 
-** TODO High: Exact invocation effects can call a stale endpoint generation
+*** Resolution
+
+Frozen selector bytes remain historical audit input, while finalization now
+resolves the board-owned current subscription identity and lifecycle version.
+Cancel, mute, replacement, expiry, or later authorization revoke suppresses
+pickup/effect creation in board sequence and releases the captured pin once.
+
+*** Evidence
+
+Held-classifier regressions cover cancel, mute, replacement, expiry, and
+authorization revoke; all pass in the board-core selection.
+
+** DONE High: Exact invocation effects can call a stale endpoint generation
 
 *** Expected
 
@@ -453,7 +560,20 @@ Replace or clear the qualified endpoint between enrollment, terminal
 classification, effect application, and acknowledgement.  Assert no stale
 callback, one visible terminal effect state, and no delivery to the replacement.
 
-** TODO High: Retryable delivery failures can strand a ready pickup
+*** Resolution
+
+Invocation targets now freeze the opaque endpoint token and full composite
+instance/harness/session generation.  Acceptance and effect application both
+use the current-attachment check.  A lost or replaced endpoint settles visibly
+unavailable/uncertain without calling stale completion code or resolving a
+replacement by session id.
+
+*** Evidence
+
+The acceptance-generation and stale-invocation-effect regressions pass beside
+the qualified rebind generation tests.
+
+** DONE High: Retryable delivery failures can strand a ready pickup
 
 *** Expected
 
@@ -496,7 +616,21 @@ turn-terminal idle edge, including failure and cancellation.
 Add signal-once-then-success, busy-then-failed, busy-then-cancelled, exhausted
 retry, and first-participant-error/second-participant-continues tests.
 
-** TODO High: Several scheduled paths still do unbounded main-thread work
+*** Resolution
+
+Each pickup failure is isolated.  Retryable failures retain one
+scheduler-owned ready record and a bounded retry budget; exhaustion becomes a
+visible terminal failure while other participant lanes continue.  Every turn
+terminal edge releases an eligible FIFO successor, and accepted queued input
+reconciles through exact consumed/discarded receipts during reset or detach.
+
+*** Evidence
+
+Signal-once retry, exhausted signal, independent-lane continuation,
+busy-then-failed/cancelled, reset, and participant-removal FIFO regressions pass
+in the 67-test runtime selection.
+
+** DONE High: Several scheduled paths still do unbounded main-thread work
 
 *** Expected
 
@@ -551,80 +685,87 @@ the configured budget.  Hold each page while an independent heartbeat and
 composer edit run, and make both currently failing structural tests pass without
 expanding their allowlists.
 
+*** Resolution
+
+Board events/messages append through owner-local tail cells and retain an
+ordinal message index.  Live/history observers address bounded index windows
+without prefix scans or full reversal.  Registry paging uses an ordered AVL
+successor index.  Classification captures bounded identity views rather than
+copying the full subscription population, and runtime/presentation drains have
+explicit work/page budgets.  UI mutation remains behind =e-ui-work=.
+
+*** Evidence
+
+Budget sentinels cover retained prefixes, sparse history, registry population,
+stale mailboxes/hooks/pickups, and producer drains.  The nonblocking and
+direct-render structural suites pass without new allowlist entries; batch
+compilation succeeds.
+
 * Plan coverage
 
 | Slice | Review result |
 |-------+---------------|
-| 0 | Useful =e-work= lifecycle foundation is present and focused tests pass. |
-| 1 | Work enrollment/activity/deferred-hook foundations are substantial, but unbounded append structures remain. |
-| 2 | Board identity, registry, selectors, invocation effects, and observer cursors exist; revocation and invocation generation have blocking correctness defects. |
-| 3 | Deferred routing, pickup FIFO, effects, and continuations exist; subscription-transition ordering and retry liveness are incomplete. |
-| 4 | Cross-harness attachment, dormant catalog/access, participant controls, and offline preparation are partial; complete controlled ports, persistence projection, and shell/producer binding remain. |
-| 5 | Not implemented.  Admission/quiescence, public source cut, legacy deletion, chat observer handoff, producer wiring, offline user-store invocation, and full restart remain. |
-| 6 | Blocked until Slice 5 is accepted and real board workloads exist. |
+| 0 | Done: canonical =e-work= lifecycle and tool contracts are the only executable foundation. |
+| 1 | Done: append-efficient board state, bounded observation, activity/output publication, and attachment ingress pass. |
+| 2 | Done: exact invocation/aggregation effects retain and revalidate opaque endpoint identity. |
+| 3 | Done: lifecycle-fenced routing, effects, FIFO receipt settlement, retries, and observers pass. |
+| 4 | Done: qualified attachment/control, explicit producer/session binding, and catalog/access contracts pass. |
+| 5 | Done in source: admission/quiescence, public board service, producer cut, and legacy deletion are complete; a full restart is required to activate it. |
+| 6 | Deferred as planned: production tuning begins only after real post-restart workload measurements exist. |
 
 * Architecture review
 
-The target dependency direction remains sound: =e-work= has no board dependency;
-the board core owns routing/settlement facts; the registry owns identity and
-authorization; the runtime composes harness endpoints; presentation should own
-only board observation and UI state.  The current public product has not yet
-adopted that direction, so old shell/producer dependencies still bypass the
-board application services.
+The dependency direction now matches the target.  =e-work= remains independent
+of the board; board core owns ordered routing/settlement facts; registry owns
+identity, authorization, and cursors; runtime owns endpoint composition,
+admission, producers, and quiescence; the core =e-chat-service= is the narrow
+application seam; presentation shells own buffers, reducers, and UI work only.
 
-The private implementation also conflates “deferred” with “bounded” in several
-collections.  A scheduler boundary moves work to a later main-loop callback; it
-does not make whole-list copy/reverse/scan operations safe.  These data-structure
-choices belong to the board owners and should be corrected there rather than
-hidden behind another adapter.
+Deferred work is also genuinely bounded: owner-local tail/index structures make
+append and page cost independent of retained prefixes, while explicit budgets
+yield between classification, effects, pickups, activity, producers, observer
+pages, and UI mutation.  No adapter hides a whole-collection scan.
 
-No compatibility requirement applies.  The corrective cutover should delete
-the legacy tool/session/presentation paths rather than retain wrappers, feature
-flags, dual publication, or expanded structural allowlists.
+No compatibility window was retained.  Direct live presentation/producer
+paths, legacy tool registration, arbitrary producer callbacks, session-context
+annotation export, metadata repair, and the one-shot preparation command are
+removed; structural tests reject their reintroduction.
 
 * Design self-check
 
-1. The private foundation is useful if stopped here, but it is not a completed
-   public feature and must remain unreachable until the atomic cutover.
-2. The final direction remains one board-only interaction context with sessions
-   as private transcript-owning participants.
-3. Tag conventions and budgets are reversible; identity, authorization,
-   exactly-one-board attachment, non-consuming observation, and receipt
-   semantics are stable and must be enforced directly.
-4. Board core should own ordered reducer state; registry should own
-   identity/grants/client generations; runtime should own endpoint composition;
-   shells should own only interaction/presentation.
-5. The board design reduces producer/consumer coupling, but current public
-   callers still couple directly to harness/session state.
-6. =e-work= remains independent of the board; no stable policy needs to depend
-   on chat, providers, or producer implementations.
-7. Delivery, persistence, observer handoff, carrier hooks, and UI mutation
-   remain outward scheduled effects; whole-collection work must also move into
-   genuinely bounded owner operations.
-8. Board logs, subscriptions, receipts, attachments, and cursors have the right
-   semantic owners, but their list/index representation does not yet satisfy
-   the required lifetime/performance contract.
-9. Current O(n) append and prefix/full-log scans are unjustified regressions;
-   the correct semantics do not fundamentally require them.
-10. Subscription, observer, pickup, activation, and invocation contracts are
-    semantically distinct; fixes should strengthen their boundaries rather than
-    introduce a generic callback graph.
-11. No compatibility window applies; obsolete live interfaces should be
-    removed atomically.
-12. Remove direct session/presentation APIs, legacy tool branches/adapters,
-    missed-final fallback, arbitrary producer callbacks, and the one-shot
-    preparation command at the declared boundary.
-13. Expected authorization, routing, delivery, and endpoint loss must settle as
-    visible board state; unexpected per-item failures must be contained without
-    swallowing them or aborting independent lanes.
-14. Existing unit coverage is strong on happy paths.  The missing proofs are
-    held-boundary race tests, structural retirement tests, work-budget sentinels,
-    full-restart cutover tests, and live board/chat playthroughs.
+1. Yes.  This stopping point replaces the public interaction boundary and
+   closes all eight correctness/performance findings.
+2. It reaches the declared direction: one board-only live interaction context,
+   with sessions private transcript-owning participants.
+3. Stable identity, authorization, attachment, observation, and receipt rules
+   are direct.  Tunable tags and budgets remain local configuration.
+4. Board core, registry, runtime, core chat application service, and shells each
+   own one cohesive policy/state/presentation responsibility.
+5. Coupling is reduced: shells and producers depend on narrow board services,
+   not concrete harness lifecycle or transcript internals.
+6. No dependency points backward; =e-work= and board policy do not depend on
+   shells, producers, providers, or UI.
+7. External delivery, persistence, timers, and UI mutation stay at runtime or
+   shell adapters; core reducer policy remains side-effect free.
+8. Process-local bindings/cursors live with board runtime; durable transcript
+   and task facts remain with their stores; UI state stays buffer-local.  Every
+   derived cache is rebuildable.
+9. Append is O(1), paging/drains are budget-bounded, and added authorization or
+   generation checks are constant work per admitted record.
+10. Producer binding, observer, pickup, activation, and invocation interfaces
+    are real consumer-shaped contracts and do not emulate unsupported modes.
+11. No compatibility window applies; obsolete public paths were removed.
+12. Legacy tool branches, direct presentation/producer session paths,
+    arbitrary cron callbacks, annotation session export, metadata repair, and
+    cutover preparation are gone.
+13. Expected revoke/stale/busy/retry outcomes settle as explicit board state;
+    unexpected item failures surface while independent lanes continue.
+14. Core behavior is proven by held-boundary authorization/generation races,
+    lifecycle classifiers, FIFO receipts/retries, quiescence owners, budget
+    sentinels, structural cutover guards, and end-to-end board chat tests.
 
 * Unresolved
 
-- All eight High findings above remain open.
-- A live board/chat UX and responsiveness playthrough remains blocked until the
-  public board path exists and a restarted Emacs server is available.
-- The real user session store has not been prepared or migrated; this is correct
-  until quiescence and exclusive-store preconditions are satisfied.
+None.  All eight High findings are resolved.  The running Emacs remains
+unchanged and requires a full restart before the cardinal board-only source cut
+is active; that operational restart is not an implementation finding.

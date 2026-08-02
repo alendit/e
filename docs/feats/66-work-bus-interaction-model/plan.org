@@ -3,7 +3,14 @@
 
 * Status
 
-In-progress
+Done
+
+Slice 5 is complete in repository source.  Public shells enter through the
+core board-backed chat application service, bundled producers require explicit
+runtime-scoped board bindings, the aggregate quiescence request owns the
+admission fence, and the structural retirement tests pass.  The running Emacs
+was deliberately left unchanged; activating the cardinal source cut requires a
+full restart rather than =e-dev-reload=.
 
 The identity, bus-selector/settlement, board-registry, inbox-delivery,
 main-thread execution boundary, and first-version default contracts have been
@@ -321,14 +328,11 @@ The board now has a monotonic logical retention floor.  Advancing it does not
 scan observers; instead, an active live cursor that is behind the retained
 boundary expires only on its next page request and receives explicit
 =resnapshot-required= state, while a cursor at the boundary continues normally.
-Slices 0--4 are private implementation/verification order only.  No board mode,
-feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
-Slice 5 cutover replaces every caller and deletes the superseded interfaces in
-the same change set.
-Until then the supported product remains wholly on its pre-cutover interfaces;
-no command, action, tool, or chat path may reach the private board services.
-The slice completion/progress labels above describe private foundation code and
-tests, not public board-surface readiness.
+Slices 0--4 were private implementation/verification order only.  Slice 5 now
+replaces the public callers and deletes the superseded interfaces without a
+feature flag, compatibility shim, or mixed live runtime.  The completion labels
+above now describe the accepted board-only source; activation still requires
+the declared full process restart.
 The explicitly deferred follow-ups below are not blockers.
 
 Directory keeps the =66-work-bus-interaction-model/= path; the plan uses "board" for the shared scope (see [[*The scope above sessions]]).

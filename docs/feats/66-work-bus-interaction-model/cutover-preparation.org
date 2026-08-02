@@ -2,9 +2,11 @@
 
 * Status
 
-The command is implemented and covered by temporary-store tests.  It has not
-been run against user data.  Slice 5 owns the real invocation after its
-quiescence preflight and exclusive-store handoff.
+Historical Slice 4 contract.  The temporary command and its tests were removed
+at the Slice 5 source cut, as required by =plan.org=.  It was not run against
+user data during repository implementation.  The board-only runtime accepts
+only current-schema stores and fails preflight visibly rather than retaining a
+migration or lazy-write path.
 
 * Preconditions
 
@@ -20,7 +22,8 @@ quiescence preflight and exclusive-store handoff.
 
 * Invocation
 
-Run the script directly or through Node from a non-interactive process:
+The retired command was invoked directly through Node from a non-interactive
+process:
 
 #+begin_src sh
 node lisp/core/e-session-cutover-prepare.mjs \
@@ -29,7 +32,8 @@ node lisp/core/e-session-cutover-prepare.mjs \
   --snapshot /absolute/path/to/new-restorable-snapshot
 #+end_src
 
-The snapshot path must not exist and must not be inside the store.
+The source path no longer exists.  This invocation is retained only as the
+audited historical preparation contract; it is not an available command.
 
 * Manifest
 
