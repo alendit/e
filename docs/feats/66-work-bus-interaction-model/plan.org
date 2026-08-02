@@ -28,6 +28,8 @@ invalid requests install no aggregation subscription.
 Its aggregation effect now also holds only the same runtime-owned opaque
 invocation target as executable-tool completion, never a board-retained
 callback closure.
+Elapsed aggregation timers now only record a deadline token; a bounded board
+drain serializes the timeout transition before scheduling its opaque effect.
 Ordinary subscription lifecycle now records the full active/muted/completed/
 faulted/cancelled/expired state set with legal one-way terminal transitions;
 matcher/effect changes cancel the old future route and create a fresh

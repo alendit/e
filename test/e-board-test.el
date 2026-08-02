@@ -345,12 +345,14 @@
                     'committed))))))
 
 (ert-deftest e-board-test-aggregation-timeout-does-not-cancel-work ()
-  "Aggregation timeout closes only its deferred reply subscription."
+  "Aggregation timeout queues its deferred reply transition without cancelling work."
   (e-board-test--with-empty-registry
-    (let (effects reasons)
+    (let (effects deadline-drains reasons)
       (let* ((board (e-board-create :id "board"
                                     :effect-scheduler
                                     (lambda (effect) (push effect effects))
+                                    :aggregation-deadline-scheduler
+                                    (lambda (drain) (push drain deadline-drains))
                                     :invocation-effect-dispatcher
                                     (lambda (_board target state reason)
                                       (should (equal target "timeout"))
@@ -366,6 +368,11 @@
          "timeout" :timeout 0.01)
         (e-work-start-prepared handle)
         (sleep-for 0.05)
+        ;; The timer only records the deadline; it cannot settle or reply.
+        (should (= (length deadline-drains) 1))
+        (should-not effects)
+        (funcall (pop deadline-drains))
+        (should (= (length effects) 1))
         (funcall (pop effects))
         (should (equal reasons '(timed-out)))
         (should (eq (plist-get (e-work-status handle) :state) 'started))))))

@@ -70,6 +70,9 @@
 (defconst e-board-input-classification-drain-limit 32
   "Maximum frozen input subscription clauses classified per drain.")
 
+(defconst e-board-aggregation-deadline-drain-limit 16
+  "Maximum aggregation deadline transitions committed per drain.")
+
 (cl-defstruct (e-board-pickup
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
@@ -113,7 +116,8 @@
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
   terminal-classifications terminal-classification-scheduled terminal-classification-scheduler
   input-classifications input-classification-scheduled input-classification-scheduler
-  routed-pickup-results)
+  routed-pickup-results
+  aggregation-deadlines aggregation-deadline-scheduled aggregation-deadline-scheduler)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -177,6 +181,7 @@ The board object remains valid for inspection by its holder."
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
           terminal-classification-scheduler input-classification-scheduler
+          aggregation-deadline-scheduler
           (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
@@ -208,7 +213,10 @@ explicit ids to individual operations takes precedence over this generator."
                   :input-classifications nil
                   :input-classification-scheduled nil
                   :input-classification-scheduler input-classification-scheduler
-                  :routed-pickup-results nil)))
+                  :routed-pickup-results nil
+                  :aggregation-deadlines nil
+                  :aggregation-deadline-scheduled nil
+                  :aggregation-deadline-scheduler aggregation-deadline-scheduler)))
     (when register (e-board-register board))
     board))
 
@@ -261,6 +269,33 @@ explicit ids to individual operations takes precedence over this generator."
   (if-let ((scheduler (e-board-effect-scheduler board)))
       (funcall scheduler (lambda () (e-board-drain-effects board)))
     (run-at-time 0 nil (lambda () (e-board-drain-effects board)))))
+
+(defun e-board--schedule-aggregation-deadline (board)
+  "Schedule one later deadline drain for BOARD."
+  (unless (e-board-aggregation-deadline-scheduled board)
+    (setf (e-board-aggregation-deadline-scheduled board) t)
+    (if-let ((scheduler (e-board-aggregation-deadline-scheduler board)))
+        (funcall scheduler (lambda () (e-board-drain-aggregation-deadlines board)))
+      (run-at-time 0 nil (lambda () (e-board-drain-aggregation-deadlines board))))))
+
+(defun e-board--queue-aggregation-deadline (board aggregation-id)
+  "Record an elapsed aggregation deadline without settling on the timer stack."
+  (setf (e-board-aggregation-deadlines board)
+        (append (e-board-aggregation-deadlines board) (list aggregation-id)))
+  (e-board--schedule-aggregation-deadline board))
+
+(defun e-board-drain-aggregation-deadlines (board)
+  "Commit a bounded page of elapsed aggregation deadlines in board order."
+  (setf (e-board-aggregation-deadline-scheduled board) nil)
+  (let ((remaining e-board-aggregation-deadline-drain-limit))
+    (while (and (> remaining 0) (e-board-aggregation-deadlines board))
+      (let ((aggregation-id (pop (e-board-aggregation-deadlines board))))
+        (when-let ((aggregation (e-board-aggregation board aggregation-id)))
+          (when (eq (e-board-aggregation-state aggregation) 'open)
+            (e-board--settle-aggregation board aggregation 'timed-out)))
+        (cl-decf remaining)))
+    (when (e-board-aggregation-deadlines board)
+      (e-board--schedule-aggregation-deadline board))))
 
 (defun e-board-drain-effects (board)
   "Apply BOARD's frozen effects once, in publication order.
@@ -456,7 +491,8 @@ through the injected invocation effect dispatcher."
         (setf (e-board-aggregation-timer aggregation)
               (run-at-time timeout nil
                            (lambda ()
-                             (e-board--settle-aggregation board aggregation 'timed-out)))))
+                             (e-board--queue-aggregation-deadline
+                              board (e-board-aggregation-id aggregation))))))
       (when (e-board--aggregation-ready-p board aggregation)
         ;; Keep an already-ready subscription on the same later classifier
         ;; path as a fresh terminal publication.
