@@ -33,22 +33,27 @@
 
 (defcustom e-await-tool-max-timeout 900
   "Ceiling in seconds for the await tool timeout.
-A requested timeout above this is clamped so a runaway wait still ends."
+Explicit requests above this ceiling are rejected."
   :type 'number
   :group 'e)
 
+(define-error 'e-await-tool-invalid-request "Invalid await request")
+
 (defun e-await-tool--effective-timeout (arguments)
-  "Return the clamped await timeout in seconds from ARGUMENTS."
-  (let ((requested (plist-get arguments :timeout)))
-    (min e-await-tool-max-timeout
-         (if (and (numberp requested) (> requested 0))
-             requested
-           e-await-tool-default-timeout))))
+  "Return ARGUMENTS' declared timeout or reject an invalid explicit value."
+  (if (not (plist-member arguments :timeout))
+      e-await-tool-default-timeout
+    (let ((requested (plist-get arguments :timeout)))
+      (unless (and (numberp requested) (> requested 0)
+                   (<= requested e-await-tool-max-timeout))
+        (signal 'e-await-tool-invalid-request
+                (list "Timeout must be finite, positive, and within the hard maximum")))
+      requested)))
 
 (defun e-await-tool--normalize-mode (arguments)
   "Return the await mode symbol (`all' or `any') from ARGUMENTS."
   (pcase (plist-get arguments :mode)
-    ((or 'nil "all" "" 'all) 'all)
+    ((or 'nil "all" 'all) 'all)
     ((or "any" 'any) 'any)
     (other (signal 'wrong-type-argument (list '(member "all" "any") other)))))
 
@@ -63,12 +68,7 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
           :error (plist-get status :error))))
 
 (defun e-await-tool--resolve-references (refs)
-  "Resolve REFS into resolved handles and per-reference errors.
-Return a plist (:pairs PAIRS :errors ERRORS) where PAIRS is a list of
-\(REFERENCE . HANDLE) for resolvable references and ERRORS is a list of
-\(:ref REFERENCE :status error :error MESSAGE) for the rest.  An unresolvable
-reference is a per-reference error, never a whole-call failure, so an await over
-a mix still waits on the resolvable references."
+  "Resolve every REF in REFS, rejecting the complete request on any failure."
   (let (pairs errors)
     (dolist (ref (append refs nil))
       (let ((resolved (e-waitable-resolve ref)))
@@ -77,7 +77,10 @@ a mix still waits on the resolvable references."
           (push (list :ref ref :status 'error
                       :error (plist-get resolved :error))
                 errors))))
-    (list :pairs (nreverse pairs) :errors (nreverse errors))))
+    (when errors
+      (signal 'e-await-tool-invalid-request
+              (list "Every await reference must resolve" (nreverse errors))))
+    (nreverse pairs)))
 
 (defun e-await-tool--result-entry (ref handle)
   "Return the report entry for REF backed by HANDLE."
@@ -92,17 +95,15 @@ a mix still waits on the resolvable references."
           :result result
           :error (plist-get snapshot :error))))
 
-(defun e-await-tool--report (mode reason pairs errors)
-  "Return the compact await report for MODE, REASON, PAIRS, and ERRORS."
+(defun e-await-tool--report (mode reason pairs)
+  "Return the compact await report for MODE, REASON, and frozen PAIRS."
   (list :settled (eq reason 'complete)
         :reason reason
         :mode mode
         :results
-        (append
-         (mapcar (lambda (pair)
-                   (e-await-tool--result-entry (car pair) (cdr pair)))
-                 pairs)
-         errors)))
+        (mapcar (lambda (pair)
+                  (e-await-tool--result-entry (car pair) (cdr pair)))
+                pairs)))
 
 (cl-defun e-await-tool--start
     (&key arguments context on-done on-error &allow-other-keys)
@@ -111,13 +112,17 @@ a mix still waits on the resolvable references."
       (let* ((refs (plist-get arguments :refs))
              (mode (e-await-tool--normalize-mode arguments))
              (timeout (e-await-tool--effective-timeout arguments))
-             (resolved (e-await-tool--resolve-references refs))
-             (pairs (plist-get resolved :pairs))
-             (errors (plist-get resolved :errors))
+             (pairs (progn
+                      (unless (and (or (listp refs) (vectorp refs))
+                                   (> (length refs) 0))
+                        (signal 'e-await-tool-invalid-request
+                                (list "Await requires a non-empty reference list")))
+                      (e-await-tool--resolve-references refs)))
              (handles (mapcar #'cdr pairs)))
         (cond
-         ((or (null refs) (null handles))
-          (funcall on-done (e-await-tool--report mode 'complete pairs errors)))
+         ((null handles)
+          (signal 'e-await-tool-invalid-request
+                  (list "Await requires at least one resolved work handle")))
          (t
           (let ((cancel
                  (if-let ((subscribe (plist-get context :board-subscribe-aggregation)))
@@ -125,14 +130,14 @@ a mix still waits on the resolvable references."
                               handles mode timeout
                               (lambda (reason)
                                 (funcall on-done
-                                         (e-await-tool--report mode reason pairs errors))))
+                                         (e-await-tool--report mode reason pairs))))
                    (e-work-await-set
                     handles :mode mode :timeout timeout
                     :on-settle
                     (lambda (set-report)
                       (funcall on-done
                                (e-await-tool--report
-                                mode (plist-get set-report :reason) pairs errors)))))))
+                                mode (plist-get set-report :reason) pairs)))))))
             (e-tools-request-create :cancel (lambda () (funcall cancel) t))))))
     (error (when on-error (funcall on-error err)) nil)))
 

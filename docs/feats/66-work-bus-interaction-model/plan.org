@@ -22,6 +22,9 @@ and defers their activation classification to a bounded board drain.
 Input append now freezes a private subscription snapshot and returns before
 matching, pickup creation, continuation effects, or harness delivery; the
 runtime drains only the resulting finalized pickup identities later.
+The invocation-only =await= request now requires a non-empty all-resolved
+reference list and an exact finite timeout within the configured hard maximum;
+invalid requests install no aggregation subscription.
 The Slice 1 async-interactive carrier foundation now has a pre-start bounded
 activity observer, explicit hard-bounded/deferred general-hook classification,
 stable deferred-hook receipts, and a generation-fenced bounded private runtime

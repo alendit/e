@@ -146,8 +146,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
                             '(started progress))))))
       (e-work-cancel a))))
 
-(ert-deftest e-await-tool-test-unknown-reference-is-per-reference-error ()
-  "An unknown reference is a report entry, not a whole-call failure."
+(ert-deftest e-await-tool-test-unknown-reference-rejects-the-whole-request ()
+  "Every await reference must resolve before any subscription is installed."
   (let ((a (e-await-tool-test--pending-handle)))
     (unwind-protect
         (e-await-tool-test--with-scheme (list (cons "a" a))
@@ -159,17 +159,22 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
              '(:id "c" :name "await"
                :arguments (:refs ["fake:a" "fake:missing" "bogus"] :timeout 30))
              :on-done (lambda (v) (setq result v)))
-            ;; The resolvable reference still gates completion.
-            (should-not result)
-            (e-work-finish a '(:summary "ok"))
-            (let* ((content (plist-get result :content))
-                   (results (plist-get content :results))
-                   (errors (cl-remove-if-not
-                            (lambda (r) (eq (plist-get r :status) 'error))
-                            results)))
-              (should (plist-get content :settled))
-              (should (= (length errors) 2)))))
+            (should (eq (plist-get result :status) 'error))
+            (should (eq (plist-get (plist-get result :metadata) :error)
+                        'e-await-tool-invalid-request))))
       (e-work-cancel a))))
+
+(ert-deftest e-await-tool-test-invalid-explicit-timeout-rejects ()
+  "Await rejects invalid explicit timeout values instead of clamping them."
+  (let ((handle (e-await-tool-test--pending-handle)))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "a" handle))
+          (let ((result (e-await-tool-test--run
+                         '(:refs ["fake:a"] :timeout 901))))
+            (should (eq (plist-get result :status) 'error))
+            (should (eq (plist-get (plist-get result :metadata) :error)
+                        'e-await-tool-invalid-request))))
+      (e-work-cancel handle))))
 
 (ert-deftest e-await-tool-test-any-mode-settles-at-first ()
   "MODE any settles at the first terminal reference."
