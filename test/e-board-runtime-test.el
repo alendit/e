@@ -128,6 +128,31 @@
                    'consumed))
        (should-not (plist-get (e-harness-state harness "session") :active-turn))))))
 
+(ert-deftest e-board-runtime-test-session-reset-discards-accepted-queue-pickup ()
+  "Resetting a queued harness item releases its accepted board pickup."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let ((publication (e-board-runtime-post-input
+                          board :to "participant" :mode 'queue :content "queued")))
+        (e-board-runtime--drain-input-routing
+         board
+         (lambda ()
+           (e-board-drain-input-classifications
+            (e-board-registry-board-source-board board))))
+        (let ((pickup-id (car (e-board-message-pickup-ids
+                               (e-board-publication-message publication)))))
+          (e-board-runtime--drain-pickups)
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
+                      'accepted))
+          (e-harness-reset harness "session")
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup (e-board-registry-board-source-board board) pickup-id))
+                      'discarded)))))))
+
 (ert-deftest e-board-runtime-test-attached-session-enrolls-prepared-work-before-start ()
   "An attached harness maps turn/tool work to its participant board."
   (e-board-runtime-test--with-empty-state
