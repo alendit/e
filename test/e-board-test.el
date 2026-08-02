@@ -279,6 +279,21 @@
                        (e-board-pickup board '("board" "input" "one")))
                       'ready)))))))
 
+(ert-deftest e-board-test-observer-default-live-cursor-starts-after-high-watermark ()
+  "A new observer sees future live messages unless it explicitly requests history."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-post-fact board :id "old" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (let ((observer (e-board-observer-subscribe board "client" '(:tags (main)))))
+        (should (= (e-board-observer-next-seq observer) 1))
+        (e-board-post-fact board :id "new" :tags '(main)
+                           :source-fact-key '(producer 1 2))
+        (should (equal (mapcar #'e-board-message-id
+                               (e-board-observer-read-page board
+                                                           (e-board-observer-id observer)))
+                       '("new")))))))
+
 (ert-deftest e-board-test-pickups-preserve-participant-fifo-order ()
   "Only a participant's oldest pickup may become deliverable."
   (e-board-test--with-empty-registry

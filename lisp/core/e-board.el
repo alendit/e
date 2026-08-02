@@ -861,7 +861,7 @@ SELECTOR supports `:to', `:tags', `:tags-all', and `:tags-any'.  Slice 1's
             t))))
 
 (cl-defun e-board-observer-subscribe
-    (board client-id selector &key id (state 'active) (start-seq 0)
+    (board client-id selector &key id (state 'active) start-seq
            history-before-seq (history-floor 0))
   "Create an effect-free client observer cursor over BOARD's message sequence.
 Observers deliberately share selector fields with participant subscriptions,
@@ -873,6 +873,7 @@ the returned cursor's advancing `next-seq' for later bounded pages."
   (unless (memq state e-board--observer-states)
     (signal 'wrong-type-argument
             (list e-board--observer-states state)))
+  (setq start-seq (or start-seq (e-board-next-seq board)))
   (unless (and (integerp start-seq) (>= start-seq 0))
     (signal 'wrong-type-argument (list 'natnump start-seq)))
   (unless (and (integerp history-floor) (>= history-floor 0))
