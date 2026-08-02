@@ -115,7 +115,9 @@ The runtime now publishes source-keyed =turn-failed= and =turn-cancelled=
 activity for no-output terminal turns, closing the same projection.
 Attachment-local turn accumulators observe provider/tool/action edges and emit
 one source-keyed =turn-summary= with bounded terminal counts only after a turn
-entered provider activity; empty turns produce no fabricated summary.
+entered provider activity; its duration is measured from the first provider
+request event to the terminal event, and empty turns produce no fabricated
+summary.
 The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/

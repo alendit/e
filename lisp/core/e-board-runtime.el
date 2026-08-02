@@ -95,7 +95,7 @@
 (cl-defstruct (e-board-runtime-turn-activity
                (:constructor e-board-runtime-turn-activity--create)
                (:conc-name e-board-runtime-turn-activity-))
-  provider-seen tool-count action-count)
+  provider-seen provider-started-at tool-count action-count)
 
 (cl-defstruct (e-board-runtime-invocation
                (:constructor e-board-runtime-invocation--create)
@@ -470,13 +470,16 @@ these terminal states have no output to close the board-owned open projection."
     (let ((state (e-board-runtime--turn-activity attachment turn-id)))
       (pcase (e-events-type event)
         ('provider-request-started
-         (setf (e-board-runtime-turn-activity-provider-seen state) t))
+         (setf (e-board-runtime-turn-activity-provider-seen state) t)
+         (unless (e-board-runtime-turn-activity-provider-started-at state)
+           (setf (e-board-runtime-turn-activity-provider-started-at state)
+                 (plist-get event :created-at))))
         ('tool-started
          (cl-incf (e-board-runtime-turn-activity-tool-count state)))
         ('action-started
          (cl-incf (e-board-runtime-turn-activity-action-count state)))))))
 
-(defun e-board-runtime--publish-turn-summary (attachment turn-id status)
+(defun e-board-runtime--publish-turn-summary (attachment turn-id status ended-at)
   "Publish one terminal summary for provider-active TURN-ID, then release state."
   (when-let ((state (gethash turn-id (e-board-runtime-attachment-turn-activity attachment))))
     (remhash turn-id (e-board-runtime-attachment-turn-activity attachment))
@@ -491,6 +494,9 @@ these terminal states have no output to close the board-owned open projection."
          :subject-participant-id participant-id :source-turn-id turn-id
          :activity-kind 'turn-summary
          :attributes (list :status status
+                           :duration-seconds
+                           (max 0 (- ended-at
+                                     (e-board-runtime-turn-activity-provider-started-at state)))
                            :tool-count (e-board-runtime-turn-activity-tool-count state)
                            :action-count (e-board-runtime-turn-activity-action-count state))
          :source-activity-key
@@ -504,11 +510,13 @@ these terminal states have no output to close the board-owned open projection."
     (cond
      ((eq type 'turn-finished)
      (e-board-runtime--publish-output attachment (plist-get event :turn-id))
-      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) 'finished)
+      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) 'finished
+                                             (plist-get event :created-at))
       (e-board-runtime--enqueue-ready-participant-pickup attachment))
      ((memq type '(turn-failed turn-cancelled))
       (e-board-runtime--publish-terminal-activity attachment event)
-      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) type))
+      (e-board-runtime--publish-turn-summary attachment (plist-get event :turn-id) type
+                                             (plist-get event :created-at)))
      ((eq type 'input-consumed)
       (let* ((payload (plist-get event :payload))
              (delivery-id (plist-get payload :delivery-id))

@@ -372,13 +372,16 @@
              (source-board (e-board-registry-board-source-board board)))
         (dolist (type '(provider-request-started tool-started action-started))
           (e-board-runtime--handle-harness-event
-           attachment (e-events-make :type type :session-id "session" :turn-id "turn")))
+           attachment (e-events-make :type type :session-id "session" :turn-id "turn"
+                                     :created-at 100)))
         (e-board-runtime--handle-harness-event
-         attachment (e-events-make :type 'turn-finished :session-id "session" :turn-id "turn"))
+         attachment (e-events-make :type 'turn-finished :session-id "session" :turn-id "turn"
+                                   :created-at 102.5))
         (let ((summary (car (last (e-board-messages source-board)))))
           (should (eq (e-board-message-activity-kind summary) 'turn-summary))
           (should (equal (e-board-message-attributes summary)
-                         '(:status finished :tool-count 1 :action-count 1))))
+                         '(:status finished :duration-seconds 2.5
+                           :tool-count 1 :action-count 1))))
         (e-board-runtime--handle-harness-event
          attachment (e-events-make :type 'turn-finished :session-id "session"
                                    :turn-id "no-provider"))
