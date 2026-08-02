@@ -123,6 +123,9 @@ declarative selection metadata; the factory still builds the live harness."
     (signal 'wrong-type-argument (list 'stringp session-store-id)))
   (e-harness-instance--validate-session-port 'session-catalog session-catalog)
   (e-harness-instance--validate-session-port 'session-access-store session-access-store)
+  (when (and session-store-id (not (and session-catalog session-access-store)))
+    (signal 'e-harness-instance-store-conflict
+            (list session-store-id 'missing-required-port)))
   (e-harness-instance--validate-shared-store-ports
    id session-store-id session-catalog session-access-store)
   (let ((harness-id (or harness-id id)))

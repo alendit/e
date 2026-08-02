@@ -155,6 +155,14 @@
         (should (equal (plist-get (car stores) :eligible-instance-ids)
                        '(:first :second)))))))
 
+(ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
+  "A declared durable store cannot silently omit a required port."
+  (e-harness-instances-test--with-empty-registries
+    (should-error
+     (e-harness-instance-register :id :incomplete :kind 'chat :session-store-id "store"
+                                  :session-catalog (lambda (&rest _arguments) 'pending))
+     :type 'e-harness-instance-store-conflict)))
+
 (provide 'e-harness-instances-test)
 
 ;;; e-harness-instances-test.el ends here
