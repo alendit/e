@@ -799,6 +799,22 @@ member broadcast; exact target with and without grant; participant-originated
 post; and trusted producer post.  No nil requester should reach a retained
 message.
 
+*** Current remediation note
+
+Public ingress now requires a live requester context and retains its exact
+=(client id generation)= actor instead of collapsing it to a possibly nil
+principal.  Classification and physical delivery re-resolve that actor, so
+detach, reconnect, cross-board use, and principal revocation fence accepted
+work.  The =:private-pre-cutover= sentinel and principal-only requester resolver
+are gone.  =e-board-runtime-post-participant-input= is the separately named
+participant ingress and derives its actor only from a current active attachment.
+
+The 99-test registry/runtime selection covers omitted, stale, revoked,
+wrong-board, and wrong-generation clients, broadcast and exact grants, delivery
+rechecks, and participant-originated input.  The finding remains open only
+until the trusted producer work ingress in the producer remediation below is
+implemented and tested.
+
 ** TODO High: Production board identity and lifecycle are not durable registry contracts
 
 *** Expected

@@ -2373,23 +2373,28 @@ and pickup tombstones remain on the source board."
                  (mode 'inject) content reference source-input-key)
   "Post one input to BOARD-OR-ID's source board and enqueue its frozen pickups.
 The returned value is the source board's `e-board-publication'.  Duplicate
-publications only retry pickups that remain pending.  REQUESTER, when supplied,
-must be an active registry client requester context; exact posts additionally
+publications only retry pickups that remain pending.  REQUESTER must be an
+active registry client requester context; exact posts additionally
 require authority for their target participant."
   (e-board-runtime--require-admission)
+  (unless requester
+    (signal 'e-board-registry-authorization-denied
+            (list (if (e-board-registry-board-p board-or-id)
+                      (e-board-registry-board-id board-or-id)
+                    board-or-id)
+                  nil 'missing-requester)))
   (let* ((board (e-board-runtime--active-board board-or-id))
          (target (and to (e-board-registry-participant board to)))
-         (requester-principal
-          (and requester
-               (e-board-registry-resolve-requester-principal board requester)))
+         (requester-actor
+          (e-board-registry-resolve-requester-actor board requester))
          (_authorization
-          (and requester target
-               (e-board-registry-authorize-exact-post
-                board requester-principal target)))
+          (and target
+               (e-board-registry-authorize-actor-exact-post
+                board requester-actor target)))
          (publication
           (e-board-post-input
            (e-board-registry-board-source-board board)
-            :id id :author author :requester-actor requester-principal
+            :id id :author author :requester-actor requester-actor
             :tags tags :attributes attributes
            :to (and target (e-board-registry-participant-id target))
            :mode mode :content content
@@ -2397,6 +2402,33 @@ require authority for their target participant."
     (e-board-runtime--enqueue-pickups
      board (e-board-publication-pickup-ids publication))
     publication))
+
+(cl-defun e-board-runtime-post-participant-input
+    (attachment &key id author tags attributes to (mode 'inject)
+                content reference source-input-key)
+  "Post input as current board ATTACHMENT's authenticated participant actor."
+  (e-board-runtime--require-admission)
+  (unless (and (e-board-runtime--current-attachment-p attachment)
+               (eq (e-board-runtime-attachment-state attachment) 'active))
+    (signal 'e-board-runtime-error (list "Stale participant attachment")))
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (participant (e-board-runtime-attachment-participant attachment))
+         (target (and to (e-board-registry-participant board to)))
+         (actor (list 'participant
+                      (e-board-registry-participant-id participant))))
+    (when target
+      (e-board-registry-authorize-actor-exact-post board actor target))
+    (let ((publication
+           (e-board-post-input
+            (e-board-registry-board-source-board board)
+            :id id :author author :requester-actor actor :tags tags
+            :attributes attributes
+            :to (and target (e-board-registry-participant-id target))
+            :mode mode :content content :reference reference
+            :source-input-key source-input-key)))
+      (e-board-runtime--enqueue-pickups
+       board (e-board-publication-pickup-ids publication))
+      publication)))
 
 (defun e-board-runtime-attachment-active-turn-p (attachment)
   "Return non-nil when current ATTACHMENT owns a live harness turn."

@@ -187,36 +187,80 @@ board's participant identity from being used to mutate another board."
          (target-principal
           (and target (e-board-registry-participant-principal target)))
          (actor (e-board-message-requester-actor message))
-         requester-principal)
+         (requester-principal (e-board-registry--actor-principal board actor)))
     (when (and target
                (memq (e-board-participant-state
                       (e-board-registry-participant-source-participant target))
                      '(active dormant stale))
                (or (null target-principal)
                    (e-board-registry-principal-role board target-principal)))
-      (setq requester-principal
-            (cond
-             ((null actor) :private-pre-cutover)
-             ((stringp actor)
-              (and (e-board-registry-principal-role board actor) actor))
-             ((and (listp actor) (eq (car actor) 'participant))
-              (when-let ((source
-                          (gethash (cadr actor)
-                                   (e-board-registry-board-participants board))))
-                (let ((principal (e-board-registry-participant-principal source)))
-                  (and (memq (e-board-participant-state
-                              (e-board-registry-participant-source-participant source))
-                             '(active dormant stale))
-                       (or (null principal)
-                           (e-board-registry-principal-role board principal))
-                       (or principal :private-pre-cutover)))))))
       (and requester-principal
            (or (null (e-board-message-to message))
-               (eq requester-principal :private-pre-cutover)
                (condition-case nil
-                   (e-board-registry-authorize-exact-post
-                    board requester-principal target)
+                   (e-board-registry-authorize-actor-exact-post
+                    board actor target)
                  (e-board-registry-authorization-denied nil)))))))
+
+(defun e-board-registry--actor-principal (board actor)
+  "Resolve current generation-fenced ACTOR on BOARD.
+Return its board principal, or a non-string member marker for an authenticated
+actor without a principal.  Return nil for missing, stale, revoked, or nil
+actors.  Member markers authorize tagged broadcast only, never exact posts."
+  (cond
+   ((stringp actor)
+    (and (e-board-registry-principal-role board actor) actor))
+   ((and (listp actor) (eq (car actor) 'client))
+    (let ((client (gethash (cadr actor) (e-board-registry-board-clients board))))
+      (and (e-board-registry--client-authorized-p board client)
+           (= (or (caddr actor) -1)
+              (e-board-registry-client-generation client))
+           (or (e-board-registry-client-principal client) :client-member))))
+   ((and (listp actor) (eq (car actor) 'participant))
+    (when-let ((source
+                (gethash (cadr actor)
+                         (e-board-registry-board-participants board))))
+      (let ((principal (e-board-registry-participant-principal source)))
+        (and (memq (e-board-participant-state
+                    (e-board-registry-participant-source-participant source))
+                   '(active dormant stale))
+             (or (null principal)
+                 (e-board-registry-principal-role board principal))
+             (or principal :participant-member)))))))
+
+(defun e-board-registry--actor-has-exact-right-p (board actor target)
+  "Return non-nil when current ACTOR holds the exact right for TARGET."
+  (let ((principal (e-board-registry--actor-principal board actor)))
+    (cond
+     ((stringp principal)
+      (or (eq (e-board-registry-principal-role board principal) 'owner)
+          (equal principal (e-board-registry-participant-controller target))
+          (memq 'post
+                (gethash principal
+                         (e-board-registry-participant-access-grants target)))))
+     ((eq principal :client-member)
+      (and (null (e-board-registry-board-principal board))
+           (null (e-board-registry-participant-controller target))))
+     ((eq principal :participant-member)
+      (equal (cadr actor) (e-board-registry-participant-id target))))))
+
+(defun e-board-registry-authorize-actor-exact-post (board-or-id actor target)
+  "Authorize generation-fenced ACTOR to start an exact post to TARGET.
+Principals use the ordinary target-grant policy.  A principal-free client may
+address a principal-free participant only on a principal-free board, and a
+participant actor may address itself.  These narrow cases retain authenticated
+private-board operation without treating nil as authority."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (target (e-board-registry--participant board target))
+         (state
+          (e-board-participant-state
+           (e-board-registry-participant-source-participant target))))
+    (unless (and (memq state '(active dormant stale))
+                 (e-board-registry--actor-has-exact-right-p board actor target))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) actor
+                    (e-board-registry-participant-id target)
+                    (if (eq state 'detaching) 'target-unavailable 'post))))
+    t))
 
 (cl-defun e-board-registry-create
     (&key id id-function author principal client-revocation-scheduler)
@@ -571,8 +615,8 @@ LIMIT plus one candidates, rather than materializing the full registry list."
      :principal (e-board-registry-client-principal client)
      :role (e-board-registry-client-role client))))
 
-(defun e-board-registry-resolve-requester-principal (board-or-id context)
-  "Return CONTEXT's principal only while its exact client generation is active."
+(defun e-board-registry-resolve-requester-actor (board-or-id context)
+  "Return CONTEXT's generation-fenced actor while its client is active."
   (let* ((board (e-board-registry--require-active board-or-id))
          (client-id (and (e-board-registry-requester-context-p context)
                          (e-board-registry-requester-context-client-id context)))
@@ -589,7 +633,7 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                      (e-board-registry-client-role client)))
       (signal 'e-board-registry-authorization-denied
               (list (e-board-registry-board-id board) client-id 'stale-requester)))
-    (e-board-registry-client-principal client)))
+    (list 'client client-id (e-board-registry-client-generation client))))
 
 (cl-defun e-board-registry-install-observer
     (board-or-id client-id selector &key id start-seq
@@ -870,33 +914,12 @@ explicit `post' grant."
     (board actor target addressed-p)
   "Return non-nil while frozen ACTOR may still deliver to TARGET.
 ADDRESSED-P requires the target-owned exact-post grant in addition to current
-board membership.  A nil actor is retained only for the private pre-cutover
-foundation and disappears with the public source cut."
-  (let ((principal
-         (cond
-          ((null actor) :private-pre-cutover)
-          ((stringp actor)
-           (and (e-board-registry-principal-role board actor) actor))
-          ((and (listp actor) (eq (car actor) 'participant))
-           (when-let ((source
-                       (gethash (cadr actor)
-                                (e-board-registry-board-participants board))))
-             (let ((source-principal
-                    (e-board-registry-participant-principal source)))
-               (and (memq
-                     (e-board-participant-state
-                      (e-board-registry-participant-source-participant source))
-                     '(active dormant stale))
-                    (or (null source-principal)
-                        (e-board-registry-principal-role board source-principal))
-                    (or source-principal :private-pre-cutover))))))))
+board membership.  Nil and stale actors are always revoked."
+  (let ((principal (e-board-registry--actor-principal board actor)))
     (and principal
          (or (not addressed-p)
-             (eq principal :private-pre-cutover)
-             (condition-case nil
-                 (e-board-registry-authorize-exact-post
-                  board principal target)
-               (e-board-registry-authorization-denied nil))))))
+             (e-board-registry--actor-has-exact-right-p
+              board actor target)))))
 
 (defun e-board-registry-participant-delivery-authorization
     (board-or-id participant-or-id &optional requester-actor addressed-p)
@@ -925,8 +948,9 @@ missing current principal grant."
      ((or (null participant) (not (eq current participant))) 'revoked)
      ((and principal (null (e-board-registry-principal-role board principal)))
       'revoked)
-     ((not (e-board-registry--delivery-requester-authorized-p
-            board requester-actor participant addressed-p))
+     ((and requester-actor
+           (not (e-board-registry--delivery-requester-authorized-p
+                 board requester-actor participant addressed-p)))
       'revoked)
      ((eq state 'active) 'authorized)
      ((memq state '(detaching dormant stale)) 'waiting)

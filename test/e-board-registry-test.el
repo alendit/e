@@ -390,18 +390,18 @@
            (client (e-board-registry-attach-client
                     board :id "client" :principal "owner"))
            (context (e-board-registry-client-requester-context board "client")))
-      (should (equal (e-board-registry-resolve-requester-principal board context)
-                     "owner"))
+      (should (equal (e-board-registry-resolve-requester-actor board context)
+                     '(client "client" 1)))
       (e-board-registry-detach-client board (e-board-registry-client-id client))
       (e-board-registry-attach-client board :id "client" :principal "owner")
       (should-error
-       (e-board-registry-resolve-requester-principal board context)
+       (e-board-registry-resolve-requester-actor board context)
        :type 'e-board-registry-authorization-denied)
       (should
        (equal
-        (e-board-registry-resolve-requester-principal
+        (e-board-registry-resolve-requester-actor
          board (e-board-registry-client-requester-context board "client"))
-        "owner")))))
+        '(client "client" 2))))))
 
 (ert-deftest e-board-registry-test-reconnect-fences-old-observer-cursor ()
   "A reconnect cannot operate a cursor installed by its old generation."
@@ -464,7 +464,13 @@
       (should (eq (e-board-participant-state
                    (e-board-registry-participant-source-participant participant))
                   'dormant))
-      (let ((publication (e-board-post-input source-board :id "dormant" :to "member")))
+      (let* ((client (e-board-registry-attach-client board :id "client"))
+             (publication
+              (e-board-post-input
+               source-board :id "dormant" :to "member"
+               :requester-actor
+               (list 'client "client"
+                     (e-board-registry-client-generation client)))))
         (e-board-drain-input-classifications source-board)
         (should (equal (e-board-publication-pickup-ids publication)
                        '(("board" "dormant" "member")))))
@@ -554,12 +560,20 @@
              board "old" '(:tags (new)) :id "new")))
       (should (eq (e-board-subscription-state old) 'cancelled))
       (should (equal (e-board-subscription-participant-id replacement) "member"))
-      (let ((old-publication (e-board-post-input source-board :tags '(old))))
+      (let* ((client (e-board-registry-attach-client board :id "client"))
+             (actor (list 'client "client"
+                          (e-board-registry-client-generation client)))
+             (old-publication
+              (e-board-post-input source-board :tags '(old)
+                                  :requester-actor actor)))
         (e-board-drain-input-classifications source-board)
-        (should-not (e-board-publication-pickup-ids old-publication)))
-      (let ((new-publication (e-board-post-input source-board :tags '(new))))
-        (e-board-drain-input-classifications source-board)
-        (should (= (length (e-board-publication-pickup-ids new-publication)) 1))))))
+        (should-not (e-board-publication-pickup-ids old-publication))
+        (let ((new-publication
+               (e-board-post-input source-board :tags '(new)
+                                   :requester-actor actor)))
+          (e-board-drain-input-classifications source-board)
+          (should (= (length (e-board-publication-pickup-ids new-publication))
+                     1)))))))
 
 (ert-deftest e-board-registry-test-attached-client-owns-observer-cursor ()
   "Observation is available only through a board-local attached client."
@@ -787,7 +801,7 @@
                (receipt (plist-get page :receipt)))
           (e-board-registry-revoke-principal board "owner" "member")
           (should-error
-           (e-board-registry-resolve-requester-principal board context)
+           (e-board-registry-resolve-requester-actor board context)
            :type 'e-board-registry-authorization-denied)
           (should-error
            (e-board-registry-client-requester-context board "client")

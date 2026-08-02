@@ -10,10 +10,54 @@
 (require 'ert)
 (require 'e-board-runtime)
 
+(defconst e-board-runtime-test--production-post-input
+  (symbol-function 'e-board-runtime-post-input)
+  "Unwrapped production ingress used by the runtime test adapter.")
+
+(defconst e-board-runtime-test--core-post-input
+  (symbol-function 'e-board-post-input)
+  "Unwrapped core ingress used by the runtime test adapter.")
+
+(defun e-board-runtime-test--source-post-input (source-board &rest arguments)
+  "Post through SOURCE-BOARD with an authenticated registry test actor."
+  (if (plist-member arguments :requester-actor)
+      (apply e-board-runtime-test--core-post-input source-board arguments)
+    (let* ((board (e-board-registry-get (e-board-id source-board)))
+           (id "runtime-source-test-client")
+           (client (or (gethash id (e-board-registry-board-clients board))
+                       (e-board-registry-attach-client
+                        board :id id
+                        :principal (e-board-registry-board-principal board))))
+           (actor (list 'client id (e-board-registry-client-generation client))))
+      (apply e-board-runtime-test--core-post-input
+             source-board (append arguments (list :requester-actor actor))))))
+
+(defun e-board-runtime-test--post-input (board &rest arguments)
+  "Call production ingress, supplying a generation-fenced test client.
+Tests that explicitly provide `:requester' retain that exact requester."
+  (if (or (plist-member arguments :requester)
+          (not e-board-runtime--admission-open-p))
+      (apply e-board-runtime-test--production-post-input board arguments)
+    (let* ((id "runtime-test-client")
+           (clients (e-board-registry-board-clients board))
+           (client (or (gethash id clients)
+                       (e-board-registry-attach-client
+                        board :id id
+                        :principal (e-board-registry-board-principal board))))
+           (requester
+            (e-board-registry-client-requester-context
+             board (e-board-registry-client-id client))))
+      (apply e-board-runtime-test--production-post-input
+             board (append arguments (list :requester requester))))))
+
 (defmacro e-board-runtime-test--with-empty-state (&rest body)
   "Run BODY with isolated board, registry, and runtime attachment state."
   (declare (indent 0) (debug t))
-  `(let ((e-board--registry (make-hash-table :test 'equal))
+  `(cl-letf (((symbol-function 'e-board-runtime-post-input)
+              #'e-board-runtime-test--post-input)
+             ((symbol-function 'e-board-post-input)
+              #'e-board-runtime-test--source-post-input))
+     (let ((e-board--registry (make-hash-table :test 'equal))
          (e-board--id-sequence 0)
           (e-board-registry--boards (make-hash-table :test 'equal))
           (e-board-registry--id-sequence 0)
@@ -75,7 +119,7 @@
           (e-harness-instance--defaults (make-hash-table :test 'equal))
           (e-harness-instance--session-stores (make-hash-table :test 'equal))
           (e-harness-instance--generation 0))
-     ,@body))
+       ,@body)))
 
 (ert-deftest e-board-runtime-test-unsettled-queues-publish-owner-transitions ()
   "Runtime queue counts change with enqueue/pop rather than a later scan."
@@ -2071,13 +2115,53 @@
                                   :requester context :content "yes")
       (should (equal (e-board-message-requester-actor
                       (car (e-board-messages source-board)))
-                     "owner"))
+                     '(client "client" 1)))
       (e-board-registry-detach-client board "client")
       (should-error
        (e-board-runtime-post-input board :id "denied" :tags '(main)
                                    :requester context :content "no")
        :type 'e-board-registry-authorization-denied)
       (should (= (length (e-board-messages source-board)) 1)))))
+
+(ert-deftest e-board-runtime-test-ingress-rejects-nil-and-fences-client-generation ()
+  "No retained input can originate from omitted or stale client identity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (_client (e-board-registry-attach-client
+                     board :id "client" :principal "owner"))
+           (old (e-board-registry-client-requester-context board "client"))
+           (source (e-board-registry-board-source-board board)))
+      (should-error
+       (funcall e-board-runtime-test--production-post-input
+                board :id "missing" :content "no")
+       :type 'e-board-registry-authorization-denied)
+      (e-board-registry-detach-client board "client")
+      (e-board-registry-attach-client board :id "client" :principal "owner")
+      (should-error
+       (funcall e-board-runtime-test--production-post-input
+                board :id "stale" :requester old :content "no")
+       :type 'e-board-registry-authorization-denied)
+      (should-not (e-board-messages source)))))
+
+(ert-deftest e-board-runtime-test-participant-originated-post-derives-current-actor ()
+  "The participant ingress never accepts caller-supplied or nil authority."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment
+              (e-board-runtime-attach
+               board harness "session" :participant-id "participant"))
+             (publication
+              (e-board-runtime-post-participant-input
+               attachment :id "self" :to "participant" :content "work"))
+             (message (e-board-publication-message publication)))
+        (should (equal (e-board-message-requester-actor message)
+                       '(participant "participant")))
+        (setf (e-board-runtime-attachment-state attachment) 'retired)
+        (should-error
+         (e-board-runtime-post-participant-input attachment :content "late")
+         :type 'e-board-runtime-error)))))
 
 (ert-deftest e-board-runtime-test-uncertain-delivery-does-not-retry-old-pickup ()
   "An adapter can tombstone an ambiguous attempt and advance the FIFO."
