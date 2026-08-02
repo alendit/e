@@ -236,9 +236,14 @@
   "Cheap work publishes its terminal fact before its deferred exact reply."
   (e-board-test--with-empty-registry
     (let (effects replies)
-      (let* ((board (e-board-create :id "board"
-                                    :effect-scheduler
-                                    (lambda (effect) (push effect effects))))
+      (let* ((board (e-board-create
+                     :id "board"
+                     :effect-scheduler
+                     (lambda (effect) (push effect effects))
+                     :invocation-effect-dispatcher
+                     (lambda (_board target state payload)
+                       (should (equal target "turn-1/call-1"))
+                       (push (list state payload) replies))))
              (handle (e-work-prepare
                       (e-work-spec-create
                        :id "cheap" :execution 'cheap :interactive-policy 'cheap
@@ -246,8 +251,11 @@
         (e-board-enroll-work board handle)
         (e-board-subscribe-invocation
          board (e-work-handle-id handle)
-         (lambda (state payload) (push (list state payload) replies))
+         "turn-1/call-1"
          :id "turn-1/call-1")
+        (should (equal (e-board-invocation-effect-target
+                        (e-board-invocation board "turn-1/call-1"))
+                       "turn-1/call-1"))
         (e-work-start-prepared handle)
         (should-not replies)
         (should (eq (e-board-work-state

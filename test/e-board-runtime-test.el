@@ -19,6 +19,7 @@
           (e-board-registry--id-sequence 0)
           (e-board-runtime--attachments (make-hash-table :test 'equal))
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+          (e-board-runtime--invocations (make-hash-table :test 'equal))
           (e-board-runtime--deferred-hooks nil)
           (e-board-runtime--deferred-hook-drain-scheduled nil)
           (e-board-runtime--deferred-hook-generation 0)
@@ -118,6 +119,35 @@
         (should (e-board-observed-work source-board (e-work-handle-id handle)))
         (should (e-board-invocation source-board '("turn" "call")))
         (should-not (e-work-handle-started-p handle))))))
+
+(ert-deftest e-board-runtime-test-exact-invocation-effect-uses-opaque-target ()
+  "A terminal board effect reaches only the target's captured loop service."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           reply)
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "tool" :execution 'cheap :interactive-policy 'cheap
+                       :runner (lambda (_arguments _context) "done"))
+                      nil
+                      :context
+                      '(:session-id "session" :turn-id "turn" :tool-call (:id "call"))))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (funcall enroll handle (lambda (state payload) (setq reply (list state payload))))
+        (let ((invocation (e-board-invocation source-board '("turn" "call"))))
+          (should invocation)
+          (should-not (functionp (e-board-invocation-effect-target invocation))))
+        (e-work-start-prepared handle)
+        (should-not reply)
+        (e-board-drain-effects source-board)
+        (should (equal reply '(finished "done")))
+        (should (eq (e-board-invocation-state
+                     (e-board-invocation source-board '("turn" "call")))
+                    'committed))))))
 
 (ert-deftest e-board-runtime-test-enrollment-installs-bounded-activity-mailbox ()
   "Board enrollment captures progress before it schedules general hook work."

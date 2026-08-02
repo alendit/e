@@ -35,6 +35,9 @@
 (defvar e-board-runtime--session-attachments (make-hash-table :test 'equal)
   "Live attachments keyed by a concrete harness and session identity.")
 
+(defvar e-board-runtime--invocations (make-hash-table :test 'equal)
+  "Exact invocation effect targets owned by their original attachment.")
+
 (defconst e-board-runtime-deferred-hook-drain-limit 16
   "Maximum deferred carrier hooks the private runtime starts per drain.")
 
@@ -83,7 +86,12 @@
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function subscription activity-sequence)
+  board participant harness session-id delivery-function subscription activity-sequence generation)
+
+(cl-defstruct (e-board-runtime-invocation
+               (:constructor e-board-runtime-invocation--create)
+               (:conc-name e-board-runtime-invocation-))
+  target attachment attachment-generation callback state)
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -93,6 +101,58 @@
 (defun e-board-runtime--session-key (harness session-id)
   "Return the runtime attachment key for HARNESS SESSION-ID."
   (list harness session-id))
+
+(defun e-board-runtime--invocation-target (attachment turn-id tool-call-id)
+  "Return ATTACHMENT's immutable target for TURN-ID and TOOL-CALL-ID."
+  (list (e-board-registry-board-id (e-board-runtime-attachment-board attachment))
+        (e-board-registry-participant-id
+         (e-board-runtime-attachment-participant attachment))
+        turn-id tool-call-id))
+
+(defun e-board-runtime--register-invocation
+    (attachment turn-id tool-call-id callback)
+  "Capture CALLBACK behind one exact invocation target before work starts.
+The target retains the original live ATTACHMENT and its generation.  Later
+effects may use that capture or fail visibly; they never resolve a replacement
+endpoint by session identity."
+  (unless (and turn-id tool-call-id (functionp callback))
+    (signal 'e-board-runtime-error
+            (list "Invocation requires turn id, tool call id, and callback")))
+  (let ((target (e-board-runtime--invocation-target
+                 attachment turn-id tool-call-id)))
+    (when (gethash target e-board-runtime--invocations)
+      (signal 'e-board-runtime-error (list "Invocation target already exists" target)))
+    (puthash target
+             (e-board-runtime-invocation--create
+              :target target
+              :attachment attachment
+              :attachment-generation (e-board-runtime-attachment-generation attachment)
+              :callback callback
+              :state 'open)
+             e-board-runtime--invocations)
+    target))
+
+(defun e-board-runtime--apply-invocation-effect (_board target state payload)
+  "Apply TARGET exactly once through its captured runtime invocation service."
+  (let ((invocation (gethash target e-board-runtime--invocations)))
+    (unless invocation
+      (signal 'e-board-runtime-error (list "Unknown invocation target" target)))
+    (unless (eq (e-board-runtime-invocation-state invocation) 'open)
+      (signal 'e-board-runtime-error (list "Invocation target is not open" target)))
+    (let ((attachment (e-board-runtime-invocation-attachment invocation)))
+      (unless (= (e-board-runtime-invocation-attachment-generation invocation)
+                 (e-board-runtime-attachment-generation attachment))
+        (setf (e-board-runtime-invocation-state invocation) 'unavailable)
+        (signal 'e-board-runtime-error
+                (list "Original invocation endpoint is unavailable" target)))
+      (setf (e-board-runtime-invocation-state invocation) 'applying)
+      (condition-case err
+          (progn
+            (funcall (e-board-runtime-invocation-callback invocation) state payload)
+            (setf (e-board-runtime-invocation-state invocation) 'committed))
+        (error
+         (setf (e-board-runtime-invocation-state invocation) 'failed)
+         (signal (car err) (cdr err)))))))
 
 (defun e-board-runtime--drain-deferred-hooks ()
   "Start one bounded page of deferred carrier hooks outside settlement.
@@ -261,10 +321,16 @@ has no callback and is observed only."
       (when callback
         (let* ((context (e-work-handle-context handle))
                (turn-id (plist-get context :turn-id))
-               (tool-call-id (plist-get (plist-get context :tool-call) :id)))
-          (e-board-subscribe-invocation
-           board (e-work-handle-id handle) callback
-            :id (list turn-id tool-call-id)))))))
+               (tool-call-id (plist-get (plist-get context :tool-call) :id))
+               (target (e-board-runtime--register-invocation
+                        attachment turn-id tool-call-id callback)))
+          (condition-case err
+              (e-board-subscribe-invocation
+               board (e-work-handle-id handle) target
+               :id (list turn-id tool-call-id))
+            (error
+             (remhash target e-board-runtime--invocations)
+             (signal (car err) (cdr err)))))))))
 
 (defun e-board-runtime--subscribe-aggregation
     (harness handles mode timeout callback)
@@ -372,12 +438,13 @@ the conservative idle-only harness delivery port is used."
     (let ((attachment
            (e-board-runtime-attachment--create
             :board board
-            :participant participant
-             :harness harness
-             :session-id session-id
-             :activity-sequence 0
-              :delivery-function (or delivery-function
-                                     #'e-board-runtime--deliver-to-harness))))
+             :participant participant
+            :harness harness
+            :session-id session-id
+            :activity-sequence 0
+            :generation 1
+            :delivery-function (or delivery-function
+                                    #'e-board-runtime--deliver-to-harness))))
        (setf (e-board-runtime-attachment-subscription attachment)
              (e-harness-subscribe
               harness
@@ -395,6 +462,9 @@ the conservative idle-only harness delivery port is used."
                  (lambda ()
                    (funcall effect)
                    (e-board-runtime--deliver-pending-pickups board)))))
+        (setf (e-board-invocation-effect-dispatcher
+               (e-board-registry-board-source-board board))
+              #'e-board-runtime--apply-invocation-effect)
          (e-harness-set-work-enrollment-function
          harness
          (lambda (handle &optional callback)

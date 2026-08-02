@@ -78,7 +78,7 @@
 (cl-defstruct (e-board-invocation
                 (:constructor e-board-invocation--create)
                 (:conc-name e-board-invocation-))
-  id work-id state callback activation-id)
+  id work-id state effect-target activation-id)
 
 (cl-defstruct (e-board-aggregation
                 (:constructor e-board-aggregation--create)
@@ -90,7 +90,7 @@
                (:conc-name e-board-))
   id id-function next-seq events messages message-table participants subscriptions
   observers pickups source-high-watermarks source-recent work-table invocations aggregations pending-effects
-  effect-scheduler)
+  effect-scheduler invocation-effect-dispatcher)
 
 (defun e-board--next-id (board kind)
   "Return BOARD's next identity for KIND.
@@ -151,7 +151,8 @@ The board object remains valid for inspection by its holder."
                    (string< (format "%s" (e-board-id left))
                             (format "%s" (e-board-id right)))))))
 
-(cl-defun e-board-create (&key id id-function effect-scheduler (register t))
+(cl-defun e-board-create
+    (&key id id-function effect-scheduler invocation-effect-dispatcher (register t))
   "Create a process-local board with ID and optional ID-FUNCTION.
 ID-FUNCTION receives a symbol such as `message' or `subscription'.  Passing
 explicit ids to individual operations takes precedence over this generator."
@@ -172,7 +173,8 @@ explicit ids to individual operations takes precedence over this generator."
                    :invocations (make-hash-table :test 'equal)
                    :aggregations (make-hash-table :test 'equal)
                   :pending-effects nil
-                  :effect-scheduler effect-scheduler)))
+                  :effect-scheduler effect-scheduler
+                  :invocation-effect-dispatcher invocation-effect-dispatcher)))
     (when register (e-board-register board))
     board))
 
@@ -254,7 +256,13 @@ effect records and never synchronously enter a tool or harness callback."
            (setf (e-board-invocation-state invocation) 'applying)
            (condition-case err
                (progn
-                 (funcall (e-board-invocation-callback invocation) state payload)
+                 (let ((dispatcher (e-board-invocation-effect-dispatcher board)))
+                   (unless dispatcher
+                     (signal 'e-board-error
+                             (list "No invocation effect dispatcher" activation-id)))
+                   (funcall dispatcher board
+                            (e-board-invocation-effect-target invocation)
+                            state payload))
                  (setf (e-board-invocation-state invocation) 'committed)
                  (e-board--append-event
                   board 'effect-committed
@@ -409,19 +417,22 @@ before runner entry so synchronous carriers cannot settle outside the log."
          (e-board--observe-work-terminal board work state payload)))
       work)))
 
-(cl-defun e-board-subscribe-invocation (board work-id callback &key id)
+(cl-defun e-board-subscribe-invocation (board work-id effect-target &key id)
   "Install one exact reply relation for BOARD WORK-ID.
-CALLBACK is an injected invocation service.  It receives the terminal work
-state and payload only after the terminal board event has committed."
-  (unless (functionp callback)
-    (signal 'wrong-type-argument (list 'functionp callback)))
+EFFECT-TARGET is an opaque exact invocation identity owned by the runtime
+effect adapter.  The board never retains or invokes a loop callback; it only
+commits the terminal event, then asks its injected dispatcher to apply this
+target after the start stack unwinds."
+  (unless effect-target
+    (signal 'e-board-error (list "Invocation effect target is required")))
   (unless (e-board-observed-work board work-id)
     (signal 'e-board-error (list "Unknown board work" work-id)))
   (let ((id (or id (e-board--next-id board 'invocation))))
     (when (e-board-invocation board id)
       (signal 'e-board-id-conflict (list id)))
     (let ((invocation (e-board-invocation--create
-                       :id id :work-id work-id :state 'open :callback callback)))
+                       :id id :work-id work-id :state 'open
+                       :effect-target effect-target)))
       (puthash id invocation (e-board-invocations board))
       (e-board--append-event board 'subscription-added
                              (list :subscription-id id :work-id work-id
@@ -437,13 +448,13 @@ state and payload only after the terminal board event has committed."
       invocation)))
 
 (cl-defun e-board-enroll-invocation-work
-    (board handle invocation-id callback &key metadata)
+    (board handle invocation-id effect-target &key metadata)
   "Atomically enroll prepared HANDLE and its exact INVOCATION-ID relation.
-CALLBACK is the private loop-owned result seam.  This convenience keeps the
-required pre-run ordering at one application boundary without making `e-work'
-depend on board state."
+EFFECT-TARGET is owned by an injected runtime invocation service.  This
+convenience keeps required pre-run ordering at one application boundary without
+making `e-work' depend on board state or making the board retain loop closures."
   (e-board-enroll-work board handle :metadata metadata)
-  (e-board-subscribe-invocation board (e-work-handle-id handle) callback
+  (e-board-subscribe-invocation board (e-work-handle-id handle) effect-target
                                  :id invocation-id)
   handle)
 

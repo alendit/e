@@ -89,6 +89,7 @@
   "A board-enrolled cheap tool cannot settle its call before the effect drain."
   (let ((registry (e-tools-registry-create))
         (effects nil)
+        (callbacks (make-hash-table :test 'equal))
         result)
     (e-tools-register
      registry :name "board_echo" :description "Return through the board."
@@ -98,14 +99,18 @@
     (let ((board (e-board-create
                   :id "board-tools"
                   :register nil
-                  :effect-scheduler (lambda (effect) (push effect effects)))))
+                  :effect-scheduler (lambda (effect) (push effect effects))
+                  :invocation-effect-dispatcher
+                  (lambda (_board target state payload)
+                    (funcall (gethash target callbacks) state payload)))))
       (e-tools-start
        registry '(:id "call-1" :name "board_echo" :arguments (:text "done"))
        :context
        (list :board-enroll-work
              (lambda (handle callback)
+               (puthash "turn-1/call-1" callback callbacks)
                (e-board-enroll-invocation-work
-                board handle "turn-1/call-1" callback)))
+                board handle "turn-1/call-1" "turn-1/call-1")))
        :on-done (lambda (value) (setq result value)))
       (should-not result)
       (should (= (length effects) 1))
