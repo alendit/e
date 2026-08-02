@@ -342,6 +342,31 @@ Return the newly ready pickup identity, if any."
                                  (list :delivery-id next-id))
           next-id)))))
 
+(defun e-board-pickup-mark-uncertain (board delivery-id reason)
+  "Tombstone ambiguous DELIVERY-ID and promote its FIFO successor.
+An uncertain physical attempt is never retried as though it had not reached the
+original endpoint.  REASON records the reconciliation gap for later inspection."
+  (let ((pickup (or (e-board-pickup board delivery-id)
+                    (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
+    (unless (memq (e-board-pickup-state pickup) '(delivering accepted))
+      (signal 'e-board-error
+              (list "Pickup uncertainty requires delivering or accepted state" delivery-id)))
+    (let* ((participant-id (e-board-pickup-participant-id pickup))
+           (queue (e-board--pickup-queue board participant-id)))
+      (unless (equal (car queue) delivery-id)
+        (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (setf (e-board-pickup-state pickup) 'uncertain)
+      (e-board--append-event board 'pickup-uncertain
+                             (list :delivery-id delivery-id :reason reason))
+      (setq queue (cdr queue))
+      (puthash participant-id queue (e-board-pickup-queues board))
+      (when-let ((next-id (car queue)))
+        (let ((next (e-board-pickup board next-id)))
+          (setf (e-board-pickup-state next) 'ready)
+          (e-board--append-event board 'pickup-ready
+                                 (list :delivery-id next-id))
+          next-id)))))
+
 (defun e-board-cancel-pickup (board delivery-id &optional reason)
   "Cancel pending or ready DELIVERY-ID without affecting watched work.
 Return a newly ready successor when cancellation releases the FIFO head."

@@ -38,8 +38,10 @@ promotes its successor; a failed uncommitted adapter attempt restores the head
 to =ready=.  Harness acceptance/consumption reconciliation remains
 partial: queued delivery stays =accepted= until the harness appends its user
 message and emits a correlated =input-consumed= receipt, while inject appends
-and consumes synchronously.  Discard/uncertain/rebind reconciliation remains
-to be generalized in the delivery ledger slice.
+and consumes synchronously.  An ambiguous delivering/accepted attempt now
+records an =uncertain= tombstone, never retries against a replacement endpoint,
+and releases only that participant's FIFO successor.  Discard/rebind
+reconciliation remains to be generalized in the delivery ledger slice.
 Pending or ready pickup cancellation now records a =cancelled= tombstone and
 releases only the affected FIFO position; accepted/delivering cancellation
 races remain part of the later receipt reconciliation work.

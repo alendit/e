@@ -332,6 +332,23 @@
         (should (equal (e-board-cancel-pickup board first 'owner-cancelled) third))
         (should (eq (e-board-pickup-state (e-board-pickup board third)) 'ready))))))
 
+(ert-deftest e-board-test-uncertain-pickup-tombstones-and-releases-fifo-head ()
+  "An ambiguous accepted pickup is not retried and releases only its successor."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-add-participant board :id "one" :create-pickup-subscription-id "address")
+      (let* ((first (car (e-board-publication-pickup-ids
+                          (e-board-post-input board :id "first" :to "one"))))
+             (second (car (e-board-publication-pickup-ids
+                           (e-board-post-input board :id "second" :to "one")))))
+        (e-board-pickup-start-delivery board first)
+        (e-board-pickup-accept-delivery board first)
+        (should (equal (e-board-pickup-mark-uncertain board first 'lost-ack) second))
+        (should (eq (e-board-pickup-state (e-board-pickup board first)) 'uncertain))
+        (should (eq (e-board-pickup-state (e-board-pickup board second)) 'ready))
+        (should-error (e-board-pickup-start-delivery board first)
+                      :type 'e-board-error)))))
+
 (ert-deftest e-board-test-observer-lifecycle-and-replacement-keep-cursors-local ()
   "Observer muting, terminal states, and replacement never route input."
   (e-board-test--with-empty-registry
