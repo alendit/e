@@ -265,6 +265,33 @@
                        '("after")))
         (should (= (e-board-observer-next-seq observer) 1))))))
 
+(ert-deftest e-board-registry-test-stale-live-observer-requires-resnapshot ()
+  "A retention advance expires only the stale cursor when it next reads."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (client (e-board-registry-attach-client board :id "client"))
+           (source-board (e-board-registry-board-source-board board))
+           (stale (e-board-registry-install-observer
+                   board "client" '(:tags (main)) :id "stale" :start-seq 0)))
+      (e-board-post-fact source-board :id "one" :tags '(main)
+                         :source-fact-key '(producer 1 1))
+      (e-board-post-fact source-board :id "two" :tags '(main)
+                         :source-fact-key '(producer 1 2))
+      (e-board-advance-retention-floor source-board 2)
+      (let ((page (e-board-registry-prepare-observer-page
+                   board (e-board-registry-client-id client) "stale")))
+        (should (plist-get page :resnapshot-required))
+        (should-not (plist-get page :messages))
+        (should (eq (e-board-observer-state stale) 'expired)))
+      (let* ((fresh (e-board-registry-install-observer
+                     board "client" '(:tags (main)) :id "fresh" :start-seq 1))
+             (page (e-board-registry-prepare-observer-page
+                    board "client" "fresh")))
+        (should (equal (mapcar #'e-board-message-id (plist-get page :messages))
+                       '("one" "two")))
+        (should-not (plist-get page :resnapshot-required))
+        (should (eq (e-board-observer-state fresh) 'active))))))
+
 (ert-deftest e-board-registry-test-client-acknowledges-only-its-observer-page ()
   "An attached client explicitly accepts its own prepared observer page."
   (e-board-registry-test--with-empty-registries

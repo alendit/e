@@ -128,6 +128,11 @@ Durable session activity entries now also receive a stable monotonically
 increasing =board-activity-sequence= that survives replay, matching assistant
 entries' existing =board-output-sequence= foundation for later publication
 retry wiring.
+The harness now carries each durable activity entry id and frozen publication
+sequence alongside its public event without rewriting the event payload.
+Terminal board activity and provider-active summaries retain that id as their
+=source-event-id= provenance, while provider context strips board-only output
+sequence metadata before a request reaches the backend.
 The board core also has the first effect-free client observer cursor: bounded
 forward pages use the common selector fields and cannot route, consume, or
 create participant input.  Its client-local active/muted/faulted/cancelled/
@@ -149,6 +154,10 @@ retained backfill requires an explicit =start-seq=.
 Observer cursors now also retain their owning client connection generation, so
 reconnecting with the same client id cannot operate a cancelled cursor from an
 older attachment generation.
+The board now has a monotonic logical retention floor.  Advancing it does not
+scan observers; instead, an active live cursor that is behind the retained
+boundary expires only on its next page request and receives explicit
+=resnapshot-required= state, while a cursor at the boundary continues normally.
 Slices 0--4 are private implementation/verification order only.  No board mode,
 feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
 Slice 5 cutover replaces every caller and deletes the superseded interfaces in
