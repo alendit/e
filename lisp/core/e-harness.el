@@ -1363,6 +1363,37 @@ JSON replay, so both are recognized."
     (remhash session-id (e-harness-prompt-queues harness)))
   items)
 
+(defun e-harness-discard-queued-board-input
+    (harness session-id delivery-id endpoint-token endpoint-generation reason)
+  "Discard HARNESS SESSION-ID's exact queued board head with REASON.
+Only the first queued item is inspected, keeping reconciliation bounded and
+preserving FIFO.  DELIVERY-ID, ENDPOINT-TOKEN, and ENDPOINT-GENERATION must all
+match the immutable metadata accepted with that item.  Return the removed item,
+or nil without changing the queue when the head belongs to another delivery."
+  (let* ((items (e-harness-queued-prompts harness session-id))
+         (item (car items))
+         (metadata (and item (plist-get item :metadata))))
+    (when (and (equal (plist-get metadata :board-delivery-id) delivery-id)
+               (equal (plist-get metadata :board-endpoint-token) endpoint-token)
+               (equal (plist-get metadata :board-endpoint-generation)
+                      endpoint-generation))
+      (e-harness--set-queued-prompts harness session-id (cdr items))
+      (e-harness--emit-queue-changed harness session-id)
+      (e-harness--emit
+       harness
+       (e-events-make
+        :type 'input-discarded :session-id session-id :turn-id nil
+        :payload
+        (list :delivery-id (copy-tree delivery-id)
+              :endpoint-token
+              (if (vectorp endpoint-token)
+                  (copy-sequence endpoint-token)
+                (copy-tree endpoint-token))
+              :endpoint-generation (copy-tree endpoint-generation)
+              :queue-id (plist-get item :id)
+              :reason reason)))
+      item)))
+
 (defun e-harness--emit-queue-changed (harness session-id)
   "Emit a queue update event for SESSION-ID."
   (e-harness--emit

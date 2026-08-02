@@ -209,6 +209,16 @@ The source board is registered with `e-board' under the same board identity."
             (list (e-board-registry-board-id board) requester 'owner)))
   board)
 
+(defun e-board-registry-authorize-participant-removal
+    (board-or-id requester participant-or-id)
+  "Authorize REQUESTER to remove PARTICIPANT-OR-ID from active BOARD-OR-ID.
+Participant removal is board administration.  Session-private transcript and
+control grants are deliberately not consulted by this operation."
+  (let ((board (e-board-registry--require-active board-or-id)))
+    (e-board-registry--require-owner board requester)
+    (e-board-registry--participant board participant-or-id)
+    t))
+
 (defun e-board-registry--owner-count (board)
   "Return the number of current owner grants on BOARD.
 Administrative grant changes may scan this small registry-owned table; hot
@@ -610,23 +620,29 @@ principal may address itself; all other exact posts require the target's
 explicit `post' grant."
   (let* ((board (e-board-registry--require-active board-or-id))
          (participant (e-board-registry--participant board participant-or-id))
+         (state
+          (e-board-participant-state
+           (e-board-registry-participant-source-participant participant)))
          (rights (gethash requester
                           (e-board-registry-participant-access-grants participant))))
-    (unless (or (eq (e-board-registry-principal-role board requester) 'owner)
-                (equal requester (e-board-registry-participant-controller participant))
-                (memq 'post rights))
+    (unless (and (memq state '(active dormant stale))
+                 (or (eq (e-board-registry-principal-role board requester) 'owner)
+                     (equal requester
+                            (e-board-registry-participant-controller participant))
+                     (memq 'post rights)))
       (signal 'e-board-registry-authorization-denied
               (list (e-board-registry-board-id board) requester
-                    (e-board-registry-participant-id participant) 'post)))
+                    (e-board-registry-participant-id participant)
+                    (if (eq state 'detaching) 'target-unavailable 'post))))
     t))
 
 (defun e-board-registry-participant-delivery-authorization
     (board-or-id participant-or-id)
   "Return PARTICIPANT-OR-ID's current physical-delivery authorization state.
-`authorized' permits a new endpoint attempt.  `waiting' preserves a dormant or
-stale member's bounded FIFO without calling a harness.  `revoked' requires an
-explicit pickup tombstone and includes removed membership or a missing current
-principal grant."
+`authorized' permits a new endpoint attempt.  `waiting' preserves a dormant,
+stale, or detaching member's bounded FIFO without calling a harness.  `revoked'
+requires an explicit pickup tombstone and includes removed membership or a
+missing current principal grant."
   (let* ((board (e-board-registry--resolve board-or-id))
          (participant
           (if (e-board-registry-participant-p participant-or-id)
@@ -648,7 +664,7 @@ principal grant."
      ((and principal (null (e-board-registry-principal-role board principal)))
       'revoked)
      ((eq state 'active) 'authorized)
-     ((memq state '(dormant stale)) 'waiting)
+     ((memq state '(detaching dormant stale)) 'waiting)
      (t 'revoked))))
 
 (defun e-board-registry-remove-participant (board-or-id participant-or-id)
@@ -664,17 +680,19 @@ principal grant."
       (when (equal (e-board-subscription-participant-id subscription) participant-id)
         (setf (e-board-subscription-state subscription) 'inactive)))
     (remhash participant-id (e-board-registry-board-participants board))
+    (e-board--append-event
+     source-board 'participant-removed (list :participant-id participant-id))
     participant))
 
 (defun e-board-registry-set-participant-state
     (board-or-id participant-or-id state)
-  "Transition a local participant to active, dormant, or stale STATE.
+  "Transition a local participant to active, detaching, dormant, or stale STATE.
 These nonterminal membership states retain the participant's exact address
 subscription so queued/recoverable delivery can be reconciled by the runtime.
 Removal remains the terminal operation in `e-board-registry-remove-participant'."
-  (unless (memq state '(active dormant stale))
+  (unless (memq state '(active detaching dormant stale))
     (signal 'wrong-type-argument
-            (list '(member active dormant stale) state)))
+            (list '(member active detaching dormant stale) state)))
   (let* ((board (e-board-registry--require-active board-or-id))
          (participant (e-board-registry--participant board participant-or-id))
          (source-board (e-board-registry-board-source-board board))
@@ -689,6 +707,7 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
      source-board
      (pcase state
        ('active 'participant-rebound)
+       ('detaching 'participant-detaching)
        ('dormant 'participant-dormant)
        ('stale 'participant-stale))
      (list :participant-id (e-board-registry-participant-id participant)

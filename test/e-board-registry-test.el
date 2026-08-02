@@ -135,6 +135,35 @@
                      board participant)
                     'revoked))))))
 
+(ert-deftest e-board-registry-test-detaching-participant-fences-new-ingress ()
+  "Detaching membership waits for receipts but cannot receive another input."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (participant
+            (e-board-registry-add-participant board :id "participant"))
+           (source-board (e-board-registry-board-source-board board)))
+      (should (e-board-registry-authorize-participant-removal
+               board "owner" participant))
+      (should-error
+       (e-board-registry-authorize-participant-removal
+        board "member" participant)
+       :type 'e-board-registry-authorization-denied)
+      (e-board-registry-set-participant-state board participant 'detaching)
+      (should (eq (e-board-registry-participant-delivery-authorization
+                   board participant)
+                  'waiting))
+      (should-error
+       (e-board-registry-authorize-exact-post board "owner" participant)
+       :type 'e-board-registry-authorization-denied)
+      (let ((publication
+             (e-board-post-input
+              source-board :id "late" :to "participant" :content "late")))
+        (e-board-drain-input-classifications source-board)
+        (should-not (e-board-publication-pickup-ids publication))
+        (should (eq (e-board-message-unrouted-reason
+                     (e-board-publication-message publication))
+                    'target-unavailable))))))
+
 (ert-deftest e-board-registry-test-owner-manages-target-participant-grants ()
   "Cross-target rights live on the target and revoke immediately."
   (e-board-registry-test--with-empty-registries

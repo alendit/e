@@ -138,6 +138,16 @@ ignores old endpoint events or deferred activity mailboxes.
 If its old FIFO head was delivering, accepted, or cancelling, rebind instead
 records that logical delivery as =uncertain= before the replacement is active;
 only the promoted successor may be delivered there.
+Participant removal now has a controlled runtime start operation.  It reserves
+one request identity, revalidates board-owner authority in its first scheduled
+commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
+one FIFO item per later step.  Undelivered items become explicit cancellation
+tombstones; accepted items retain their endpoint receipt while the old harness
+turn drains or its exact queued head acknowledges discard.  Only a quiescent
+session loses its reverse attachment indexes and board membership, leaving its
+transcript dormant and unchanged.
+Cancellation is valid before the detach commit; a later cancellation attempt
+fails visibly because reconciliation has already changed board state.
 Participant output and activity source keys now include that attachment
 generation, so a fresh replacement session cannot deduplicate its first
 publication against the old endpoint's sequence.

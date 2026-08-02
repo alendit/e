@@ -326,6 +326,276 @@
             (should-not (equal (e-board-delivery-attempt-receipt attempt)
                                'stale-receipt))))))))
 
+(ert-deftest e-board-runtime-test-remove-participant-cancels-only-before-commit ()
+  "A prepared removal can cancel without changing the live attachment."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           scheduled)
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant")))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq scheduled
+                           (append scheduled
+                                   (list (lambda ()
+                                           (apply function arguments))))))))
+          (let ((request
+                 (e-board-runtime-remove-participant-start
+                  board "participant" "owner")))
+            (should (eq (e-request-lifecycle-state request) 'started))
+            (should (= (length scheduled) 1))
+            (e-request-cancel request 'user-cancelled)
+            (should (eq (e-request-lifecycle-state request) 'cancelled))
+            (should (eq (e-board-runtime-attachment-state attachment) 'active))
+            (should-not
+             (e-board-runtime-attachment-reconciliation attachment))
+            (funcall (pop scheduled))
+            (should (e-board-runtime--current-attachment-p attachment))
+            (should (e-board-registry-participant board "participant"))))))))
+
+(ert-deftest e-board-runtime-test-remove-participant-revalidates-owner-at-commit ()
+  "A requester revoked before the scheduled commit cannot begin detaching."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           scheduled)
+      (e-board-registry-authorize-principal board "owner" "other-owner" 'owner)
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant")))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (setq scheduled
+                           (append scheduled
+                                   (list (lambda ()
+                                           (apply function arguments))))))))
+          (let ((request
+                 (e-board-runtime-remove-participant-start
+                  board "participant" "owner")))
+            (e-board-registry-revoke-principal
+             board "other-owner" "owner")
+            (funcall (pop scheduled))
+            (should (eq (e-request-lifecycle-state request) 'failed))
+            (should (eq (car (e-request-lifecycle-terminal-payload request))
+                        'e-board-registry-authorization-denied))
+            (should (eq (e-board-runtime-attachment-state attachment) 'active))
+            (should (e-board-runtime--current-attachment-p attachment))
+            (should-not
+             (e-board-runtime-attachment-reconciliation attachment))))))))
+
+(ert-deftest e-board-runtime-test-remove-participant-reconciles-bounded-fifo ()
+  "Removal fences ingress and tombstones one undelivered FIFO item per step."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (source-board (e-board-registry-board-source-board board))
+           scheduled request attachment first-id second-id)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"))
+      (e-board-registry-attach-client
+       board :id "owner-client" :principal "owner")
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((first (e-board-post-input
+                      source-board :id "first" :to "participant"
+                      :content "first"))
+              (second (e-board-post-input
+                       source-board :id "second" :to "participant"
+                       :content "second")))
+          (e-board-drain-input-classifications source-board)
+          (setq first-id (car (e-board-publication-pickup-ids first))
+                second-id (car (e-board-publication-pickup-ids second))
+                scheduled nil))
+        (setq request
+              (e-board-runtime-remove-participant-start
+               board "participant" "owner"))
+        (funcall (pop scheduled))
+        (should (eq (e-board-runtime-attachment-state attachment) 'detaching))
+        (e-board-runtime--deliver-pickups board (list first-id))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup source-board first-id))
+                    'ready))
+        (should-error
+         (e-board-runtime-post-input
+          board :id "late" :to "participant"
+          :requester
+          (e-board-registry-client-requester-context board "owner-client")
+          :content "late")
+         :type 'e-board-registry-authorization-denied)
+        (should-not (e-board-message source-board "late"))
+        (should-error (e-request-cancel request 'too-late)
+                      :type 'e-board-runtime-control-committed)
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup source-board first-id))
+                    'cancelled))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup source-board second-id))
+                    'ready))
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state
+                     (e-board-pickup source-board second-id))
+                    'cancelled))
+        (should (eq (e-request-lifecycle-state request) 'progress))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+        (should-not (e-board-runtime--current-attachment-p attachment))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants board)))
+        (should (equal (mapcar #'e-board-message-content
+                               (e-board-messages source-board))
+                       '("first" "second")))))))
+
+(ert-deftest e-board-runtime-test-remove-participant-awaits-accepted-receipt ()
+  "Removal retains an accepted endpoint binding until its receipt settles."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (source-board (e-board-registry-board-source-board board))
+           scheduled request attachment delivery-id pickup attempt)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :delivery-function (lambda (&rest _arguments)
+                                  '(:accepted receipt))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((publication
+               (e-board-post-input
+                source-board :id "accepted" :to "participant"
+                :content "accepted")))
+          (e-board-drain-input-classifications source-board)
+          (setq delivery-id (car (e-board-publication-pickup-ids publication))
+                scheduled nil))
+        (e-board-runtime--deliver-pickups board (list delivery-id))
+        (setq pickup (e-board-pickup source-board delivery-id)
+              attempt (e-board-pickup-attempt pickup)
+              request (e-board-runtime-remove-participant-start
+                       board "participant" "owner"))
+        (should (eq (e-board-pickup-state pickup) 'accepted))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state pickup) 'cancelling))
+        (should (equal (e-board-delivery-attempt-receipt attempt) 'receipt))
+        (funcall (pop scheduled))
+        (should-not scheduled)
+        (should (eq (e-request-lifecycle-state request) 'progress))
+        (should (e-board-registry-participant board "participant"))
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make
+          :type 'input-consumed :session-id "session" :turn-id "turn"
+          :payload
+          (list :delivery-id delivery-id
+                :endpoint-token
+                (e-board-delivery-attempt-endpoint-token attempt)
+                :endpoint-generation
+                (e-board-delivery-attempt-composite-generation attempt))))
+        (should (eq (e-board-pickup-state pickup) 'consumed))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants board)))))))
+
+(ert-deftest e-board-runtime-test-remove-participant-discards-fenced-queue-head ()
+  "Removal gets an exact harness discard receipt for an idle queued input."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (source-board (e-board-registry-board-source-board board))
+           scheduled request delivery-id pickup)
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach
+       board harness "session" :participant-id "participant")
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (let ((publication
+               (e-board-post-input
+                source-board :id "queued" :to "participant" :mode 'queue
+                :content "queued")))
+          (e-board-drain-input-classifications source-board)
+          (setq delivery-id (car (e-board-publication-pickup-ids publication))
+                scheduled nil))
+        (e-board-runtime--deliver-pickups board (list delivery-id))
+        (setq pickup (e-board-pickup source-board delivery-id)
+              request (e-board-runtime-remove-participant-start
+                       board "participant" "owner"))
+        (should (eq (e-board-pickup-state pickup) 'accepted))
+        (should (= (length (e-harness-queued-prompts harness "session")) 1))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (should (eq (e-board-pickup-state pickup) 'cancelled))
+        (should-not (e-harness-queued-prompts harness "session"))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants board)))))))
+
+(ert-deftest e-board-runtime-test-remove-participant-awaits-active-turn ()
+  "Removal resumes from a terminal turn event instead of polling the harness."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           scheduled request attachment entry)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant")
+            entry '(:id "turn" :status running))
+      (puthash "session" entry (e-harness-active-turns harness))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq scheduled
+                         (append scheduled
+                                 (list (lambda ()
+                                         (apply function arguments))))))))
+        (setq request
+              (e-board-runtime-remove-participant-start
+               board "participant" "owner"))
+        (funcall (pop scheduled))
+        (funcall (pop scheduled))
+        (should-not scheduled)
+        (should (eq (plist-get (e-request-lifecycle-progress request) :phase)
+                    'awaiting-active-turn))
+        (plist-put entry :status 'finished)
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make
+          :type 'turn-finished :session-id "session" :turn-id "turn"
+          :payload nil))
+        (should (= (length scheduled) 1))
+        (funcall (pop scheduled))
+        (should (eq (e-request-lifecycle-state request) 'finished))
+        (should-not
+         (gethash "participant"
+                  (e-board-registry-board-participants board)))))))
+
 (ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
   "Two harness objects cannot attach the same stable store/session identity."
   (e-board-runtime-test--with-empty-state

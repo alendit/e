@@ -1772,6 +1772,38 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (should-not (eq (plist-get payload :endpoint-token) token))
       (should (equal (plist-get payload :endpoint-generation) '(3 7))))))
 
+(ert-deftest e-harness-test-discards-only-fenced-queued-board-head ()
+  "Queued board discard preserves FIFO and acknowledges the exact endpoint."
+  (let* ((harness (e-harness-create))
+         (token [endpoint :live 7 "store" "session"])
+         (delivery-id '("board" "message" "participant"))
+         events)
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session")
+    (e-harness-request-follow-up
+     harness "session" "queued"
+     :metadata
+     (list :input-origin 'board :board-delivery-id delivery-id
+           :board-endpoint-token token :board-endpoint-generation '(3 7)))
+    (should-not
+     (e-harness-discard-queued-board-input
+      harness "session" delivery-id token '(3 8) 'participant-removed))
+    (should (= (length (e-harness-queued-prompts harness "session")) 1))
+    (should
+     (e-harness-discard-queued-board-input
+      harness "session" delivery-id token '(3 7) 'participant-removed))
+    (should-not (e-harness-queued-prompts harness "session"))
+    (let* ((event (cl-find-if
+                   (lambda (candidate)
+                     (eq (e-events-type candidate) 'input-discarded))
+                   events))
+           (payload (plist-get event :payload)))
+      (should event)
+      (should (equal (plist-get payload :delivery-id) delivery-id))
+      (should (equal (plist-get payload :endpoint-token) token))
+      (should-not (eq (plist-get payload :endpoint-token) token))
+      (should (eq (plist-get payload :reason) 'participant-removed)))))
+
 (ert-deftest e-harness-test-reset-clears-session-messages ()
   "Reset clears transcript messages for a session."
   (let ((harness (e-harness-create
