@@ -33,6 +33,10 @@
 (define-error 'e-work-url-failed "e work URL request failed" 'e-work-error)
 (define-error 'e-work-prepared-start-invalid
   "Prepared e work cannot be started" 'e-work-error)
+(define-error 'e-work-unclassified-hook
+  "Interactive e work hook has no execution policy" 'e-work-error)
+(define-error 'e-work-invalid-hook-policy
+  "Invalid e work hook execution policy" 'e-work-error)
 
 (defconst e-work-execution-carriers
   '(cheap process url cooperative render agent-task backend)
@@ -41,6 +45,12 @@
 (defconst e-work-interactive-policies
   '(cheap async batch-only)
   "Known interactive policies for work specs.")
+
+(defconst e-work-hook-execution-policies '(hard-bounded deferred)
+  "Execution policies for hooks on board-enrolled interactive work.")
+
+(defconst e-work-max-hard-bounded-hooks 8
+  "Maximum inline general hooks a classified work settlement may invoke.")
 
 (defvar e-work--sequence 0
   "Monotonic fallback sequence for work handles.")
@@ -93,6 +103,12 @@
    context
    callbacks
    publication-observer
+   activity-observer
+   hook-dispatcher
+   hook-policies
+   hook-sequence
+   hook-receipts
+   hard-hook-count
    started-p
    cancel-function
   cleanup-function
@@ -209,22 +225,78 @@ Every spec must declare explicit :execution and :interactive-policy values."
       (funcall value arguments context)
     value))
 
-(defun e-work--shape-result (spec raw arguments context)
-  "Return RAW shaped through SPEC's result shaper when present."
-  (if-let ((shaper (e-work-spec-result-shaper spec)))
-      (funcall shaper raw arguments context)
+(defun e-work--shape-result (handle raw arguments context)
+  "Return RAW shaped through HANDLE's classified result shaper when present."
+  (if-let ((shaper (e-work-spec-result-shaper (e-work-handle-spec handle))))
+      (if (e-work-handle-hook-dispatcher handle)
+          (e-work--dispatch-hook handle :result-shaper shaper raw arguments context)
+        (funcall shaper raw arguments context))
     raw))
 
+(defun e-work--hook-policy (handle key)
+  "Return HANDLE's declared execution policy for hook KEY, when any."
+  (plist-get (e-work-handle-hook-policies handle) key))
+
+(defun e-work--remember-hook-error (handle key err)
+  "Record hook KEY failure ERR without reopening HANDLE's settlement."
+  (setf (e-work-handle-metadata handle)
+        (append (e-work-handle-metadata handle)
+                (list :hook-error (list :hook key :error err))))
+  err)
+
+(defun e-work--remember-hook-receipt (handle receipt)
+  "Remember deferred hook RECEIPT on HANDLE and return whether it is new."
+  (unless (member receipt (e-work-handle-hook-receipts handle))
+    (push receipt (e-work-handle-hook-receipts handle))
+    t))
+
+(defun e-work--dispatch-hook (handle key function &rest args)
+  "Run FUNCTION for HANDLE according to its declared policy.
+Raw/off-board work has no dispatcher and preserves the ordinary direct callback
+contract.  Board-enrolled work injects a dispatcher before start: trusted
+hard-bounded hooks execute under a small fixed count, while deferred hooks are
+handed to that owner scheduler with a stable receipt and can never re-enter the
+carrier's settlement stack."
+  (when function
+    (if-let ((dispatcher (e-work-handle-hook-dispatcher handle)))
+        (let ((policy (e-work--hook-policy handle key)))
+          (unless (memq policy e-work-hook-execution-policies)
+            (signal 'e-work-unclassified-hook
+                    (list :work-id (e-work-handle-id handle) :hook key)))
+          (pcase policy
+            ('hard-bounded
+             (when (>= (e-work-handle-hard-hook-count handle)
+                       e-work-max-hard-bounded-hooks)
+               (signal 'e-work-invalid-hook-policy
+                       (list :work-id (e-work-handle-id handle)
+                             :reason 'hard-hook-budget-exceeded)))
+             (cl-incf (e-work-handle-hard-hook-count handle))
+             (condition-case err
+                 (apply function args)
+               (error (e-work--remember-hook-error handle key err))))
+            ('deferred
+             (let ((receipt (list (e-work-handle-id handle)
+                                  key
+                                  (cl-incf (e-work-handle-hook-sequence handle)))))
+               (when (e-work--remember-hook-receipt handle receipt)
+                 (funcall
+                  dispatcher handle receipt
+                  (lambda ()
+                    (condition-case err
+                        (apply function args)
+                      (error (e-work--remember-hook-error handle key err))))))))))
+      (apply function args))))
+
 (defun e-work--callback (handle key &rest args)
-  "Call HANDLE callback KEY with ARGS when present."
+  "Call HANDLE callback KEY with ARGS through its hook policy when present."
   (when-let ((callback (plist-get (e-work-handle-callbacks handle) key)))
-    (apply callback args)))
+    (apply #'e-work--dispatch-hook handle key callback args)))
 
 (defun e-work--cleanup (handle)
   "Run HANDLE cleanup exactly once."
   (when-let ((cleanup (e-work-handle-cleanup-function handle)))
     (setf (e-work-handle-cleanup-function handle) nil)
-    (funcall cleanup handle)))
+    (e-work--dispatch-hook handle :cleanup cleanup handle)))
 
 (defun e-work--add-cleanup (handle cleanup)
   "Add CLEANUP to HANDLE's terminal cleanup chain."
@@ -247,12 +319,16 @@ Every spec must declare explicit :execution and :interactive-policy values."
 (defun e-work--cancel-underlying (handle)
   "Cancel HANDLE's underlying carrier and return any cancellation error."
   (when-let ((cancel (e-work-handle-cancel-function handle)))
-    (condition-case err
+    (if (e-work-handle-hook-dispatcher handle)
         (progn
-          (funcall cancel handle)
+          (e-work--dispatch-hook handle :cancel cancel handle)
           nil)
-      (error
-       (e-work--remember-cancel-error handle err)))))
+      (condition-case err
+          (progn
+            (funcall cancel handle)
+            nil)
+        (error
+         (e-work--remember-cancel-error handle err))))))
 
 (defun e-work--valid-deadline-p (deadline)
   "Return non-nil when DEADLINE is a valid absolute timestamp."
@@ -306,10 +382,10 @@ Every spec must declare explicit :execution and :interactive-policy values."
              (max 0 (- deadline (float-time))) nil
              (lambda ()
                (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
-                 (e-work--cancel-underlying handle)
                  (e-work-fail
                   handle
-                  (e-work--deadline-condition handle deadline))))))
+                  (e-work--deadline-condition handle deadline))
+                 (e-work--cancel-underlying handle)))))
       (e-work--add-cleanup
        handle
        (lambda (_handle)
@@ -339,6 +415,62 @@ ordering after ownership has been established."
   (setf (e-work-handle-publication-observer handle) observer)
   handle)
 
+(defun e-work-install-activity-observer (handle observer)
+  "Install HANDLE's dedicated bounded progress OBSERVER before it starts.
+The observer is the sole inline progress seam for board-enrolled work.  It may
+only capture a bounded mailbox reference; publication and all general progress
+hooks remain outside the carrier callback stack."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (unless (functionp observer)
+    (signal 'wrong-type-argument (list 'functionp observer)))
+  (when (or (e-work-handle-started-p handle)
+            (e-work-handle-activity-observer handle))
+    (signal 'e-work-prepared-start-invalid (list handle)))
+  (setf (e-work-handle-activity-observer handle) observer)
+  handle)
+
+(defun e-work-install-hook-dispatcher (handle dispatcher policies)
+  "Install DISPATCHER and complete hook POLICIES on prepared HANDLE.
+DISPATCHER receives HANDLE, a stable receipt, and a nullary thunk.  POLICIES is
+a plist mapping every installed general callback to `hard-bounded' or
+`deferred'.  This makes the classification an explicit owner decision before a
+cheap runner can settle; raw carrier work remains intentionally unclassified."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (unless (functionp dispatcher)
+    (signal 'wrong-type-argument (list 'functionp dispatcher)))
+  (when (or (e-work-handle-started-p handle)
+            (e-work-handle-hook-dispatcher handle))
+    (signal 'e-work-prepared-start-invalid (list handle)))
+  (dolist (key '(:on-done :on-error :on-progress :on-event))
+    (when (and (plist-get (e-work-handle-callbacks handle) key)
+               (not (memq (plist-get policies key)
+                          e-work-hook-execution-policies)))
+      (signal 'e-work-unclassified-hook
+              (list :work-id (e-work-handle-id handle) :hook key))))
+  (dolist (key '(:cleanup :cancel :result-shaper :settle))
+    (when (and (plist-member policies key)
+               (not (memq (plist-get policies key)
+                          e-work-hook-execution-policies)))
+      (signal 'e-work-invalid-hook-policy
+              (list :work-id (e-work-handle-id handle) :hook key
+                    :policy (plist-get policies key)))))
+  (when (and (e-work-spec-result-shaper (e-work-handle-spec handle))
+             (not (eq (plist-get policies :result-shaper) 'hard-bounded)))
+    (signal 'e-work-unclassified-hook
+            (list :work-id (e-work-handle-id handle) :hook :result-shaper)))
+  (setf (e-work-handle-hook-dispatcher handle) dispatcher
+        (e-work-handle-hook-policies handle) (copy-sequence policies))
+  handle)
+
+(defun e-work--activity-observer (handle payload)
+  "Notify HANDLE's dedicated bounded progress observer before general hooks."
+  (when-let ((observer (e-work-handle-activity-observer handle)))
+    (condition-case err
+        (funcall observer handle payload)
+      (error (e-work--remember-hook-error handle :activity-observer err)))))
+
 (defun e-work--publication-observer (handle state payload)
   "Notify HANDLE's dedicated terminal publication observer.
 The observer is intentionally isolated from work settlement: a publication
@@ -364,6 +496,7 @@ carrier result or suppresses ordinary cleanup/callbacks."
   "Record progress PAYLOAD for HANDLE."
   (when (and (e-work-handle-p handle)
              (e-request-progress (e-work-handle-lifecycle handle) payload))
+    (e-work--activity-observer handle payload)
     (e-work--callback handle :on-progress payload)
     (e-work--callback handle :on-event 'progress payload)
     handle))
@@ -391,14 +524,16 @@ carrier result or suppresses ordinary cleanup/callbacks."
   (unless (e-work-handle-p handle)
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
   (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
-    (let* ((cancel-error (e-work--cancel-underlying handle))
+    (let* ((classified (e-work-handle-hook-dispatcher handle))
+           (cancel-error (unless classified (e-work--cancel-underlying handle)))
            (payload (if cancel-error
-                        (list :status 'cancelled
-                              :cancel-error cancel-error)
+                        (list :status 'cancelled :cancel-error cancel-error)
                       '(:status cancelled))))
       (when (e-request-cancel (e-work-handle-lifecycle handle) payload)
         (setf (e-work-handle-error handle) payload)
-        (e-work--terminal-event handle 'cancelled payload))))
+        (e-work--terminal-event handle 'cancelled payload)
+        (when classified
+          (e-work--cancel-underlying handle)))))
   handle)
 
 (defun e-work-status (handle)
@@ -435,7 +570,7 @@ This function is rejected from interactive hot paths."
     ('cancelled (signal 'e-work-cancelled (list handle)))
     (state (signal 'e-work-error (list "Unexpected terminal state" state)))))
 
-(defun e-work-on-settle (handle callback)
+(defun e-work-on-settle (handle callback &optional policy)
   "Call CALLBACK with HANDLE once HANDLE reaches a terminal state.
 When HANDLE is already terminal, call CALLBACK now; otherwise register a
 terminal-event subscription that fires exactly once when it settles.  This is
@@ -444,10 +579,12 @@ loop.  CALLBACK runs with HANDLE already in a terminal state, so
 `e-work-status' reports the final result or error."
   (unless (e-work-handle-p handle)
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (ignore policy)
   (if (e-request-terminal-p (e-work-handle-lifecycle handle))
-      (funcall callback handle)
+      (e-work--dispatch-hook handle :settle callback handle)
     (e-work-add-cleanup handle (lambda (settled-handle)
-                                 (funcall callback settled-handle))))
+                                 (e-work--dispatch-hook
+                                  settled-handle :settle callback settled-handle))))
   handle)
 
 (cl-defun e-work-await-set (handles &key (mode 'all) timeout on-settle)
@@ -694,7 +831,7 @@ detach branch, and the child stays ignorant of detachment entirely."
     (e-work-finish
      handle
      (e-work--shape-result
-      (e-work-handle-spec handle)
+      handle
       (funcall runner arguments context)
       arguments context))))
 
@@ -730,7 +867,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                     (plist-get command :metadata))))
     (if immediate
         (e-work-finish
-         handle (e-work--shape-result spec immediate arguments context))
+         handle (e-work--shape-result handle immediate arguments context))
       (let* ((program (plist-get command :program))
              (args (plist-get command :args))
              (directory (or (plist-get command :directory) default-directory))
@@ -826,7 +963,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                (condition-case err
                    (e-work-finish
                     handle
-                    (e-work--shape-result spec raw arguments context))
+                    (e-work--shape-result handle raw arguments context))
                  (error
                   (e-work-fail handle err))))
              (finish-process ()
@@ -994,8 +1131,8 @@ detach branch, and the child stays ignorant of detachment entirely."
                      (condition-case condition
                          (e-work-finish
                           handle
-                          (e-work--shape-result
-                           spec
+                         (e-work--shape-result
+                          handle
                            (list :url url
                                  :status status
                                  :buffer buffer)
@@ -1030,7 +1167,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                        (e-work-finish
                         handle
                         (e-work--shape-result
-                         spec
+                         handle
                          raw
                          arguments context))))
                   (error
@@ -1057,7 +1194,7 @@ detach branch, and the child stays ignorant of detachment entirely."
         (e-work-finish
          handle
          (e-work--shape-result
-          (e-work-handle-spec handle)
+          handle
           result
           arguments context))))
     handle))
@@ -1137,7 +1274,7 @@ detach branch, and the child stays ignorant of detachment entirely."
             (condition-case err
                 (e-work-finish
                  handle
-                 (e-work--shape-result spec result arguments context))
+                 (e-work--shape-result handle result arguments context))
               (error
                (fail err)))))
         :on-error #'fail))
@@ -1168,7 +1305,7 @@ detach branch, and the child stays ignorant of detachment entirely."
     (e-work-finish
      handle
      (e-work--shape-result
-      spec
+      handle
       (e-task-queue-enqueue queue
                             :prompt prompt
                             :summary summary
@@ -1178,7 +1315,7 @@ detach branch, and the child stays ignorant of detachment entirely."
 
 (cl-defun e-work-prepare
     (spec arguments &key context on-done on-error on-progress on-event
-          publication-observer)
+          publication-observer activity-observer hook-dispatcher hook-policies)
   "Prepare SPEC with ARGUMENTS and return its unstarted `e-work-handle'.
 Preparation allocates the canonical work identity and installs terminal
 observers without invoking a carrier.  Use `e-work-start-prepared' exactly once
@@ -1216,7 +1353,12 @@ after any owner enrollment has committed."
                              :on-error on-error
                              :on-progress on-progress
                              :on-event on-event)
-            :publication-observer publication-observer)))
+            :publication-observer publication-observer
+            :activity-observer activity-observer
+            :hook-sequence 0
+            :hard-hook-count 0)))
+    (when hook-dispatcher
+      (e-work-install-hook-dispatcher handle hook-dispatcher hook-policies))
     handle))
 
 (cl-defun e-work-start-prepared (handle &key arguments context)
@@ -1257,7 +1399,7 @@ after a prior start, no carrier runner is invoked."
 
 (cl-defun e-work-start
     (spec arguments &key context on-done on-error on-progress on-event
-          publication-observer)
+          publication-observer activity-observer hook-dispatcher hook-policies)
   "Prepare then start SPEC with ARGUMENTS and return its `e-work-handle'.
 This compatibility convenience preserves the one-call API.  Owners that must
 enroll work before its runner can settle use `e-work-prepare' followed by
@@ -1269,7 +1411,10 @@ enroll work before its runner can settle use `e-work-prepare' followed by
                    :on-error on-error
                    :on-progress on-progress
                    :on-event on-event
-                   :publication-observer publication-observer)
+                   :publication-observer publication-observer
+                   :activity-observer activity-observer
+                   :hook-dispatcher hook-dispatcher
+                   :hook-policies hook-policies)
    :arguments arguments
    :context context))
 

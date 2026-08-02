@@ -35,6 +35,21 @@
 (defvar e-board-runtime--session-attachments (make-hash-table :test 'equal)
   "Live attachments keyed by a concrete harness and session identity.")
 
+(defconst e-board-runtime-deferred-hook-drain-limit 16
+  "Maximum deferred carrier hooks the private runtime starts per drain.")
+
+(defvar e-board-runtime--deferred-hooks nil
+  "Generation-fenced deferred carrier hooks awaiting a runtime drain.")
+
+(defvar e-board-runtime--deferred-hook-drain-scheduled nil
+  "Non-nil while one deferred-hook runtime drain has been scheduled.")
+
+(defvar e-board-runtime--deferred-hook-generation 0
+  "Current private runtime generation for deferred carrier hook receipts.")
+
+(defvar e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal)
+  "Latest bounded activity capture for each board-enrolled work handle.")
+
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
@@ -49,6 +64,57 @@
   "Return the runtime attachment key for HARNESS SESSION-ID."
   (list harness session-id))
 
+(defun e-board-runtime--drain-deferred-hooks ()
+  "Start one bounded page of deferred carrier hooks outside settlement.
+Queue items retain the installing runtime generation, so a reload/replacement
+can invalidate pending callbacks without letting an old closure advance the
+new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
+  (setq e-board-runtime--deferred-hook-drain-scheduled nil)
+  (let ((started 0))
+    (while (and e-board-runtime--deferred-hooks
+                (< started e-board-runtime-deferred-hook-drain-limit))
+      (pcase-let ((`(,generation ,_receipt ,thunk)
+                   (pop e-board-runtime--deferred-hooks)))
+        (when (= generation e-board-runtime--deferred-hook-generation)
+          (cl-incf started)
+          (funcall thunk))))
+    (when e-board-runtime--deferred-hooks
+      (setq e-board-runtime--deferred-hook-drain-scheduled t)
+      (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks))))
+
+(defun e-board-runtime--schedule-deferred-hook (_handle receipt thunk)
+  "Queue deferred carrier THUNK with stable RECEIPT outside its start stack."
+  (push (list e-board-runtime--deferred-hook-generation receipt thunk)
+        e-board-runtime--deferred-hooks)
+  (unless e-board-runtime--deferred-hook-drain-scheduled
+    (setq e-board-runtime--deferred-hook-drain-scheduled t)
+    (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks)))
+
+(defun e-board-runtime--capture-work-activity (handle payload)
+  "Replace HANDLE's bounded progress mailbox with PAYLOAD.
+This is the sole synchronous activity observer installed by board enrollment.
+It neither formats nor publishes PAYLOAD; a later runtime activity publisher
+will consume the mailbox under its own bounded drain."
+  (puthash (e-work-handle-id handle)
+           (list :work-id (e-work-handle-id handle) :payload payload)
+           e-board-runtime--work-activity-mailboxes))
+
+(defun e-board-runtime--install-work-hooks (handle)
+  "Install the private board-runtime hook classification on prepared HANDLE."
+  (let ((policies '(:cancel deferred :cleanup deferred :settle deferred)))
+    (dolist (key '(:on-done :on-error :on-progress :on-event))
+      (when (plist-get (e-work-handle-callbacks handle) key)
+        (setq policies (plist-put policies key 'deferred))))
+    (when (e-work-spec-result-shaper (e-work-handle-spec handle))
+      ;; Result shaping is still part of a cheap runner in this foundation.
+      ;; The board runtime therefore admits it only under the narrow inline
+      ;; classification; a later async shaper will use a separate work unit.
+      (setq policies (plist-put policies :result-shaper 'hard-bounded)))
+    (e-work-install-hook-dispatcher
+     handle #'e-board-runtime--schedule-deferred-hook policies)
+    (e-work-install-activity-observer
+     handle #'e-board-runtime--capture-work-activity)))
+
 (defun e-board-runtime--enroll-work (harness handle callback)
   "Enroll HANDLE for its attached HARNESS session before runner entry.
 CALLBACK is the private loop result seam for executable tool work; turn work
@@ -59,6 +125,7 @@ has no callback and is observed only."
     (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
+      (e-board-runtime--install-work-hooks handle)
       (e-board-enroll-work board handle :metadata metadata)
       (when callback
         (let* ((context (e-work-handle-context handle))

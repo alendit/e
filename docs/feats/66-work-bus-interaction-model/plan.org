@@ -14,10 +14,12 @@ harness work observation, participant output publication, and the board-owned
 ordered aggregation reducer have landed.  Slice 3 has begun with deferred
 =post-input= effects, bounded derived-message lineage, runtime pickup sweeps,
 and visibly faulted trusted predicates.
-The async-interactive carrier-hook/cancellation hardening and dedicated bounded
-activity-observer seam identified by this review are explicit remaining Slice
-1 foundation work; current generic =e-work= still invokes those general hooks
-inline and is not yet board-ready at that seam.
+The Slice 1 async-interactive carrier foundation now has a pre-start bounded
+activity observer, explicit hard-bounded/deferred general-hook classification,
+stable deferred-hook receipts, and a generation-fenced bounded private runtime
+hook drain.  Board enrollment captures progress only into its bounded mailbox;
+general progress, terminal, cleanup, and cancellation hooks no longer need to
+run on the work-settlement stack.
 Slices 0--4 are private implementation/verification order only.  No board mode,
 feature flag, compatibility shim, or mixed public runtime is exposed before the atomic
 Slice 5 cutover replaces every caller and deletes the superseded interfaces in

@@ -107,6 +107,67 @@
                    '((publication finished :done) cleanup
                      (event finished) done)))))
 
+(ert-deftest e-work-test-activity-observer-precedes-deferred-progress-hook ()
+  "A board-facing progress mailbox capture stays before general hook work."
+  (let (events scheduled)
+    (let ((handle
+           (e-work-start
+            (e-work-spec-create
+             :id "activity-order" :execution 'render :interactive-policy 'async
+             :runner (lambda (_arguments _context) :never))
+            '(:delay 600)
+            :activity-observer
+            (lambda (_handle payload) (push (list 'activity payload) events))
+            :on-progress
+            (lambda (payload) (push (list 'progress payload) events))
+            :hook-dispatcher
+            (lambda (_handle _receipt thunk) (push thunk scheduled))
+            :hook-policies '(:on-progress deferred :cancel deferred))))
+      (unwind-protect
+          (progn
+            (e-work-progress handle '(:step one))
+            (should (equal events '((activity (:step one)))))
+            (funcall (pop scheduled))
+            (should (equal (nreverse events)
+                           '((activity (:step one)) (progress (:step one))))))
+        (e-work-cancel handle)))))
+
+(ert-deftest e-work-test-interactive-hook-classification-rejects-before-runner ()
+  "A classified start cannot leave a general callback policy implicit."
+  (let ((runs 0))
+    (should-error
+     (e-work-prepare
+      (e-work-spec-create
+       :id "unclassified" :execution 'cheap :interactive-policy 'cheap
+       :runner (lambda (_arguments _context) (cl-incf runs)))
+      nil
+      :on-done (lambda (_value) nil)
+      :hook-dispatcher (lambda (&rest _args) nil)
+      :hook-policies nil)
+     :type 'e-work-unclassified-hook)
+    (should (= runs 0))))
+
+(ert-deftest e-work-test-deferred-hooks-do-not-run-on-settlement-stack ()
+  "Deferred cancellation and terminal callbacks await the owner scheduler."
+  (let (scheduled events)
+    (let ((handle
+           (e-work-start
+            (e-work-spec-create
+             :id "deferred-hooks" :execution 'render :interactive-policy 'async
+             :runner (lambda (_arguments _context) :never))
+            '(:delay 600)
+            :on-event (lambda (state _payload) (push (list 'event state) events))
+            :hook-dispatcher
+            (lambda (_handle receipt thunk)
+              (push (cons receipt thunk) scheduled))
+            :hook-policies '(:on-event deferred :cancel deferred))))
+      (e-work-cancel handle)
+      (should-not events)
+      (should (= (length scheduled) 2))
+      (dolist (entry scheduled)
+        (funcall (cdr entry)))
+      (should (equal events '((event cancelled)))))))
+
 (ert-deftest e-work-test-fail-cancel-and-stale-callbacks ()
   "Failures and cancellation settle once; late callbacks are ignored."
   (let (error)

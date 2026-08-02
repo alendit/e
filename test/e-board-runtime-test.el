@@ -18,7 +18,11 @@
           (e-board-registry--boards (make-hash-table :test 'equal))
           (e-board-registry--id-sequence 0)
           (e-board-runtime--attachments (make-hash-table :test 'equal))
-          (e-board-runtime--session-attachments (make-hash-table :test 'equal)))
+          (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+          (e-board-runtime--deferred-hooks nil)
+          (e-board-runtime--deferred-hook-drain-scheduled nil)
+          (e-board-runtime--deferred-hook-generation 0)
+          (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal)))
      ,@body))
 
 (ert-deftest e-board-runtime-test-attachment-maps-live-session-and-delivers-exact-and-tags ()
@@ -100,6 +104,32 @@
         (should (e-board-observed-work source-board (e-work-handle-id handle)))
         (should (e-board-invocation source-board '("turn" "call")))
         (should-not (e-work-handle-started-p handle))))))
+
+(ert-deftest e-board-runtime-test-enrollment-installs-bounded-activity-mailbox ()
+  "Board enrollment captures progress before it schedules general hook work."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "stream" :execution 'render :interactive-policy 'async
+                       :runner (lambda (_arguments _context) :never))
+                      '(:delay 600)
+                      :context '(:session-id "session")))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (unwind-protect
+            (progn
+              (funcall enroll handle nil)
+              (e-work-start-prepared handle)
+              (e-work-progress handle '(:step first))
+              (should (equal
+                       (gethash (e-work-handle-id handle)
+                                e-board-runtime--work-activity-mailboxes)
+                       (list :work-id (e-work-handle-id handle)
+                             :payload '(:step first)))))
+          (e-work-cancel handle))))))
 
 (ert-deftest e-board-runtime-test-publishes-final-assistant-output-idempotently ()
   "Repeated completion notifications retain one participant board output."
