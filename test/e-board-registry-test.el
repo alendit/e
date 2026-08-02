@@ -52,14 +52,32 @@
                         (e-board-registry-board-source-board board)))))))))
 
 (ert-deftest e-board-registry-test-default-identities-have-board-local-prefixes ()
-  "Registry fallback identities retain their distinct board-local namespaces."
+  "Production registry identities are opaque and retain distinct namespaces."
   (e-board-registry-test--with-empty-registries
     (let* ((board (e-board-registry-create))
            (client (e-board-registry-attach-client board))
            (participant (e-board-registry-add-participant board)))
       (should (string-prefix-p "brd_" (e-board-registry-board-id board)))
       (should (string-prefix-p "cli_" (e-board-registry-client-id client)))
-      (should (string-prefix-p "ptc_" (e-board-registry-participant-id participant))))))
+      (should (string-prefix-p "ptc_" (e-board-registry-participant-id participant)))
+      (should (= (length (substring (e-board-registry-board-id board) 4)) 26))
+      (should (= (length (substring (e-board-registry-client-id client) 4)) 26))
+      (should (= (length (substring (e-board-registry-participant-id participant) 4))
+                 26)))))
+
+(ert-deftest e-board-registry-test-default-board-identities-do-not-alias-after-reset ()
+  "A process restart cannot make a historical board id name a new board."
+  (e-board-registry-test--with-empty-registries
+    (let ((first-id (e-board-registry-board-id (e-board-registry-create))))
+      (let ((e-board--registry (make-hash-table :test 'equal))
+            (e-board-registry--boards (make-hash-table :test 'equal))
+            (e-board-registry--board-index
+             (avl-tree-create
+              (lambda (left right) (string< (car left) (car right)))))
+            (e-board-registry--id-sequence 0))
+        (should-not
+         (equal first-id
+                (e-board-registry-board-id (e-board-registry-create))))))))
 
 (ert-deftest e-board-registry-test-owner-controls-explicit-principal-grants ()
   "Only owners mutate board grants, and a board retains an owner."

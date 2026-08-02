@@ -650,7 +650,7 @@ composer edit run between pages.  Cover fan-out over the cap, large payload,
 large transcript, writer backlog/restart, large =await= set/result, and prove
 zero full-log/registry scans on every hot path.
 
-** TODO High: Retained board messages are not immutable
+** DONE High: Retained board messages are not immutable
 
 *** Expected
 
@@ -693,6 +693,32 @@ only that frozen representation.
 Add mutation regressions for content, reference, tags, attributes, nested conses,
 strings, vectors, requester identity, and cause metadata before and after
 classification and pickup preparation.
+
+*** Resolution
+
+=e-board--make-message= now validates and deep-copies every caller-supplied
+envelope value before the append event is created.  The bounded copier handles
+strings, conses, vectors, and hash tables, rejects cycles and unsupported
+mutable objects, and enforces separate fixed budgets for content, references,
+attributes, tags, and causal metadata.  Pickup preparation continues to copy
+only the retained representation.
+
+*** Evidence
+
+=e-board-test-retained-message-deep-copies-all-mutable-envelope-values= mutates
+nested caller-owned strings, conses, vectors, tags, attributes, requester
+identity, reference, content, and cause metadata after append and proves both
+the retained message and prepared pickup remain unchanged.
+=e-board-test-message-envelope-rejects-oversized-and-cyclic-values= proves the
+fixed content budget and cycle rejection fail before any message is appended.
+
+#+begin_src sh
+rtk eldev test test/e-board-test.el test/e-board-registry-test.el
+#+end_src
+
+#+begin_example
+Ran 94 tests, 94 results as expected, 0 unexpected
+#+end_example
 
 ** TODO High: Nil requester identity still bypasses authorization
 
@@ -784,6 +810,17 @@ participant movement to registry-owned lifecycle operations.
 Prove restart non-aliasing, reconnect, buffer kill, two clients, idle expiry,
 explicit close with pending pickup/effect/history pin, bounded close pages, and
 no leaked registry entry/client/participant/subscription after completion.
+
+*** Current remediation note
+
+The identity half is resolved: registry-owned production board, client,
+participant, subscription, observer, and message identities now use the
+existing monotonic ULID service with distinct prefixes, and the injected id
+function is propagated into the source board only for deterministic tests.
+=e-board-registry-test-default-board-identities-do-not-alias-after-reset= proves
+that resetting process-local registries and counters cannot alias a historical
+board id.  The finding remains open for scheduled =active -> closing -> closed=
+reconciliation and shell-owned detach/expiry/close behavior.
 
 ** TODO Medium: Current regression guards certify wrappers rather than the product contract
 

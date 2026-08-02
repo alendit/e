@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'avl-tree)
 (require 'e-board)
+(require 'e-session)
 
 (define-error 'e-board-registry-error "e board registry error")
 (define-error 'e-board-registry-id-conflict "e board registry id conflict"
@@ -37,7 +38,7 @@
   'e-board-registry-error)
 
 (defvar e-board-registry--id-sequence 0
-  "Process-local fallback sequence for registry-owned identities.")
+  "Deterministic sequence retained only for explicitly injected test ids.")
 
 (defvar e-board-registry--boards (make-hash-table :test 'equal)
   "Live and closed process-local boards keyed by board id.")
@@ -123,17 +124,17 @@
   "Closed set of session-private participant access rights.")
 
 (defun e-board-registry--next-id (id-function kind)
-  "Return an identity for KIND from ID-FUNCTION or the local fallback."
+  "Return an opaque identity for KIND, using ID-FUNCTION when injected."
   (let ((id (if id-function
                  (funcall id-function kind)
-              (format "%s%d"
+              (format "%s%s"
                       (pcase kind
                         ('board "brd_")
                         ('client "cli_")
                         ('participant "ptc_")
                         ('subscription "sub_")
                         (_ (format "%s_" kind)))
-                      (cl-incf e-board-registry--id-sequence)))))
+                      (e-session-generate-ulid)))))
     (unless id
       (signal 'e-board-registry-error
               (list "Id generator returned nil" kind)))
@@ -233,7 +234,7 @@ The source board is registered with `e-board' under the same board identity."
             e-board-registry--unsettled-generation 0))
     (when (gethash id e-board-registry--boards)
       (signal 'e-board-registry-id-conflict (list id)))
-    (let* ((source-board (e-board-create :id id))
+    (let* ((source-board (e-board-create :id id :id-function id-function))
            (board (e-board-registry-board--create
                   :id id
                   :source-board source-board

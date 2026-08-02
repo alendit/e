@@ -141,6 +141,69 @@
                                   :subscription-lineage)
                        '(origin)))))))
 
+(ert-deftest e-board-test-retained-message-deep-copies-all-mutable-envelope-values ()
+  "Caller mutation cannot rewrite any retained message or pickup envelope."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "board"))
+           (content (list (copy-sequence "before") ["vector"]))
+           (reference (list :resource (copy-sequence "board://before")))
+           (tags (list (copy-sequence "main")))
+           (attributes (list :nested (list (copy-sequence "value"))))
+           (requester (list 'participant (copy-sequence "source")))
+           (causes (list (vector (copy-sequence "delivery")))))
+      (e-board-add-participant board :id "one"
+                               :create-pickup-subscription-id "address")
+      (let* ((publication
+              (e-board-post-input
+               board :id "message" :to "one" :requester-actor requester
+               :tags tags :attributes attributes :content content
+               :reference reference))
+             (message (e-board-publication-message publication))
+             (pickup (e-board-pickup board '("board" "message" "one")))
+             (activity
+              (e-board-publication-message
+               (e-board-post-activity
+                board :id "activity" :author "participant:one"
+                :subject-participant-id "one" :source-turn-id "turn"
+                :activity-kind 'reasoning :source-activity-key '(one 1 1)
+                :caused-by-delivery-ids causes))))
+        (aset (car content) 0 ?X)
+        (aset (cadr content) 0 "changed")
+        (aset (plist-get reference :resource) 0 ?X)
+        (aset (car tags) 0 ?X)
+        (aset (car (plist-get attributes :nested)) 0 ?X)
+        (aset (cadr requester) 0 ?X)
+        (aset (aref (car causes) 0) 0 ?X)
+        (should (equal (e-board-message-content message)
+                       '("before" ["vector"])))
+        (should (equal (e-board-message-reference message)
+                       '(:resource "board://before")))
+        (should (equal (e-board-message-tags message) '("main")))
+        (should (equal (e-board-message-attributes message)
+                       '(:nested ("value"))))
+        (should (equal (e-board-message-requester-actor message)
+                       '(participant "source")))
+        (should (equal (e-board-message-caused-by-delivery-ids activity)
+                       '(["delivery"])))
+        (should (equal (e-board-pickup-content pickup)
+                       '("before" ["vector"])))))))
+
+(ert-deftest e-board-test-message-envelope-rejects-oversized-and-cyclic-values ()
+  "Retained message fields fail closed at their fixed byte and shape bounds."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board"))
+          (cycle (list 'cycle)))
+      (setcdr cycle cycle)
+      (should-error
+       (e-board-post-fact
+        board :source-fact-key '(test 1 1)
+        :content (make-string (1+ e-board-message-content-byte-limit) ?x))
+       :type 'e-board-envelope-too-large)
+      (should-error (e-board-post-fact board :source-fact-key '(test 1 2)
+                                             :content cycle)
+                    :type 'e-board-invalid-envelope)
+      (should-not (e-board-messages board)))))
+
 (ert-deftest e-board-test-condition-selector-matches-author-and-attributes ()
   "Generic routes conjunctively match immutable author and attributes."
   (e-board-test--with-empty-registry

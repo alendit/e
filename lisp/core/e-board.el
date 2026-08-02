@@ -21,6 +21,10 @@
 (define-error 'e-board-invalid-source-key "Invalid board source key" 'e-board-error)
 (define-error 'e-board-invalid-activity "Invalid board activity message" 'e-board-error)
 (define-error 'e-board-observer-missing "Unknown board observer" 'e-board-error)
+(define-error 'e-board-envelope-too-large
+  "Board message envelope field exceeds its byte budget" 'e-board-error)
+(define-error 'e-board-invalid-envelope
+  "Board message envelope contains unsupported mutable structure" 'e-board-error)
 
 (defvar e-board--id-sequence 0
   "Process-local fallback sequence for board identities.")
@@ -90,6 +94,21 @@
 
 (defconst e-board-default-pickup-pending-limit 16
   "Maximum FIFO pickups allowed behind one participant's active head.")
+
+(defconst e-board-message-content-byte-limit (* 256 1024)
+  "Maximum retained byte budget for one board message content value.")
+
+(defconst e-board-message-reference-byte-limit (* 64 1024)
+  "Maximum retained byte budget for one board message reference value.")
+
+(defconst e-board-message-attributes-byte-limit (* 64 1024)
+  "Maximum retained byte budget for one board message attributes value.")
+
+(defconst e-board-message-metadata-byte-limit (* 32 1024)
+  "Maximum retained byte budget for one board message causal metadata field.")
+
+(defconst e-board-message-tags-byte-limit (* 8 1024)
+  "Maximum retained byte budget for one board message tag collection.")
 
 (defconst e-board--aggregation-modes
   '(all any all-terminal first-terminal on-success on-failure on-terminal)
@@ -2189,6 +2208,69 @@ Return nil when the key is new and may be appended."
       (puthash (list kind producer generation) sequence
                (e-board-source-high-watermarks board)))))
 
+(defun e-board--freeze-envelope-value (value field byte-limit)
+  "Deep-copy VALUE for retained FIELD while enforcing BYTE-LIMIT.
+The walk charges atomic payload bytes and one byte per container cell.  It
+stops as soon as the field exceeds its budget, rejects cyclic structures, and
+copies strings, conses, vectors, and hash tables so later caller mutation
+cannot rewrite retained board state."
+  (let ((remaining byte-limit)
+        (visiting (make-hash-table :test 'eq)))
+    (cl-labels
+        ((charge (amount)
+           (setq remaining (- remaining amount))
+           (when (< remaining 0)
+             (signal 'e-board-envelope-too-large
+                     (list field byte-limit))))
+         (copy-value (current)
+           (cond
+            ((stringp current)
+             (charge (string-bytes current))
+             (copy-sequence current))
+            ((symbolp current)
+             (charge (length (symbol-name current)))
+             current)
+            ((numberp current)
+             (charge 16)
+             current)
+            ((consp current)
+             (when (gethash current visiting)
+               (signal 'e-board-invalid-envelope (list field 'cyclic-cons)))
+             (charge 1)
+             (puthash current t visiting)
+             (unwind-protect
+                 (cons (copy-value (car current))
+                       (copy-value (cdr current)))
+               (remhash current visiting)))
+            ((vectorp current)
+             (when (gethash current visiting)
+               (signal 'e-board-invalid-envelope (list field 'cyclic-vector)))
+             (charge (length current))
+             (puthash current t visiting)
+             (unwind-protect
+                 (let ((copy (make-vector (length current) nil)))
+                   (dotimes (index (length current))
+                     (aset copy index (copy-value (aref current index))))
+                   copy)
+               (remhash current visiting)))
+            ((hash-table-p current)
+             (when (gethash current visiting)
+               (signal 'e-board-invalid-envelope (list field 'cyclic-hash-table)))
+             (charge (hash-table-count current))
+             (puthash current t visiting)
+             (unwind-protect
+                 (let ((copy (make-hash-table :test (hash-table-test current)
+                                              :size (hash-table-count current))))
+                   (maphash (lambda (key item)
+                              (puthash (copy-value key) (copy-value item) copy))
+                            current)
+                   copy)
+               (remhash current visiting)))
+            (t
+             (signal 'e-board-invalid-envelope
+                     (list field (type-of current)))))))
+      (copy-value value))))
+
 (defun e-board--make-message (board kind id author requester-actor
                                      tags attributes to mode content reference
                                      source-input-key source-output-key
@@ -2198,24 +2280,73 @@ Return nil when the key is new and may be appended."
   "Create and record one immutable BOARD message, returning it."
   (when (e-board-message board id)
     (signal 'e-board-id-conflict (list id)))
-  (let* ((event (e-board--append-event
+  (let* ((frozen-author
+          (e-board--freeze-envelope-value
+           author 'author e-board-message-metadata-byte-limit))
+         (frozen-requester
+          (e-board--freeze-envelope-value
+           requester-actor 'requester-actor e-board-message-metadata-byte-limit))
+         (frozen-tags
+          (e-board--freeze-envelope-value
+           tags 'tags e-board-message-tags-byte-limit))
+         (frozen-attributes
+          (e-board--freeze-envelope-value
+           attributes 'attributes e-board-message-attributes-byte-limit))
+         (frozen-to
+          (e-board--freeze-envelope-value
+           to 'to e-board-message-metadata-byte-limit))
+         (frozen-content
+          (e-board--freeze-envelope-value
+           content 'content e-board-message-content-byte-limit))
+         (frozen-reference
+          (e-board--freeze-envelope-value
+           reference 'reference e-board-message-reference-byte-limit))
+         (frozen-source-input-key
+          (e-board--freeze-envelope-value
+           source-input-key 'source-input-key e-board-message-metadata-byte-limit))
+         (frozen-source-output-key
+          (e-board--freeze-envelope-value
+           source-output-key 'source-output-key e-board-message-metadata-byte-limit))
+         (frozen-reply-to-message-ids
+          (e-board--freeze-envelope-value
+           reply-to-message-ids 'reply-to-message-ids
+           e-board-message-metadata-byte-limit))
+         (frozen-caused-by-delivery-ids
+          (e-board--freeze-envelope-value
+           caused-by-delivery-ids 'caused-by-delivery-ids
+           e-board-message-metadata-byte-limit))
+         (frozen-source-activity-key
+          (e-board--freeze-envelope-value
+           source-activity-key 'source-activity-key
+           e-board-message-metadata-byte-limit))
+         (frozen-source-fact-key
+          (e-board--freeze-envelope-value
+           source-fact-key 'source-fact-key e-board-message-metadata-byte-limit))
+         (frozen-subject-participant-id
+          (e-board--freeze-envelope-value
+           subject-participant-id 'subject-participant-id
+           e-board-message-metadata-byte-limit))
+         (frozen-source-turn-id
+          (e-board--freeze-envelope-value
+           source-turn-id 'source-turn-id e-board-message-metadata-byte-limit))
+         (event (e-board--append-event
                  board (intern (format "%s-posted" kind))
                  (list :message-id id)))
          (message
           (e-board-message--create
            :id id :board-id (e-board-id board) :seq (e-board-event-seq event)
-           :kind kind :author author :requester-actor (copy-tree requester-actor)
-           :tags (copy-tree tags)
-           :attributes (copy-tree attributes) :to to :mode mode
-           :content content :reference reference
-           :source-input-key (copy-tree source-input-key)
-           :source-output-key (copy-tree source-output-key)
-           :reply-to-message-ids (copy-tree reply-to-message-ids)
-           :caused-by-delivery-ids (copy-tree caused-by-delivery-ids)
-           :source-activity-key (copy-tree source-activity-key)
-           :source-fact-key (copy-tree source-fact-key)
-           :subject-participant-id subject-participant-id
-           :source-turn-id source-turn-id
+           :kind kind :author frozen-author :requester-actor frozen-requester
+           :tags frozen-tags
+           :attributes frozen-attributes :to frozen-to :mode mode
+           :content frozen-content :reference frozen-reference
+           :source-input-key frozen-source-input-key
+           :source-output-key frozen-source-output-key
+           :reply-to-message-ids frozen-reply-to-message-ids
+           :caused-by-delivery-ids frozen-caused-by-delivery-ids
+           :source-activity-key frozen-source-activity-key
+           :source-fact-key frozen-source-fact-key
+           :subject-participant-id frozen-subject-participant-id
+           :source-turn-id frozen-source-turn-id
            :activity-kind activity-kind
            :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
