@@ -93,12 +93,13 @@
   :group 'e)
 
 (defconst e-session--replay-list-fields
-  '(:session-events :messages :activity-events :branch-summaries
+  '(:session-events :messages :board-messages :activity-events :branch-summaries
     :compactions :provider-anchors :process-reports)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
   '((:messages . :messages-tail)
+    (:board-messages . :board-messages-tail)
     (:activity-events . :activity-events-tail)
     (:branch-summaries . :branch-summaries-tail)
     (:compactions . :compactions-tail)
@@ -579,6 +580,7 @@ arrays and sometimes inverted key/value pairs."
   '("session"
     "session-info"
     "message"
+    "board-message"
     "message-display"
     "activity-event"
     "branch-summary"
@@ -1380,6 +1382,22 @@ behavior.  Interactive mutation paths must not call this function."
       (plist-put event :payload payload)))
   event)
 
+(defun e-session--normalize-board-message (message)
+  "Return durable board MESSAGE normalized after JSON replay."
+  (dolist (field '(:kind :mode :activity-kind :routing-state
+                   :unrouted-reason))
+    (when-let ((value (plist-get message field)))
+      (when (stringp value)
+        (plist-put message field (intern value)))))
+  (plist-put message :tags
+             (mapcar (lambda (tag) (if (stringp tag) (intern tag) tag))
+                     (plist-get message :tags)))
+  (when-let ((attributes (plist-get message :attributes)))
+    (when-let ((status (plist-get attributes :status)))
+      (when (stringp status)
+        (plist-put attributes :status (intern status)))))
+  message)
+
 (defun e-session--update-activity-derived-fields (session event)
   "Update derived SESSION fields for appended activity EVENT."
   (when (eq (plist-get event :event-type) 'token-usage)
@@ -1410,6 +1428,8 @@ behavior.  Interactive mutation paths must not call this function."
                             :metadata metadata
                             :session-events nil
                          :messages nil
+                         :board-messages nil
+                         :board-message-id-index (make-hash-table :test 'equal)
                          :board-output-sequence 0
                          :board-activity-sequence 0
                             :activity-events nil
@@ -1455,6 +1475,29 @@ behavior.  Interactive mutation paths must not call this function."
                        (max (or (plist-get session :board-output-sequence) 0)
                             sequence)))
           (e-session--touch store session timestamp)))
+      ("board-message"
+       (when session
+         (let ((message
+                (e-session--normalize-board-message
+                 (copy-tree (plist-get record :message)))))
+           (e-session--prepend-replayed-item session :board-messages message)
+           (puthash (plist-get message :id) t
+                    (or (plist-get session :board-message-id-index)
+                        (let ((index (make-hash-table :test 'equal)))
+                          (plist-put session :board-message-id-index index)
+                          index))))
+         (e-session--touch store session timestamp)))
+      ("board-session-state"
+       (when session
+         (plist-put session :board-session-state
+                    (copy-tree (plist-get record :board-state)))
+         (e-session--touch store session timestamp)))
+      ("board-messages-cleared"
+       (when session
+         (e-session--replace-list-field session :board-messages nil)
+         (plist-put session :board-message-id-index
+                    (make-hash-table :test 'equal))
+         (e-session--touch store session timestamp)))
       ("message-display"
        (when session
          (when-let ((message
@@ -1674,6 +1717,8 @@ behavior.  Interactive mutation paths must not call this function."
              :metadata nil
              :session-events nil
              :messages nil
+             :board-messages nil
+             :board-message-id-index (make-hash-table :test 'equal)
              :activity-events nil
              :branch-summaries nil
              :current-branch nil
@@ -1988,6 +2033,8 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :metadata metadata
                         :session-events nil
                         :messages nil
+                        :board-messages nil
+                        :board-message-id-index (make-hash-table :test 'equal)
                         :board-output-sequence 0
                         :board-activity-sequence 0
                         :activity-events nil
@@ -2023,6 +2070,63 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
            :metadata metadata))
     (e-session--write-index store)
     session))
+
+(defun e-session-board-messages (store session-id)
+  "Return SESSION-ID's durable board envelopes in board order."
+  (copy-tree (plist-get (e-session-get store session-id) :board-messages)))
+
+(defun e-session-append-board-message (store session-id message)
+  "Append one immutable board MESSAGE envelope to SESSION-ID's board log."
+  (let* ((session (e-session-get store session-id))
+         (message (copy-tree message))
+         (index (or (plist-get session :board-message-id-index)
+                    (let ((created (make-hash-table :test 'equal)))
+                      (dolist (current (plist-get session :board-messages))
+                        (puthash (plist-get current :id) t created))
+                      (plist-put session :board-message-id-index created)
+                      created))))
+    (unless (gethash (plist-get message :id) index)
+      (puthash (plist-get message :id) t index)
+      (e-session--append-list-item session :board-messages message)
+      (e-session--touch store session (e-session--timestamp))
+      (e-session--append-record
+       store session-id
+       (list :type "board-message" :session-id session-id
+             :message message)))
+    message))
+
+(defun e-session-clear-board-messages (store session-id)
+  "Clear SESSION-ID's durable board log and derived identity index."
+  (let ((session (e-session-get store session-id)))
+    (e-session--replace-list-field session :board-messages nil)
+    (plist-put session :board-message-id-index (make-hash-table :test 'equal))
+    (e-session--touch store session (e-session--timestamp))
+    (e-session--append-record
+     store session-id
+     (list :type "board-messages-cleared" :session-id session-id))
+    nil))
+
+(defun e-session-declare-board-state
+    (store session-id controller-principal board-id)
+  "Persist SESSION-ID's dormant board identity and access owner."
+  (let* ((session (e-session-get store session-id))
+         (board-state
+          (list :board-id board-id :state 'dormant
+                :access-record
+                (list :controller controller-principal :version 0
+                      :discover-principals nil :resume-principals nil))))
+    (plist-put session :board-session-state (copy-tree board-state))
+    (e-session--append-record
+     store session-id
+     (list :type "board-session-state" :session-id session-id
+           :board-state board-state
+           :state "dormant"
+           :access-record (plist-get board-state :access-record)
+           :board-output-sequence
+           (or (plist-get session :board-output-sequence) 0)
+           :board-activity-sequence
+           (or (plist-get session :board-activity-sequence) 0)))
+    board-state))
 
 (defun e-session--fork-message-seed (message)
   "Return MESSAGE stripped of source-session identity for fork replay.

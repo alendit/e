@@ -2792,13 +2792,17 @@ require authority for their target participant."
        board (e-board-publication-pickup-ids publication))
       publication)))
 
+(defun e-board-runtime-attachment-active-turn (attachment)
+  "Return current ATTACHMENT's private execution turn projection, or nil."
+  (and (e-board-runtime--current-attachment-p attachment)
+       (copy-tree
+        (gethash (e-board-runtime-attachment-session-id attachment)
+                 (e-harness-active-turns
+                  (e-board-runtime-attachment-harness attachment))))))
+
 (defun e-board-runtime-attachment-active-turn-p (attachment)
   "Return non-nil when current ATTACHMENT owns a live harness turn."
-  (and (e-board-runtime--current-attachment-p attachment)
-       (plist-get
-        (e-harness-state (e-board-runtime-attachment-harness attachment)
-                         (e-board-runtime-attachment-session-id attachment))
-        :active-turn)))
+  (e-board-runtime-attachment-active-turn attachment))
 
 (defun e-board-runtime-abort-attachment (attachment)
   "Abort the current board-bound ATTACHMENT turn through runtime admission."

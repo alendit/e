@@ -39,7 +39,7 @@
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
   source-activity-key source-fact-key subject-participant-id source-turn-id
   activity-kind
-  matching-participant-ids pickup-ids unrouted-reason routing-state)
+  matching-participant-ids pickup-ids unrouted-reason routing-state created-at)
 
 (cl-defstruct (e-board-event
                (:constructor e-board-event--create)
@@ -2295,7 +2295,8 @@ cannot rewrite retained board state."
                                      source-input-key source-output-key
                                      reply-to-message-ids caused-by-delivery-ids
                                      &optional source-activity-key source-fact-key
-                                     subject-participant-id source-turn-id activity-kind)
+                                     subject-participant-id source-turn-id activity-kind
+                                     created-at)
   "Create and record one immutable BOARD message, returning it."
   (when (e-board-message board id)
     (signal 'e-board-id-conflict (list id)))
@@ -2367,6 +2368,7 @@ cannot rewrite retained board state."
            :subject-participant-id frozen-subject-participant-id
            :source-turn-id frozen-source-turn-id
            :activity-kind activity-kind
+           :created-at (or created-at (float-time))
            :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
     (puthash (e-board-message-seq message) message (e-board-message-seq-table board))
@@ -2849,6 +2851,42 @@ an activity tag by itself cannot re-enter a participant inbox."
                             :status 'posted :message message :pickup-ids nil)))
           (e-board--queue-input-classification board message publication)
           publication))))
+
+(defun e-board-import-message (board envelope)
+  "Restore one historical ENVELOPE into BOARD without routing or delivery.
+The restored message receives a fresh process-local sequence while preserving
+its durable source identity fields and order in the imported stream."
+  (let* ((kind (plist-get envelope :kind))
+         (message
+          (e-board--make-message
+           board kind (plist-get envelope :id)
+           (plist-get envelope :author)
+           (plist-get envelope :requester-actor)
+           (plist-get envelope :tags)
+           (plist-get envelope :attributes)
+           (plist-get envelope :to)
+           (plist-get envelope :mode)
+           (plist-get envelope :content)
+           (plist-get envelope :reference)
+           (plist-get envelope :source-input-key)
+           (plist-get envelope :source-output-key)
+           (plist-get envelope :reply-to-message-ids)
+           (plist-get envelope :caused-by-delivery-ids)
+           (plist-get envelope :source-activity-key)
+           (plist-get envelope :source-fact-key)
+           (plist-get envelope :subject-participant-id)
+           (plist-get envelope :source-turn-id)
+           (plist-get envelope :activity-kind)
+           (plist-get envelope :created-at))))
+    (setf (e-board-message-routing-state message)
+          (and (eq kind 'input)
+               (or (plist-get envelope :routing-state) 'historical))
+          (e-board-message-unrouted-reason message)
+          (plist-get envelope :unrouted-reason)
+          (e-board-message-matching-participant-ids message)
+          (copy-tree (plist-get envelope :matching-participant-ids))
+          (e-board-message-pickup-ids message) nil)
+    message))
 
 (defun e-board-unrouted-inputs (board)
   "Return retained BOARD input messages that have a visible unrouted reason."

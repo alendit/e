@@ -381,7 +381,7 @@ attachment rather than the shell's only product identity.
 - =e-chat-test-buffer-owns-explicit-board-client-observer-identity= proves the
   product buffer retains its board-facing identities.
 
-** TODO High: Chat observation and replay are not board-faithful or causally safe
+** DONE High: Chat observation and replay are not board-faithful or causally safe
 
 *** Expected
 
@@ -468,16 +468,45 @@ history/live overlap, selector widening, subscriber failure, and expired-cursor
 resnapshot.  Make transcript/activity reads fail during every chat rendering
 test.
 
-*** Current remediation note
+*** Resolution
 
-Observer events now preserve board id, sequence, retained message id, subject
-participant, source turn, and delivery causes.  Turn correlation follows the
-retained pickup caused by the source input instead of the former pending-input
-FIFO, and failed/cancelled summaries remain visible.  Reasoning updates cross
-the board through one latest-value mailbox per participant/turn/kind, so rapid
-deltas coalesce before bounded publication.  The finding remains open while
-chat replay/state helpers can still read private session transcript/activity
-state instead of reconstructing exclusively from bounded board pages.
+Chat now persists and reopens the immutable board envelope stream separately
+from the participant-private transcript.  A reconnect imports those envelopes
+as historical board messages without routing or redelivery, and each binding
+materializes a fixed-capacity projection through its canonical observer.  The
+presentation APIs for messages, activity, queue, active turns, and settled
+state derive from that projection plus the runtime attachment's narrow active
+turn adapter; they no longer read private transcript or activity indexes.
+
+Every projected event retains board id, sequence, message id, subject
+participant, source turn, tags, attributes, references, causes, and original
+creation time.  Correlation is keyed by participant plus source turn and first
+uses the caused delivery pickup or explicit reply-to input.  Failed and
+cancelled summaries remain terminal events, independent shell subscribers keep
+their own observer cursors, and retained projection/history overlap deduplicates
+by immutable board message id.  The process-local projection is hard-capped at
+256 events, initial materialization is one 16-message page, and later pages are
+timer-driven.
+
+Reset clears the durable board presentation epoch without mutating historical
+board messages, and durable append deduplication uses a derived identity index
+instead of scanning the retained log.
+
+*** Evidence
+
+- =lisp/core/e-chat-service.el= owns the fixed ring, board-envelope
+  translation, causal correlation, independent subscriber drains, and all
+  board-derived presentation projections.
+- =lisp/core/e-session.el= and =lisp/core/e-session-persistence.el= persist,
+  replay, clear, and reopen board envelopes and dormant board identity without
+  treating them as participant transcript messages.
+- =lisp/core/e-board.el= imports historical messages without pickups or routing
+  and preserves their creation timestamps.
+- =test/e-modernchat-test.el= covers failed/cancelled equal-local-turn replay,
+  hard-cap eviction, and process-restart reopen without redelivery.
+- =test/e-chat-test.el= covers board-native loaded/async replay, hidden audit
+  items, navigation timing, reset, and a structural guard that makes private
+  transcript/activity reads signal during rendering.
 
 ** DONE High: Subagents do not join the parent's board
 
@@ -1150,7 +1179,7 @@ new service names.
 
 * Unresolved
 
-- Three High findings and one Medium finding remain open.
+- Two High findings and one Medium finding remain open.
 - The feature must stay =In-review= in =docs/feats/index.org=.
 - The previous =review.org= remains historical evidence for fixes that are
   genuinely complete, but its final =Done= conclusion is superseded by this

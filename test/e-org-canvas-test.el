@@ -75,6 +75,23 @@
       (when (e-chat-service-subscription-active-p subscription)
         (funcall (e-chat-service-subscription-function subscription) event)))))
 
+(defun e-org-canvas-test--import-board-input
+    (harness session-id id content &optional attributes)
+  "Import one historical board input fixture for HARNESS SESSION-ID."
+  (let* ((binding (e-chat-service-ensure-binding harness session-id))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (e-board-import-message
+     board
+     (list :id id :kind 'input :author "org-canvas-test"
+           :tags '(main) :content content :attributes attributes
+           :source-input-key (list 'org-canvas-test session-id id)
+           :routing-state 'historical))
+    (while (< (e-board-observer-next-index
+               (e-chat-service-binding-observer binding))
+              (e-board-message-count board))
+      (e-chat-service--drain-observer binding))))
+
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."
   (let ((file (expand-file-name name directory)))
@@ -1081,10 +1098,8 @@
              :metadata (list :project-root default-directory))
             (e-org-canvas--mark-session
              harness "session-1" source :scope 'thread :target-folder nil)
-            (e-session-append-message
-             (e-harness-sessions harness)
-             "session-1"
-             '(:id "msg-1" :role user :content "Existing backing chat history"))
+            (e-org-canvas-test--import-board-input
+             harness "session-1" "msg-1" "Existing backing chat history")
             (setq chat (e-chat-open :harness harness :session-id "session-1"))
             (setq input
                   (e-org-canvas--input-buffer
@@ -1706,12 +1721,9 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
   (let ((harness (e-org-canvas-test--harness))
         input)
     (e-harness-create-session harness :id "session-1")
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     '(:role user
-       :content "revise the outline"
-       :metadata (:org-canvas-scope document)))
+    (e-org-canvas-test--import-board-input
+     harness "session-1" "prompt-1" "revise the outline"
+     '(:org-canvas-scope document))
     (with-temp-buffer
       (org-mode)
       (let ((target (current-buffer)))

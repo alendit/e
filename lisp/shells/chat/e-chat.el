@@ -10022,8 +10022,11 @@ plain submit steers an active turn and prefix submit queues a follow-up."
         (e-chat-reset))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-chat--clear)
-  (e-chat-session-reset e-chat-harness e-chat-session-id))
+  (let ((harness e-chat-harness)
+        (session-id e-chat-session-id)
+        (instance-id e-chat-harness-instance-id))
+    (e-chat-session-reset harness session-id)
+    (e-chat--attach-buffer (current-buffer) harness session-id instance-id)))
 
 ;;;###autoload
 (defun e-chat-shell ()

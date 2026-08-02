@@ -241,23 +241,13 @@
    controller (list :op "append" :session-id session-id :record record)))
 
 (defun e-session-persistence-declare-board-state
-    (controller session-id controller-principal)
+    (controller session-id controller-principal &optional board-id)
   "Persist current dormant board schema for SESSION-ID.
 CONTROLLER-PRINCIPAL is trusted host policy, never inferred from transcript
 content.  The derived catalog checkpoint remains asynchronous."
-  (let* ((store (e-session-persistence-store controller))
-         (session (e-session-get store session-id)))
-    (e-session-persistence-submit-record
-     controller session-id
-     (list :type "board-session-state" :session-id session-id
-           :state "dormant"
-           :access-record
-           (list :controller controller-principal :version 0
-                 :discover-principals nil :resume-principals nil)
-           :board-output-sequence
-           (or (plist-get session :board-output-sequence) 0)
-           :board-activity-sequence
-           (or (plist-get session :board-activity-sequence) 0)))
+  (let ((store (e-session-persistence-store controller)))
+    (e-session-declare-board-state
+     store session-id controller-principal board-id)
     (e-session-persistence-request-checkpoint controller)))
 
 (defun e-session-persistence-request-checkpoint (controller)

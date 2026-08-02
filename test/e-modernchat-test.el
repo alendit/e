@@ -21,6 +21,17 @@
 (require 'e-session)
 (require 'e-structured-blocks)
 
+(defun e-modernchat-test--post-board-output (harness session-id id content)
+  "Post one board-visible test output and drain its bounded projection page."
+  (let* ((binding (e-chat-service-ensure-binding harness session-id))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (e-board-post-output
+     board :id id :author "test" :tags '(main) :content content
+     :source-output-key
+     (list 'test session-id (e-board-message-count board)))
+    (e-chat-service--drain-observer binding)))
+
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
   (let ((harness (e-harness-create
@@ -33,12 +44,9 @@
                  :context-attachments ((:uri "file:///tmp/a.org"
                                          :label "a.org"))))
     (dotimes (index 3)
-      (e-session-append-message
-       (e-harness-sessions harness)
-       "session-1"
-       (list :id (format "m-%d" index)
-             :role 'user
-             :content (format "message %d" index))))
+      (e-modernchat-test--post-board-output
+       harness "session-1" (format "m-%d" index)
+       (format "message %d" index)))
     (let* ((snapshot (e-modernchat-view-model-snapshot
                       harness "session-1" :message-limit 2 :activity-limit 0))
            (session (cdr (assq 'session snapshot)))
@@ -74,6 +82,15 @@ client."
                             "alternatives: insufficient-evidence\n"
                             "evidence: none\n"
                             "#+end_reasoning\n")))
+    (e-modernchat-test--post-board-output
+     harness "session-1" "m-0"
+     (concat "The answer is 42.\n\n"
+             "#+begin_reasoning\n"
+             "claim: the answer is 42\n"
+             "confidence: high\n"
+             "alternatives: insufficient-evidence\n"
+             "evidence: none\n"
+             "#+end_reasoning\n"))
     (let* ((snapshot (e-modernchat-view-model-snapshot
                       harness "session-1" :activity-limit 0))
            (messages (cdr (assq 'messages snapshot)))
@@ -91,20 +108,9 @@ messages so the transcript reads as one clean answer."
                   :backend (e-backend-create :name "noop")
                   :enabled-layer-ids nil)))
     (e-harness-create-session harness :id "session-1")
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     (list :id "m-0" :role 'assistant :content "visible reply"))
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     (list :id "m-1" :role 'assistant :content "hidden first attempt"
-           :display 'hidden))
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     (list :id "m-2" :role 'user :content "hidden corrective prompt"
-           :metadata '(:display hidden)))
+    ;; Superseded/hidden private attempts are deliberately never published.
+    (e-modernchat-test--post-board-output
+     harness "session-1" "m-0" "visible reply")
     (let* ((snapshot (e-modernchat-view-model-snapshot
                       harness "session-1" :activity-limit 0))
            (messages (cdr (assq 'messages snapshot)))
@@ -274,6 +280,146 @@ messages so the transcript reads as one clean answer."
            :source-fact-key '(test fact 2))
           (e-chat-service--drain-subscription good)
           (should (equal (plist-get (car good-events) :message-id) "child")))))))
+
+(ert-deftest e-chat-service-test-replay-is-bounded-board-derived-and-causal ()
+  "Replay never reads private transcripts and keeps participant-local turns distinct."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session :harness harness :id "replay"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (registry-board (e-chat-service-binding-board binding))
+         (board (e-board-registry-board-source-board registry-board))
+         (participant
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant
+            (e-chat-service-binding-attachment binding)))))
+    ;; Equal private turn ids from different participants must not alias.
+    (e-board-post-activity
+     board :id "summary-a" :author (format "participant:%s" participant)
+     :subject-participant-id participant :source-turn-id "same-turn"
+     :activity-kind 'turn-summary :tags '(main) :attributes '(:status failed)
+     :source-activity-key (list participant 1 1))
+    (e-board-post-activity
+     board :id "summary-b" :author "participant:other"
+     :subject-participant-id "other" :source-turn-id "same-turn"
+     :activity-kind 'turn-summary :tags '(main) :attributes '(:status cancelled)
+     :source-activity-key '(other 1 1))
+    (e-board-post-output
+     board :id "answer" :author (format "participant:%s" participant)
+     :subject-participant-id participant :source-turn-id "same-turn"
+     :tags '(main) :content "answer" :source-output-key (list participant 1 1))
+    (e-chat-service--drain-observer binding)
+    (cl-letf (((symbol-function 'e-harness-messages)
+               (lambda (&rest _) (error "private transcript read")))
+              ((symbol-function 'e-session-activity-events)
+               (lambda (&rest _) (error "private activity read")))
+              ((symbol-function 'e-harness-state)
+               (lambda (&rest _) (error "private state read")))
+              ((symbol-function 'e-harness-queued-prompts)
+               (lambda (&rest _) (error "private queue read")))
+              ((symbol-function 'e-harness-active-turns)
+               (lambda (&rest _) (error "private active-turn read"))))
+      (let* ((messages (e-chat-service-messages harness "replay"))
+             (activities (e-chat-service-activity-events harness "replay"))
+             (first (car activities))
+             (second (cadr activities)))
+        (should (equal (mapcar (lambda (message) (plist-get message :id))
+                               messages)
+                       '("answer")))
+        (should (equal (mapcar (lambda (event)
+                                (plist-get event :event-type))
+                              activities)
+                       '(turn-failed turn-cancelled)))
+        (should-not (equal (plist-get first :turn-id)
+                           (plist-get second :turn-id)))
+        (should (equal (plist-get first :message-id) "summary-a"))
+        (should (integerp (plist-get first :board-seq)))
+        (should (equal (plist-get first :board-id)
+                       (e-board-registry-board-id registry-board)))
+        (should (= (plist-get (e-chat-service-state harness "replay")
+                              :message-count)
+                   1))))))
+
+(ert-deftest e-chat-service-test-projection-ring-evicts-at-hard-cap ()
+  "History/live overlap cannot grow one presentation projection without bound."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session :harness harness :id "bounded"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (dotimes (index (+ e-chat-service-projection-capacity 5))
+      (e-board-post-output
+       board :id (format "out-%03d" index) :author "test" :tags '(main)
+       :content (format "answer %d" index)
+       :source-output-key (list 'test 1 index)))
+    (while (< (e-board-observer-next-index
+               (e-chat-service-binding-observer binding))
+              (e-board-message-count board))
+      (e-chat-service--drain-observer binding))
+    (let ((messages (e-chat-service-messages harness "bounded")))
+      (should (= (length messages) e-chat-service-projection-capacity))
+      (should (equal (plist-get (car messages) :id) "out-005"))
+      (should (equal (plist-get (car (last messages)) :id) "out-260")))))
+
+(ert-deftest e-chat-service-test-persistent-board-log-reopens-without-redelivery ()
+  "A restarted service restores board history as board messages, not transcript."
+  (let ((directory (make-temp-file "e-chat-board-log-" t))
+        (e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (harness (e-harness-create :sessions store :enabled-layer-ids nil))
+               (session (e-chat-service-create-session
+                         :harness harness :id "persistent-board"))
+               (binding (e-chat-service-binding harness (plist-get session :id)))
+               (board-id (e-board-registry-board-id
+                          (e-chat-service-binding-board binding))))
+          (e-modernchat-test--post-board-output
+           harness "persistent-board" "persisted-answer" "durable answer")
+          (should (= (length (e-session-board-messages
+                              store "persistent-board"))
+                     1))
+          (e-session-flush store 5)
+          ;; Model a fresh Emacs process while retaining only the session store.
+          (setq e-board--registry (make-hash-table :test 'equal)
+                e-board-registry--boards (make-hash-table :test 'equal)
+                e-board-registry--board-index
+                (avl-tree-create (lambda (left right)
+                                   (string< (car left) (car right))))
+                e-chat-service--bindings
+                (make-hash-table :test 'eq :weakness 'key)
+                e-chat-service--board-bindings (make-hash-table :test 'equal)
+                e-chat-service--board-log-owners (make-hash-table :test 'equal)
+                e-board-runtime--attachments (make-hash-table :test 'equal)
+                e-board-runtime--session-attachments (make-hash-table :test 'equal)
+                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (restarted (e-harness-create :sessions loaded
+                                              :enabled-layer-ids nil))
+                 (restored (e-chat-service-ensure-binding
+                            restarted "persistent-board")))
+            (should (= (length (e-session-board-messages
+                                loaded "persistent-board"))
+                       1))
+            (e-chat-service--drain-observer restored)
+            (should (equal (e-board-registry-board-id
+                            (e-chat-service-binding-board restored))
+                           board-id))
+            (should (equal (mapcar (lambda (message)
+                                     (plist-get message :content))
+                                   (e-chat-service-messages
+                                    restarted "persistent-board"))
+                           '("durable answer")))
+            (should-not
+             (e-board-input-classifications
+              (e-board-registry-board-source-board
+               (e-chat-service-binding-board restored))))))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-board-chat-end-to-end ()
   "Board ingress, harness delivery, board output, and observation round-trip."

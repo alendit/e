@@ -66,8 +66,8 @@ METADATA is caller-provided turn activity metadata."
   (e-chat-service-abort-session harness session-id))
 
 (defun e-chat-session-reset (harness session-id)
-  "Reset SESSION-ID through HARNESS."
-  (e-harness-reset harness session-id))
+  "Reset SESSION-ID's transcript and board presentation projection."
+  (e-chat-service-reset-session harness session-id))
 
 (cl-defun e-chat-session-compact-start
     (harness session-id &key instructions keep-recent-tokens

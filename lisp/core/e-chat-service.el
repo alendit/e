@@ -41,6 +41,9 @@
 (defconst e-chat-service-subscriber-limit 8
   "Maximum presentation subscribers admitted to one chat binding.")
 
+(defconst e-chat-service-projection-capacity 256
+  "Maximum immutable board events retained by one chat presentation binding.")
+
 (defcustom e-chat-service-idle-close-delay 300
   "Seconds without a presentation client before an idle board closes."
   :type 'number
@@ -50,7 +53,8 @@
                (:constructor e-chat-service--binding-create))
   harness session-id board client requester attachment observer subscribers
   observer-drain-scheduled pending-input-head pending-input-tail turn-map
-  input-sequence default-tags default-to idle-close-timer)
+  input-sequence default-tags default-to idle-close-timer
+  projection-ring projection-head projection-count projection-seen)
 
 (cl-defstruct (e-chat-service-subscription
                (:constructor e-chat-service--subscription-create))
@@ -61,6 +65,45 @@
 
 (defvar e-chat-service--board-bindings (make-hash-table :test 'equal)
   "Live chat bindings sharing each registered board identity.")
+
+(defvar e-chat-service--board-log-owners (make-hash-table :test 'equal)
+  "Stable root binding that persists each live board's durable message log.")
+
+(defun e-chat-service--board-envelope (message)
+  "Return MESSAGE's frozen durable board envelope."
+  (list :id (e-board-message-id message)
+        :kind (e-board-message-kind message)
+        :author (e-board-message-author message)
+        :requester-actor (e-board-message-requester-actor message)
+        :tags (copy-tree (e-board-message-tags message))
+        :attributes (copy-tree (e-board-message-attributes message))
+        :to (e-board-message-to message) :mode (e-board-message-mode message)
+        :content (e-board-message-content message)
+        :reference (copy-tree (e-board-message-reference message))
+        :source-input-key (copy-tree (e-board-message-source-input-key message))
+        :source-output-key (copy-tree (e-board-message-source-output-key message))
+        :reply-to-message-ids
+        (copy-tree (e-board-message-reply-to-message-ids message))
+        :caused-by-delivery-ids
+        (copy-tree (e-board-message-caused-by-delivery-ids message))
+        :source-activity-key
+        (copy-tree (e-board-message-source-activity-key message))
+        :source-fact-key (copy-tree (e-board-message-source-fact-key message))
+        :subject-participant-id (e-board-message-subject-participant-id message)
+        :source-turn-id (e-board-message-source-turn-id message)
+        :activity-kind (e-board-message-activity-kind message)
+        :created-at (e-board-message-created-at message)
+        :matching-participant-ids
+        (copy-tree (e-board-message-matching-participant-ids message))
+        :unrouted-reason (e-board-message-unrouted-reason message)
+        :routing-state (e-board-message-routing-state message)))
+
+(defun e-chat-service--persist-board-message (binding message)
+  "Append MESSAGE once to BINDING's durable board log."
+  (e-session-append-board-message
+   (e-harness-sessions (e-chat-service-binding-harness binding))
+   (e-chat-service-binding-session-id binding)
+   (e-chat-service--board-envelope message)))
 
 (defun e-chat-service--harness-bindings (harness)
   "Return the session binding table owned by HARNESS."
@@ -134,7 +177,26 @@
                       (gethash board-id e-chat-service--board-bindings)))
       (e-chat-service--retire-binding current))
     (remhash board-id e-chat-service--board-bindings)
+    (remhash board-id e-chat-service--board-log-owners)
     (e-board-registry-close board)))
+
+(defun e-chat-service-reset-session (harness session-id)
+  "Reset SESSION-ID's transcript and bounded board presentation projection."
+  (let* ((store (e-harness-sessions harness))
+         (binding (e-chat-service-ensure-binding harness session-id))
+         (board-id (e-board-registry-board-id
+                    (e-chat-service-binding-board binding))))
+    (e-harness-reset harness session-id)
+    (e-session-clear-board-messages store session-id)
+    (dolist (current (gethash board-id e-chat-service--board-bindings))
+      (fillarray (e-chat-service-binding-projection-ring current) nil)
+      (clrhash (e-chat-service-binding-projection-seen current))
+      (clrhash (e-chat-service-binding-turn-map current))
+      (setf (e-chat-service-binding-projection-head current) 0
+            (e-chat-service-binding-projection-count current) 0
+            (e-chat-service-binding-pending-input-head current) nil
+            (e-chat-service-binding-pending-input-tail current) nil))
+    binding))
 
 (defun e-chat-service--schedule-idle-close (binding)
   "Schedule registry-owned board cleanup after BINDING becomes idle."
@@ -159,35 +221,53 @@
       (setf (e-chat-service-binding-pending-input-head binding) cell))
     (setf (e-chat-service-binding-pending-input-tail binding) cell)))
 
-(defun e-chat-service--turn-id (binding source-turn-id)
-  "Return BINDING's presentation id for SOURCE-TURN-ID."
+(defun e-chat-service--turn-id (binding subject-participant-id source-turn-id)
+  "Return BINDING's presentation id for one participant SOURCE-TURN-ID."
   (or (and source-turn-id
-           (gethash source-turn-id (e-chat-service-binding-turn-map binding)))
-      source-turn-id))
+           (gethash (list subject-participant-id source-turn-id)
+                    (e-chat-service-binding-turn-map binding)))
+      (and source-turn-id
+           (list (e-board-registry-board-id
+                  (e-chat-service-binding-board binding))
+                 subject-participant-id source-turn-id))))
 
 (defun e-chat-service--causal-input-id (binding message)
   "Return the board input id that causally owns MESSAGE, if retained."
-  (when-let* ((delivery-id (car (e-board-message-caused-by-delivery-ids message)))
-              (pickup (e-board-pickup
-                       (e-board-registry-board-source-board
-                        (e-chat-service-binding-board binding))
-                       delivery-id)))
-    (e-board-pickup-message-id pickup)))
+  (let ((source (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (or
+     (when-let* ((delivery-id
+                  (car (e-board-message-caused-by-delivery-ids message)))
+                 (pickup (e-board-pickup source delivery-id)))
+       (e-board-pickup-message-id pickup))
+     (when-let* ((reply-id (car (e-board-message-reply-to-message-ids message)))
+                 (reply (e-board-message source reply-id)))
+       (and (eq (e-board-message-kind reply) 'input) reply-id)))))
 
 (defun e-chat-service--message-event (binding message)
   "Translate one immutable board MESSAGE for BINDING's existing reducers."
   (let* ((kind (e-board-message-kind message))
          (source-turn-id (e-board-message-source-turn-id message))
+         (subject-participant-id
+          (e-board-message-subject-participant-id message))
          (causal-input-id (e-chat-service--causal-input-id binding message))
          (turn-id (or causal-input-id
-                      (e-chat-service--turn-id binding source-turn-id)))
+                      (e-chat-service--turn-id
+                       binding subject-participant-id source-turn-id)))
          (session-id (e-chat-service-binding-session-id binding))
          (identity
           (list :board-id (e-board-message-board-id message)
                 :board-seq (e-board-message-seq message)
+                :created-at (e-board-message-created-at message)
                 :message-id (e-board-message-id message)
+                :board-kind kind
+                :tags (copy-tree (e-board-message-tags message))
+                :attributes (copy-tree (e-board-message-attributes message))
+                :to (e-board-message-to message)
+                :mode (e-board-message-mode message)
+                :reference (copy-tree (e-board-message-reference message))
                 :subject-participant-id
-                (e-board-message-subject-participant-id message)
+                subject-participant-id
                 :source-turn-id source-turn-id
                 :caused-by-delivery-ids
                 (copy-tree (e-board-message-caused-by-delivery-ids message)))))
@@ -202,7 +282,14 @@
                      (list :id message-id :role 'user
                            :content (e-board-message-content message)
                            :turn-id message-id
-                           :references (e-board-message-reference message)))))))
+                           :created-at (e-board-message-created-at message)
+                           :references (e-board-message-reference message)
+                           :metadata
+                           (copy-tree (e-board-message-attributes message))
+                           :board-id (e-board-message-board-id message)
+                           :board-seq (e-board-message-seq message)
+                           :subject-participant-id
+                           (e-board-message-subject-participant-id message)))))))
       ('output
        (append identity
                (list :type 'message-added :session-id session-id
@@ -211,11 +298,19 @@
              (list :message
                    (list :id (e-board-message-id message) :role 'assistant
                          :content (e-board-message-content message)
-                         :turn-id turn-id)))))
+                         :turn-id turn-id
+                         :created-at (e-board-message-created-at message)
+                         :metadata
+                         (copy-tree (e-board-message-attributes message))
+                         :board-id (e-board-message-board-id message)
+                         :board-seq (e-board-message-seq message)
+                         :subject-participant-id
+                         (e-board-message-subject-participant-id message))))))
       ('activity
        (let ((activity-kind (e-board-message-activity-kind message)))
          (when (and source-turn-id causal-input-id)
-           (puthash source-turn-id causal-input-id
+           (puthash (list subject-participant-id source-turn-id)
+                    causal-input-id
                     (e-chat-service-binding-turn-map binding)))
          (when (eq activity-kind 'turn-summary)
            (setq activity-kind
@@ -227,14 +322,52 @@
          (when activity-kind
            (append identity
                    (list :type activity-kind :session-id session-id
-                 :turn-id (e-chat-service--turn-id binding source-turn-id)
-                 :payload (copy-tree (e-board-message-attributes message)))))))
+                 :turn-id (e-chat-service--turn-id
+                           binding subject-participant-id source-turn-id)
+                 :payload
+                 (append
+                  (when-let ((content (e-board-message-content message)))
+                    (list :content content))
+                  (copy-tree (e-board-message-attributes message))))))))
       (_
        (append identity
                (list :type 'board-fact :session-id session-id
              :turn-id turn-id
              :payload (list :message-id (e-board-message-id message)
                             :content (e-board-message-content message))))))))
+
+(defun e-chat-service--projection-record (binding event)
+  "Retain one deduplicated immutable board EVENT in BINDING's fixed ring."
+  (when event
+    (let* ((message-id (plist-get event :message-id))
+           (seen (e-chat-service-binding-projection-seen binding)))
+      (unless (gethash message-id seen)
+        (let* ((ring (e-chat-service-binding-projection-ring binding))
+               (head (e-chat-service-binding-projection-head binding))
+               (count (e-chat-service-binding-projection-count binding))
+               (index (mod (+ head count) e-chat-service-projection-capacity)))
+          (when (= count e-chat-service-projection-capacity)
+            (when-let ((evicted (aref ring head)))
+              (remhash (plist-get evicted :message-id) seen))
+            (setq head (mod (1+ head) e-chat-service-projection-capacity)
+                  index (mod (+ head (1- count))
+                             e-chat-service-projection-capacity)))
+          (aset ring index (copy-tree event))
+          (puthash message-id t seen)
+          (setf (e-chat-service-binding-projection-head binding) head
+                (e-chat-service-binding-projection-count binding)
+                (min e-chat-service-projection-capacity (1+ count))))))))
+
+(defun e-chat-service--projection-events (binding)
+  "Return BINDING's retained board events in board sequence order."
+  (let ((ring (e-chat-service-binding-projection-ring binding))
+        (head (e-chat-service-binding-projection-head binding))
+        (count (e-chat-service-binding-projection-count binding)))
+    (cl-loop for offset from 0 below count
+             collect
+             (copy-tree
+              (aref ring (mod (+ head offset)
+                              e-chat-service-projection-capacity))))))
 
 (defun e-chat-service--notify-subscribers (binding message)
   "Deliver MESSAGE from BINDING to each current shell subscriber."
@@ -305,7 +438,8 @@
                 (e-board-observer-id observer)
                 :limit e-chat-service-observer-page-limit)))
     (dolist (message (plist-get page :messages))
-      (e-chat-service--notify-subscribers binding message))
+      (e-chat-service--projection-record
+       binding (e-chat-service--message-event binding message)))
     (when-let ((receipt (plist-get page :receipt)))
       (e-board-registry-accept-observer-page
        board (e-board-registry-client-id client)
@@ -346,16 +480,27 @@
                  :client client :requester requester :attachment attachment
                  :observer observer :subscribers nil
                  :turn-map (make-hash-table :test 'equal) :input-sequence 0
-                 :default-tags (copy-tree default-tags) :default-to default-to)))
+                 :default-tags (copy-tree default-tags) :default-to default-to
+                 :projection-ring (make-vector
+                                   e-chat-service-projection-capacity nil)
+                 :projection-head 0 :projection-count 0
+                 :projection-seen (make-hash-table :test 'equal))))
           (puthash session-id binding (e-chat-service--harness-bindings harness))
           (puthash (e-board-registry-board-id board)
                    (cons binding
                          (gethash (e-board-registry-board-id board)
                                   e-chat-service--board-bindings))
                    e-chat-service--board-bindings)
+          (unless (gethash (e-board-registry-board-id board)
+                           e-chat-service--board-log-owners)
+            (puthash (e-board-registry-board-id board) binding
+                     e-chat-service--board-log-owners))
           (setf (e-board-message-notification-function
                  (e-board-registry-board-source-board board))
-                (lambda (source _message)
+                (lambda (source message)
+                  (when-let ((owner (gethash (e-board-id source)
+                                             e-chat-service--board-log-owners)))
+                    (e-chat-service--persist-board-message owner message))
                   (dolist (current (copy-sequence
                                     (gethash (e-board-id source)
                                              e-chat-service--board-bindings)))
@@ -363,14 +508,34 @@
                              (copy-sequence
                               (e-chat-service-binding-subscribers current)))
                       (e-chat-service--schedule-subscription-drain
-                       subscription)))))
+                       subscription))
+                    (e-chat-service--schedule-observer-drain current))))
+          ;; Materialize one fixed page so initial shell render has a bounded
+          ;; board snapshot; any continuation remains timer-driven.
+          (e-chat-service--drain-observer binding)
           binding))))
 
 (defun e-chat-service--bind-session (harness session-id)
   "Create one new top-level board and bind HARNESS SESSION-ID as its main member."
   (or (e-chat-service-binding harness session-id)
-      (let* ((principal (format "chat:%s" session-id))
-             (board (e-board-registry-create :principal principal)))
+      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+             (board-state (plist-get session :board-session-state))
+             (principal (or (plist-get (plist-get board-state :access-record)
+                                       :controller)
+                            (format "chat:%s" session-id)))
+             (board-id (plist-get board-state :board-id))
+             (existing (and board-id
+                            (condition-case nil
+                                (e-board-registry-get board-id)
+                              (e-board-registry-missing nil))))
+             (board (or existing
+                        (e-board-registry-create
+                         :id board-id :principal principal))))
+        (unless existing
+          (dolist (envelope (e-session-board-messages
+                             (e-harness-sessions harness) session-id))
+            (e-board-import-message
+             (e-board-registry-board-source-board board) envelope)))
         (e-chat-service--install-participant-binding
          board harness session-id :principal principal))))
 
@@ -380,11 +545,15 @@
          (session (e-harness-create-session harness :id id :metadata metadata))
          (binding (e-chat-service--bind-session harness (plist-get session :id)))
          (store (e-harness-sessions harness)))
-    (when-let ((controller (e-session-store-persistence-controller store)))
-      (e-session-persistence-declare-board-state
-       controller (plist-get session :id)
-       (e-board-registry-board-principal
-        (e-chat-service-binding-board binding))))
+    (let ((principal (e-board-registry-board-principal
+                      (e-chat-service-binding-board binding)))
+          (board-id (e-board-registry-board-id
+                     (e-chat-service-binding-board binding))))
+      (if-let ((controller (e-session-store-persistence-controller store)))
+          (e-session-persistence-declare-board-state
+           controller (plist-get session :id) principal board-id)
+        (e-session-declare-board-state
+         store (plist-get session :id) principal board-id)))
     binding))
 
 (cl-defun e-chat-service-open-board
@@ -423,13 +592,15 @@ LIMIT defaults to the registry's fixed page bound."
              (or observer-selector '(:tags (main))))
            :default-tags default-tags
            :default-to (if (eq default-to :self) participant-id default-to))))
-    (when-let ((controller
-                (e-session-store-persistence-controller
-                 (e-harness-sessions harness))))
-      (e-session-persistence-declare-board-state
-       controller session-id
-       (e-board-registry-board-principal
-        (e-chat-service-binding-board binding))))
+    (let* ((store (e-harness-sessions harness))
+           (principal (e-board-registry-board-principal
+                       (e-chat-service-binding-board binding)))
+           (board-id (e-board-registry-board-id
+                      (e-chat-service-binding-board binding))))
+      (if-let ((controller (e-session-store-persistence-controller store)))
+          (e-session-persistence-declare-board-state
+           controller session-id principal board-id)
+        (e-session-declare-board-state store session-id principal board-id)))
     session))
 
 (defun e-chat-service--harness-has-capability-p (harness capability-id)
@@ -635,16 +806,47 @@ LIMIT defaults to the registry's fixed page bound."
   (e-harness-root-session-list harness))
 
 (defun e-chat-service-messages (harness session-id)
-  "Return SESSION-ID's durable transcript for bounded initial presentation."
-  (e-harness-messages harness session-id))
+  "Return SESSION-ID's bounded board-derived message projection."
+  (let ((binding (e-chat-service--bind-session harness session-id))
+        messages)
+    (dolist (event (e-chat-service--projection-events binding)
+                   (nreverse messages))
+      (when (eq (plist-get event :type) 'message-added)
+        (push (copy-tree (plist-get (plist-get event :payload) :message))
+              messages)))))
 
 (defun e-chat-service-activity-events (harness session-id)
-  "Return SESSION-ID's durable activity for bounded initial presentation."
-  (e-session-activity-events (e-harness-sessions harness) session-id))
+  "Return SESSION-ID's bounded board-derived activity projection."
+  (let ((binding (e-chat-service--bind-session harness session-id))
+        events)
+    (dolist (event (e-chat-service--projection-events binding)
+                   (nreverse events))
+      (unless (memq (plist-get event :type) '(message-added board-fact))
+        (push (append (list :event-type (plist-get event :type)
+                            :created-at (plist-get event :created-at))
+                      (copy-tree event))
+              events)))))
 
 (defun e-chat-service-state (harness session-id)
-  "Return SESSION-ID's current private state through the application seam."
-  (e-harness-state harness session-id))
+  "Return SESSION-ID's bounded board-derived presentation state."
+  (let* ((binding (e-chat-service--bind-session harness session-id))
+         (activities (e-chat-service-activity-events harness session-id))
+         (active-turn
+          (e-board-runtime-attachment-active-turn
+           (e-chat-service-binding-attachment binding))))
+    (dolist (event activities)
+      (pcase (plist-get event :event-type)
+        ('turn-started
+         (unless active-turn
+           (setq active-turn (list :id (plist-get event :turn-id)
+                                   :status 'running))))
+        ((or 'turn-finished 'turn-failed 'turn-cancelled)
+         (when (equal (plist-get active-turn :id) (plist-get event :turn-id))
+           (setq active-turn nil)))))
+    (list :board-id
+          (e-board-registry-board-id (e-chat-service-binding-board binding))
+          :message-count (length (e-chat-service-messages harness session-id))
+          :active-turn active-turn)))
 
 (defun e-chat-service-active-capabilities (harness)
   "Return HARNESS's active capabilities for shell affordance discovery."
@@ -667,12 +869,45 @@ LIMIT defaults to the registry's fixed page bound."
   (e-harness-prompts harness))
 
 (defun e-chat-service-queued-inputs (harness session-id)
-  "Return SESSION-ID's queued inputs for bounded local presentation."
-  (e-harness-queued-prompts harness session-id))
+  "Return SESSION-ID's queued board inputs for bounded local presentation."
+  (let* ((binding (e-chat-service--bind-session harness session-id))
+         (source (e-board-registry-board-source-board
+                  (e-chat-service-binding-board binding)))
+         queued)
+    (dolist (event (e-chat-service--projection-events binding)
+                   (nreverse queued))
+      (when (and (eq (plist-get event :board-kind) 'input)
+                 (eq (plist-get event :mode) 'queue))
+        (let* ((message-id (plist-get event :message-id))
+               (message (e-board-message source message-id))
+               (pending
+                (cl-some
+                 (lambda (pickup-id)
+                   (memq (e-board-pickup-state (e-board-pickup source pickup-id))
+                         '(pending ready delivering accepted cancelling)))
+                 (and message (e-board-message-pickup-ids message)))))
+          (when pending
+            (push (list :prompt
+                        (plist-get
+                         (plist-get (plist-get event :payload) :message)
+                         :content)
+                        :references (plist-get event :reference)
+                        :metadata (copy-tree (plist-get event :attributes)))
+                  queued)))))))
 
 (defun e-chat-service-active-turns (harness)
-  "Return HARNESS's private active-turn index for bounded shell diagnostics."
-  (e-harness-active-turns harness))
+  "Return HARNESS's board-derived active-turn index for shell diagnostics."
+  (let ((result (make-hash-table :test 'equal)))
+    (when-let ((bindings (gethash harness e-chat-service--bindings)))
+      (maphash
+       (lambda (session-id binding)
+         (when (e-chat-service--binding-live-p binding)
+           (when-let ((active-turn
+                       (plist-get (e-chat-service-state harness session-id)
+                                  :active-turn)))
+             (puthash session-id active-turn result))))
+       bindings))
+    result))
 
 (defun e-chat-service-append-seed-message (harness session-id message)
   "Append explicit pre-turn seed MESSAGE to board-bound SESSION-ID."

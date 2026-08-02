@@ -342,6 +342,91 @@ tests, matching how the buffer behaves when shown to a user."
       (equal (plist-get subscriber :session-id) session-id))
     (e-harness-subscribers harness))))
 
+(defun e-chat-test--seed-board-log-from-private-fixture (harness session-id)
+  "Translate an old private test fixture into its explicit durable board log.
+Production presentation never performs this compatibility translation."
+  (let* ((store (e-harness-sessions harness))
+         (binding (e-chat-service-binding harness session-id))
+         (board (and binding
+                     (e-board-registry-board-source-board
+                      (e-chat-service-binding-board binding))))
+         (participant-id (format "fixture:%s" session-id))
+         (sequence 0)
+         (turn-inputs (make-hash-table :test 'equal))
+         envelopes)
+    (dolist (message (e-session-messages store session-id))
+      (unless (memq (plist-get message :role) '(tool-call tool))
+        (let* ((user-p (eq (plist-get message :role) 'user))
+               (turn-id (plist-get message :turn-id))
+               (stored-id (plist-get message :id))
+               (message-id
+                (if (and user-p turn-id (stringp stored-id)
+                         (string-match-p
+                          "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'" stored-id))
+                    turn-id
+                  (or stored-id turn-id)))
+               (reply-id (and (not user-p) turn-id
+                              (gethash turn-id turn-inputs))))
+          (when (and user-p turn-id)
+            (puthash turn-id message-id turn-inputs))
+          (push (list :id message-id
+                    :kind (if user-p 'input 'output)
+                    :author (if (eq (plist-get message :role) 'user)
+                                "fixture-client" "fixture-participant")
+                    :tags '(main) :content (plist-get message :content)
+                    :reference (plist-get message :references)
+                    :attributes
+                    (let ((attributes
+                           (copy-tree (plist-get message :metadata))))
+                      (if-let ((display (plist-get message :display)))
+                          (plist-put attributes :display display)
+                        attributes))
+                    :source-input-key
+                    (and user-p
+                         (list 'fixture session-id (cl-incf sequence)))
+                    :source-output-key
+                    (and (not user-p)
+                         (list 'fixture session-id (cl-incf sequence)))
+                    :source-turn-id turn-id
+                    :created-at (plist-get message :created-at)
+                    :reply-to-message-ids (and reply-id (list reply-id))
+                    :routing-state 'historical)
+                envelopes))))
+    (dolist (event (e-session-activity-events store session-id))
+      (push (list :id (or (plist-get event :id)
+                          (format "fixture-activity-%d" (1+ sequence)))
+                  :kind 'activity
+                  :author (format "participant:%s" participant-id)
+                  :tags '(main) :attributes (copy-tree (plist-get event :payload))
+                  :subject-participant-id participant-id
+                  :source-turn-id (plist-get event :turn-id)
+                  :reply-to-message-ids
+                  (when-let ((input-id (gethash (plist-get event :turn-id)
+                                                turn-inputs)))
+                    (list input-id))
+                  :activity-kind (plist-get event :event-type)
+                  :created-at (plist-get event :created-at)
+                  :source-activity-key
+                  (list participant-id 1 (cl-incf sequence)))
+            envelopes))
+    (setq envelopes (nreverse envelopes))
+    (if board
+        (dolist (envelope envelopes)
+          (unless (e-board-message board (plist-get envelope :id))
+            (e-board-import-message board envelope)))
+      (unless (plist-get (e-session-get store session-id) :board-session-state)
+        (e-session-declare-board-state
+         store session-id (format "chat:%s" session-id)
+         (format "test-board:%s" session-id)))
+      (dolist (envelope envelopes)
+        (e-session-append-board-message store session-id envelope)))
+    (when binding
+      (while (< (e-board-observer-next-index
+                 (e-chat-service-binding-observer binding))
+                (e-board-message-count board))
+        (e-chat-service--drain-observer binding)))
+    envelopes))
+
 (ert-deftest e-chat-test-open-creates-protected-transcript-and-composer ()
   "Opening chat creates protected transcript text and editable composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-open")))
@@ -629,6 +714,8 @@ only the visible reply while retaining a durable-to-rendered projection."
            (e-harness-sessions e-chat-harness) "chat-hidden-render"
            (list :id "m-hidden" :role 'assistant :turn-id "turn-1"
                  :content "superseded first attempt" :display 'hidden))
+          (e-chat-test--seed-board-log-from-private-fixture
+           e-chat-harness e-chat-session-id)
           (e-chat--clear)
           (e-chat--render-session)
           (let* ((visible-id (e-chat--message-block-id "m-visible"))
@@ -706,6 +793,8 @@ on demand so the user can audit what the calibration follow-up removed."
            (list :id "m-prompt" :role 'user :turn-id "turn-1"
                  :content "machine corrective prompt"
                  :metadata '(:display hidden)))
+          (e-chat-test--seed-board-log-from-private-fixture
+           e-chat-harness e-chat-session-id)
           (e-chat--clear)
           (e-chat--render-session)
           (should (e-chat-test--message-display-hidden-p "m-first"))
@@ -740,6 +829,8 @@ one-answer transcript."
            (e-harness-sessions e-chat-harness) "chat-hidden-reveal-off"
            (list :id "m-first" :role 'assistant :turn-id "turn-1"
                  :content "superseded first attempt" :display 'hidden))
+          (e-chat-test--seed-board-log-from-private-fixture
+           e-chat-harness e-chat-session-id)
           (e-chat--clear)
           (e-chat--render-session)
           (e-chat-test--focus-block-containing "revised answer")
@@ -768,6 +859,8 @@ must drop any revealed hidden blocks."
            (e-harness-sessions e-chat-harness) "chat-hidden-reveal-composer"
            (list :id "m-first" :role 'assistant :turn-id "turn-1"
                  :content "superseded first attempt" :display 'hidden))
+          (e-chat-test--seed-board-log-from-private-fixture
+           e-chat-harness e-chat-session-id)
           (e-chat--clear)
           (e-chat--render-session)
           (e-chat-test--focus-block-containing "revised answer")
@@ -2918,7 +3011,12 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                                      (plist-get message :role))
                                    (e-chat-service-messages
                                     harness e-chat-session-id))
-                           '(user tool-call tool)))))
+                           '(user)))
+            (should (seq-some
+                     (lambda (event)
+                       (eq (plist-get event :event-type) 'turn-cancelled))
+                     (e-chat-service-activity-events
+                      harness e-chat-session-id)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -3016,6 +3114,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
            (e-harness-sessions e-chat-harness) e-chat-session-id
            (list :role 'user :turn-id "turn-2" :content "corrective"
                  :metadata '(:display hidden :pending-summary "Validating claims…")))
+          (e-chat-test--seed-board-log-from-private-fixture
+           e-chat-harness e-chat-session-id)
           (e-chat--render-event
            (e-events-make :type 'turn-started :session-id e-chat-session-id
                           :turn-id "turn-2" :created-at 10))
@@ -4320,6 +4420,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (e-session-append-message
            store "chat-provider-replay"
            '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-provider-replay")
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-provider-replay"))
           (with-current-buffer buffer
@@ -4372,6 +4474,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (puthash "chat-provider-active-replay"
                    '(:id "turn-1" :status running)
                    (e-harness-active-turns harness))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-provider-active-replay")
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-provider-active-replay"))
           (with-current-buffer buffer
@@ -6111,11 +6215,20 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
            '(:role assistant
              :content "old two"
              :created-at "1970-01-01T00:00:22Z"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-nav-replay")
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-nav-replay"))
           (with-current-buffer buffer
             (call-interactively #'e-chat-enter-response-navigation)
-            (should (equal e-chat--focused-turn-id "replayed-turn-2"))
+            (should
+             (equal e-chat--focused-turn-id
+                    (plist-get
+                     (seq-find
+                      (lambda (message)
+                        (equal (plist-get message :content) "old second"))
+                      (e-chat-service-messages harness "chat-nav-replay"))
+                     :turn-id)))
             (let ((details (e-chat-response-navigation-details)))
               (with-current-buffer details
                 (should (string-match-p
@@ -6129,6 +6242,40 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
+
+(ert-deftest e-chat-test-replay-render-never-reads-private-transcript-indexes ()
+  "Opening durable history renders only the board-derived projection."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         buffer)
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "board-only-render")
+          (e-session-append-message
+           store "board-only-render"
+           '(:id "private-user" :role user :content "board prompt"))
+          (e-session-append-message
+           store "board-only-render"
+           '(:id "private-output" :role assistant :content "board answer"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "board-only-render")
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "board-only-render"))
+          (cl-letf (((symbol-function 'e-harness-messages)
+                     (lambda (&rest _) (error "private transcript read")))
+                    ((symbol-function 'e-session-messages)
+                     (lambda (&rest _) (error "private message index read")))
+                    ((symbol-function 'e-session-activity-events)
+                     (lambda (&rest _) (error "private activity index read"))))
+            (with-current-buffer buffer
+              (e-chat--clear)
+              (e-chat--render-session)
+              (should (string-match-p "board prompt" (buffer-string)))
+              (should (string-match-p "board answer" (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-replayed-failed-turn-expands-inline ()
   "Replayed turn-failed activity renders as a compact expandable block."
@@ -6151,6 +6298,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                         (:code "context_length_exceeded"
                          :message
                          "Your input exceeds the context window.")))))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-failed-replay")
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-failed-replay"))
           (with-current-buffer buffer
@@ -6201,6 +6350,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (e-session-append-activity-event
            store "chat-failed-thinking-replay" "turn-1" 'turn-failed
            '(:error "provider failed"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-failed-thinking-replay")
           (setq buffer (e-chat-open
                         :harness harness
                         :session-id "chat-failed-thinking-replay"))
@@ -6911,6 +7062,8 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
              (list :id (format "msg-%d" index)
                    :role (if (cl-evenp index) 'user 'assistant)
                    :content (format "preview message %d" index))))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "preview-tail")
           (let* ((sessions (e-harness-session-list harness))
                  (labels (mapcar #'e-chat--session-choice-label sessions))
                  (state (e-chat--resume-preview-state harness sessions labels)))
@@ -8092,6 +8245,8 @@ The context-window denominator comes from the live provider lookup
              store
              e-chat-session-id
              '(:role user :content "context question"))
+            (e-chat-test--seed-board-log-from-private-fixture
+             harness e-chat-session-id)
             (e-chat--set-status "idle" t)
             (should (string-match-p "gpt-5.5/high" mode-name))
             (should (string-match-p "~[0-9]+%" mode-name))
@@ -9569,6 +9724,12 @@ The context-window denominator comes from the live provider lookup
           (e-session-append-message
            store "async-render"
            '(:id "msg-2" :role assistant :content "render response"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           (e-harness-create
+            :backend (e-backend-fake-create :items nil)
+            :sessions store)
+           "async-render")
+          (e-session-flush store)
           (let* ((indexed-store
                   (e-session-persistent-index-store-create directory))
                  (harness (e-harness-create
@@ -9613,6 +9774,8 @@ The context-window denominator comes from the live provider lookup
                      (:id "msg-4" :role user :content "last prompt")
                      (:id "msg-5" :role assistant :content "last response")))
             (e-session-append-message store "loaded-tail" message))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "loaded-tail")
           (setq buffer (e-chat-open-session harness "loaded-tail"))
           (with-current-buffer buffer
             (let ((text (buffer-string)))
@@ -9647,6 +9810,8 @@ The context-window denominator comes from the live provider lookup
                      (:id "msg-4" :role user :content "last prompt")
                      (:id "msg-5" :role assistant :content "last response")))
             (e-session-append-message store "loaded-backfill" message))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "loaded-backfill")
           (setq buffer (e-chat-open-session harness "loaded-backfill"))
           (with-current-buffer buffer
             (should (e-chat-test--live-work-handle-p
@@ -10198,6 +10363,8 @@ last normal window), so the no-normal-window condition is stubbed."
           (e-session-append-message
            store "chat-run-elisp-replay"
            '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "chat-run-elisp-replay")
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-run-elisp-replay"))
           (with-current-buffer buffer

@@ -24,6 +24,34 @@
     (should (equal (plist-get (e-session-get store "session-1") :id) "session-1"))
     (should (equal (e-session-messages store "session-1") nil))))
 
+(ert-deftest e-session-test-board-log-deduplicates-and-clear-survives-replay ()
+  "Board log identity and reset boundaries remain durable across reopen."
+  (let ((directory (make-temp-file "e-session-board-log-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (first '(:id "board-1" :kind output :content "old"))
+               (second '(:id "board-2" :kind output :content "new")))
+          (e-session-create store :id "board-session")
+          (e-session-append-board-message store "board-session" first)
+          (e-session-append-board-message store "board-session" first)
+          (should (= (length (e-session-board-messages
+                              store "board-session"))
+                     1))
+          (e-session-clear-board-messages store "board-session")
+          (e-session-append-board-message store "board-session" second)
+          (e-session-flush store 5)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (let ((messages (e-session-board-messages
+                             reopened "board-session")))
+              (should (= (length messages) 1))
+              (should (equal (plist-get (car messages) :id) "board-2"))
+              (should (equal (plist-get (car messages) :content) "new")))
+            (e-session-append-board-message reopened "board-session" second)
+            (should (= (length (e-session-board-messages
+                                reopened "board-session"))
+                       1))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-append-message-preserves-order ()
   "Messages are returned in insertion order."
   (let ((store (e-session-store-create)))
