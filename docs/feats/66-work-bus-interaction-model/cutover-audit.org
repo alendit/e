@@ -93,7 +93,11 @@ operations; synchronous public helpers are not acceptable substitutes.
    requests, exact invocation targets, deferred carrier hooks, activity
    mailboxes, and queued pickup attempts.  Each count and the monotonic change
    generation advances at the enqueue, pop, admit, or terminal transition that
-   owns the state.  Harness, board-core, and persistence contributions remain.
+   owns the state.  Each harness now likewise reports active turns and the
+   combined queued follow-up/steering input count.  Prompt queues retain an
+   O(1) per-session count, steering entries retain their own count, and terminal
+   turn cleanup retires unconsumed steering without a scan.  Board-core,
+   independent work carriers, and persistence contributions remain.
 3. Build a controlled runtime-quiescence request that freezes the admission
    epoch, reads only those bounded counters, and waits on their transition
    events.  A nonzero class reports exact named blockers; it never polls or

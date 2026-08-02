@@ -905,6 +905,42 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
      (e-harness-queue-prompt harness "session-1" "follow up")
      :type 'e-harness-no-active-turn)))
 
+(ert-deftest e-harness-test-unsettled-state-follows-turn-and-input-owners ()
+  "Harness counts active turns and queued inputs at their exact transitions."
+  (let* ((backend (e-backend-create
+                   :name "held"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done on-error
+                                     on-request-start)))))
+         (harness (e-harness-create :backend backend))
+         scheduled snapshots)
+    (setf (e-harness-unsettled-change-function harness)
+          (lambda (snapshot) (push snapshot snapshots)))
+    (e-harness-create-session harness :id "session-1")
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_seconds _repeat function &rest arguments)
+                 (push (lambda () (apply function arguments)) scheduled))))
+      (e-harness-prompt-async harness "session-1" "first")
+      (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 1 :active-turns 1 :queued-inputs 0)))
+      (e-harness-queue-prompt harness "session-1" "second")
+      (e-harness-steer-active-turn harness "session-1" "steer")
+      (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 3 :active-turns 1 :queued-inputs 2)))
+      (e-harness-abort harness "session-1")
+      (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 4 :active-turns 1 :queued-inputs 1)))
+      (funcall (pop scheduled))
+      (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 7 :active-turns 1 :queued-inputs 0)))
+      (e-harness-abort harness "session-1")
+      (funcall (pop scheduled))
+      (should (equal (e-harness-unsettled-state harness)
+                     '(:generation 8 :active-turns 0 :queued-inputs 0)))
+      (should (= (length snapshots) 8)))))
+
 (ert-deftest e-harness-test-queue-prompt-stores-during-active-turn ()
   "Queueing during a running turn stores prompt data without replacing it."
   (let* ((backend (e-backend-create

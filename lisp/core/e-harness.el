@@ -69,6 +69,10 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
    (subscribers nil)
    active-turns
    prompt-queues
+   prompt-queue-counts
+   (queued-input-count 0)
+   (unsettled-generation 0)
+   unsettled-change-function
    work-enrollment-function
    board-aggregation-function)
 
@@ -187,7 +191,8 @@ layer selection APIs change the enabled layer set."
                           :intrinsic-capabilities
                           (copy-sequence intrinsic-capabilities)
                           :active-turns (make-hash-table :test 'equal)
-                          :prompt-queues (make-hash-table :test 'equal))))
+                          :prompt-queues (make-hash-table :test 'equal)
+                          :prompt-queue-counts (make-hash-table :test 'equal))))
     (when layer-change-function
       (e-harness-set-layer-change-function harness layer-change-function))
     harness))
@@ -1356,11 +1361,64 @@ JSON replay, so both are recognized."
   "Return queued prompt items for SESSION-ID in HARNESS."
   (copy-sequence (gethash session-id (e-harness-prompt-queues harness))))
 
-(defun e-harness--set-queued-prompts (harness session-id items)
-  "Replace SESSION-ID queued prompt ITEMS in HARNESS."
-  (if items
-      (puthash session-id items (e-harness-prompt-queues harness))
-    (remhash session-id (e-harness-prompt-queues harness)))
+(defun e-harness-unsettled-state (harness)
+  "Return HARNESS's constant-time owner-local unsettled snapshot."
+  (list :generation (e-harness-unsettled-generation harness)
+        :active-turns (hash-table-count (e-harness-active-turns harness))
+        :queued-inputs (e-harness-queued-input-count harness)))
+
+(defun e-harness--unsettled-changed (harness)
+  "Record and publish one owner-local unsettled transition in HARNESS."
+  (cl-incf (e-harness-unsettled-generation harness))
+  (when-let ((function (e-harness-unsettled-change-function harness)))
+    (funcall function (e-harness-unsettled-state harness))))
+
+(defun e-harness--adjust-queued-input-count (harness delta)
+  "Adjust HARNESS's queued input count by DELTA at its owning transition."
+  (let ((count (cl-incf (e-harness-queued-input-count harness) delta)))
+    (when (< count 0)
+      (signal 'e-harness-error (list "Negative queued input count" count)))
+    (unless (= delta 0)
+      (e-harness--unsettled-changed harness))
+    count))
+
+(defun e-harness--put-active-turn (harness session-id entry)
+  "Install ENTRY as SESSION-ID's active turn and publish the transition."
+  (when (gethash session-id (e-harness-active-turns harness))
+    (signal 'e-harness-active-turn-exists (list session-id)))
+  (puthash session-id entry (e-harness-active-turns harness))
+  (e-harness--unsettled-changed harness)
+  entry)
+
+(defun e-harness--remove-active-turn (harness session-id &optional expected)
+  "Remove SESSION-ID's active turn when it matches EXPECTED, if supplied."
+  (let ((current (gethash session-id (e-harness-active-turns harness))))
+    (when (and current (or (null expected) (eq current expected)))
+      (remhash session-id (e-harness-active-turns harness))
+      (e-harness--unsettled-changed harness)
+      current)))
+
+(defun e-harness--set-queued-prompts (harness session-id items &optional delta)
+  "Replace SESSION-ID queued prompt ITEMS in HARNESS by known DELTA.
+Clearing a queue may omit DELTA because its owner-local count is indexed."
+  (let* ((counts (e-harness-prompt-queue-counts harness))
+         (old-count (or (gethash session-id counts) 0))
+         (delta (or delta
+                    (and (null items) (- old-count))
+                    (signal 'e-harness-error
+                            (list "Queued prompt delta is required"
+                                  session-id))))
+         (new-count (+ old-count delta)))
+    (when (< new-count 0)
+      (signal 'e-harness-error
+              (list "Negative session prompt queue count" session-id new-count)))
+    (if items
+        (progn
+          (puthash session-id items (e-harness-prompt-queues harness))
+          (puthash session-id new-count counts))
+      (remhash session-id (e-harness-prompt-queues harness))
+      (remhash session-id counts))
+    (e-harness--adjust-queued-input-count harness delta))
   items)
 
 (defun e-harness-discard-queued-board-input
@@ -1377,7 +1435,7 @@ or nil without changing the queue when the head belongs to another delivery."
                (equal (plist-get metadata :board-endpoint-token) endpoint-token)
                (equal (plist-get metadata :board-endpoint-generation)
                       endpoint-generation))
-      (e-harness--set-queued-prompts harness session-id (cdr items))
+      (e-harness--set-queued-prompts harness session-id (cdr items) -1)
       (e-harness--emit-queue-changed harness session-id)
       (e-harness--emit
        harness
@@ -1419,7 +1477,7 @@ reuse it."
                      :created-at (e-harness--queue-timestamp)))
          (items (append (e-harness-queued-prompts harness session-id)
                         (list item))))
-    (e-harness--set-queued-prompts harness session-id items)
+    (e-harness--set-queued-prompts harness session-id items 1)
     (e-harness--emit-queue-changed harness session-id)
     queue-id))
 
@@ -1455,7 +1513,7 @@ The session must currently have a running active turn."
                      :created-at (e-harness--queue-timestamp)))
          (items (append (e-harness-queued-prompts harness session-id)
                         (list item))))
-    (e-harness--set-queued-prompts harness session-id items)
+    (e-harness--set-queued-prompts harness session-id items 1)
     (e-harness--emit-queue-changed harness session-id)
     queue-id))
 
@@ -1470,19 +1528,26 @@ The session must currently have a running active turn."
   (and (listp entry)
        (plist-get entry :pending-steering-input)))
 
-(defun e-harness--append-pending-steering-item (entry prompt metadata)
-  "Append PROMPT and METADATA as pending steering input on ENTRY."
+(defun e-harness--append-pending-steering-item (harness entry prompt metadata)
+  "Append PROMPT and METADATA as pending steering input on HARNESS ENTRY."
   (plist-put entry
              :pending-steering-input
              (append (e-harness--pending-steering-items entry)
                      (list (list :prompt prompt
-                                 :metadata (copy-sequence metadata))))))
+                                 :metadata (copy-sequence metadata)))))
+  (plist-put entry :pending-steering-count
+             (1+ (or (plist-get entry :pending-steering-count) 0)))
+  (e-harness--adjust-queued-input-count harness 1)
+  entry)
 
-(defun e-harness--drain-pending-steering-input (entry)
-  "Return and clear pending steering items from active turn ENTRY."
-  (let ((items (e-harness--pending-steering-items entry)))
+(defun e-harness--drain-pending-steering-input (harness entry)
+  "Return and clear pending steering items from HARNESS active turn ENTRY."
+  (let ((items (e-harness--pending-steering-items entry))
+        (count (or (plist-get entry :pending-steering-count) 0)))
     (when items
       (plist-put entry :pending-steering-input nil)
+      (plist-put entry :pending-steering-count 0)
+      (e-harness--adjust-queued-input-count harness (- count))
       items)))
 
 (cl-defun e-harness-steer-active-turn
@@ -1494,7 +1559,7 @@ The session must currently have a running active turn."
     (unless (e-harness--active-turn-running-p entry)
       (signal 'e-harness-no-active-turn (list session-id)))
     (let ((turn-id (plist-get entry :id)))
-      (e-harness--append-pending-steering-item entry prompt metadata)
+      (e-harness--append-pending-steering-item harness entry prompt metadata)
       (e-harness--emit-turn-event
        harness session-id turn-id 'turn-steered
        (list :prompt-preview (e-harness--steering-prompt-preview prompt)
@@ -1507,13 +1572,13 @@ The session must currently have a running active turn."
     (when (and current-entry
                (not (e-harness--active-turn-running-p current-entry))
                (eq current-entry settled-entry))
-      (remhash session-id (e-harness-active-turns harness)))
+      (e-harness--remove-active-turn harness session-id settled-entry))
     (unless (e-harness--active-turn-running-p
              (gethash session-id (e-harness-active-turns harness)))
       (when-let ((item (car (e-harness-queued-prompts harness session-id))))
         (e-harness--set-queued-prompts
          harness session-id
-         (cdr (e-harness-queued-prompts harness session-id)))
+         (cdr (e-harness-queued-prompts harness session-id)) -1)
         (e-harness--emit-queue-changed harness session-id)
         (e-harness-prompt-async
          harness
@@ -2711,6 +2776,7 @@ When a turn produced multiple assistant messages, return the last one."
                        :content (plist-get item :prompt)
                        :metadata (plist-get item :metadata)))
                (e-harness--drain-pending-steering-input
+                harness
                 (gethash session-id
                          (e-harness-active-turns harness))))))
         :append-message
@@ -2778,7 +2844,7 @@ cancellation.  SESSION-ID identifies the session."
             (error
              (e-work-fail turn-work err)
              (signal (car err) (cdr err)))))
-        (puthash session-id entry (e-harness-active-turns harness))
+        (e-harness--put-active-turn harness session-id entry)
         (condition-case err
             (plist-put entry
                       :prompt-message-id
@@ -2794,7 +2860,7 @@ cancellation.  SESSION-ID identifies the session."
             (plist-put entry :error-details details)
             (e-harness--emit-turn-failed
              harness session-id turn-id message details)
-            (remhash session-id (e-harness-active-turns harness))
+            (e-harness--remove-active-turn harness session-id entry)
              (signal (car err) (cdr err)))))
         (when (plist-get metadata :board-delivery-id)
           (e-harness--emit-turn-event
@@ -2874,6 +2940,7 @@ cancellation.  SESSION-ID identifies the session."
                     (e-work-fail turn-work err)
                     (e-harness--emit-turn-failed
                     harness session-id turn-id message details)
+                   (e-harness--drain-pending-steering-input harness entry)
                    (e-harness--schedule-queue-drain
                     harness session-id entry)))))
             (finish-done
@@ -2892,6 +2959,7 @@ cancellation.  SESSION-ID identifies the session."
 	                 (plist-put entry :result hooked-result)
 	                 (plist-put entry :status 'done)
 	                 (e-work-finish turn-work hooked-result)
+	                 (e-harness--drain-pending-steering-input harness entry)
 	                 (e-harness--schedule-queue-drain
 	                  harness session-id entry))))
 	            (start-provider
@@ -2954,7 +3022,8 @@ cancellation.  SESSION-ID identifies the session."
 	                       (list :role 'user
 	                             :content (plist-get item :prompt)
 	                             :metadata (plist-get item :metadata)))
-	                     (e-harness--drain-pending-steering-input entry))))
+	                     (e-harness--drain-pending-steering-input
+	                      harness entry))))
 	                :context context)))
 	            (start-auto-compaction
 	             (context)
@@ -3072,6 +3141,7 @@ cancellation.  SESSION-ID identifies the session."
           (plist-put entry :status 'cancelled)
           (e-harness--emit-turn-event
            harness session-id turn-id 'turn-cancelled nil)
+          (e-harness--drain-pending-steering-input harness entry)
           (e-harness--schedule-queue-drain harness session-id entry)
           entry)
       (signal 'e-harness-no-active-turn (list session-id)))))
@@ -3097,7 +3167,7 @@ active state when it is no longer running."
     ;; queue may already have replaced it with the next turn.
     (when (and (eq (gethash session-id (e-harness-active-turns harness)) entry)
                (not (e-harness--active-turn-running-p entry)))
-      (remhash session-id (e-harness-active-turns harness)))
+      (e-harness--remove-active-turn harness session-id entry))
     entry))
 
 (provide 'e-harness)

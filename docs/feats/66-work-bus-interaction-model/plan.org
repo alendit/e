@@ -185,6 +185,14 @@ and one private hard-bounded notification port advance on the same enqueue,
 pop, admission, and terminal transitions; no preflight scan reconstructs them.
 The harness, board core, and persistence owners still need equivalent local
 contributions before runtime quiescence can be authorized.
+Each =e-harness= now also owns a constant-time unsettled snapshot and monotonic
+change notification for active turns plus queued follow-up and steering input.
+The harness active-turn hash is the turn count; per-session prompt counts and
+per-turn steering counts update the combined input count on their exact
+enqueue, drain, discard, reset, abort, and terminal transitions.  This adds
+fields to the core harness record and therefore belongs to the planned full
+restart boundary, not a mixed live reload.  Board-core, independent =e-work=
+carriers, and persistence remain outside this proof.
 Participant removal now has a controlled runtime start operation.  It reserves
 one request identity, revalidates board-owner authority in its first scheduled
 commit, enters =detaching=, fences exact and tag ingress, and reconciles at most
