@@ -100,7 +100,8 @@
            (deliveries nil))
       (e-harness-create-session old-harness :id "old")
       (e-harness-create-session new-harness :id "new")
-      (e-board-runtime-attach board old-harness "old" :participant-id "participant")
+      (let ((old-attachment
+             (e-board-runtime-attach board old-harness "old" :participant-id "participant")))
       (e-board-runtime-post-input board :id "before-rebind" :to "participant"
                                   :content "preserved pickup")
       (e-board-runtime--drain-input-routing
@@ -113,6 +114,8 @@
               (lambda (_attachment _pickup message)
                 (push (e-board-message-content message) deliveries)))))
         (should (eq (e-board-runtime-attachment-harness attachment) new-harness))
+        (should-not (e-board-runtime--current-attachment-p old-attachment))
+        (should (e-board-runtime--current-attachment-p attachment))
         (should-not (gethash (e-board-runtime--session-key old-harness "old")
                              e-board-runtime--session-attachments))
         (e-board-runtime-post-input board :id "after-rebind" :to "participant"
@@ -122,7 +125,7 @@
                            (e-board-registry-board-source-board board))))
         (e-board-runtime--drain-pickups)
         (should (equal (nreverse deliveries)
-                       '("preserved pickup" "new endpoint")))))))
+                       '("preserved pickup" "new endpoint"))))))))
 
 (ert-deftest e-board-runtime-test-default-queue-delivery-enters-idle-follow-up-queue ()
   "Default queue delivery uses the harness queue without starting a turn."

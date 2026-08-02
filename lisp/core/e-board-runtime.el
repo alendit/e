@@ -109,6 +109,19 @@
          (e-board-runtime-attachment-participant attachment))
         turn-id tool-call-id))
 
+(defun e-board-runtime--current-attachment-p (attachment)
+  "Return non-nil when ATTACHMENT still owns its board participant endpoint."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (participant (e-board-runtime-attachment-participant attachment)))
+    (and (eq (gethash (e-board-runtime--attachment-key board participant)
+                      e-board-runtime--attachments)
+             attachment)
+         (eq (gethash (e-board-runtime--session-key
+                       (e-board-runtime-attachment-harness attachment)
+                       (e-board-runtime-attachment-session-id attachment))
+                       e-board-runtime--session-attachments)
+             attachment))))
+
 (defun e-board-runtime--register-invocation
     (attachment turn-id tool-call-id callback)
   "Capture CALLBACK behind one exact invocation target before work starts.
@@ -389,7 +402,8 @@ has no callback and is observed only."
 
 (defun e-board-runtime--handle-harness-event (attachment event)
   "Publish attached output and reconcile board-delivery receipts from EVENT."
-  (let ((type (e-events-type event)))
+  (when (e-board-runtime--current-attachment-p attachment)
+    (let ((type (e-events-type event)))
     (cond
      ((eq type 'turn-finished)
       (e-board-runtime--publish-output attachment (plist-get event :turn-id)))
@@ -412,7 +426,7 @@ has no callback and is observed only."
         (when (and pickup (memq (e-board-pickup-state pickup) '(accepted cancelling)))
           (when-let ((next-id
                       (e-board-pickup-discard-delivery board delivery-id 'session-reset)))
-            (e-board-runtime--enqueue-pickups registry-board (list next-id)))))))))
+            (e-board-runtime--enqueue-pickups registry-board (list next-id))))))))))
 
 (defun e-board-runtime--active-board (board-or-id)
   "Return active registry BOARD-OR-ID."
