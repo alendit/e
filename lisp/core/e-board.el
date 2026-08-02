@@ -574,7 +574,14 @@ effect records and never synchronously enter a tool or harness callback."
          (effects (cl-subseq pending 0 count)))
     (setf (e-board-pending-effects board) (nthcdr count pending))
     (dolist (effect effects)
-      (funcall effect))
+      ;; Concrete effect closures record their own domain failure state.  This
+      ;; outer boundary also contains an unexpected stale or malformed queued
+      ;; callback, so one record cannot wedge later FIFO effects.
+      (condition-case err
+          (funcall effect)
+        (error
+         (e-board--append-event board 'effect-drain-failed
+                                (list :error err)))))
     (when (e-board-pending-effects board)
       (e-board--schedule-effect-drain board))))
 

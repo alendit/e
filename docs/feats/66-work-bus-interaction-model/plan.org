@@ -31,7 +31,8 @@ runtime drains only the resulting finalized pickup identities later.  Each
 input now exposes its explicit =routing=, =routed=, or =unrouted= projection.
 Board effects now drain in one FIFO record-bounded page per scheduler turn and
 schedule one successor for a remaining backlog, rather than applying a whole
-effect queue from one callback.
+effect queue from one callback.  An unexpected queued callback failure records
+=effect-drain-failed= and leaves later FIFO effects eligible in the same page.
 An unexpected core selector/index fault now terminates that attempt as visible
 =routing-failed= before any pickup-set commit; trusted predicate faults remain
 subscription-local.

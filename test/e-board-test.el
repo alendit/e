@@ -765,6 +765,26 @@
         (should (equal (reverse applied) '(first second)))
         (should-not drains)))))
 
+(ert-deftest e-board-test-effect-drain-contains-one-unexpected-callback-failure ()
+  "A failed queued callback records its fault without blocking later FIFO work."
+  (e-board-test--with-empty-registry
+    (let ((e-board-effect-drain-limit 2)
+          drains applied)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (drain) (push drain drains)))))
+        (e-board--schedule-effect board (lambda () (error "unexpected effect failure")))
+        (e-board--schedule-effect board (lambda () (push 'second applied)))
+        (e-board--schedule-effect board (lambda () (push 'third applied)))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(second)))
+        (should (member 'effect-drain-failed
+                        (mapcar #'e-board-event-type (e-board-events board))))
+        (should (= (length drains) 1))
+        (funcall (pop drains))
+        (should (equal (reverse applied) '(second third)))
+        (should-not drains)))))
+
 (ert-deftest e-board-test-post-input-effect-does-not-reenter-its-lineage ()
   "A continuation cannot schedule itself from its own derived input."
   (e-board-test--with-empty-registry
