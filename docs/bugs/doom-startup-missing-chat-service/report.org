@@ -6,8 +6,10 @@
 Doom Emacs failed while loading =~/.doom.d/config.el= with:
 
 #+begin_src text
-file-missing /Users/dimitrivorona/projects/elisp/e/lisp/shells/chat/e-chat-service.el.gz
+file-missing /Users/dvorona/projects/elisp/e/lisp/shells/chat/e-chat-service.el.gz
 #+end_src
 
 The failure prevented Emacs from starting after =e-chat-service.el= moved from
 =lisp/shells/chat/= to =lisp/core/=.
+
+The same failure recurred on 2026-08-03 after the original stale-bytecode fix.

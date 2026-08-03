@@ -39,3 +39,27 @@ missing source path after exhausting Emacs load suffixes.
 
 The running Emacs was not reloaded or otherwise changed.  A fresh Emacs start
 uses the rebuilt package state.
+
+* Recurrence on 2026-08-03
+
+The same startup error recurred with two kinds of generated artifact still
+present:
+
+- The checkout again contained ignored stale bytecode, including the orphaned
+  =lisp/shells/chat/e-chat-service.elc=.
+- Doom's native-comp cache contained
+  =e-chat-service-9a0e5de3-5a335b45.eln= while its generated =e= package build
+  had no =e-chat-service.el= link.
+
+=e-dev-clean-stale-bytecode= removed 45 stale checkout-local =.elc= files.  A
+normal =doom sync -U= repaired Doom's generated profile without updating
+packages, but Doom did not consider the out-of-tree local =e= package dirty and
+did not recreate the missing link.  Moving the stale =e-chat-service= native
+image out of Doom's cache removed the remaining obsolete load candidate.
+
+Validation used a separate named Emacs daemon so the user's normal Emacs state
+was not changed.  Doom loaded successfully, =e= and =e-chat-service= were both
+present, and =e-chat-service-create-session= resolved to
+=lisp/core/e-chat-service.el=.  The temporary daemon was then stopped.  The
+native image remains recoverable under =/private/tmp/= for the lifetime of that
+temporary directory.
