@@ -1585,6 +1585,14 @@ The session must currently have a running active turn."
                (replace-regexp-in-string "[\n\r\t ]+" " " prompt))))
     (e-harness--string-byte-prefix text 160)))
 
+(defun e-harness--durable-input-metadata (metadata)
+  "Return durable input METADATA without the live attachment fence.
+The endpoint token authorizes one process-local delivery attempt.  It remains
+available to the delivery and receipt paths, but must not enter transcript or
+activity persistence."
+  (e-session--plist-remove
+   (copy-sequence metadata) :board-endpoint-token))
+
 (defun e-harness--pending-steering-items (entry)
   "Return pending steering items from active turn ENTRY."
   (and (listp entry)
@@ -1621,7 +1629,8 @@ The session must currently have a running active turn."
   (let ((entry (gethash session-id (e-harness-active-turns harness))))
     (unless (e-harness--active-turn-running-p entry)
       (signal 'e-harness-no-active-turn (list session-id)))
-    (let ((turn-id (plist-get entry :id)))
+    (let ((turn-id (plist-get entry :id))
+          (metadata (e-harness--durable-input-metadata metadata)))
       (e-harness--append-pending-steering-item harness entry prompt metadata)
       (e-harness--emit-turn-event
        harness session-id turn-id 'turn-steered
@@ -2585,9 +2594,7 @@ Returns the updated message, or nil when no such message exists."
   ;; entry and queued input while in use, but are neither transcript context
   ;; nor durable data (and production tokens are intentionally opaque
   ;; structs, not JSON values).
-  (setq metadata
-        (e-session--plist-remove
-         (copy-sequence metadata) :board-endpoint-token))
+  (setq metadata (e-harness--durable-input-metadata metadata))
   (e-harness--append-message
    harness
    session-id

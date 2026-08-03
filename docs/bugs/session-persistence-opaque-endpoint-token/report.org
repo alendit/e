@@ -12,8 +12,8 @@ The affected records were user messages and =turn-steered= activity events from
 three child sessions on the daily board.
 The writer kept retrying the same locally unencodable records.
 
-The failure recurred in session =20260803T164156-136fc3d8a0af= after the
-persistence preflight fix was loaded but the endpoint-token removal in the
-harness was not.  In that mixed-version runtime, the deterministic JSON error
-failed the turn visibly but did not enter the persistence outbox or start a
-retry loop.
+The failure recurred in session =20260803T164156-136fc3d8a0af= through active
+turn steering.  The initial-prompt path removed the token, but steering copied
+the board delivery metadata into both durable =turn-steered= activity and the
+later same-turn user message.  The deterministic JSON error failed the turn
+visibly but did not enter the persistence outbox or start a retry loop.

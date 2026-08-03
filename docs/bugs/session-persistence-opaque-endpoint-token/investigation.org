@@ -16,7 +16,7 @@ checkout and did not contain the current endpoint-token removal.
 The running Emacs was inspected with bounded scalar probes and was not reloaded
 or mutated.
 
-** Recurrence after persistence preflight
+** Steering recurrence after persistence preflight
 
 The same opaque token reached persistence in the later Grimoire session
 =20260803T164156-136fc3d8a0af=, displayed as “Hyper overload handling: goals,
@@ -24,23 +24,40 @@ measures, and load balancing.”  The turn failed with
 =e-session-persistence-command-error= wrapping the expected =json-error=.
 
 A bounded live fingerprint reported =:loaded-sanitizer nil= for
-=e-harness--append-user-message=.  The affected session was already idle with
-178 messages.  Its persistence controller reported a live writer, zero outbox
-entries, no pending retry, and no retained last error.  This proves that the
-preflight fix was active and settled the deterministic failure, while the
-loaded harness still predated the endpoint-token removal.
+=e-harness--append-user-message=.  That established stale loaded code but did
+not explain the recurrence completely.  After the user identified steering as
+the trigger, source tracing showed that the checkout's initial-prompt sanitizer
+did not cover =e-harness--steer-attached-turn=.
 
-The running Emacs was again left unchanged.  The supported =e-dev-reload=
-sequence now reloads both =e-session-persistence.el= and =e-harness.el=, so a
-full reload when Emacs is idle will align the running definitions with the
-checkout.
+Steering copied the delivery metadata into two durable paths:
+
+- the =turn-steered= activity payload was persisted immediately;
+- the pending steering item later became an ordinary same-turn user message
+  through =e-loop='s generic append callback.
+
+Both retained the production =e-board-runtime-endpoint-token= struct.  Focused
+tests using that concrete type reproduced both leaks against the checkout.
+
+The affected session was already idle with 178 messages.  Its persistence
+controller reported a live writer, zero outbox entries, no pending retry, and
+no retained last error.  The preflight fix therefore settled the deterministic
+failure even though the steering turn failed.
+
+The running Emacs was again left unchanged.
 
 * Source evidence
 
-=e-harness--append-user-message= in the checkout removes
-=:board-endpoint-token= before appending transcript metadata.
-Its regression test previously used a JSON-safe vector stand-in rather than the
-production opaque struct.
+=e-harness--append-user-message= removed =:board-endpoint-token= before
+appending initial transcript metadata.  Steering bypassed that function:
+=e-harness--steer-attached-turn= retained the raw metadata in its pending item
+and activity event, while the loop drained the item through
+=e-harness--append-message=.
+
+The fix introduces one harness-owned durable-input metadata projection.  Both
+initial user messages and accepted steering cross that boundary.  Attachment
+authorization still receives the opaque token separately; pending steering,
+durable activity, provider context, and transcript persistence receive only the
+projected metadata.
 
 =e-session-persistence--submit= encoded only while sending.
 It first inserted the raw request into the outbox and incremented unsettled
@@ -74,6 +91,35 @@ with regression coverage.
 The running Emacs was intentionally not reloaded or repaired during repository
 implementation.
 
-The later recurrence does not require another steady-state source fix.  It is a
-stale mixed-version runtime: the checkout and reload sequence already contain
-both halves of the resolution.
+The later recurrence required a steering-specific steady-state fix.  Focused
+regression coverage now uses the production opaque endpoint-token type and
+proves that accepted steering excludes it from pending input, durable
+=turn-steered= activity, the next provider request, and the same-turn transcript
+message.
+
+* Design self-check
+
+1. The package is better if stopped here: steering no longer makes persistence
+   fail.
+2. This moves board ingress toward explicit separation of live delivery fences
+   from durable input facts.
+3. Board routing metadata may evolve; the stable decision is that an endpoint
+   token is process-local.  Its removal is localized in one projection.
+4. The harness owns the transition from authorized delivery metadata to agent
+   input metadata.
+5. Coupling is reduced because persistence and the loop no longer need to know
+   the opaque token type.
+6. Stable persistence policy does not depend on the board runtime adapter.
+7. No side effect moved inward; projection happens before persistence and loop
+   callbacks.
+8. No new state is added.  The token retains its existing attachment and queue
+   lifetime only where reconciliation needs it.
+9. The projection removes one plist key per accepted input; the cost is bounded
+   by the already-bounded metadata size.
+10. The helper names a real contract shared by initial input and steering.
+11. No compatibility path is needed for invalid durable token values.
+12. The duplicate initial-prompt-only removal is deleted.
+13. Invalid persistence commands still fail at preflight; this fix prevents the
+    known invalid value at its owning boundary.
+14. Harness tests prove pending, activity, provider-context, and transcript
+    behavior without the full UI or writer process.

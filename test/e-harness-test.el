@@ -1104,7 +1104,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
      :type 'e-harness-no-active-turn)))
 
 (ert-deftest e-harness-test-steer-active-turn-stores-pending-input ()
-  "Successful steering stores pending input on the active turn."
+  "Successful steering stores only durable input on the active turn."
+  (require 'e-board-runtime)
   (let* ((backend (e-backend-create
                    :name "steerable"
                    :start (cl-function
@@ -1116,13 +1117,22 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                                       (e-backend-request-create))
                              nil))))
          (harness (e-harness-create :backend backend))
+         (token (e-board-runtime-endpoint-token--create
+                 :harness-id :live
+                 :harness-object-generation 7
+                 :session-id "session-1"))
          (events nil))
     (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
+    (let ((turn-id
+           (e-harness-test-prompt-async
+            harness "session-1" "first"
+            :metadata (list :input-origin 'board
+                            :board-endpoint-token token))))
       (should (equal (e-harness-test-steer-active-turn
                       harness "session-1" "focus here"
-                      :metadata '(:source chat-composer))
+                      :metadata (list :source 'chat-composer
+                                      :board-endpoint-token token))
                      turn-id))
       (let ((entry (gethash "session-1" (e-harness-active-turns harness))))
         (should (equal (e-harness--pending-steering-items entry)
@@ -1138,10 +1148,19 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                        "focus here"))
         (should (equal (plist-get (plist-get steered :payload)
                                   :metadata)
+                       '(:source chat-composer))))
+      (let ((durable
+             (cl-find 'turn-steered
+                      (e-harness-session-activity-events harness "session-1")
+                      :key (lambda (event)
+                             (plist-get event :event-type)))))
+        (should durable)
+        (should (equal (plist-get (plist-get durable :payload) :metadata)
                        '(:source chat-composer)))))))
 
 (ert-deftest e-harness-test-steer-active-turn-drains-in-same-turn ()
   "Pending steering input is sampled as a user message in the same turn."
+  (require 'e-board-runtime)
   (let* ((calls nil)
          (finishers nil)
          (backend (e-backend-create
@@ -1166,12 +1185,21 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                                   (funcall on-done '(:status done)))
                                 finishers))
                              nil))))
-         (harness (e-harness-create :backend backend)))
+         (harness (e-harness-create :backend backend))
+         (token (e-board-runtime-endpoint-token--create
+                 :harness-id :live
+                 :harness-object-generation 7
+                 :session-id "session-1")))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
+    (let ((turn-id
+           (e-harness-test-prompt-async
+            harness "session-1" "first"
+            :metadata (list :input-origin 'board
+                            :board-endpoint-token token))))
       (e-harness-test-steer-active-turn
        harness "session-1" "focus here"
-       :metadata '(:source chat-composer))
+       :metadata (list :source 'chat-composer
+                       :board-endpoint-token token))
       (funcall (pop finishers))
       (while (< (length calls) 2)
         (accept-process-output nil 0.01))
