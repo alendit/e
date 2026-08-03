@@ -4592,13 +4592,29 @@ and how long the oldest running tool has been active."
                            oldest (e-chat--current-time-seconds)))
                 "")))))
 
-(defun e-chat--activity-round-visible-text (round)
-  "Return visible text for semantic activity ROUND."
+(defun e-chat--round-between-steps-text (round)
+  "Return live between-step progress text for settled ROUND.
+This temporary presentation covers an active turn's gap after the provider
+request settles and before a tool or the next provider request starts."
+  (when (eq (e-chat--normalize-round-status (plist-get round :status)) 'done)
+    (format "%s Working for %s"
+            (e-chat--progress-dots)
+            (e-chat--format-duration
+             (plist-get round :started-at)
+             (e-chat--current-time-seconds)))))
+
+(defun e-chat--activity-round-visible-text (round &optional active-tail)
+  "Return visible text for semantic activity ROUND.
+When ACTIVE-TAIL is non-nil, ROUND is the latest settled round of the
+harness-confirmed active turn."
   (let* ((running-text (e-chat--round-running-tools-text round))
          ;; While tools are running, replace the frozen \"Thought for ...\"
          ;; left cell with a live spinner naming the running tool and its
          ;; elapsed time.  The shared progress interval already reticks this row.
-         (thought (or running-text (e-chat--round-thought-text round)))
+         (thought (or running-text
+                      (and active-tail
+                           (e-chat--round-between-steps-text round))
+                      (e-chat--round-thought-text round)))
          (tool-count (e-chat--round-tool-count round))
          (tool-text (and (> tool-count 0)
                          (let* ((count-text
@@ -4637,9 +4653,19 @@ and how long the oldest running tool has been active."
 
 (defun e-chat--activity-record-visible-chunks (record)
   "Return visible activity chunks for semantic activity RECORD."
-  (delq nil
-        (mapcar #'e-chat--activity-round-visible-text
-                (e-chat--activity-records record))))
+  (let* ((rounds (e-chat--activity-records record))
+         (latest (car (last rounds)))
+         (active-turn (and (equal (plist-get record :id)
+                                  e-chat--progress-turn-id)
+                           e-chat-session-id
+                           (e-harness-p e-chat-harness)
+                           (not (e-chat--stale-progress-turn-p
+                                 e-chat--progress-turn-id)))))
+    (delq nil
+          (mapcar (lambda (round)
+                    (e-chat--activity-round-visible-text
+                     round (and active-turn (eq round latest))))
+                  rounds))))
 
 (defun e-chat--activity-action-visible-chunks (record)
   "Return visible action chunks from RECORD intermittent entries."

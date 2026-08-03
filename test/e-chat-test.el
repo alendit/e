@@ -3514,6 +3514,48 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-rerender-updates-between-provider-and-tool ()
+  "Progress redraw keeps counting after a provider settles within a live turn."
+  (let ((buffer (e-chat-test--buffer nil "chat-between-step-progress")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:status done)))
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--advance-progress-indicator)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "⠙ Working for 0min 8sec" content))
+            (should-not (string-match-p
+                         "Thought for 0min 1sec" content)))
+          (e-chat--stop-progress-indicator "turn-1")
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Thought for 0min 1sec" content))
+            (should-not (string-match-p
+                         "Working for" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-active-activity-restores-missing-progress-interval ()
   "Rendering active activity restarts a missing progress interval."
   (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-interval-restore")))

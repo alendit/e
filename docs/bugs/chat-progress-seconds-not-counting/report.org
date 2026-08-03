@@ -1,0 +1,24 @@
+#+title: Chat Progress Seconds Not Counting
+#+startup: overview
+
+* Report
+
+The user reported that the live =e-chat= activity progress can remain at
+=Thought for 0min 0sec= while an agent turn is still running.
+
+The screenshot showed one settled round with six tool calls followed by a new
+=Thought for 0min 0sec= row whose elapsed time did not advance.
+
+* Expected
+
+The latest activity row should show a visibly advancing elapsed duration for
+every non-terminal part of an active turn, including the interval after a
+provider request finishes and before its first tool starts or the next provider
+request begins.
+
+* Actual
+
+The latest provider round is rendered as settled as soon as
+=provider-request-finished= arrives.
+If the turn remains active but no tool has started yet, progress ticks repaint
+the same settled =Thought for 0min 0sec= text.

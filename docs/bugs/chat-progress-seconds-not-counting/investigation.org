@@ -1,0 +1,87 @@
+#+title: Chat Progress Seconds Not Counting Investigation
+#+startup: overview
+
+* Source Evidence
+
+The presentation owner is =lisp/shells/chat/e-chat.el=.
+
+=e-chat--record-provider-finished= marks the active semantic round =done= and
+stores its provider completion timestamp.
+=e-chat--round-thought-text= therefore renders the round through the settled
+=Thought for ...= branch.
+
+The turn-level progress interval remains responsible for periodic redraws until
+the whole turn settles.
+However, =e-chat--activity-round-visible-text= only derives its left cell from
+an active provider round or a running tool.
+When the latest provider round is done and its tool has not started, every
+progress repaint produces the same settled duration.
+
+* Live Evidence
+
+A bounded =emacsclient --eval= probe inspected the selected Grimoire chat's
+paired transcript after the reported turn completed.
+The live progress handle had correctly retired by then, so no running timer was
+mutated or restarted.
+
+The finished turn's bounded round timing metadata matched the screenshot:
+
+- Round 1 provider activity lasted about 0.74 seconds and therefore rendered as
+  =Thought for 0min 0sec=.
+  Its six tools included a search that ran for about 7.85 seconds, matching the
+  right-side =6 tool calls ... for 0min 8sec= text.
+- Round 2 provider activity lasted about 0.74 seconds.
+  Its =run_elisp= tool did not start until roughly 20 seconds after the provider
+  round had been marked done.
+  That interval had no active provider or running-tool presentation state, so
+  the visible row remained frozen at =Thought for 0min 0sec=.
+
+The initial sandboxed live probe could not access the Emacs server socket.
+The same read-only scalar probes succeeded outside the sandbox.
+
+* Conclusion
+
+The interval scheduler is not the root cause.
+The rendering model has no live tail state for the interval between a settled
+provider request and the next tool/provider event.
+
+The smallest fix belongs in the chat presentation shell: while the overall turn
+still owns the progress interval, render the latest settled round as a temporary
+=Working for ...= row using the current clock.
+Running-tool and active-provider rows keep their existing, more specific text.
+Once the turn settles, the temporary working text disappears and the provider
+round returns to its durable =Thought for ...= duration.
+
+* Fix Applied
+
+The chat shell now projects the latest settled provider round as a live
+=Working for ...= row when both the local progress owner and the harness's
+running turn identify the same turn.
+
+The projection uses the existing turn progress interval and current clock.
+It adds no timer or durable state.  Active provider and running-tool rows retain
+their more specific presentations.  Clearing the progress owner immediately
+restores the settled =Thought for ...= duration.
+
+* Validation
+
+The focused regression test finishes a provider request while leaving the turn
+active, advances the progress frame at a later clock value, and verifies that
+the latest row says =Working for 0min 8sec= instead of retaining the frozen
+=Thought for 0min 1sec= text.  It then stops the progress owner and verifies
+that the row returns to =Thought for 0min 1sec=.
+
+- The focused regression and four adjacent progress/tool rendering tests pass:
+  5 passed, 0 unexpected.
+- =eldev compile -W lisp/shells/chat/e-chat.el= passes with warnings treated as
+  errors.  The generated ignored bytecode was removed after validation.
+- The chat test file excluding
+  =e-chat-test-open-session-renders-after-async-index-load= passes: 318 passed,
+  0 unexpected, 1 skipped.
+- The complete chat test file reached 318 passed and 1 skipped, but the unrelated
+  async session-load test exceeded its fixed two-second deadline.  Rerunning it
+  alone reproduced the same timeout while its 16-byte chunk reader was still
+  making progress.  This change does not touch session loading.
+
+Repository-side validation used source-loaded Eldev tests.  The running Emacs
+was inspected only with bounded read-only probes and was not reloaded.
