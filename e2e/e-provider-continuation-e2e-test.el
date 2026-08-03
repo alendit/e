@@ -19,6 +19,9 @@
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-tools)
+(load (expand-file-name
+       "e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (defun e-provider-continuation-e2e--sse (&rest events)
   "Return an SSE stream containing JSON EVENTS."
@@ -43,6 +46,7 @@
   "A full anchored tool turn sends function call and output on follow-up."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-harness-auto-compaction-enabled nil)
          (e-openai-model-providers
           '((continuation-e2e
              :name "Continuation E2E"
@@ -90,7 +94,6 @@
                   '((type . "response.completed")
                     (response . ((id . "resp-final")
                                  (status . "completed"))))))))))))
-    (e-harness-create-session harness :id "session-1")
     (e-harness-activate-capability
      harness
      (e-capability-create
@@ -102,11 +105,15 @@
           registry
           :name "inspect"
           :description "Inspect state."
-          :handler (lambda (arguments)
-                     (format "fresh %s"
-                             (plist-get arguments :target))))))))
-    (e-harness-prompt-batch harness "session-1" "seed")
-    (e-harness-prompt-batch harness "session-1" "inspect now")
+          :work
+          (e-tools-cheap-work
+           "e2e.provider-continuation.inspect"
+           (lambda (arguments)
+             (format "fresh %s"
+                     (plist-get arguments :target)))))))))
+    (e-board-e2e-create-session harness :id "session-1")
+    (e-board-e2e-prompt-batch harness "session-1" "seed")
+    (e-board-e2e-prompt-batch harness "session-1" "inspect now")
     (let* ((ordered (nreverse requests))
            (anchored-tool-request (nth 1 ordered))
            (followup-request (nth 2 ordered)))

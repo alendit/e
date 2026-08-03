@@ -20,6 +20,9 @@
 (require 'e-chat)
 (require 'e-harness)
 (require 'e-ui-work)
+(load (expand-file-name
+       "e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (defun e-ui-work-e2e--drain (buffer &rest args)
   "Drain finite UI work in BUFFER with ARGS."
@@ -30,14 +33,18 @@
   "A settled chat turn cancels intervals and drains finite UI work."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
-         (session-id "ui-work-e2e")
+         (session-id (e-board-e2e-create-session
+                      harness :id "ui-work-e2e"))
          (turn-id "ui-work-turn")
          (buffer (e-chat-open :harness harness
                               :session-id session-id
-                              :new-session nil)))
+                              :new-session nil))
+         (window-configuration (current-window-configuration)))
     (unwind-protect
-        (with-current-buffer buffer
-          (let ((e-chat-activity-redraw-delay 0)
+        (progn
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (let ((e-chat-activity-redraw-delay 0)
                 (e-chat-progress-interval 0.02)
                 (e-chat-deferred-markdown-threshold-bytes 8)
                 (e-chat-deferred-markdown-chunk-lines 1)
@@ -97,8 +104,9 @@
                    :turn-id turn-id
                    :created-at (float-time)
                    :payload nil))
-            (e-ui-work-e2e--drain buffer)
-            (should-not (e-ui-work-pending buffer))))
+              (e-ui-work-e2e--drain buffer)
+              (should-not (e-ui-work-pending buffer)))))
+      (set-window-configuration window-configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

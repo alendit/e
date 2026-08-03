@@ -34,6 +34,9 @@
 (require 'e-layers)
 (require 'e-session)
 (require 'e-tools)
+(load (expand-file-name
+       "e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (defconst e-live-e2e--harness-id :chat-default
   "Registry id of the default chat harness exercised by live e2e tests.")
@@ -134,10 +137,13 @@ backend is whatever the configuration selected."
    :parameters '(:type "object"
                  :properties (:text (:type "string"))
                  :required ["text"])
-   :handler (lambda (arguments)
-              (or (plist-get arguments :text)
-                  (plist-get arguments "text")
-                  ""))))
+   :work
+   (e-tools-cheap-work
+    "e2e.live.echo"
+    (lambda (arguments)
+      (or (plist-get arguments :text)
+          (plist-get arguments "text")
+          "")))))
 
 (defun e-live-e2e--slow-tool-register (registry &rest _context)
   "Register a cancellable slow tool in REGISTRY."
@@ -146,27 +152,30 @@ backend is whatever the configuration selected."
    :name "e2e_slow"
    :description "Wait briefly before returning. Use only for e live e2e cancellation validation."
    :parameters '(:type "object" :properties nil)
-   :start (lambda (&key _arguments on-done _on-error on-request-start)
-            (let ((cancelled nil)
-                  timer
-                  request)
-              (setq request
-                    (e-tools-request-create
-                     :cancel (lambda ()
-                               (setq cancelled t)
-                               (when (timerp timer)
-                                 (cancel-timer timer))
-                               t)
-                     :metadata '(:transport timer :cancellable t)))
-              (when on-request-start
-                (funcall on-request-start request))
-              (setq timer
-                    (run-at-time
-                     30 nil
-                     (lambda ()
-                       (unless cancelled
-                         (funcall on-done "slow tool finished")))))
-              request))))
+   :work
+   (e-tools-callback-work
+    "e2e.live.slow"
+    (lambda (&key _arguments on-done _on-error on-request-start)
+      (let ((cancelled nil)
+            timer
+            request)
+        (setq request
+              (e-tools-request-create
+               :cancel (lambda ()
+                         (setq cancelled t)
+                         (when (timerp timer)
+                           (cancel-timer timer))
+                         t)
+               :metadata '(:transport timer :cancellable t)))
+        (when on-request-start
+          (funcall on-request-start request))
+        (setq timer
+              (run-at-time
+               30 nil
+               (lambda ()
+                 (unless cancelled
+                   (funcall on-done "slow tool finished")))))
+        request)))))
 
 (defun e-live-e2e--tool-layer ()
   "Return a narrow e2e tool layer."
@@ -202,11 +211,8 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                         (e-session-store-create)))
               (,harness (e-live-e2e--make-harness ,store))
               (,session-id
-               (plist-get
-                (e-harness-create-session
-                 ,harness
-                 :metadata (list :project-root ,root))
-                :id))
+               (e-board-e2e-create-session
+                ,harness :metadata (list :project-root ,root)))
               (,events nil)
               (,subscription
                (e-harness--install-activity-sink
@@ -229,7 +235,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "A first live prompt returns a concrete assistant message."
   (e-live-e2e--with-harness (harness session-id)
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-harness-prompt-batch
+           (result (e-board-e2e-prompt-batch
                     harness session-id
                     (format "Reply with exactly this token and no extra words: %s"
                             nonce))))
@@ -241,11 +247,11 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "A follow-up live prompt can use earlier transcript context."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt-batch
+      (e-board-e2e-prompt-batch
        harness session-id
        (format "Remember this validation token for the next message: %s. Reply OK."
                nonce))
-      (let ((result (e-harness-prompt-batch
+      (let ((result (e-board-e2e-prompt-batch
                      harness session-id
                      "Reply with only the validation token I asked you to remember.")))
         (should (e-live-e2e--contains-p
@@ -256,7 +262,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "The model can call a registered e tool and use its result."
   (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-harness-prompt-batch
+           (result (e-board-e2e-prompt-batch
                     harness session-id
                     (format
                      "Call e2e_echo exactly once with text %S. Then reply with only that returned text."
@@ -278,7 +284,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "Live provider start and finish events are emitted and persisted."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt-batch
+      (e-board-e2e-prompt-batch
        harness session-id
        (format "Reply with exactly this lifecycle token: %s" nonce))
       (let ((started (e-live-e2e--activity-of-type
@@ -293,7 +299,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
 (ert-deftest e-live-e2e-test-token-usage-is-recorded-when-reported ()
   "Live provider token usage reaches durable activity when reported."
   (e-live-e2e--with-harness (harness session-id)
-    (e-harness-prompt-batch
+    (e-board-e2e-prompt-batch
      harness session-id
      "Reply with exactly: TOKEN-USAGE-CHECK")
     (let ((usage-events (e-live-e2e--activity-of-type
@@ -308,7 +314,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   (e-live-e2e--with-harness (harness session-id :persistent t)
     (let* ((store-dir (e-session-store-directory (e-harness-sessions harness)))
            (nonce (e-live-e2e--nonce)))
-      (e-harness-prompt-batch
+      (e-board-e2e-prompt-batch
        harness session-id
        (format "Reply with exactly this persistence token: %s" nonce))
       (let* ((reloaded-store (e-session-persistent-store-create store-dir))
@@ -325,10 +331,10 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "Manual compaction uses the live backend and records a durable compaction."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt-batch
+      (e-board-e2e-prompt-batch
        harness session-id
        (format "Remember this compaction token: %s. Reply OK." nonce))
-      (e-harness-prompt-batch
+      (e-board-e2e-prompt-batch
        harness session-id
        "Reply with one short sentence confirming you still have the token.")
       (let ((record (e-harness-compact-session-batch
@@ -344,7 +350,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
 (ert-deftest e-live-e2e-test-provider-anchor-candidate-recorded-when-supported ()
   "Continuation-capable providers record provider anchor candidates."
   (e-live-e2e--with-harness (harness session-id)
-    (e-harness-prompt-batch
+    (e-board-e2e-prompt-batch
      harness session-id
      "Reply with exactly: ANCHOR-CHECK")
     ;; Continuation support is backend-specific; assert anchors when the
@@ -358,7 +364,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "An active live turn can be cancelled through the harness."
   (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
     (let ((turn-id
-           (e-harness-prompt-async
+           (e-board-e2e-prompt-async
             harness session-id
             "Call e2e_slow now. Do not answer until the tool result is available.")))
       (let ((deadline (+ (float-time) 30))
@@ -369,7 +375,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
           (accept-process-output nil 0.05))
         (should (e-live-e2e--activity-of-type
                  harness session-id 'provider-request-started))
-        (should (e-harness-abort harness session-id))
+        (should (e-chat-service-abort-session harness session-id))
         (while (and (not cancelled) (< (float-time) deadline))
           (setq cancelled
                 (seq-some
@@ -388,7 +394,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
      (e-harness-sessions harness) session-id
      '(:model "e-live-e2e-nonexistent-model"))
     (should-error
-     (e-harness-prompt-batch
+     (e-board-e2e-prompt-batch
       harness session-id
       "This request should fail because the model is invalid."))
     (should (e-live-e2e--activity-of-type

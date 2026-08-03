@@ -18,9 +18,12 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-session)
+(load (expand-file-name
+       "e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(ert-deftest e-session-restart-e2e-test-legacy-array-metadata-chat-works ()
-  "A restarted harness can prompt a session with legacy array metadata."
+(ert-deftest e-session-restart-e2e-test-legacy-row-allows-fresh-board-chat ()
+  "A legacy metadata row cannot prevent a fresh board-backed chat."
   (let* ((directory (make-temp-file "e-session-restart-e2e-" t))
          (root (file-name-as-directory directory))
          (sessions-directory (expand-file-name "sessions" directory))
@@ -66,18 +69,26 @@
                  (harness (e-harness-create
                            :backend backend
                            :sessions store)))
+            (e-board-e2e-reset-runtime)
             (should (equal (mapcar (lambda (session)
                                      (plist-get session :id))
                                    (e-harness-session-list harness))
                            (list session-id)))
-            (e-harness-prompt-batch
+            (let ((metadata (plist-get (e-session-get store session-id)
+                                       :metadata)))
+              (should (equal (plist-get metadata :project-root) root))
+              (should (equal (plist-get metadata :harness-instance-id)
+                             "chat-default")))
+            (setq session-id
+                  (e-board-e2e-create-session
+                   harness :id "fresh-after-legacy"
+                   :metadata (list :project-root root)))
+            (e-board-e2e-prompt-batch
              harness session-id "does chat still work after restart?")
             (let ((metadata (plist-get (e-session-get store session-id)
                                        :metadata))
                   (messages (e-harness-messages harness session-id)))
               (should (equal (plist-get metadata :project-root) root))
-              (should (equal (plist-get metadata :harness-instance-id)
-                             "chat-default"))
               (should (equal (mapcar (lambda (message)
                                        (plist-get message :role))
                                      messages)
