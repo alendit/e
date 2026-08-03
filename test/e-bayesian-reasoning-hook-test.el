@@ -17,25 +17,43 @@
 (require 'e-bayesian-reasoning)
 (require 'e-chat-session)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-backend)
+
+(defun e-bayesian-reasoning-hook-test--run-finished-hook (value context)
+  "Run the stop hook with the settling board token production retains."
+  (let ((harness (plist-get context :harness))
+        (session-id (plist-get context :session-id))
+        (turn-id (plist-get context :turn-id)))
+    (puthash session-id
+             (list :id turn-id :status 'done
+                   :endpoint-token e-harness-test--attachment-token)
+             (e-harness-active-turns harness))
+    (e-harness-test--synthetic-token
+     harness session-id e-harness-test--attachment-token)
+    (e-bayesian-reasoning--turn-finished-hook value context)))
 
 ;;;; The harness follow-up affordance
 
-(ert-deftest e-bayesian-reasoning-hook-test-request-follow-up-needs-no-active-turn ()
-  "`e-harness-request-follow-up' queues a prompt with no running turn.
-This is the core affordance the stop-hook relies on: at turn settlement there
-is no active turn, so the guarded `e-harness-queue-prompt' would signal."
+(ert-deftest e-bayesian-reasoning-hook-test-request-follow-up-uses-settling-attachment ()
+  "The stop-hook queues through the token retained by its settling turn."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    ;; The guarded path refuses without a running turn.
-    (should-error (e-harness-queue-prompt harness "session-1" "guarded")
-                  :type 'e-harness-no-active-turn)
-    ;; The settlement-valid path accepts it.
-    (e-harness-request-follow-up harness "session-1" "corrective")
-    (let ((queued (car (e-harness-queued-prompts harness "session-1"))))
-      (should (equal (plist-get queued :prompt) "corrective"))
-      (should (eq (plist-get (plist-get queued :metadata) :input-origin)
-                  'harness)))))
+    (e-harness-test-prompt-async harness "session-1" "initial" :delay 1.0)
+    (let ((entry (gethash "session-1" (e-harness-active-turns harness))))
+      (unwind-protect
+          (progn
+            (plist-put entry :status 'done)
+            (should-error
+             (e-harness-test-queue-prompt harness "session-1" "guarded")
+             :type 'e-harness-no-active-turn)
+            (e-harness-test-request-follow-up harness "session-1" "corrective")
+            (let ((queued (car (e-harness-queued-prompts harness "session-1"))))
+              (should (equal (plist-get queued :prompt) "corrective"))
+              (should (eq (plist-get (plist-get queued :metadata) :input-origin)
+                          'harness))))
+        (when-let ((timer (plist-get entry :timer)))
+          (cancel-timer timer))))))
 
 ;;;; Deterministic mark-completeness checks
 
@@ -295,14 +313,14 @@ appended for the same turn so the gate itself would otherwise fire."
     (e-harness-create-session harness :id "session-1")
     ;; Run a real turn whose prompt carries the follow-up marker, then fire the
     ;; hook against that turn.
-    (e-harness-prompt-batch
+    (e-harness-test-prompt-batch
      harness "session-1" "corrective"
      :metadata (list :bayesian-reasoning e-bayesian-reasoning--follow-up-marker))
     (let* ((messages (e-harness-messages harness "session-1"))
            (turn-id (plist-get (car (last messages)) :turn-id))
            (assistant (seq-find (lambda (m) (eq (plist-get m :role) 'assistant))
                                 messages)))
-      (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
        '(:status done)
        (list :harness harness
              :session-id "session-1"
@@ -370,7 +388,7 @@ unchanged."
                            :content
                            e-bayesian-reasoning-hook-test--incomplete-mark-reply)))
            (result
-            (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
              value
              (list :harness harness
                    :session-id "session-1"
@@ -386,6 +404,8 @@ unchanged."
                              :supersedes-message-id (plist-get message :id)
                              :pending-summary
                              e-bayesian-reasoning--follow-up-pending-summary
+                             :board-endpoint-token
+                             e-harness-test--attachment-token
                              :input-origin 'harness))))
       (let ((audit (car (e-harness-turn-hook-audits
                          harness "session-1" "turn-1" 'bayesian-reasoning))))
@@ -405,7 +425,7 @@ unchanged."
                     (list :role 'assistant
                           :content
                           e-bayesian-reasoning-hook-test--incomplete-mark-reply))))
-      (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
        '(:status done)
        (list :harness harness
              :session-id "session-1"
@@ -421,7 +441,7 @@ unchanged."
              (replacement (e-harness--append-message
                            harness "session-1" "turn-2"
                            (list :role 'assistant :content "revised reply"))))
-        (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
          '(:status done)
          (list :harness harness
                :session-id "session-1"
@@ -450,7 +470,7 @@ unchanged."
             (list :role 'assistant
                   :content
                   e-bayesian-reasoning-hook-test--incomplete-mark-reply))))
-      (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
        '(:status done)
        (list :harness harness
              :session-id "session-1"
@@ -475,7 +495,7 @@ unchanged."
                  "```reasoning\nclaim: the measured error rise needs another explanation\n"
                  "confidence: medium\nalternatives: rollout caused the rise\n"
                  "evidence: in:01KASKED\n```\n")))))
-        (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
          '(:status done)
          (list :harness harness
                :session-id "session-1"
@@ -538,7 +558,7 @@ unchanged."
        (list :uri (concat "buffer://" (buffer-name))
              :label "graph analytics spec"
              :buffer-name (buffer-name)))
-      (e-harness-prompt-batch
+      (e-harness-test-prompt-batch
        harness "session-1" "What does the graph analytics spec propose?")
       (let ((deadline (+ (float-time) 1)))
         (while (and (< calls 2) (< (float-time) deadline))
@@ -585,7 +605,7 @@ unchanged."
   "A trivial turn queues no follow-up."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    (e-bayesian-reasoning--turn-finished-hook
+      (e-bayesian-reasoning-hook-test--run-finished-hook
      '(:status done)
      (list :harness harness
            :session-id "session-1"

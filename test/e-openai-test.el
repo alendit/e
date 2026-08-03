@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-openai)
 (require 'url-http)
 
@@ -908,7 +909,7 @@
               "data: {\"type\":\"response.output_text.done\",\"text\":\"gateway answer\"}\n\n\
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))
@@ -1359,7 +1360,7 @@ data: [DONE]\n\n")
               "data: {\"choices\":[{\"delta\":{\"content\":\"gateway answer\",\"role\":\"assistant\"},\"index\":0}]}\n\n\
 data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n")))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (should (equal (plist-get captured :url)
                    "https://gateway.example.test/v1/chat/completions"))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
@@ -2147,7 +2148,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "session-1")
-          (e-harness-prompt-batch harness "session-1" "question")
+          (e-harness-test-prompt-batch harness "session-1" "question")
           (should (equal (mapcar (lambda (message) (plist-get message :role))
                                  (e-harness-messages harness "session-1"))
                          '(user assistant)))

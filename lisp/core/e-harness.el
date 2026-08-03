@@ -41,6 +41,19 @@
 (define-error 'e-harness-no-active-turn "No active turn")
 (define-error 'e-harness-active-turn-exists
   "Session already has an active turn")
+(define-error 'e-harness-board-attachment-required
+  "Live harness execution requires a current board attachment")
+
+(defvar e-harness--attached-port-authorizer nil
+  "Adapter validating private live-port attachment tokens.")
+
+(defun e-harness--require-attached-port (harness session-id token)
+  "Require TOKEN to authorize HARNESS SESSION-ID's private live port."
+  (unless (and token e-harness--attached-port-authorizer
+               (funcall e-harness--attached-port-authorizer
+                        harness session-id token))
+    (signal 'e-harness-board-attachment-required (list session-id)))
+  token)
 
 (defgroup e-harness nil
   "Core harness service for e."
@@ -1508,9 +1521,8 @@ or nil without changing the queue when the head belongs to another delivery."
 (defun e-harness--enqueue-prompt-item
     (harness session-id prompt references metadata)
   "Append PROMPT to SESSION-ID's follow-up queue in HARNESS and return its id.
-Shared enqueue body with no active-turn guard, so both the guarded public
-`e-harness-queue-prompt' and the settlement-valid `e-harness-request-follow-up'
-reuse it."
+Shared enqueue body with no active-turn guard for attached queue and settlement
+follow-up ports."
   (let* ((queue-id (e-session-generate-ulid))
          (item (list :id queue-id
                      :prompt prompt
@@ -1523,14 +1535,18 @@ reuse it."
     (e-harness--emit-queue-changed harness session-id)
     queue-id))
 
-(cl-defun e-harness-request-follow-up
+(cl-defun e-harness--request-attached-follow-up
     (harness session-id prompt &key references metadata)
   "Queue PROMPT as a follow-up during turn settlement, then return its id.
-Unlike `e-harness-queue-prompt', this does NOT require a running active turn:
-it is valid from a `:turn-finished' hook, whose turn is already settling.  The
+This is valid from a `:turn-finished' hook, whose turn is already settling.  The
 queued prompt is picked up by the normal post-settlement drain
 (`e-harness--drain-next-queued-prompt') that runs after the finished turn's
 hooks complete, so the drain path stays the single owner of turn scheduling."
+  (let* ((entry (gethash session-id (e-harness-active-turns harness)))
+         (token (and (listp entry) (plist-get entry :endpoint-token))))
+    (e-harness--require-attached-port harness session-id token)
+    (setq metadata (plist-put (copy-sequence metadata)
+                              :board-endpoint-token token)))
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
   (let ((metadata (copy-sequence metadata)))
@@ -1538,10 +1554,13 @@ hooks complete, so the drain path stays the single owner of turn scheduling."
     (e-harness--enqueue-prompt-item
      harness session-id prompt references metadata)))
 
-(cl-defun e-harness-queue-prompt
-    (harness session-id prompt &key references metadata)
+(cl-defun e-harness--queue-attached-prompt
+    (harness session-id prompt &key references metadata attachment-token)
   "Queue PROMPT as a follow-up for SESSION-ID in HARNESS.
 The session must currently have a running active turn."
+  (e-harness--require-attached-port harness session-id attachment-token)
+  (setq metadata (plist-put (copy-sequence metadata)
+                            :board-endpoint-token attachment-token))
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
   (unless (e-harness--active-turn-running-p
@@ -1592,9 +1611,10 @@ The session must currently have a running active turn."
       (e-harness--adjust-queued-input-count harness (- count))
       items)))
 
-(cl-defun e-harness-steer-active-turn
-    (harness session-id prompt &key metadata)
+(cl-defun e-harness--steer-attached-turn
+    (harness session-id prompt &key metadata attachment-token)
   "Steer SESSION-ID's running active turn with PROMPT in HARNESS."
+  (e-harness--require-attached-port harness session-id attachment-token)
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
   (let ((entry (gethash session-id (e-harness-active-turns harness))))
@@ -1622,11 +1642,13 @@ The session must currently have a running active turn."
          harness session-id
          (cdr (e-harness-queued-prompts harness session-id)) -1)
         (e-harness--emit-queue-changed harness session-id)
-        (e-harness-prompt-async
+        (e-harness--prompt-attached-async
          harness
          session-id
          (plist-get item :prompt)
-         :metadata (e-harness--queue-item-metadata item))))))
+         :metadata (e-harness--queue-item-metadata item)
+         :attachment-token
+         (plist-get (plist-get item :metadata) :board-endpoint-token))))))
 
 (defun e-harness--schedule-queue-drain (harness session-id settled-entry)
   "Schedule queue drain for SESSION-ID after SETTLED-ENTRY settles."
@@ -2827,15 +2849,18 @@ When a turn produced multiple assistant messages, return the last one."
               (e-harness--append-message
                harness session-id turn-id message))))))))
 
-(cl-defun e-harness-prompt-batch (harness session-id prompt &key metadata)
+(cl-defun e-harness--prompt-attached-batch
+    (harness session-id prompt &key metadata attachment-token)
   "Synchronously append PROMPT and run one backend turn from batch/test code."
   (when (e-request-hot-path-active-p)
-    (e-request-hot-path-blocking-error 'e-harness-prompt-batch))
+    (e-request-hot-path-blocking-error 'e-harness--prompt-attached-batch))
   (e-harness--profile-call
    'harness.prompt-batch
    (list :session-id session-id)
    (lambda ()
-     (e-harness-prompt-async harness session-id prompt :metadata metadata)
+     (e-harness--prompt-attached-async
+      harness session-id prompt :metadata metadata
+      :attachment-token attachment-token)
      (let ((entry (e-harness-wait-batch harness session-id)))
        (pcase (plist-get entry :status)
          ('done
@@ -2850,11 +2875,14 @@ When a turn produced multiple assistant messages, return the last one."
           (signal 'e-harness-no-active-turn (list session-id)))
          (_ entry))))))
 
-(cl-defun e-harness-prompt-async
-    (harness session-id prompt &key delay metadata)
+(cl-defun e-harness--prompt-attached-async
+    (harness session-id prompt &key delay metadata attachment-token)
   "Append PROMPT and run one backend turn asynchronously in HARNESS.
 Return the queued turn id.  DELAY is primarily for tests and queued-turn
 cancellation.  SESSION-ID identifies the session."
+  (e-harness--require-attached-port harness session-id attachment-token)
+  (setq metadata (plist-put (copy-sequence metadata)
+                            :board-endpoint-token attachment-token))
   (e-harness--profile-call
    'harness.prompt-async
    (list :session-id session-id)
@@ -2877,8 +2905,9 @@ cancellation.  SESSION-ID identifies the session."
                          :result nil
                          :error nil
                          :error-details nil
-                         :condition nil
-                         :timer nil
+                          :condition nil
+                          :timer nil
+                          :endpoint-token attachment-token
                           :request nil)))
         (when-let ((enroll (e-harness-work-enrollment-function harness)))
           (condition-case err
@@ -3127,9 +3156,12 @@ cancellation.  SESSION-ID identifies the session."
 	           (start-turn)))
 	       turn-id))))
 
-(cl-defun e-harness-follow-up-batch (harness session-id prompt &key metadata)
+(cl-defun e-harness--follow-up-attached-batch
+    (harness session-id prompt &key metadata attachment-token)
   "Synchronously prompt a follow-up from explicit batch/test code."
-  (e-harness-prompt-batch harness session-id prompt :metadata metadata))
+  (e-harness--prompt-attached-batch
+   harness session-id prompt :metadata metadata
+   :attachment-token attachment-token))
 
 (defun e-harness--run-session-reset-hooks (harness session-id)
   "Run `:session-reset' hooks for HARNESS SESSION-ID."
@@ -3165,8 +3197,9 @@ cancellation.  SESSION-ID identifies the session."
                          (e-harness--active-turn-id entry))
           :message-count (or (plist-get session :message-count) 0))))
 
-(defun e-harness-abort (harness session-id)
+(defun e-harness--abort-attached (harness session-id attachment-token)
   "Abort the active turn for SESSION-ID in HARNESS."
+  (e-harness--require-attached-port harness session-id attachment-token)
   (let ((entry (gethash session-id (e-harness-active-turns harness))))
     (unless entry
       (signal 'e-harness-no-active-turn (list session-id)))

@@ -245,7 +245,7 @@ of matching participants/subscriptions.
 
 * Findings
 
-** TODO High: Standalone sessions still bypass the board-only product and its admission fence
+** DONE High: Standalone sessions still bypass the board-only product and its admission fence
 
 *** Expected
 
@@ -308,6 +308,35 @@ must not remain live interaction roots.
   participant, and attachment token.
 - Closing board admission prevents every new root, including custom capability
   and internal service paths.
+
+*** Resolution
+
+The public prompt, follow-up, queue, steer, and abort roots were removed.
+Their replacements are private harness ports which require the exact opaque
+token of the current board attachment before they can start or control work.
+The board runtime is the production authorizer and supplies a fresh token for
+both qualified and direct attachments; queued and settlement follow-ups retain
+that token for their later turn.  A bare session record can still exist as
+dormant storage and model context, but it has no public operation that can make
+it live.
+
+Chat reload now preserves an admitted board-bound harness instead of attaching
+a second endpoint to the same durable session.  Test-only direct harness use is
+isolated behind an explicit support adapter whose synthetic authority never
+overrides a real production attachment.
+
+*** Evidence
+
+- =test/e-cutover-structure-test.el= asserts that every retired public live-root
+  symbol is absent and that a forged private-port token cannot start a turn.
+- =test/e-test.el= no longer treats direct prompt, follow-up, queue, steer, or
+  abort functions as public harness API.
+- =test/e-board-runtime-test.el= proves current attachment tokens fence normal
+  delivery, queued follow-ups, reset settlement, removal, and rebind behavior.
+- =test/e-harness-test.el= exercises the private ports only through the explicit
+  test attachment adapter, including delayed queue drains and fenced discard.
+- The focused harness/runtime/cutover/chat/subagent/provider/layer suites pass
+  repository-side with no live Emacs reload.
 
 ** DONE High: Chat is still session-first and cannot operate the top-level board model
 
@@ -1179,7 +1208,7 @@ new service names.
 
 * Unresolved
 
-- Two High findings and one Medium finding remain open.
+- One High finding and one Medium finding remain open.
 - The feature must stay =In-review= in =docs/feats/index.org=.
 - The previous =review.org= remains historical evidence for fixes that are
   genuinely complete, but its final =Done= conclusion is superseded by this

@@ -26,7 +26,7 @@
 (require 'e-structured-blocks)
 (require 'subr-x)
 
-(declare-function e-harness-request-follow-up "e-harness"
+(declare-function e-harness--request-attached-follow-up "e-harness"
                   (harness session-id prompt &rest args))
 (declare-function e-harness-messages "e-harness" (harness session-id))
 (declare-function e-harness-session-activity-events "e-harness"
@@ -678,11 +678,11 @@ know this capability's marker grammar to render it."
   "Conditional `:turn-finished' hook enforcing the reasoning mark.
 Returns VALUE unchanged always -- the hook never rewrites the reply.  On a
 gated failure it requests exactly one corrective follow-up turn through
-`e-harness-request-follow-up', tagged so it does not recurse.  The first
-attempt remains visible with a validation activity entry until the corrective
-turn has produced an accepted replacement.  An invalid replacement is hidden
-instead, while the original stays visible.  Every performed check writes a
-durable hook-audit record."
+`e-harness--request-attached-follow-up', tagged so it does not recurse.  The
+first attempt remains visible with a validation activity entry until the
+corrective turn has produced an accepted replacement.  An invalid replacement
+is hidden instead, while the original stays visible.  Every performed check
+writes a durable hook-audit record."
   (if (e-bayesian-reasoning--follow-up-turn-p context)
       (when-let* ((harness (plist-get context :harness))
                   (session-id (plist-get context :session-id))
@@ -743,13 +743,13 @@ durable hook-audit record."
         (if (not (memq outcome '(format-gap evidence-gap)))
             (e-bayesian-reasoning--record-audit
              harness session-id turn-id outcome details 'none)
-          (if (not (fboundp 'e-harness-request-follow-up))
+          (if (not (fboundp 'e-harness--request-attached-follow-up))
               (e-bayesian-reasoning--record-audit
                harness session-id turn-id 'verification-unavailable
                (append details (list :reason 'follow-up-unavailable)) 'unavailable)
             (condition-case err
                 (progn
-                  (e-harness-request-follow-up
+                  (e-harness--request-attached-follow-up
                    harness session-id
                    (e-bayesian-reasoning--follow-up-prompt
                     gap

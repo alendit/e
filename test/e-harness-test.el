@@ -25,6 +25,7 @@
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-emacs-tools)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-layers)
 (require 'e-operations)
 (require 'e-prompts)
@@ -225,7 +226,7 @@
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (let ((messages (e-harness-messages harness "session-1")))
       (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
                               (plist-get (car messages) :turn-id)))
@@ -264,7 +265,7 @@
          (harness (e-harness-create :backend backend)))
     (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (should (equal (plist-get seen :value)
                    `(:status done :reason stop :assistant-content
                      ,assistant-text)))
@@ -353,7 +354,7 @@
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (should-error
-     (e-harness-abort harness "session-1")
+     (e-harness-test-abort harness "session-1")
      :type 'e-harness-no-active-turn)))
 
 (ert-deftest e-harness-test-async-prompt-wait-settles-turn ()
@@ -363,7 +364,7 @@
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-prompt-async harness "session-1" "question")))
+    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "question")))
       (should (equal (plist-get (e-harness-state harness "session-1")
                                 :active-turn)
                      turn-id))
@@ -383,9 +384,10 @@
     (e-harness-create-session harness :id "session-1")
     (let ((err (should-error
                 (e-request-with-hot-path 'chat-submit
-                  (e-harness-prompt-batch harness "session-1" "question"))
+                  (e-harness-test-prompt-batch harness "session-1" "question"))
                 :type 'e-request-blocking-call-in-hot-path)))
-      (should (equal (cdr err) '(e-harness-prompt-batch chat-submit))))
+      (should (equal (cdr err)
+                     '(e-harness--prompt-attached-batch chat-submit))))
     (should-not (e-harness-messages harness "session-1"))
     (should-not (plist-get (e-harness-state harness "session-1")
                            :active-turn))))
@@ -400,7 +402,7 @@
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "session-1")
-          (e-harness-prompt-async harness "session-1" "question")
+          (e-harness-test-prompt-async harness "session-1" "question")
           (let ((err (should-error
                       (e-request-with-hot-path 'turn-wait
                         (e-harness-wait-batch harness "session-1" 0.1))
@@ -409,7 +411,7 @@
           (should (plist-get (e-harness-state harness "session-1")
                              :active-turn)))
       (ignore-errors
-        (e-harness-abort harness "session-1")))))
+        (e-harness-test-abort harness "session-1")))))
 
 (ert-deftest e-harness-test-async-prompt-appends-user-message-immediately ()
   "Async prompting records the user message before the backend timer runs."
@@ -424,7 +426,7 @@
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question" :delay 1.0)
+    (e-harness-test-prompt-async harness "session-1" "question" :delay 1.0)
     (should (equal called nil))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
@@ -432,7 +434,7 @@
     (should (member 'message-added
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))
-    (e-harness-abort harness "session-1")))
+    (e-harness-test-abort harness "session-1")))
 
 (ert-deftest e-harness-test-set-message-display-hides-and-emits-event ()
   "Setting a message's display flips it hidden and emits `message-updated'."
@@ -486,8 +488,8 @@ prompt rides the metadata channel and its value may replay as a string."
                               (setq called t)))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question" :delay 1.0)
-    (e-harness-abort harness "session-1")
+    (e-harness-test-prompt-async harness "session-1" "question" :delay 1.0)
+    (e-harness-test-abort harness "session-1")
     (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
@@ -515,9 +517,9 @@ prompt rides the metadata channel and its value may replay as a string."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (run-at-time 0.01 nil (lambda ()
-                            (e-harness-abort harness "session-1")))
+                            (e-harness-test-abort harness "session-1")))
     (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                               :status)
                    'cancelled))
@@ -548,8 +550,8 @@ prompt rides the metadata channel and its value may replay as a string."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
-    (should (e-harness-abort harness "session-1"))
+    (e-harness-test-prompt-async harness "session-1" "question")
+    (should (e-harness-test-abort harness "session-1"))
     (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
@@ -570,7 +572,7 @@ prompt rides the metadata channel and its value may replay as a string."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (string-match-p "provider failed" (plist-get settled :error))))
@@ -588,7 +590,7 @@ prompt rides the metadata channel and its value may replay as a string."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (equal (plist-get settled :error) "provider failed"))
@@ -735,7 +737,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
       (should (equal (plist-get settled :status) 'done)))
     ;; Two failures + one success.
@@ -757,7 +759,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (string-match-p "429" (plist-get settled :error))))
@@ -838,7 +840,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                (lambda (_harness &optional _session-id _turn-id) tools)))
       (e-harness-subscribe harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt-async harness "session-1" "question")
+      (e-harness-test-prompt-async harness "session-1" "question")
       (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
         (should (equal (plist-get settled :status) 'done)))
       (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
@@ -857,7 +859,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error)))
     (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
@@ -885,9 +887,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                       nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "first")
+    (e-harness-test-prompt-async harness "session-1" "first")
     (should-error
-     (e-harness-prompt-async harness "session-1" "second")
+     (e-harness-test-prompt-async harness "session-1" "second")
      :type 'e-harness-active-turn-exists)
     (funcall finish)
     (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
@@ -903,7 +905,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (should-error
-     (e-harness-queue-prompt harness "session-1" "follow up")
+     (e-harness-test-queue-prompt harness "session-1" "follow up")
      :type 'e-harness-no-active-turn)))
 
 (ert-deftest e-harness-test-unsettled-state-follows-turn-and-input-owners ()
@@ -926,22 +928,22 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_seconds _repeat function &rest arguments)
                  (push (lambda () (apply function arguments)) scheduled))))
-      (e-harness-prompt-async harness "session-1" "first")
+      (e-harness-test-prompt-async harness "session-1" "first")
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 1 :active-turns 1 :queued-inputs 0)))
-      (e-harness-queue-prompt harness "session-1" "second")
-      (e-harness-steer-active-turn harness "session-1" "steer")
+      (e-harness-test-queue-prompt harness "session-1" "second")
+      (e-harness-test-steer-active-turn harness "session-1" "steer")
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 3 :active-turns 1 :queued-inputs 2)))
       (should (equal (e-harness-aggregate-unsettled-state)
                      '(:generation 3 :active-turns 1 :queued-inputs 2)))
-      (e-harness-abort harness "session-1")
+      (e-harness-test-abort harness "session-1")
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 4 :active-turns 1 :queued-inputs 1)))
       (funcall (pop scheduled))
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 7 :active-turns 1 :queued-inputs 0)))
-      (e-harness-abort harness "session-1")
+      (e-harness-test-abort harness "session-1")
       (funcall (pop scheduled))
       (should (equal (e-harness-unsettled-state harness)
                      '(:generation 8 :active-turns 0 :queued-inputs 0)))
@@ -963,9 +965,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-prompt-async harness "session-1" "first")))
+    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
       (let ((queue-id
-             (e-harness-queue-prompt
+             (e-harness-test-queue-prompt
               harness "session-1" "second"
               :references '((:uri "buffer://source"))
               :metadata '(:source chat-composer))))
@@ -980,12 +982,18 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           (should (equal (plist-get item :prompt) "second"))
           (should (equal (plist-get item :references)
                          '((:uri "buffer://source"))))
-          (should (equal (plist-get item :metadata)
-                         '(:source chat-composer)))
+          (should (eq (plist-get (plist-get item :metadata) :source)
+                      'chat-composer))
+          (should (eq (plist-get (plist-get item :metadata)
+                                 :board-endpoint-token)
+                      e-harness-test--attachment-token))
           (should (stringp (plist-get item :created-at))))
         (should (member 'queue-changed
                         (mapcar (lambda (event) (plist-get event :type))
-                                events)))))))
+                                events)))
+        ;; Do not leave the held turn and its queued successor for the real
+        ;; provider deadline timer to settle after this test has returned.
+        (e-harness-reset harness "session-1")))))
 
 (ert-deftest e-harness-test-queued-prompts-drain-in-order ()
   "Queued prompts start automatically in FIFO order after active turns settle."
@@ -1016,12 +1024,12 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                              nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "first")
-    (e-harness-queue-prompt
+    (e-harness-test-prompt-async harness "session-1" "first")
+    (e-harness-test-queue-prompt
      harness "session-1" "second"
      :references '((:uri "buffer://source"))
      :metadata '(:source chat-composer))
-    (e-harness-queue-prompt harness "session-1" "third")
+    (e-harness-test-queue-prompt harness "session-1" "third")
     (should (equal (mapcar (lambda (item) (plist-get item :prompt))
                            (e-harness-queued-prompts harness "session-1"))
                    '("second" "third")))
@@ -1073,8 +1081,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (harness (e-harness-create :backend backend)))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "first")
-    (e-harness-queue-prompt harness "session-1" "second")
+    (e-harness-test-prompt-async harness "session-1" "first")
+    (e-harness-test-queue-prompt harness "session-1" "second")
     (should (e-harness-queued-prompts harness "session-1"))
     (e-harness-reset harness "session-1")
     (should-not (e-harness-queued-prompts harness "session-1"))
@@ -1092,7 +1100,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (should-error
-     (e-harness-steer-active-turn harness "session-1" "focus here")
+     (e-harness-test-steer-active-turn harness "session-1" "focus here")
      :type 'e-harness-no-active-turn)))
 
 (ert-deftest e-harness-test-steer-active-turn-stores-pending-input ()
@@ -1111,8 +1119,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-prompt-async harness "session-1" "first")))
-      (should (equal (e-harness-steer-active-turn
+    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
+      (should (equal (e-harness-test-steer-active-turn
                       harness "session-1" "focus here"
                       :metadata '(:source chat-composer))
                      turn-id))
@@ -1160,8 +1168,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                              nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (let ((turn-id (e-harness-prompt-async harness "session-1" "first")))
-      (e-harness-steer-active-turn
+    (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
+      (e-harness-test-steer-active-turn
        harness "session-1" "focus here"
        :metadata '(:source chat-composer))
       (funcall (pop finishers))
@@ -1320,7 +1328,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                      (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (let* ((events (e-harness-session-activity-events harness "session-1"))
            (usage-event
             (seq-find (lambda (event)
@@ -1376,7 +1384,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "session-1")
-          (e-harness-prompt-batch harness "session-1" "question")
+          (e-harness-test-prompt-batch harness "session-1" "question")
           (e-session-flush-write-queue store)
           (let ((disk
                  (with-temp-buffer
@@ -1448,7 +1456,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                     :name "Context Anchor Layer"
                     :capabilities (list capability)))))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt-batch harness "session-1" "question")
+      (e-harness-test-prompt-batch harness "session-1" "question")
       (let* ((messages (e-harness-messages harness "session-1"))
              (assistant (cl-find 'assistant messages
                                  :key (lambda (message)
@@ -1495,7 +1503,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                                         :provider-continuation t
                                         :provider-anchor-provider-id openai))))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt-batch harness "session-1" "question")
+      (e-harness-test-prompt-batch harness "session-1" "question")
       (let ((anchors (e-session-provider-anchors
                       (e-harness-sessions harness)
                       "session-1")))
@@ -1516,7 +1524,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                    :backend backend
                    :default-options '(:model "gpt-test"))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (should-not
      (e-session-provider-anchors (e-harness-sessions harness)
                                  "session-1"))))
@@ -1544,7 +1552,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
               nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (let* ((activity (e-harness-session-activity-events harness "session-1"))
            (types (mapcar (lambda (event)
                             (plist-get event :event-type))
@@ -1593,7 +1601,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (string-match-p "deadline" (plist-get settled :error)))
@@ -1659,7 +1667,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (harness (e-harness-create :backend backend)))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'done))
       (should (= attempts 2)))
@@ -1693,8 +1701,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "question")
-    (e-harness-abort harness "session-1")
+    (e-harness-test-prompt-async harness "session-1" "question")
+    (e-harness-test-abort harness "session-1")
     (funcall (plist-get callbacks :on-item)
              '(:type assistant-message :content "late answer"))
     (funcall (plist-get callbacks :on-item)
@@ -1753,9 +1761,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                (lambda (_harness &optional _session-id _turn-id) tools)))
       (e-harness-subscribe harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt-async harness "session-1" "question")
+      (e-harness-test-prompt-async harness "session-1" "question")
       (should tool-callbacks)
-      (e-harness-abort harness "session-1")
+      (e-harness-test-abort harness "session-1")
       (funcall (plist-get tool-callbacks :on-done) "late result")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                                 :status)
@@ -1783,8 +1791,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "first")
-    (e-harness-follow-up-batch harness "session-1" "second")
+    (e-harness-test-prompt-batch harness "session-1" "first")
+    (e-harness-test-prompt-batch harness "session-1" "second")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant user assistant)))))
@@ -1799,7 +1807,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          events)
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session")
-    (e-harness-prompt-batch
+    (e-harness-test-prompt-batch
      harness "session" "board input"
      :metadata
      (list :input-origin 'board
@@ -1824,7 +1832,11 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          events)
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session")
-    (e-harness-request-follow-up
+    (puthash "session"
+             (list :id "settling" :status 'done
+                   :endpoint-token token)
+             (e-harness-active-turns harness))
+    (e-harness-test-request-follow-up
      harness "session" "queued"
      :metadata
      (list :input-origin 'board :board-delivery-id delivery-id
@@ -1855,7 +1867,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                             :items '((:type assistant-message :content "answer")
                                      (:type done :reason stop))))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (e-harness-reset harness "session-1")
     (should (equal (e-harness-messages harness "session-1") nil))))
 
@@ -1907,7 +1919,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                    :backend backend
                    :context-strategy context-strategy)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "raw prompt")
+    (e-harness-test-prompt-batch harness "session-1" "raw prompt")
     (should (equal captured-messages
                    '((:role user :content "from context"))))))
 
@@ -1984,7 +1996,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                (lambda (&rest args)
                  (push (nth 3 args) purposes)
                  (apply original-context args))))
-      (e-harness-prompt-async harness "session-1" "hello")
+      (e-harness-test-prompt-async harness "session-1" "hello")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done)))
@@ -2708,7 +2720,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :backend backend
            :intrinsic-capabilities (list tools-capability hooks-capability)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "use tool")
+    (e-harness-test-prompt-batch harness "session-1" "use tool")
     (let* ((messages (e-harness-messages harness "session-1"))
            (tool-call (cl-find 'tool-call messages
                                :key (lambda (message)
@@ -2969,7 +2981,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-subscribe harness (lambda (event) (push event events)))
-    (e-harness-prompt-batch harness "session-1" "chain tools")
+    (e-harness-test-prompt-batch harness "session-1" "chain tools")
     (should (equal calls 2))
     (let* ((messages (e-harness-messages harness "session-1"))
            (roles (mapcar (lambda (message)
@@ -3059,7 +3071,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :backend backend
            :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "catch nested error")
+    (e-harness-test-prompt-batch harness "session-1" "catch nested error")
     (should (equal calls 2))
     (let* ((tool-message (cl-find 'tool second-request-messages
                                   :key (lambda (message)
@@ -3116,7 +3128,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (progn
           (e-harness-create-session harness :id "session-1")
           (e-dev-profile-start)
-          (e-harness-prompt-batch harness "session-1" "use tool")
+          (e-harness-test-prompt-batch harness "session-1" "use tool")
           (e-dev-profile-stop)
           (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
                  (aggregates (plist-get report :aggregates)))
@@ -3502,7 +3514,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (harness (e-harness-create :backend backend)))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (let ((preamble (seq-find
                      (lambda (message)
                        (string-match-p
@@ -3696,7 +3708,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (harness (e-harness-create :backend backend)))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "raw prompt")
+    (e-harness-test-prompt-batch harness "session-1" "raw prompt")
     (let* ((tool (seq-find (lambda (definition)
                              (equal (plist-get definition :name) "noop"))
                            (plist-get captured-options :tools)))
@@ -3745,7 +3757,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "session-model")
     (e-harness-set-session-reasoning-effort harness "session-1" "high")
-    (e-harness-prompt-batch harness "session-1" "raw prompt")
+    (e-harness-test-prompt-batch harness "session-1" "raw prompt")
     (should (equal (plist-get captured-options :model) "session-model"))
     (should (equal (plist-get captured-options :reasoning-effort) "high"))
     (should (plist-get captured-options :tools))))
@@ -3816,7 +3828,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (store (e-session-store-create))
          (harness (e-harness-create :backend backend :sessions store)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "hello")
+    (e-harness-test-prompt-batch harness "session-1" "hello")
     (let ((messages (e-session-messages store "session-1"))
           (events (e-session-activity-events store "session-1")))
       (should (equal (length (delete-dups
@@ -4016,7 +4028,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
@@ -4057,7 +4069,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 999999 :total-tokens 1000000))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
@@ -4096,7 +4108,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
@@ -4133,7 +4145,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                (lambda (&rest args)
                  (setq context-calls (1+ context-calls))
                  (apply original-context args))))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done)))
@@ -4164,7 +4176,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))

@@ -9,6 +9,7 @@
 
 (require 'ert)
 (require 'e-board-runtime)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-task-queue)
 
 (defconst e-board-runtime-test--production-post-input
@@ -1224,7 +1225,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
       (setq attachment
             (e-board-runtime-attach
              board harness "session" :participant-id "participant"))
-      (e-harness-prompt-async harness "session" "running")
+      (e-harness-test-prompt-async harness "session" "running")
       (setq active-turn (gethash "session" (e-harness-active-turns harness)))
       (cl-letf (((symbol-function 'run-at-time)
                  (lambda (_seconds _repeat function &rest arguments)
@@ -1920,7 +1921,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
       (e-harness-create-session harness :id "session")
       (setq attachment (e-board-runtime-attach
                         board harness "session" :participant-id "participant"))
-      (e-harness-prompt-async harness "session" "running")
+      (e-harness-test-prompt-async harness "session" "running")
       (let* ((publication (e-board-runtime-post-input board :to "participant" :mode 'queue
                                                       :content "queued input"))
              (pickup-id nil))
@@ -2455,7 +2456,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
                                :name "held" :start (lambda (&rest _) nil)))))
       (e-harness-create-session harness :id "session")
       (e-board-runtime-attach board harness "session" :participant-id "participant")
-      (e-harness-prompt-async harness "session" "running")
+      (e-harness-test-prompt-async harness "session" "running")
       (let ((publication (e-board-runtime-post-input
                           board :to "participant" :mode 'queue :content "queued")))
         (e-board-runtime--drain-input-routing
@@ -2483,7 +2484,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
                                :name "held" :start (lambda (&rest _) nil)))))
       (e-harness-create-session harness :id "session")
       (e-board-runtime-attach board harness "session" :participant-id "participant")
-      (e-harness-prompt-async harness "session" "running")
+      (e-harness-test-prompt-async harness "session" "running")
       (let ((publication (e-board-runtime-post-input
                           board :to "participant" :mode 'queue :content "queued")))
         (e-board-runtime--drain-input-routing

@@ -22,6 +22,7 @@
 (require 'e-emacs-base)
 (require 'e-events)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -664,7 +665,7 @@ Production presentation never performs this compatibility translation."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort e-chat-harness e-chat-session-id)))
+            (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-shared-harness-buffers-render-only-their-session ()
@@ -904,7 +905,7 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort e-chat-harness e-chat-session-id)))
+            (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-defers-backend-start-until-after-command ()
@@ -954,7 +955,7 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort e-chat-harness e-chat-session-id)))
+            (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-does-not-render-assistant-before-async-provider-completes ()
@@ -1158,7 +1159,7 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort e-chat-harness e-chat-session-id)))
+            (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-queued-prompts-render-above-composer ()
@@ -6547,8 +6548,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-reload-buffers-refreshes-existing-chat-harness ()
-  "Reloading chat buffers reattaches them and restores persisted transcript."
+(ert-deftest e-chat-test-reload-buffers-keeps-board-bound-harness ()
+  "Reloading keeps the admitted endpoint, transcript, and composer draft."
   (let* ((directory (make-temp-file "e-chat-" t))
          (store (e-session-persistent-store-create directory))
          (old-backend (e-backend-fake-create :items nil))
@@ -6573,18 +6574,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                (lambda () new-harness))
               (should (= (e-chat-reload-buffers) 1))))
           (with-current-buffer buffer
-            (should (eq e-chat-harness new-harness))
+            (should (eq e-chat-harness old-harness))
             (should (equal e-chat-session-id "chat-reload"))
-            (should-not (string-match-p "stale prompt" (buffer-string)))
-            (should (string-match-p "saved prompt" (buffer-string)))
-            (e-chat-submit "hello")
-            (should (e-chat-test--wait-until
-                     (lambda ()
-                       (string-match-p
-                        (concat (regexp-quote e-chat--assistant-glyph)
-                                " fresh answer")
-                        (buffer-string)))
-                     1.0))))
+            (should (string-match-p "stale prompt" (buffer-string)))
+            (should (string-match-p "saved prompt" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -6629,7 +6622,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (e-chat-service-active-turn-p
                      e-chat-harness e-chat-session-id))))
       (ignore-errors
-        (e-harness-abort old-harness "chat-reload-active"))
+        (e-harness-test-abort old-harness "chat-reload-active"))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

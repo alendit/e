@@ -17,6 +17,7 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-layer)
 (require 'e-layers)
 (require 'e-shells)
@@ -90,7 +91,7 @@
                    :intrinsic-capabilities
                    (list first-capability second-capability))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "hello")
+    (e-harness-test-prompt-batch harness "session-1" "hello")
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))

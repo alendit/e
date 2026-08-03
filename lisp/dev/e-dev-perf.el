@@ -819,15 +819,20 @@ artifacts under `e-dev-perf-run-directory'."
 
 (defun e-dev-perf--scenario-turn-start-run (_state)
   "Run fake backend turn-start scenario."
+  (require 'e-chat-service)
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create
                    :items (list (list :type 'assistant-message
                                       :content "ok"))))
          (harness (e-harness-create :backend backend :sessions store)))
-    (e-harness-create-session harness :id "turn-start")
+    (e-chat-service-create-session :harness harness :id "turn-start")
     (e-dev-perf--profile-spans
      (lambda ()
-       (e-harness-prompt-batch harness "turn-start" "hello"))
+       (e-chat-service-submit-session harness "turn-start" "hello")
+       (while (not (plist-get (e-harness-state harness "turn-start")
+                              :active-turn))
+         (accept-process-output nil 0.001))
+       (e-harness-wait-batch harness "turn-start"))
      '(harness.prompt harness.prompt-async harness.context
        harness.message-append loop.backend-start))))
 

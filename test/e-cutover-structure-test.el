@@ -6,6 +6,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-board-runtime)
+(require 'e-harness)
 (require 'subr-x)
 
 (defun e-cutover-structure-test--source (file)
@@ -16,7 +18,10 @@
 
 (defconst e-cutover-structure-test--retired-live-symbols
   '("e-harness-create-session"
+    "e-harness-prompt-batch"
     "e-harness-prompt-async"
+    "e-harness-follow-up-batch"
+    "e-harness-request-follow-up"
     "e-harness-queue-prompt"
     "e-harness-steer-active-turn"
     "e-harness-abort"
@@ -26,6 +31,28 @@
     "e-harness-state"
     "e-harness-active-turns")
   "Private live-session symbols forbidden in public shells and producers.")
+
+(defconst e-cutover-structure-test--retired-root-functions
+  '(e-harness-prompt-batch e-harness-prompt-async
+    e-harness-follow-up-batch e-harness-request-follow-up
+    e-harness-queue-prompt e-harness-steer-active-turn e-harness-abort)
+  "Retired tokenless live roots that must not remain callable.")
+
+(ert-deftest e-cutover-structure-test-retired-live-roots-are-absent ()
+  "The compatibility surface cannot start or control standalone work."
+  (dolist (symbol e-cutover-structure-test--retired-root-functions)
+    (should-not (fboundp symbol))))
+
+(ert-deftest e-cutover-structure-test-private-port-requires-board-token ()
+  "The only harness start port fails closed without a current attachment."
+  (let ((harness (e-harness-create :enabled-layer-ids nil)))
+    (e-harness-create-session harness :id "standalone-denied")
+    (should-error
+     (e-harness--prompt-attached-async
+      harness "standalone-denied" "must fail" :attachment-token 'forged)
+     :type 'e-harness-board-attachment-required)
+    (should-not (plist-get (e-harness-state harness "standalone-denied")
+                           :active-turn))))
 
 (defun e-cutover-structure-test--symbol-hits (files)
   "Return forbidden symbol hits as (FILE SYMBOL) pairs across FILES."

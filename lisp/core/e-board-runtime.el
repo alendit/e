@@ -1614,11 +1614,13 @@ steering lane while queue-mode enters the later-turn inbox."
         ('queue
          (if active-turn
              (list :accepted
-                   (e-harness-request-follow-up
+                   (e-harness--request-attached-follow-up
                     harness session-id prompt :metadata metadata))
            (let ((turn-id
-                  (e-harness-prompt-async
-                   harness session-id prompt :metadata metadata)))
+                  (e-harness--prompt-attached-async
+                   harness session-id prompt :metadata metadata
+                   :attachment-token
+                   (e-board-runtime-attachment-endpoint-token attachment))))
              (puthash turn-id
                       (copy-tree
                        (plist-get (e-board-pickup-cause-metadata pickup)
@@ -1628,10 +1630,14 @@ steering lane while queue-mode enters the later-turn inbox."
         ('inject
          (let ((turn-id
                 (if active-turn
-                    (e-harness-steer-active-turn
-                     harness session-id prompt :metadata metadata)
-                  (e-harness-prompt-async
-                   harness session-id prompt :metadata metadata))))
+                    (e-harness--steer-attached-turn
+                     harness session-id prompt :metadata metadata
+                     :attachment-token
+                     (e-board-runtime-attachment-endpoint-token attachment))
+                  (e-harness--prompt-attached-async
+                   harness session-id prompt :metadata metadata
+                   :attachment-token
+                   (e-board-runtime-attachment-endpoint-token attachment)))))
            (puthash turn-id
                     (copy-tree
                      (plist-get (e-board-pickup-cause-metadata pickup)
@@ -1949,7 +1955,11 @@ read proves the expected authorization and controller are still current."
    :harness-object-generation
    (plist-get metadata :harness-object-generation)
    :session-store-id (plist-get metadata :session-store-id)
-   :endpoint-token (plist-get metadata :endpoint-token)))
+   :endpoint-token
+   (or (plist-get metadata :endpoint-token)
+       (e-board-runtime-endpoint-token--create
+        :harness-id (list 'direct (e-session-generate-ulid))
+        :session-id session-id))))
 
 (defun e-board-runtime--configure-attachment (attachment)
   "Install the private board/harness ports required by ATTACHMENT."
@@ -2809,8 +2819,21 @@ require authority for their target participant."
   (e-board-runtime--require-admission)
   (unless (e-board-runtime--current-attachment-p attachment)
     (signal 'e-board-runtime-error (list "Stale attachment" attachment)))
-  (e-harness-abort (e-board-runtime-attachment-harness attachment)
-                   (e-board-runtime-attachment-session-id attachment)))
+  (e-harness--abort-attached
+   (e-board-runtime-attachment-harness attachment)
+   (e-board-runtime-attachment-session-id attachment)
+   (e-board-runtime-attachment-endpoint-token attachment)))
+
+(defun e-board-runtime--authorize-harness-port (harness session-id token)
+  "Return non-nil when TOKEN owns HARNESS SESSION-ID's current attachment."
+  (when-let ((attachment
+              (gethash (e-board-runtime--session-key harness session-id)
+                       e-board-runtime--endpoint-attachments)))
+    (and (e-board-runtime--current-attachment-p attachment)
+         (equal token (e-board-runtime-attachment-endpoint-token attachment)))))
+
+(setq e-harness--attached-port-authorizer
+      #'e-board-runtime--authorize-harness-port)
 
 (provide 'e-board-runtime)
 

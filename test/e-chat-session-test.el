@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-chat-session)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-session)
 (require 'e-work)
 
@@ -134,7 +135,7 @@
                        '((:uri "buffer://source"))))
         (should (equal (plist-get (plist-get item :metadata) :source)
                        'chat-composer))))
-    (e-harness-abort harness "session-1")))
+    (e-harness-test-abort harness "session-1")))
 
 (ert-deftest e-chat-session-test-steer-validates-and-routes-to-active-turn ()
   "Steering validates prompt text and reaches the active steering lane."

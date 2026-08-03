@@ -8508,9 +8508,12 @@ When SESSION-ID is nil, create a private execution session for the participant."
             (let ((session-id (or e-chat-session-id
                                   e-chat-default-session-id))
                   (harness
-                   (if (e-chat--harness-session-active-turn-p
-                        e-chat-harness
-                        (or e-chat-session-id e-chat-default-session-id))
+                   (if (or (e-chat-service-binding
+                            e-chat-harness
+                            (or e-chat-session-id e-chat-default-session-id))
+                           (e-chat--harness-session-active-turn-p
+                            e-chat-harness
+                            (or e-chat-session-id e-chat-default-session-id)))
                        e-chat-harness
                      (condition-case err
                          (if e-chat-harness-instance-id

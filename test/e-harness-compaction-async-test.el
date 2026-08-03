@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-context-budget)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-session)
 (require 'e-work)
 
@@ -173,7 +174,7 @@
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
              (request (plist-get entry :request)))
         (should (e-backend-request-p request))
@@ -244,7 +245,7 @@
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
-      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (e-harness-compaction-async-test--wait-until
                (lambda () (= calls 2))))
       (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
@@ -253,7 +254,7 @@
         (should (eq (plist-get (e-backend-request-metadata request)
                                :operation)
                     'provider)))
-      (should (e-harness-abort harness "session-1"))
+      (should (e-harness-test-abort harness "session-1"))
       (should provider-cancelled)
       (should-not compaction-cancelled))))
 

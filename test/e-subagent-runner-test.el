@@ -18,6 +18,7 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-session)
 (require 'e-store)
@@ -373,7 +374,7 @@ turn's result lands."
 
 (ert-deftest e-subagent-runner-test-send-refuses-settled-child ()
   "Send refuses a failed, cancelled, or done child instead of queueing.
-A settled child has no active turn, so `e-harness-queue-prompt' would raise the
+A settled child has no active turn, so `e-harness-test-queue-prompt' would raise the
 low-level `e-harness-no-active-turn'.  Send must guard status up front like
 `e-subagent-resume', point failed/cancelled children at resume, and never reach
 the harness."
@@ -384,7 +385,7 @@ the harness."
            (captured (list nil))
            (queued nil))
       (e-harness-create-session parent :id "parent-1")
-      (cl-letf (((symbol-function 'e-harness-queue-prompt)
+      (cl-letf (((symbol-function 'e-harness-test-queue-prompt)
                  (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
         ;; A failed child is not sendable; the error points at resume.
         (let* ((record (e-subagent-spawn
@@ -428,13 +429,30 @@ the harness."
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (subagent-id (plist-get record :subagent-id))
              (child-session-id (plist-get record :session-id))
-             (raw (e-subagent-raw-read registry subagent-id 1)))
-        (should (equal (plist-get raw :session-uri)
-                       (format "session://e/sessions/%s/messages" child-session-id)))
-        ;; Bounded to the last message only.
-        (should (equal (mapcar (lambda (m) (plist-get m :content))
-                               (plist-get raw :messages))
-                       '("two")))))))
+             (child-harness (plist-get (car captured) :child-harness))
+             (binding (e-chat-service-binding child-harness child-session-id))
+             (participant-id
+              (e-board-registry-participant-id
+               (e-board-runtime-attachment-participant
+                (e-chat-service-binding-attachment binding)))))
+        (e-board-post-output
+         (e-board-registry-board-source-board
+          (e-chat-service-binding-board binding))
+         :author (format "participant:%s" participant-id)
+         :content "visible output"
+         :subject-participant-id participant-id
+         :source-turn-id "turn-visible"
+         :source-output-key (list participant-id 1 1))
+        (e-chat-service--drain-observer binding)
+        (let ((raw (e-subagent-raw-read registry subagent-id 1)))
+          (should (equal (plist-get raw :session-uri)
+                         (format "session://e/sessions/%s/messages"
+                                 child-session-id)))
+          ;; Bounded to the last board-visible message only; private seed
+          ;; context is intentionally absent from the observable transcript.
+          (should (equal (mapcar (lambda (m) (plist-get m :content))
+                                 (plist-get raw :messages))
+                         '("visible output"))))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-toggles-layers ()
   "configure-type enables and disables layers on the type's shared harness."

@@ -17,6 +17,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-anthropic)
 
 (defun e-anthropic-test--wait-until (predicate &optional timeout)
@@ -723,7 +724,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
               (ignore url headers body)
               e-anthropic-test--text-stream)))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-batch harness "session-1" "question")
+    (e-harness-test-prompt-batch harness "session-1" "question")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))
