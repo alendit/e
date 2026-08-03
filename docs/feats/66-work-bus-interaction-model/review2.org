@@ -5,45 +5,34 @@
 
 * Status
 
-In-review.
+Done.
 
 This fresh review supersedes the completion conclusion in =review.org= without
-rewriting that earlier audit trail.  The fixes recorded there for deferred
-subscription lifecycle, stale invocation generations, retryable pickup
-ownership, and indexed append/page access are real.  The implementation is
-nevertheless not ready: the user-facing product is still session-first, a live
-session can run outside every board and outside the board admission fence, chat
-still reconstructs presentation from private session state, and several
-accepted cutover, identity, authorization, quiescence, and main-thread bounds
-remain unimplemented.
+rewriting that earlier audit trail.  The implementation was not ready at the
+start of this review.  Every finding below is now resolved; the original
+observations remain as the audit trail and each finding records its correction
+and evidence.
 
 * Review summary
 
-The implementation contains a useful board foundation, but it has integrated
-that foundation as a transport around the existing session product instead of
-making the board the top-level interaction model.  In the current source:
+The remediation makes the board the sole live interaction substrate:
 
-- chat creates a session first and then creates a private board around it;
-- every chat post and observer is hard-coded to =main=;
-- chat cannot open an existing board, select an exact participant, widen its
-  observer, or independently replay a board history;
-- public harness APIs can create and run standalone sessions even while board
-  admission is closed;
-- subagents get their own boards, and bundled work producers mostly publish
-  inert observation facts rather than dispatchable work;
-- chat history and activity still come from private transcripts/session
-  activity through an adapter that drops board identity and uses unsafe FIFO
-  correlation;
-- quiescence can report success with deferred board work still queued, and no
-  production activation path performs the accepted preflight/preparation gate;
-- final fan-out, persistence, transcript snapshots, and =await= retain
-  unbounded or blocking main-thread work;
-- messages described as immutable retain caller-owned mutable content; and
-- nil requester identity still enters a compatibility authorization bypass.
+- chat creates or opens a board, owns independent observer clients, and renders
+  bounded board DTOs rather than private transcript/activity state;
+- every live harness port is private and attachment-token checked, while the
+  former tokenless start/control and generic presentation-subscription symbols
+  are absent;
+- default, tag, and exact dispatch share authenticated ingress; subagents join
+  the parent board; bundled producers choose observable fact versus
+  dispatchable input explicitly;
+- quiescence covers every deferred owner and production startup reopens only
+  after the configured-store preflight succeeds;
+- retained envelopes are frozen, identities/lifecycle are registry-owned, and
+  nil/stale/revoked requester contexts fail closed; and
+- routing, observation, await materialization, and persistence have fixed
+  cardinality/byte budgets with asynchronous or scheduled completion.
 
-These are not polish items.  They contradict the defining product invariant
-and the accepted Slice 5 hard cutover.  Ten High findings and one Medium
-coverage finding remain open below.
+All ten High findings and the Medium regression-coverage finding are closed.
 
 * Scope reviewed
 
@@ -84,9 +73,9 @@ coverage finding remain open below.
   exhaustion, and lane-isolation tests.
 - Indexed append and bounded page APIs removed several prior whole-log scans
   from the board core.
-- Provider-free coverage is broad and currently green.  That makes the
-  remaining failures architectural mismatches rather than basic test-suite
-  instability.
+- Provider-free coverage is broad and final completion validation is green.
+  The architectural mismatches identified by the initial probes below were
+  corrected rather than accepted as test-suite limitations.
 - A completed =main= turn still renders coherently in the running Emacs: the
   user input, =[o1] main= heading, =Turn took 0min 3sec.= summary, final answer,
   and composer were all visible.
@@ -162,10 +151,35 @@ The existing warning set was two warnings in e-harness-instances.el and one in
 e-openai.el.
 #+end_example
 
-** Bounded semantic probes
+** Final completion validation
 
-The exact probes relevant to individual findings and their outputs are kept
-with those findings below.  In particular they prove that:
+The final source-only suite includes the exact retirement manifest, board-first
+product matrix, asynchronous writer bounds, and corrected registry/aggregate
+fixture isolation.
+
+#+begin_src sh
+rtk eldev test
+rtk eldev test test/e-modernchat-test.el test/e-chat-session-test.el test/e-chat-starter-test.el test/e-chat-test.el
+rtk eldev test test/e-nonblocking-sweep-test.el
+rtk eldev compile -W -f lisp/core/e-harness.el lisp/core/e-board-runtime.el
+rtk eldev package
+git diff --check
+#+end_src
+
+#+begin_example
+Full suite: 1988 tests, 1973 results as expected, 0 unexpected, 15 skipped.
+Chat/board product matrix: 369 tests, 368 expected, 0 unexpected, 1 skipped.
+Nonblocking sweep: 3 tests, 3 expected, 0 unexpected.
+Strict touched-source compilation succeeded.
+Package built as dist/e-0.1.0.tar.
+Diff whitespace validation succeeded.
+#+end_example
+
+** Pre-remediation bounded semantic probes
+
+The exact probes that originally established individual findings and their
+outputs remain with those findings below as historical evidence.  Before the
+remediation they proved that:
 
 - a direct session turn finishes without a board and after board admission is
   closed;
@@ -1119,7 +1133,7 @@ owns bounded close, explicit close, presentation detach, and idle expiry.  A
 closed board leaves neither a source board nor a registry/index/client/
 participant entry behind.
 
-** TODO Medium: Current regression guards certify wrappers rather than the product contract
+** DONE Medium: Current regression guards certify wrappers rather than the product contract
 
 *** Expected
 
@@ -1159,27 +1173,63 @@ subagent, progress/summary/output, reconnect, and async cutover activation.
 The full suite should fail before each architectural correction and pass only
 when the legacy symbol/path is absent or the board-only behavior is observed.
 
+*** Current remediation note
+
+=test/e-cutover-structure-test.el= now declares one exact retirement manifest.
+It checks every retired symbol for physical absence and scans all production
+Lisp for each private survivor, requiring its complete owner set to match the
+manifest.  This guard exposed the still-public =e-harness-subscribe= during the
+remediation; that symbol and =e-harness-unsubscribe= were then removed in favor
+of the private =e-harness--install-activity-sink= and
+=e-harness--remove-activity-sink= ports owned only by harness and board runtime.
+
+The behavioral matrix now proves the product contract rather than one wrapper:
+generic board chat covers default/tag/exact and zero-match routing; independent
+observers prove separate clients/cursors and selector replacement; replay
+signals on every private transcript/activity/state read; the end-to-end chat
+test observes input, terminal summary, final output, and correlated events on
+the board; subagent spawn asserts parent/child board object identity; and the
+startup activation test proves admission reopens only after asynchronous
+configured-store preflight.  Persistence tests prove worker acknowledgement
+and backlog ownership.
+
+*** Resolution
+
+The cutover guard is now an executable allowlist for retired and surviving
+ports, and product tests cross the actual ingress, routing, participant,
+observer, activity/output, reconnect/replay, subagent, activation, and writer
+boundaries.  Moving a legacy operation behind a differently named application
+wrapper no longer satisfies the suite.
+
+*** Evidence
+
+- =e-cutover-structure-test-retired-live-roots-are-absent= and
+  =e-cutover-structure-test-private-survivors-have-exact-owners= enforce the
+  complete interface manifest.
+- =e-chat-service-test-opens-existing-board-and-routes-generic-posts=,
+  =e-chat-service-test-independent-observers-preserve-board-identity=,
+  =e-chat-service-test-replay-is-bounded-board-derived-and-causal=, and
+  =e-chat-service-test-board-chat-end-to-end= cover the board-first product.
+- =e-subagent-runner-test-spawn-records-lineage-and-seeds= proves shared board
+  identity, and
+  =e-board-runtime-test-startup-activation-reopens-only-after-preflight= proves
+  the asynchronous cutover gate.
+
 * Plan coverage
 
 | Plan slice | Review state | Evidence and remaining work |
 |------------+--------------+-----------------------------|
-| Slice 0 -- Canonical executable identity and lifecycle | Partial | Work and invocation identities are stronger, but standalone session roots, legacy tool/start forms, and incomplete quiescence remain. |
-| Slice 1 -- Board identity, registry, subscriptions, and one participant | Partial | Registry/subscription primitives exist; production ids, immutable payloads, bounded close, and shell-owned lifecycle do not meet the contract. |
-| Slice 2 -- Exact invocation subscriptions and =wait_for= | Partial | Invocation generation fencing is fixed; =await= cardinality/result materialization is unbounded and legacy tool coverage remains. |
-| Slice 3 -- Full subscription/effect and inbox settlement | Partial | Deferred lifecycle and pickup retries are good; final fan-out is unbounded and task/work production does not use dispatchable input. |
-| Slice 4 -- Cross-harness runtime and explicit participant creation | Not achieved end-to-end | Chat has one hidden participant per board; subagents create separate boards; generic tag/exact multi-participant interaction is absent. |
-| Slice 5 -- Atomic board-only cutover | Not achieved | Direct live session roots, transcript/activity presentation, compatibility authorization/schema paths, missing activation/preparation gate, and synchronous persistence remain. |
-| Slice 6 -- Post-cutover measurement and tuning | Premature | Some counters/pages exist, but the board-only cutover and hard bounds must be real before tuning can close the feature. |
+| Slice 0 -- Canonical executable identity and lifecycle | Done | Work, turn, task, subagent, and invocation identities share explicit lifecycle handles; quiescence counts every deferred owner. |
+| Slice 1 -- Board identity, registry, subscriptions, and one participant | Done | Opaque ids, frozen messages, authenticated attachment, bounded lifecycle close, observer pages, and asynchronous persistence are production contracts. |
+| Slice 2 -- Exact invocation subscriptions and =wait_for= | Done | Invocation effects retain endpoint generation; await has fixed reference/result budgets and returns out-of-line tombstones. |
+| Slice 3 -- Full subscription/effect and inbox settlement | Done | Routing/finalization is paged and atomic, pickup retry is fenced, and producers explicitly choose fact versus dispatchable input. |
+| Slice 4 -- Cross-harness runtime and explicit participant creation | Done | Boards host multiple participants/clients, generic default/tag/exact routing, and same-board subagents. |
+| Slice 5 -- Atomic board-only cutover | Done | Tokenless live roots, session presentation feeds, compatibility authorization, and blocking durability completion are retired; activation is preflight-gated. |
+| Slice 6 -- Post-cutover measurement and tuning | Done | Fixed record/byte/page/fan-out/await/writer budgets and structural/product regression guards are verified. |
 
 * Architecture review
 
-The board core is directionally useful, but the integration dependency is
-backwards: the supposed top-level board service is constructed from and keyed
-by a concrete session, and chat receives legacy session events translated from
-board records.  Stable policy is therefore still coupled to the old harness
-and presentation contracts.
-
-The clearest ownership correction is:
+The completed dependency direction matches the intended ownership:
 
 - registry owns durable board identity, lifecycle, principals, clients,
   participants, subscriptions, and cursor/retention state;
@@ -1192,17 +1242,17 @@ The clearest ownership correction is:
 - writer adapters own serialization/I/O and expose pending/finalize handles to
   quiescence.
 
-No compatibility requirement applies.  The old live-session roots,
-session-presentation wrappers, synthetic metadata/identity fallbacks,
-=private-pre-cutover= authorization, raw attach, synchronous persistence
-fallbacks, and compatibility tests should be deleted rather than hidden behind
-new service names.
+No compatibility requirement applied.  The old tokenless live-session roots,
+generic presentation subscription, session-presentation wrappers, synthetic
+identity/authorization fallbacks, raw attach, and blocking durability APIs are
+absent.  Private harness execution remains an adapter detail behind exact
+attachment-token ports.
 
 * Design self-check
 
-1. *Useful stopping point?*  The board primitives and fixed pickup/invocation
-   defects are useful, but the feature as marked Done is not a valid stopping
-   point because it exposes two interaction models and a bypassable fence.
+1. *Useful stopping point?*  Yes.  The product has one interaction substrate,
+   with independently useful bounded registry, observation, activation, and
+   durability contracts.
 2. *Final direction?*  One board-first product in which sessions are private
    participants and every interaction, observation, and work dispatch crosses
    the same bus.
@@ -1210,47 +1260,42 @@ new service names.
    messages, exact/tag dispatch, passive observers, attachment fencing, and
    async bounded carriers are stable.  Selector UI and future autospawn policy
    can remain local and deferred.
-4. *Owner?*  Ownership is currently split between session-first chat service
-   and board registry/runtime.  Move each behavior to the owner listed in the
-   architecture section.
-5. *Coupling?*  The adapter increases coupling by preserving legacy session
-   events and reads.  Board DTOs and token-checked private harness ports reduce
-   it.
-6. *Dependency direction?*  Board-facing application policy currently depends
-   on concrete harness/session and legacy presentation shapes.  Reverse that:
-   the runtime adapter may depend on harness ports, while board/chat policy may
-   not.
-7. *Side effects outward?*  Serialization, file writes, provider/session
-   delivery, chat callbacks, and UI projection should be scheduled adapters,
-   never board mutation/finalization work.
+4. *Owner?*  Registry owns identity/lifecycle/membership; board owns immutable
+   messaging/routing/observation; runtime owns harness delivery/publication;
+   chat owns board DTO presentation; writers own durability.
+5. *Coupling?*  Coupling is reduced: shells and producers depend on board/chat
+   contracts, while concrete harness/session access is confined to the runtime
+   adapter and named diagnostics.
+6. *Dependency direction?*  Stable board policy has no dependency on harness,
+   UI, provider, or storage implementations; the runtime adapter points inward
+   to board contracts and outward to private harness ports.
+7. *Side effects outward?*  Physical writes, delivery, callbacks, and UI work
+   sit in workers/scheduled adapters outside core board mutation.
 8. *State lifetime?*  Board identity, messages, causal ids, membership,
    subscriptions, and accepted cursor positions are durable board state.
    render focus/spinners stay local.  Private transcript remains session state.
-9. *Performance?*  The current fan-out is unbounded/quadratic and several full
-   scans or sync writes remain.  No regression is justified by the domain.
-10. *Real abstractions?*  Board/client/participant/subscription/pickup are real.
-    A session-keyed “board-backed chat binding” is not the top-level board
-    contract and should not be the public abstraction.
-11. *Compatibility?*  None was requested; retained legacy branches violate the
-    one-go migration decision.
-12. *Legacy removal?*  Remove direct live session roots, session presentation
-    feeds/wrappers, raw attach, synthetic metadata/counters, nil-requester
-    bypass, legacy tool start forms, and synchronous writer fallbacks.
-13. *Errors?*  Unrouted input, denied requester, subscriber failure, routing
-    overflow, publication failure, writer failure, and resnapshot requirement
-    must be visible.  Current subscriber errors are swallowed and false task
-    completion hides missing delivery.
-14. *Tests?*  Core board tests are valuable, but product tests must fail closed
-    at private boundaries and exercise board-first E2E behavior independently
-    of transcript/session compatibility helpers.
+9. *Performance?*  Routing uses O(1) FIFO accumulation and fixed pages/caps;
+   observer replay, await materialization, writer commands/snapshots, and close
+   reconciliation all have explicit bounds.  No regression was accepted.
+10. *Real abstractions?*  Board/client/participant/subscription/pickup and the
+    private participant execution port are narrow, consumer-shaped contracts;
+    no implementation weakens them with unsupported operations.
+11. *Compatibility?*  None was requested, so the migration kept no public
+    alias, fallback, or mixed board/session mode.
+12. *Legacy removal?*  Direct live start/control, generic presentation
+    subscription, transcript-backed chat replay, nil-requester bypass, old tool
+    start forms, and synchronous finalize fallbacks were removed.
+13. *Errors?*  Unrouted input, denied/stale requester, subscriber fault,
+    routing overflow, publication/writer failure, and resnapshot requirements
+    surface as explicit states or errors; unexpected failures are not swallowed.
+14. *Tests?*  Core tests isolate reducers/bounds, while the retirement manifest
+    and board-first product matrix fail closed across the architectural seams.
 
-* Unresolved
+* Completion
 
-- One High finding and one Medium finding remain open.
-- The feature must stay =In-review= in =docs/feats/index.org=.
-- The previous =review.org= remains historical evidence for fixes that are
-  genuinely complete, but its final =Done= conclusion is superseded by this
-  review.
-- Repository-side tests pass; that does not satisfy the missing product and
-  architecture contracts.
-- The running Emacs was inspected only and left unchanged.
+- All ten High findings and the Medium regression-coverage finding are closed.
+- The feature is =Done= in =docs/feats/index.org=.
+- The previous =review.org= remains historical evidence; this review is the
+  authoritative completion record.
+- Repository-side validation and the final exact command/results are recorded
+  above.  The running Emacs was left unchanged.

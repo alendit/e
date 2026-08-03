@@ -209,7 +209,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                 :id))
               (,events nil)
               (,subscription
-               (e-harness-subscribe
+               (e-harness--install-activity-sink
                 ,harness
                 (lambda (event) (push event ,events))
                 :session-id ,session-id)))
@@ -222,7 +222,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                         (append (e-harness-intrinsic-capabilities ,harness)
                                 (e-layer-capabilities layer))))))
                ,@body)
-           (ignore-errors (e-harness-unsubscribe ,harness ,subscription))
+           (ignore-errors (e-harness--remove-activity-sink ,harness ,subscription))
            (ignore-errors (delete-directory ,root t)))))))
 
 (ert-deftest e-live-e2e-test-basic-assistant-response ()

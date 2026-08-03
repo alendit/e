@@ -770,17 +770,18 @@ the bash working directory); the rest are configured extra roots from
                        (e-harness-project-root harness session-id turn-id))))
     (cons primary (e-harness-configured-workspace-roots primary))))
 
-(cl-defun e-harness-subscribe (harness subscriber &key session-id)
+(cl-defun e-harness--install-activity-sink (harness subscriber &key session-id)
   "Register SUBSCRIBER for core events from HARNESS.
 When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
   (let ((record (list :callback subscriber :session-id session-id)))
     (push record (e-harness-subscribers harness))
     record))
 
-(defun e-harness-unsubscribe (harness subscription)
+(defun e-harness--remove-activity-sink (harness subscription)
   "Remove SUBSCRIPTION from HARNESS subscribers.
-SUBSCRIPTION should be a record returned by `e-harness-subscribe'.  Removing
-an already-removed record is a no-op."
+SUBSCRIPTION should be a record returned by
+`e-harness--install-activity-sink'.  Removing an already-removed record is a
+no-op."
   (setf (e-harness-subscribers harness)
         (delq subscription (e-harness-subscribers harness)))
   nil)

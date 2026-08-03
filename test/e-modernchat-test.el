@@ -139,6 +139,10 @@ messages so the transcript reads as one clean answer."
         (e-board--id-sequence 0)
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
@@ -181,6 +185,10 @@ messages so the transcript reads as one clean answer."
   "Board-first clients can reconnect, tag, address, and expose zero matches."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
@@ -221,6 +229,10 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-board-list-is-bounded-and-continuable ()
   "The shell-neutral service exposes bounded public board navigation."
   (let ((e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-registry--board-index (avl-tree-create
                                         (lambda (left right)
                                           (string< (car left) (car right))))))
@@ -237,6 +249,10 @@ messages so the transcript reads as one clean answer."
   "Subscriber failure cannot advance another client's cursor or lose identity."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
@@ -365,6 +381,10 @@ messages so the transcript reads as one clean answer."
   (let ((directory (make-temp-file "e-chat-board-log-" t))
         (e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
         (e-chat-service--board-log-owners (make-hash-table :test 'equal))
@@ -388,6 +408,10 @@ messages so the transcript reads as one clean answer."
           ;; Model a fresh Emacs process while retaining only the session store.
           (setq e-board--registry (make-hash-table :test 'equal)
                 e-board-registry--boards (make-hash-table :test 'equal)
+                e-board-registry--unsettled-pickup-count 0
+                e-board-registry--unsettled-effect-count 0
+                e-board-registry--unsettled-routing-count 0
+                e-board-registry--unsettled-generation 0
                 e-board-registry--board-index
                 (avl-tree-create (lambda (left right)
                                    (string< (car left) (car right))))
@@ -427,6 +451,10 @@ messages so the transcript reads as one clean answer."
         (e-board--id-sequence 0)
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
@@ -497,6 +525,10 @@ messages so the transcript reads as one clean answer."
   "The last shell client schedules full registry-owned board cleanup."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))

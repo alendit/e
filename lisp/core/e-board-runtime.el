@@ -1996,7 +1996,7 @@ read proves the expected authorization and controller are still current."
               (gethash endpoint-key e-board-runtime--endpoint-attachments))
       (signal 'e-board-runtime-session-busy (list session-key endpoint-key)))
     (setf (e-board-runtime-attachment-subscription attachment)
-          (e-harness-subscribe
+          (e-harness--install-activity-sink
            harness (lambda (event) (e-board-runtime--handle-harness-event attachment event))
            :session-id session-id))
     (puthash key attachment e-board-runtime--attachments)
@@ -2060,7 +2060,7 @@ read proves the expected authorization and controller are still current."
       (signal 'e-board-runtime-error
               (list "Participant attachment changed during removal"
                     (e-board-registry-participant-id participant))))
-    (e-harness-unsubscribe
+    (e-harness--remove-activity-sink
      harness (e-board-runtime-attachment-subscription attachment))
     (remhash (e-board-runtime--attachment-key board participant)
              e-board-runtime--attachments)
@@ -2102,7 +2102,7 @@ read proves the expected authorization and controller are still current."
     (condition-case condition
         (progn
           (setf (e-board-runtime-attachment-subscription attachment)
-                (e-harness-subscribe
+                (e-harness--install-activity-sink
                  harness
                  (lambda (event)
                    (e-board-runtime--handle-harness-event attachment event))
@@ -2111,7 +2111,7 @@ read proves the expected authorization and controller are still current."
           attachment)
       (error
        (when (e-board-runtime-attachment-subscription attachment)
-         (e-harness-unsubscribe
+         (e-harness--remove-activity-sink
           harness (e-board-runtime-attachment-subscription attachment)))
        (signal (car condition) (cdr condition))))))
 
@@ -2136,7 +2136,7 @@ read proves the expected authorization and controller are still current."
                     (e-board-registry-participant-id participant))))
     (e-board-runtime--require-rebind-target-free new-harness new-session-id)
     (setq new (e-board-runtime--prepare-rebind-attachment reconciliation))
-    (e-harness-unsubscribe
+    (e-harness--remove-activity-sink
      old-harness (e-board-runtime-attachment-subscription old))
     (remhash (e-board-runtime--attachment-session-key old)
              e-board-runtime--session-attachments)
@@ -2179,7 +2179,7 @@ read proves the expected authorization and controller are still current."
     (condition-case condition
         (progn
           (setf (e-board-runtime-attachment-subscription attachment)
-                (e-harness-subscribe
+                (e-harness--install-activity-sink
                  harness
                  (lambda (event)
                    (when (e-board-runtime-attachment-participant attachment)
@@ -2189,7 +2189,7 @@ read proves the expected authorization and controller are still current."
           attachment)
       (error
        (when (e-board-runtime-attachment-subscription attachment)
-         (e-harness-unsubscribe
+         (e-harness--remove-activity-sink
           harness (e-board-runtime-attachment-subscription attachment)))
        (signal (car condition) (cdr condition))))))
 
@@ -2223,11 +2223,11 @@ read proves the expected authorization and controller are still current."
                source destination requester participant
                destination-participant-id))
       (error
-       (e-harness-unsubscribe
+       (e-harness--remove-activity-sink
         harness (e-board-runtime-attachment-subscription new))
        (signal (car condition) (cdr condition))))
     (setf (e-board-runtime-attachment-participant new) moved-participant)
-    (e-harness-unsubscribe
+    (e-harness--remove-activity-sink
      harness (e-board-runtime-attachment-subscription old))
     (remhash (e-board-runtime--attachment-key source participant)
              e-board-runtime--attachments)

@@ -224,7 +224,7 @@
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "question")
     (let ((messages (e-harness-messages harness "session-1")))
@@ -285,13 +285,13 @@
          (first-events nil)
          (second-events nil)
          (all-events nil))
-    (e-harness-subscribe harness
+    (e-harness--install-activity-sink harness
                          (lambda (event) (push event first-events))
                          :session-id "session-1")
-    (e-harness-subscribe harness
+    (e-harness--install-activity-sink harness
                          (lambda (event) (push event second-events))
                          :session-id "session-2")
-    (e-harness-subscribe harness
+    (e-harness--install-activity-sink harness
                          (lambda (event) (push event all-events)))
     (e-harness--emit-turn-event harness "session-1" "turn-1" 'turn-started nil)
     (e-harness--emit-turn-event harness "session-2" "turn-2" 'turn-started nil)
@@ -318,7 +318,7 @@
                    :backend (e-backend-fake-create :items nil)))
          (events nil))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-subscribe harness (lambda (event) (push event events))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events))
                          :session-id "session-1")
     (e-harness--emit-turn-event
      harness "session-1" "turn-1" 'tool-started '(:name "read"))
@@ -335,17 +335,17 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (events nil)
-         (subscription (e-harness-subscribe
+         (subscription (e-harness--install-activity-sink
                         harness
                         (lambda (event) (push event events))
                         :session-id "session-1")))
     (e-harness--emit-turn-event harness "session-1" "turn-1" 'turn-started nil)
     (should (= (length events) 1))
-    (e-harness-unsubscribe harness subscription)
+    (e-harness--remove-activity-sink harness subscription)
     (e-harness--emit-turn-event harness "session-1" "turn-2" 'turn-started nil)
     (should (= (length events) 1))
     (should-not (member subscription (e-harness-subscribers harness)))
-    (e-harness-unsubscribe harness subscription)
+    (e-harness--remove-activity-sink harness subscription)
     (should (= (length events) 1))))
 
 (ert-deftest e-harness-test-abort-idle-session-is-explicit-error ()
@@ -424,7 +424,7 @@
                               (setq called t)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question" :delay 1.0)
     (should (equal called nil))
@@ -444,7 +444,7 @@
     (let ((message (e-harness--append-message
                     harness "session-1" "turn-1"
                     '(:role assistant :content "The fix shipped in commit 42."))))
-      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness--install-activity-sink harness (lambda (event) (push event events)))
       (e-harness-set-message-display
        harness "session-1" (plist-get message :id) 'hidden)
       (should (eq (plist-get (car (last (e-harness-messages harness "session-1")))
@@ -515,7 +515,7 @@ prompt rides the metadata channel and its value may replay as a string."
               (funcall on-item '(:type done :reason cancelled))))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (run-at-time 0.01 nil (lambda ()
@@ -548,7 +548,7 @@ prompt rides the metadata channel and its value may replay as a string."
                 request)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (should (e-harness-test-abort harness "session-1"))
@@ -570,7 +570,7 @@ prompt rides the metadata channel and its value may replay as a string."
                               (error "provider failed")))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
@@ -588,7 +588,7 @@ prompt rides the metadata channel and its value may replay as a string."
                               :payload (:provider-error full)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
@@ -735,7 +735,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (counter (cdr pair))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
@@ -757,7 +757,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (backend (car pair))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
@@ -838,7 +838,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           request))))
     (cl-letf (((symbol-function 'e-harness-tools)
                (lambda (_harness &optional _session-id _turn-id) tools)))
-      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness--install-activity-sink harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
       (e-harness-test-prompt-async harness "session-1" "question")
       (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
@@ -857,7 +857,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                               :payload (:status 400)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
@@ -963,7 +963,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                              nil))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
       (let ((queue-id
@@ -1079,7 +1079,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                               finishers)
                              nil))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "first")
     (e-harness-test-queue-prompt harness "session-1" "second")
@@ -1117,7 +1117,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                              nil))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (let ((turn-id (e-harness-test-prompt-async harness "session-1" "first")))
       (should (equal (e-harness-test-steer-active-turn
@@ -1599,7 +1599,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                 request)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
@@ -1665,7 +1665,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                    (funcall on-done '(:status done)))))
               nil))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
@@ -1699,7 +1699,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                         request)))))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (e-harness-test-abort harness "session-1")
@@ -1759,7 +1759,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                            request))))
     (cl-letf (((symbol-function 'e-harness-tools)
                (lambda (_harness &optional _session-id _turn-id) tools)))
-      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness--install-activity-sink harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
       (e-harness-test-prompt-async harness "session-1" "question")
       (should tool-callbacks)
@@ -1805,7 +1805,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (harness (e-harness-create :backend backend))
          (token [endpoint :live 7 "store" "session"])
          events)
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session")
     (e-harness-test-prompt-batch
      harness "session" "board input"
@@ -1830,7 +1830,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (token [endpoint :live 7 "store" "session"])
          (delivery-id '("board" "message" "participant"))
          events)
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session")
     (puthash "session"
              (list :id "settling" :status 'done
@@ -2860,7 +2860,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :backend (e-backend-fake-create :items nil)
            :intrinsic-capabilities (list tools-capability hooks-capability)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-tool-lifecycle-start-call
      (e-harness-tool-lifecycle harness "session-1" "turn-1")
      '(:id "outer-1" :name "outer" :arguments nil)
@@ -2980,7 +2980,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            :backend backend
            :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-test-prompt-batch harness "session-1" "chain tools")
     (should (equal calls 2))
     (let* ((messages (e-harness-messages harness "session-1"))
@@ -3767,7 +3767,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create :backend backend))
          (events nil))
-    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "gpt-test")
     (let ((event (car events)))
@@ -4097,7 +4097,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
            (e-harness-auto-compaction-reserve-tokens 10)
            (e-compaction-keep-recent-tokens 1000)
            events)
-      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness--install-activity-sink harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
       (e-session-append-message store "session-1"
                                 (list :id "kept"
