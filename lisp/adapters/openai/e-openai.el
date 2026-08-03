@@ -495,11 +495,12 @@ Diagnostics are captured only when `e-openai-codex-debug' is non-nil."
 
 (defun e-openai-codex--trim-raw-response-buffer (buffer)
   "Trim BUFFER to `e-openai-codex-raw-responses-max-bytes'."
-  (let ((limit (max 0 e-openai-codex-raw-responses-max-bytes)))
-    (when (> (string-bytes (buffer-string)) limit)
-      (let ((tail (e-openai-codex--raw-response-tail (buffer-string))))
-        (erase-buffer)
-        (insert tail)))))
+  (with-current-buffer buffer
+    (let ((limit (max 0 e-openai-codex-raw-responses-max-bytes)))
+      (when (> (string-bytes (buffer-string)) limit)
+        (let ((tail (e-openai-codex--raw-response-tail (buffer-string))))
+          (erase-buffer)
+          (insert tail))))))
 
 (defun e-openai-codex--append-raw-response (stream-text)
   "Append a bounded debug tail of STREAM-TEXT to the hidden response buffer."

@@ -106,8 +106,8 @@
     (signal 'wrong-type-argument
             (list '(member always hidden) visibility))))
 
-(defun e-harness-instance--validate-session-port (name port)
-  "Signal unless optional session NAME PORT is a callable application port."
+(defun e-harness-instance--validate-session-port (_name port)
+  "Signal unless optional session PORT is a callable application port."
   (when (and port (not (functionp port)))
     (signal 'wrong-type-argument (list 'functionp port))))
 
@@ -601,10 +601,11 @@ versioned access record and persisted board publication counters."
 (cl-defun e-harness-instance-session-access-start
     (session-store-id operation arguments &key on-done on-error)
   "Start one optimistic asynchronous session access-store mutation.
-OPERATION is one of `create', `grant', `revoke', or `transfer'.  ARGUMENTS must
-name =:session-id=, a trusted =:requester-principal= resolved by the host, and an
-explicit =:expected-version= (which may be nil for an absent-record create).
-The configured port receives no transcript or live harness object."
+OPERATION is one of `create', `grant', `revoke', or `transfer'.
+ARGUMENTS must name =:session-id=, a trusted =:requester-principal= resolved by
+the host, and an explicit =:expected-version= (which may be nil for an
+absent-record create).  The configured port receives no transcript or live
+harness object."
   (unless (memq operation e-harness-instance-session-access-operations)
     (signal 'e-harness-instance-session-access-invalid-operation
             (list operation)))
