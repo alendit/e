@@ -2475,11 +2475,12 @@ require authority for their target participant."
    :to to :requester requester :mode mode :content content
    :reference reference :source-input-key source-input-key))
 
-(cl-defun e-board-runtime-post-participant-input
+(cl-defun e-board-runtime--post-participant-input
     (attachment &key id author tags attributes to (mode 'inject)
                 content reference source-input-key)
-  "Post input as current board ATTACHMENT's authenticated participant actor."
-  (e-board-runtime--require-admission)
+  "Post one continuation as current ATTACHMENT's participant actor.
+This private path does not reopen admission: the attached turn already owns
+the authority to continue its interaction through the board."
   (unless (and (e-board-runtime--current-attachment-p attachment)
                (eq (e-board-runtime-attachment-state attachment) 'active))
     (signal 'e-board-runtime-error (list "Stale participant attachment")))
@@ -2501,6 +2502,41 @@ require authority for their target participant."
       (e-board-runtime--enqueue-pickups
        board (e-board-publication-pickup-ids publication))
       publication)))
+
+(cl-defun e-board-runtime-post-participant-input
+    (attachment &key id author tags attributes to (mode 'inject)
+                content reference source-input-key)
+  "Post a new public input as ATTACHMENT's authenticated participant actor."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--post-participant-input
+   attachment :id id :author author :tags tags :attributes attributes :to to
+   :mode mode :content content :reference reference
+   :source-input-key source-input-key))
+
+(cl-defun e-board-runtime--publish-attached-follow-up
+    (harness session-id prompt &key references metadata tags)
+  "Publish HARNESS SESSION-ID's follow-up through its current attachment."
+  (let ((attachment
+         (gethash (e-board-runtime--session-key harness session-id)
+                  e-board-runtime--endpoint-attachments)))
+    (unless (and attachment
+                 (e-board-runtime--current-attachment-p attachment)
+                 (eq (e-board-runtime-attachment-state attachment) 'active))
+      (signal 'e-harness-board-attachment-required (list session-id)))
+    (let ((participant-id
+           (e-board-registry-participant-id
+            (e-board-runtime-attachment-participant attachment))))
+      (e-board-runtime--post-participant-input
+       attachment
+       :author (format "participant:%s" participant-id)
+       :tags tags
+       :attributes
+       (append (copy-tree metadata)
+               (and references (list :references (copy-tree references))))
+       :to participant-id
+       :mode 'queue
+       :content prompt
+       :reference (copy-tree references)))))
 
 (defun e-board-runtime-attachment-active-turn (attachment)
   "Return current ATTACHMENT's private execution turn projection, or nil."
@@ -2534,6 +2570,9 @@ require authority for their target participant."
 
 (setq e-harness--attached-port-authorizer
       #'e-board-runtime--authorize-harness-port)
+
+(setq e-harness--attached-follow-up-publisher
+      #'e-board-runtime--publish-attached-follow-up)
 
 (provide 'e-board-runtime)
 

@@ -1,0 +1,11 @@
+#+title: Bayesian Follow-up Leaks Into Main Chat
+
+* Report
+
+After a Bayesian reasoning follow-up completed, chat rendered its assistant
+output as a second answer below the original answer.  The duplicate appeared
+as a separate completed turn even though the follow-up was machine-authored
+validation and should not be part of the main chat interaction.
+
+The reported session was the Grimoire daily chat on 2026-08-03.  The visible
+duplicate followed a short corrective turn.

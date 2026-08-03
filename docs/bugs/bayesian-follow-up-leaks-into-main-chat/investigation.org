@@ -1,0 +1,108 @@
+#+title: Investigation: Bayesian Follow-up Leaks Into Main Chat
+
+* Reproduction
+
+A board-native integration test submits a main-tagged prompt whose first reply
+contains an incomplete reasoning block.  The Bayesian hook schedules its
+corrective follow-up.  Before the fix, both board outputs had the =main= tag,
+so the main observer projected two assistant answers.
+
+The red assertion observed:
+
+#+begin_example
+((main) (main))
+#+end_example
+
+instead of:
+
+#+begin_example
+((main) (bayesian-reasoning-validation))
+#+end_example
+
+* Cause
+
+The board cutover left one capability continuation on the old private harness
+queue.  =e-bayesian-reasoning--turn-finished-hook= called
+=e-harness--request-attached-follow-up= directly.  That queue item did not have
+a board pickup, so =e-board-runtime= had no routing tags to attach to the new
+turn and fell back to =main= when it published the final output.
+
+The earlier display fix changed private session message metadata after the
+board had already published an immutable output under a different message id.
+Chat now observes the board, so that reconciliation could not hide the board
+output.  Adding another chat-side id map would preserve the wrong ownership.
+
+A bounded live inspection of session =20260803T164156-136fc3d8a0af= confirmed
+the split: the private replacement message was hidden, while its board output
+had no display metadata and was projected as a second visible block.
+
+* Fix
+
+Add one private harness continuation port whose implementation belongs to the
+board runtime.  A settlement hook uses the port to publish an exact-addressed,
+queued board input.  Bayesian validation supplies the
+=bayesian-reasoning-validation= routing tag.  The existing board delivery path
+then starts the corrective turn and carries that tag through its activity and
+output.
+
+The main chat observer already selects =(:tags (main))=.  It therefore does
+not receive the validation interaction.  Other observers can explicitly
+select the validation tag for audit.  Board persistence records both the
+private input and output with their tags, so replay has the same projection.
+
+The obsolete accepted-replacement behavior was removed.  The original remains
+the main-chat answer; every validation reply is hidden in the private
+transcript, and the durable hook audit records whether validation succeeded or
+remained unresolved.
+
+* Ownership and state
+
+- The Bayesian capability owns the semantic validation tag and audit policy.
+- The harness owns the narrow settlement-continuation port without depending
+  on board code.
+- The board runtime implements the port, authenticates the participant, and
+  owns routing and delivery.
+- Chat remains a selector-driven presentation consumer and receives no new
+  Bayesian-specific logic.
+- No new durable side state is added.  Immutable board messages and their tags
+  are the interaction log; private message display metadata remains only for
+  model-context hygiene.
+
+* Validation
+
+- The board/chat regression proves the validation input and output use the
+  non-main tag and only one assistant message reaches a main observer.
+- Bayesian hook tests prove both successful and failed validation keep the
+  original visible and hide the private validation reply.
+- Cutover structure tests constrain the new private port to the harness,
+  board-runtime adapter, and Bayesian capability.
+
+* Architecture self-check
+
+1. This slice stops the duplicate output and leaves a reusable, board-owned
+   continuation boundary even if no further work follows.
+2. It moves toward board-first interactions with selector-driven presentation.
+3. The stable choice is that follow-ups are interactions; the capability-local
+   tag remains easy to rename or broaden without changing chat or routing.
+4. The capability owns validation policy, the harness owns lifecycle, the
+   runtime adapter owns board publication, and chat owns projection.
+5. Coupling is reduced: the harness exposes one narrow callback and neither the
+   harness nor capability imports board or chat implementation code.
+6. Stable policy has no dependency on a concrete shell; the board dependency
+   remains in the runtime adapter.
+7. The publication side effect is already at the outer board-runtime boundary.
+8. No mutable state was added.  The durable state is the existing immutable
+   board message and tag; turn tags retain their existing turn lifetime.
+9. The follow-up adds the same one input publication and routing pass as any
+   board interaction.  It removes private-to-board reconciliation work.
+10. The continuation port has one supported behavior: publish an attached
+    follow-up.  Its board implementation does not weaken the contract.
+11. Board-only execution is the compatibility target.  The obsolete private
+    replacement path was removed rather than retained as a fallback.
+12. Accepted-replacement supersession metadata and original-message hiding are
+    no longer needed and were removed from the capability.
+13. Missing or stale attachments fail at the harness/runtime boundary;
+    unexpected publication and routing errors still surface to the hook.
+14. Hook unit tests isolate audit policy, the board integration isolates tag
+    inheritance and projection, and runtime/cutover suites cover the adapter
+    and dependency boundary independently.

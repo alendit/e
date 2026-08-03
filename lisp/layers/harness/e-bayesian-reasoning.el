@@ -26,7 +26,7 @@
 (require 'e-structured-blocks)
 (require 'subr-x)
 
-(declare-function e-harness--request-attached-follow-up "e-harness"
+(declare-function e-harness--publish-attached-follow-up "e-harness"
                   (harness session-id prompt &rest args))
 (declare-function e-harness-messages "e-harness" (harness session-id))
 (declare-function e-harness-session-activity-events "e-harness"
@@ -451,9 +451,13 @@ from this turn, keeping the prompt cost bounded."
 The hook tags the follow-up it requests so it never re-fires enforcement on
 the turn it generated, which would otherwise oscillate.")
 
+(defconst e-bayesian-reasoning--follow-up-tags
+  '(bayesian-reasoning-validation)
+  "Board routing tags for the private claim-validation interaction.")
+
 (defconst e-bayesian-reasoning--follow-up-pending-summary
   "Validating claims…"
-  "Compact visible activity while a corrective turn replaces a reply.")
+  "Compact audit summary while the private validation turn runs.")
 
 (defconst e-bayesian-reasoning--specific-regexp
   "\\(?:[$€£][0-9]\\|[0-9][0-9.,]*%?\\|[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\|[A-Z][a-zA-Z0-9_]*[A-Z][a-zA-Z0-9_]*\\)"
@@ -500,11 +504,9 @@ turn it generated."
                         e-bayesian-reasoning--follow-up-marker)))
           (e-harness-messages harness session-id)))))
 
-(defun e-bayesian-reasoning--follow-up-superseded-message-id (context)
-  "Return the first-attempt message id replaced by CONTEXT's follow-up.
-The target travels only in the hidden corrective prompt's metadata.  This
-keeps replacement ownership in the capability while the harness and shell
-handle its generic display and activity contracts."
+(defun e-bayesian-reasoning--follow-up-target-message-id (context)
+  "Return the first-attempt message id checked by CONTEXT's follow-up.
+The target travels only in the private validation prompt's metadata."
   (let* ((harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
          (turn-id (plist-get context :turn-id)))
@@ -518,7 +520,8 @@ handle its generic display and activity contracts."
                                             :bayesian-reasoning)
                                  e-bayesian-reasoning--follow-up-marker)))
                    (e-harness-messages harness session-id))))
-        (plist-get (plist-get prompt :metadata) :supersedes-message-id)))))
+        (plist-get (plist-get prompt :metadata)
+                   :validation-target-message-id)))))
 
 (defun e-bayesian-reasoning--marks (content)
   "Return parsed reasoning marks found in CONTENT, newest matcher order.
@@ -678,17 +681,17 @@ know this capability's marker grammar to render it."
   "Conditional `:turn-finished' hook enforcing the reasoning mark.
 Returns VALUE unchanged always -- the hook never rewrites the reply.  On a
 gated failure it requests exactly one corrective follow-up turn through
-`e-harness--request-attached-follow-up', tagged so it does not recurse.  The
-first attempt remains visible with a validation activity entry until the
-corrective turn has produced an accepted replacement.  An invalid replacement
-is hidden instead, while the original stays visible.  Every performed check
-writes a durable hook-audit record."
+`e-harness--publish-attached-follow-up', tagged so it does not recurse and so
+main chat observers do not project the private validation interaction.  The
+first attempt remains the visible answer.  The validation reply remains in the
+private transcript for audit but is hidden from ordinary transcript context.
+Every performed check writes a durable hook-audit record."
   (if (e-bayesian-reasoning--follow-up-turn-p context)
       (when-let* ((harness (plist-get context :harness))
                   (session-id (plist-get context :session-id))
                   (replacement (plist-get context :assistant-message))
                   (message-id
-                   (e-bayesian-reasoning--follow-up-superseded-message-id
+                   (e-bayesian-reasoning--follow-up-target-message-id
                     context)))
         (let* ((original
                 (seq-find
@@ -709,24 +712,20 @@ writes a durable hook-audit record."
                  (copy-tree (plist-get check :details))
                  (list :replacement-turn-id (plist-get context :turn-id)
                        :replacement-message-id (plist-get replacement :id)
-                       :supersedes-message-id message-id))))
+                       :validation-target-message-id message-id))))
+          (when (fboundp 'e-harness-set-message-display)
+            (e-harness-set-message-display
+             harness session-id (plist-get replacement :id) 'hidden))
           (if (not original-turn-id)
               (e-bayesian-reasoning--record-audit
                harness session-id (plist-get context :turn-id)
                'verification-unavailable
-               (append details (list :reason 'superseded-message-missing))
+               (append details (list :reason 'validation-target-message-missing))
                'unavailable)
             (if accepted
-                (progn
-                  (when (fboundp 'e-harness-set-message-display)
-                    (e-harness-set-message-display
-                     harness session-id message-id 'hidden))
-                  (e-bayesian-reasoning--record-audit
-                   harness session-id original-turn-id outcome details
-                   'completed))
-              (when (fboundp 'e-harness-set-message-display)
-                (e-harness-set-message-display
-                 harness session-id (plist-get replacement :id) 'hidden))
+                (e-bayesian-reasoning--record-audit
+                 harness session-id original-turn-id outcome details
+                 'completed)
               (e-bayesian-reasoning--record-audit
                harness session-id original-turn-id 'correction-unresolved
                (append details
@@ -743,22 +742,23 @@ writes a durable hook-audit record."
         (if (not (memq outcome '(format-gap evidence-gap)))
             (e-bayesian-reasoning--record-audit
              harness session-id turn-id outcome details 'none)
-          (if (not (fboundp 'e-harness--request-attached-follow-up))
+          (if (not (fboundp 'e-harness--publish-attached-follow-up))
               (e-bayesian-reasoning--record-audit
                harness session-id turn-id 'verification-unavailable
                (append details (list :reason 'follow-up-unavailable)) 'unavailable)
             (condition-case err
                 (progn
-                  (e-harness--request-attached-follow-up
+                  (e-harness--publish-attached-follow-up
                    harness session-id
                    (e-bayesian-reasoning--follow-up-prompt
                     gap
                     (e-bayesian-reasoning--available-evidence-handles context)
                     (plist-get details :rejected))
+                   :tags e-bayesian-reasoning--follow-up-tags
                    :metadata (list :bayesian-reasoning
                                    e-bayesian-reasoning--follow-up-marker
                                    :display 'hidden
-                                   :supersedes-message-id
+                                   :validation-target-message-id
                                    (plist-get (plist-get context :assistant-message)
                                               :id)
                                    :pending-summary

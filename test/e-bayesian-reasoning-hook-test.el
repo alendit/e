@@ -20,6 +20,13 @@
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-backend)
 
+(cl-defun e-bayesian-reasoning-hook-test--queue-follow-up
+    (harness session-id prompt &key references metadata tags)
+  "Adapt the board publication port to the private queue for harness unit tests."
+  (ignore tags)
+  (e-harness--request-attached-follow-up
+   harness session-id prompt :references references :metadata metadata))
+
 (defun e-bayesian-reasoning-hook-test--run-finished-hook (value context)
   "Run the stop hook with the settling board token production retains."
   (let ((harness (plist-get context :harness))
@@ -31,7 +38,9 @@
              (e-harness-active-turns harness))
     (e-harness-test--synthetic-token
      harness session-id e-harness-test--attachment-token)
-    (e-bayesian-reasoning--turn-finished-hook value context)))
+    (let ((e-harness--attached-follow-up-publisher
+           #'e-bayesian-reasoning-hook-test--queue-follow-up))
+      (e-bayesian-reasoning--turn-finished-hook value context))))
 
 ;;;; The harness follow-up affordance
 
@@ -401,7 +410,8 @@ unchanged."
                        (list :bayesian-reasoning
                              e-bayesian-reasoning--follow-up-marker
                              :display 'hidden
-                             :supersedes-message-id (plist-get message :id)
+                             :validation-target-message-id
+                             (plist-get message :id)
                              :pending-summary
                              e-bayesian-reasoning--follow-up-pending-summary
                              :board-endpoint-token
@@ -457,8 +467,8 @@ unchanged."
           (should (eq (plist-get (plist-get payload :details) :correction)
                       'failed)))))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-valid-replacement-hides-original ()
-  "A validated corrective reply replaces the original and closes its audit."
+(ert-deftest e-bayesian-reasoning-hook-test-valid-validation-keeps-original ()
+  "A successful private validation closes the audit without replacing chat."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (e-harness--append-message
@@ -501,8 +511,8 @@ unchanged."
                :session-id "session-1"
                :turn-id "turn-2"
                :assistant-message replacement))
-        (should (e-harness-message-hidden-p message))
-        (should-not (e-harness-message-hidden-p replacement))
+        (should-not (e-harness-message-hidden-p message))
+        (should (e-harness-message-hidden-p replacement))
         (let* ((audits
                 (e-harness-turn-hook-audits
                  harness "session-1" "turn-1" 'bayesian-reasoning))
@@ -513,7 +523,9 @@ unchanged."
 
 (ert-deftest e-bayesian-reasoning-hook-test-attachment-repair-regression ()
   "An opaque citation cannot turn a source-backed answer into `I don't know'."
-  (let* ((calls 0)
+  (let* ((e-harness--attached-follow-up-publisher
+          #'e-bayesian-reasoning-hook-test--queue-follow-up)
+         (calls 0)
          (request-messages nil)
          (backend
           (e-backend-create

@@ -33,7 +33,9 @@
              :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el"))
     (:symbol e-harness--request-attached-follow-up :policy private
              :owners ("lisp/core/e-harness.el"
-                      "lisp/core/e-board-runtime.el"
+                      "lisp/core/e-board-runtime.el"))
+    (:symbol e-harness--publish-attached-follow-up :policy private
+             :owners ("lisp/core/e-harness.el"
                       "lisp/layers/harness/e-bayesian-reasoning.el"))
     (:symbol e-harness--queue-attached-prompt :policy private
              :owners ("lisp/core/e-harness.el"))

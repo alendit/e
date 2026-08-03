@@ -47,6 +47,9 @@
 (defvar e-harness--attached-port-authorizer nil
   "Adapter validating private live-port attachment tokens.")
 
+(defvar e-harness--attached-follow-up-publisher nil
+  "Adapter publishing settlement follow-ups through the owning interaction bus.")
+
 (defun e-harness--require-attached-port (harness session-id token)
   "Require TOKEN to authorize HARNESS SESSION-ID's private live port."
   (unless (and token e-harness--attached-port-authorizer
@@ -1554,6 +1557,26 @@ hooks complete, so the drain path stays the single owner of turn scheduling."
     (setq metadata (plist-put metadata :input-origin 'harness))
     (e-harness--enqueue-prompt-item
      harness session-id prompt references metadata)))
+
+(cl-defun e-harness--publish-attached-follow-up
+    (harness session-id prompt &key references metadata tags)
+  "Publish PROMPT as an attached settlement follow-up with routing TAGS.
+This is the capability-facing continuation port for a `:turn-finished' hook.
+The harness verifies the settling attachment but does not own interaction
+routing.  Its runtime adapter must publish the follow-up through the owning
+board, whose delivery path later starts the new turn."
+  (let* ((entry (gethash session-id (e-harness-active-turns harness)))
+         (token (and (listp entry) (plist-get entry :endpoint-token))))
+    (e-harness--require-attached-port harness session-id token))
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (unless e-harness--attached-follow-up-publisher
+    (signal 'e-harness-board-attachment-required (list session-id)))
+  (funcall e-harness--attached-follow-up-publisher
+           harness session-id prompt
+           :references (copy-tree references)
+           :metadata (copy-sequence metadata)
+           :tags (copy-tree tags)))
 
 (cl-defun e-harness--queue-attached-prompt
     (harness session-id prompt &key references metadata attachment-token)

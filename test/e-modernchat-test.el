@@ -530,6 +530,119 @@ messages so the transcript reads as one clean answer."
                                                   (plist-get event :turn-id)))))
         (should (null (e-harness-queued-prompts harness session-id)))))))
 
+(ert-deftest e-chat-service-test-bayesian-follow-up-stays-off-main-projection ()
+  "A Bayesian corrective interaction uses a non-main board route end to end."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (initial-reply
+         (concat "Errors rose after the rollout.\n\n"
+                 "```reasoning\n"
+                 "claim: the rollout caused the rise\n"
+                 "confidence: high\n"
+                 "alternatives: an upstream incident\n"
+                 "evidence:\n"
+                 "```\n"))
+        (backend-calls 0)
+        events)
+    (let* ((harness
+            (e-harness-create
+             :backend
+             (e-backend-create
+              :name "bayesian-board-e2e"
+              :start
+              (cl-function
+               (lambda (&key on-item on-done on-request-start &allow-other-keys)
+                 (cl-incf backend-calls)
+                 (when on-request-start
+                   (funcall on-request-start (e-backend-request-create)))
+                 (funcall on-item
+                          (list :type 'assistant-message
+                                :content (if (= backend-calls 1)
+                                             initial-reply
+                                           "I don't know.")))
+                 (funcall on-item '(:type done :reason stop))
+                 (funcall on-done '(:status done))
+                 (e-backend-request-create))))
+             :enabled-layer-ids nil))
+           (_capability
+            (e-harness-activate-capability
+             harness (e-bayesian-reasoning-capability-create)))
+           (session (e-chat-service-create-session
+                     :harness harness :id "bayesian-board-e2e"))
+           (session-id (plist-get session :id))
+           (binding (e-chat-service-binding harness session-id))
+           (board (e-chat-service-binding-board binding))
+           (source (e-board-registry-board-source-board board))
+           (subscription
+            (e-chat-service-subscribe
+             harness session-id (lambda (event) (push event events)))))
+      (e-chat-service-submit-session harness session-id "Why did errors rise?")
+      (e-board-runtime--drain-input-routing
+       board (lambda () (e-board-drain-input-classifications source)))
+      (e-board-runtime--drain-pickups)
+      (let ((deadline (+ (float-time) 2.0)))
+        (while (and (< (float-time) deadline)
+                    (< (cl-count 'output (e-board-messages source)
+                                 :key #'e-board-message-kind)
+                       2))
+          (accept-process-output nil 0.01)))
+      (e-chat-service--drain-observer binding)
+      (let ((inputs (cl-remove-if-not
+                     (lambda (message)
+                       (eq (e-board-message-kind message) 'input))
+                     (e-board-messages source)))
+            (outputs (cl-remove-if-not
+                      (lambda (message)
+                        (eq (e-board-message-kind message) 'output))
+                      (e-board-messages source)))
+            (visible-assistants
+             (cl-remove-if-not
+              (lambda (event)
+                (and (eq (plist-get event :type) 'message-added)
+                     (eq (plist-get
+                          (plist-get (plist-get event :payload) :message)
+                          :role)
+                         'assistant)))
+              events)))
+        (should (equal (mapcar #'e-board-message-tags inputs)
+                       '((main) (bayesian-reasoning-validation))))
+        (should (equal
+                 (plist-get (e-board-message-attributes (cadr inputs))
+                            :bayesian-reasoning)
+                 e-bayesian-reasoning--follow-up-marker))
+        (should (= (length outputs) 2))
+        (should (equal (mapcar #'e-board-message-tags outputs)
+                       '((main) (bayesian-reasoning-validation))))
+        (should (= (length visible-assistants) 1))
+        (let ((visible-content
+               (plist-get
+                (plist-get (plist-get (car visible-assistants) :payload)
+                           :message)
+                :content)))
+          (should (equal visible-content
+                         (e-board-message-content (car outputs))))
+          (should-not (equal visible-content
+                             (e-board-message-content (cadr outputs))))))
+      (e-chat-service-unsubscribe subscription))))
+
 (ert-deftest e-chat-service-test-idle-board-closes-through-bounded-registry ()
   "The last shell client schedules full registry-owned board cleanup."
   (let ((e-board--registry (make-hash-table :test 'equal))

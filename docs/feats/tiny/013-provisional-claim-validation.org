@@ -2,14 +2,22 @@
 
 * Change
 
-Keep a provisional Bayesian answer visible while its corrective follow-up runs.
-Show the capability-provided =Validating claims…= activity in its place, and
-hide the provisional answer only after the replacement reply has completed.
+Keep the first Bayesian answer as the only main-chat answer while its private
+validation follow-up runs.
 
-The harness carries optional pending hook activity without interpreting the
-capability's policy.  The chat shell renders it generically.
+The hook publishes the follow-up through the attached board with the
+=bayesian-reasoning-validation= tag.  The board delivers that exact-addressed
+input back to the participant, and the runtime carries the tag through all
+activity and output for the validation turn.  Main chat observers select only
+=main=, so they never project the validation input, progress, or output.
+
+The board remains the durable interaction log.  No chat-specific hiding or
+private-message-to-board-message reconciliation is required.  The validation
+reply remains hidden in the private transcript so it does not enter ordinary
+model context.
 
 * Validation
 
-- Bayesian hook tests cover delayed supersession.
-- Chat tests cover the pending activity and ordinary progress rendering.
+- Bayesian hook tests cover accepted and rejected private validation.
+- The board/chat integration test covers routing-tag inheritance and proves a
+  =main= observer receives only the first assistant output.
