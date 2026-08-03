@@ -210,6 +210,17 @@ tests, matching how the buffer behaves when shown to a user."
 
 (defun e-chat-test--mark-active-turn (turn-id &optional status)
   "Mark TURN-ID as the current active turn in the test chat buffer."
+  (let* ((binding (e-chat-service-binding e-chat-harness e-chat-session-id))
+         (attachment (and binding
+                          (e-chat-service-binding-attachment binding)))
+         (participant-id
+          (and attachment
+               (e-board-registry-participant-id
+                (e-board-runtime-attachment-participant attachment)))))
+    (when participant-id
+      (puthash (list participant-id turn-id)
+               turn-id
+               (e-chat-service-binding-turn-map binding))))
   (puthash e-chat-session-id
            (list :id turn-id :status (or status 'running))
            (e-harness-active-turns e-chat-harness)))
@@ -356,11 +367,21 @@ tests, matching how the buffer behaves when shown to a user."
   "Translate an old private test fixture into its explicit durable board log.
 Production presentation never performs this compatibility translation."
   (let* ((store (e-harness-sessions harness))
-         (binding (e-chat-service-binding harness session-id))
+         (_ (unless (plist-get (e-session-get store session-id)
+                               :board-session-state)
+              (e-session-declare-board-state
+               store session-id (format "chat:%s" session-id)
+               (format "test-board:%s" session-id))))
+         (binding (e-chat-service-ensure-binding harness session-id))
          (board (and binding
                      (e-board-registry-board-source-board
                       (e-chat-service-binding-board binding))))
-         (participant-id (format "fixture:%s" session-id))
+         (participant-id
+          (if binding
+              (e-board-registry-participant-id
+               (e-board-runtime-attachment-participant
+                (e-chat-service-binding-attachment binding)))
+            (format "fixture:%s" session-id)))
          (sequence 0)
          (turn-inputs (make-hash-table :test 'equal))
          envelopes)
@@ -3553,6 +3574,96 @@ the orphaned region and appeared to vanish."
                      "Thought for 0min 1sec" content))
             (should-not (string-match-p
                          "Working for" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-board-progress-uses-presentation-turn-identity ()
+  "Board-private turn ids do not make presentation progress look stale."
+  (let ((buffer (e-chat-test--buffer nil "chat-board-progress-identity"))
+        harness
+        session-id)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq harness e-chat-harness
+                session-id e-chat-session-id)
+          (let* ((binding (e-chat-service-binding harness session-id))
+                 (attachment (e-chat-service-binding-attachment binding))
+                 (participant-id
+                  (e-board-registry-participant-id
+                   (e-board-runtime-attachment-participant attachment)))
+                 (board (e-board-registry-board-source-board
+                         (e-chat-service-binding-board binding)))
+                 (presentation-turn-id "msg-progress-input")
+                 (source-turn-id '(board participant source-turn))
+                 (author (format "participant:%s" participant-id)))
+            (e-board-post-input
+             board :id presentation-turn-id :author "test-client" :tags '(main)
+             :content "inspect" :source-input-key '(test-progress 1 0))
+            (puthash session-id
+                     (list :id source-turn-id :status 'running)
+                     (e-harness-active-turns harness))
+            (e-board-post-activity
+             board :id "progress-turn-started" :author author
+             :subject-participant-id participant-id
+             :source-turn-id source-turn-id :activity-kind 'turn-started
+             :tags '(main) :reply-to-message-ids (list presentation-turn-id)
+             :source-activity-key '(test-progress 1 1))
+            (e-board-post-activity
+             board :id "progress-provider-started" :author author
+             :subject-participant-id participant-id
+             :source-turn-id source-turn-id
+             :activity-kind 'provider-request-started :tags '(main)
+             :attributes '(:status started)
+             :reply-to-message-ids (list presentation-turn-id)
+             :source-activity-key '(test-progress 1 2))
+            (e-board-post-activity
+             board :id "progress-provider-finished" :author author
+             :subject-participant-id participant-id
+             :source-turn-id source-turn-id
+             :activity-kind 'provider-request-finished :tags '(main)
+             :attributes '(:status done)
+             :reply-to-message-ids (list presentation-turn-id)
+             :source-activity-key '(test-progress 1 3))
+            (e-chat-service--drain-subscription e-chat--event-subscription)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
+            (should (equal e-chat--progress-turn-id presentation-turn-id))
+            (should
+             (equal
+              (plist-get
+               (e-chat-service-active-turn harness session-id)
+               :id)
+              presentation-turn-id))
+            (should
+             (equal
+              (plist-get
+               (plist-get (e-chat-service-state harness session-id)
+                          :active-turn)
+               :id)
+              presentation-turn-id))
+            (should
+             (equal
+              (plist-get
+               (gethash session-id
+                        (e-chat-service-active-turns harness))
+               :id)
+              presentation-turn-id))
+            (let* ((record
+                    (e-chat--existing-turn-record presentation-turn-id))
+                   (started-at
+                    (plist-get (e-chat--last-round-record record) :started-at)))
+              (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                         (lambda (&optional _time) (+ started-at 8.0))))
+                (e-chat--advance-progress-indicator)
+                (e-ui-work-with-batch-drain
+                  (e-ui-work-drain-batch :buffer (current-buffer)))))
+            (should (equal e-chat--progress-turn-id presentation-turn-id))
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--progress-interval-handle))
+            (should (string-match-p
+                     "Working for 0min 8sec" (buffer-string)))))
+      (when (and harness session-id)
+        (remhash session-id (e-harness-active-turns harness)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

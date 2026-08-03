@@ -1,0 +1,21 @@
+#+title: Board Chat Progress Turn ID Mismatch
+#+startup: overview
+
+* Report
+
+The user reported that live =e-chat= activity still stopped counting after the
+earlier between-step progress fix.  The latest visible row remained
+=Thought for 0min 0sec= while the board-backed Grimoire daily turn was still
+running.
+
+* Expected
+
+The progress interval should remain live for the board turn that owns the
+visible activity record.  After a provider request settles and before the next
+tool or provider request begins, the latest row should continue as
+=Working for ...=.
+
+* Actual
+
+The renderer stopped and cleared its progress owner even though the chat
+service still reported a running board participant turn.

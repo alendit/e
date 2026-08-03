@@ -4657,10 +4657,8 @@ harness-confirmed active turn."
          (latest (car (last rounds)))
          (active-turn (and (equal (plist-get record :id)
                                   e-chat--progress-turn-id)
-                           e-chat-session-id
-                           (e-harness-p e-chat-harness)
-                           (not (e-chat--stale-progress-turn-p
-                                 e-chat--progress-turn-id)))))
+                           (e-chat--service-active-turn-matches-p
+                            e-chat--progress-turn-id))))
     (delq nil
           (mapcar (lambda (round)
                     (e-chat--activity-round-visible-text
@@ -5873,18 +5871,23 @@ turn keeps a background session from stalling the main thread."
   "Return non-nil when RECORD has an active provider activity round."
   (and record (e-chat--active-round-record record)))
 
+(defun e-chat--service-active-turn-matches-p (turn-id)
+  "Return non-nil when TURN-ID is the service's current running turn."
+  (and turn-id
+       e-chat-session-id
+       (e-harness-p e-chat-harness)
+       (equal turn-id
+              (plist-get
+               (e-chat-service-active-turn
+                e-chat-harness e-chat-session-id)
+               :id))))
+
 (defun e-chat--stale-progress-turn-p (turn-id)
   "Return non-nil when TURN-ID no longer matches harness running state."
   (when (and turn-id
              e-chat-session-id
              (e-harness-p e-chat-harness))
-    (let ((entry (gethash e-chat-session-id
-                          (e-chat-service-active-turns e-chat-harness))))
-      (cond
-       ((e-harness--active-turn-running-p entry)
-        (not (equal turn-id (e-harness--active-turn-id entry))))
-       (entry t)
-       (t t)))))
+    (not (e-chat--service-active-turn-matches-p turn-id))))
 
 (defun e-chat--cancel-progress-interval ()
   "Cancel the active assistant progress UI work interval."

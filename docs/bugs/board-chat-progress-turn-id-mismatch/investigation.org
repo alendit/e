@@ -1,0 +1,116 @@
+#+title: Board Chat Progress Turn ID Mismatch Investigation
+#+startup: overview
+
+* Live Evidence
+
+A bounded read-only probe of =*e-chat:Grimoire: Daily 2026-08-03*= confirmed
+that the prior =Working for ...= code was loaded from the installed =e-chat=
+build.
+
+The same probe found three conflicting facts:
+
+- =e-chat--progress-turn-id= was nil and the interval handle was absent.
+- The chat service still reported a running active turn.
+- The latest visible record was stored under =msg_905=, while the active turn's
+  private id was a composite board value with board, participant, and source
+  turn components.
+
+The latest record contained seven completed provider rounds.  Its last round
+had completed in less than one second, matching the frozen
+=Thought for 0min 0sec= row in the screenshot.
+
+* Source Evidence
+
+=e-chat-service--message-event= deliberately translates board activity from a
+participant-private source turn id to the causal input message id.  That
+presentation id becomes every delivered event's =:turn-id= and therefore keys
+the chat shell's turn registry and progress owner.
+
+=e-chat-service-state= and =e-chat-service-active-turns= returned the private
+harness active-turn entry without applying the same translation.
+=e-chat--stale-progress-turn-p= compared those two namespaces on every tick,
+treated the live presentation turn as stale, cancelled the timer, and cleared
+the local owner.
+
+* Review Of The Earlier Fix
+
+The earlier fix correctly identified the missing presentation state between a
+settled provider request and its next tool or provider request.  Its pure
+=Working for ...= projection adds no timer or durable state and remains useful.
+
+It was ineffective for real board sessions because its active-tail predicate
+depended on the same mismatched active-turn query.  Its regression test used a
+private harness id equal to the presentation id, which bypassed the board
+translation and did not exercise the production boundary.
+
+* Design
+
+The chat service owns translation from private board identities to presentation
+identities.  It now exposes one narrow =e-chat-service-active-turn= query whose
+=:id= uses the same namespace as subscriber event =:turn-id= values.
+
+The service state and diagnostic active-turn index reuse that translation.
+The index no longer rebuilds every binding's bounded message and activity
+projection merely to answer whether a turn is active.
+
+The chat shell asks the single-session service query and compares presentation
+ids.  It no longer reaches through the service to interpret private harness
+active-turn entries.
+
+* Architecture Self-Check
+
+1. The package is independently useful: it restores correct progress ownership
+   for board chats and makes the service identity contract consistent.
+2. It moves toward the board-only runtime with presentation shells depending on
+   shell-neutral service contracts rather than private harness state.
+3. Board identity translation is stable and belongs at the service boundary.
+   The visible wording remains a local, reversible presentation decision.
+4. =e-chat-service= owns board-to-presentation identity.  =e-chat= owns only
+   progress rendering and timer presentation.
+5. Coupling decreases: the shell uses one single-session query and no longer
+   interprets harness active-turn entries or constructs a global index.
+6. Dependencies point from the presentation shell to the application service,
+   and from that service to the board runtime adapter it owns.
+7. No new side effect is in the shell.  The new query copies and translates
+   existing state without mutation outside the returned copy.
+8. No state is added.  The existing bounded binding turn map remains the sole
+   process-local owner of identity correlation.
+9. Each progress tick now reads one binding and one hash entry.  It previously
+   rebuilt state for every binding, including bounded message/activity scans.
+10. The new query has one semantic contract: a running turn whose id matches
+    presentation events.  It does not require consumers to understand private
+    source ids.
+11. The predicate retains its documented boolean behavior.  Obsolete raw-id
+    behavior was removed because board-facing consumers cannot use it safely.
+12. The shell's private harness-entry decoding and global active-turn scan were
+    removed.
+13. Missing or settled turns return nil.  Unexpected binding/runtime errors are
+    not swallowed by the new path.
+14. The regression proves identity translation and progress behavior through a
+    real board message stream while the pure renderer test remains narrow.
+
+* Validation
+
+A board-backed presentation regression uses distinct private and presentation
+turn ids, lets the service establish their causal mapping, and verifies that a
+progress tick keeps the interval alive and renders =Working for 0min 8sec=.
+
+The board-backed regression verifies the direct active-turn query, bounded
+service state, diagnostic active-turn index, progress ownership, live interval,
+and =Working for 0min 8sec= projection with distinct private and presentation
+ids.
+
+- The new regression and two adjacent progress/replay tests pass: 3 passed,
+  0 unexpected.
+- The shell-neutral chat service and modernchat tests pass: 14 passed,
+  0 unexpected.
+- The chat-session action tests pass: 13 passed, 0 unexpected.
+- The board cutover structure tests pass: 6 passed, 0 unexpected.
+- The complete chat test file reports 319 passed, 1 skipped, and the unrelated
+  =e-chat-test-open-session-renders-after-async-index-load= timeout.  Rerunning
+  that test alone reproduces its existing fixed two-second timeout while its
+  async load request is already cancelled.
+- =eldev compile -W= passes for =e-chat-service.el= and =e-chat.el=.
+
+Repository-side validation used source-loaded Eldev tests.  The running Emacs
+was inspected only through bounded read-only probes and was not reloaded.

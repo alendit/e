@@ -802,11 +802,34 @@ LIMIT defaults to the registry's fixed page bound."
    (e-chat-service-binding-attachment
     (e-chat-service--bind-session harness session-id))))
 
+(defun e-chat-service--binding-active-turn (binding)
+  "Return BINDING's running turn in the presentation id namespace.
+Board activity events are correlated to their causal input message before they
+reach presentation subscribers.  Apply the same translation to the private
+harness turn here so state queries and events identify one turn consistently."
+  (when-let* ((attachment (e-chat-service-binding-attachment binding))
+              (active-turn
+               (e-board-runtime-attachment-active-turn attachment))
+              ((eq (plist-get active-turn :status) 'running)))
+    (let* ((participant-id
+            (e-board-registry-participant-id
+             (e-board-runtime-attachment-participant attachment)))
+           (source-turn-id (plist-get active-turn :id)))
+      (plist-put active-turn :id
+                 (e-chat-service--turn-id
+                  binding participant-id source-turn-id))
+      active-turn)))
+
+(defun e-chat-service-active-turn (harness session-id)
+  "Return SESSION-ID's running turn using presentation-facing identity.
+The returned `:id' is in the same namespace as board-derived event `:turn-id'
+values delivered by `e-chat-service-subscribe'."
+  (e-chat-service--binding-active-turn
+   (e-chat-service--bind-session harness session-id)))
+
 (defun e-chat-service-active-turn-p (harness session-id)
   "Return non-nil when HARNESS SESSION-ID's board participant is running."
-  (e-board-runtime-attachment-active-turn-p
-   (e-chat-service-binding-attachment
-    (e-chat-service--bind-session harness session-id))))
+  (and (e-chat-service-active-turn harness session-id) t))
 
 (defun e-chat-service-session (harness session-id)
   "Return SESSION-ID's private metadata through the board application seam."
@@ -850,9 +873,7 @@ LIMIT defaults to the registry's fixed page bound."
   "Return SESSION-ID's bounded board-derived presentation state."
   (let* ((binding (e-chat-service--bind-session harness session-id))
          (activities (e-chat-service-activity-events harness session-id))
-         (active-turn
-          (e-board-runtime-attachment-active-turn
-           (e-chat-service-binding-attachment binding))))
+         (active-turn (e-chat-service--binding-active-turn binding)))
     (dolist (event activities)
       (pcase (plist-get event :event-type)
         ('turn-started
@@ -922,8 +943,7 @@ LIMIT defaults to the registry's fixed page bound."
        (lambda (session-id binding)
          (when (e-chat-service--binding-live-p binding)
            (when-let ((active-turn
-                       (plist-get (e-chat-service-state harness session-id)
-                                  :active-turn)))
+                       (e-chat-service--binding-active-turn binding)))
              (puthash session-id active-turn result))))
        bindings))
     result))

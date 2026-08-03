@@ -85,3 +85,14 @@ that the row returns to =Thought for 0min 1sec=.
 
 Repository-side validation used source-loaded Eldev tests.  The running Emacs
 was inspected only with bounded read-only probes and was not reloaded.
+
+* Follow-up Correction
+
+The =Working for ...= projection was correct but incomplete for board-backed
+sessions.  A later live probe showed that the chat service returned a private
+composite board turn id while subscriber events and chat records used the
+causal input message id.  The progress interval therefore classified the live
+turn as stale before this projection could remain active.
+
+The follow-up investigation and service-boundary design are recorded in
+=docs/bugs/board-chat-progress-turn-id-mismatch/investigation.org=.
