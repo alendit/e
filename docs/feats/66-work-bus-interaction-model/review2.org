@@ -25,8 +25,10 @@ The remediation makes the board the sole live interaction substrate:
 - default, tag, and exact dispatch share authenticated ingress; subagents join
   the parent board; bundled producers choose observable fact versus
   dispatchable input explicitly;
-- quiescence covers every deferred owner and production startup reopens only
-  after the configured-store preflight succeeds;
+- quiescence covers every deferred owner; production startup distinguishes a
+  globally unavailable store from an incompatible dormant row, reopening fresh
+  board admission only when persistence remains safe while fencing degraded
+  catalog discovery/resume;
 - retained envelopes are frozen, identities/lifecycle are registry-owned, and
   nil/stale/revoked requester contexts fail closed; and
 - routing, observation, await materialization, and persistence have fixed
@@ -1299,3 +1301,45 @@ attachment-token ports.
   authoritative completion record.
 - Repository-side validation and the final exact command/results are recorded
   above.  The running Emacs was left unchanged.
+
+** Post-completion startup regression correction (2026-08-03)
+
+A freshly restarted Emacs exposed a gap in the completed activation contract:
+one pre-cutover dormant catalog row failed strict validation and permanently
+left the single admission epoch closed, so even =e-chat-new= signalled =board is
+closed=.  The validator was correct, but its failure scope coupled dormant
+resume compatibility to unrelated fresh-board creation.
+
+The corrected runtime records dormant catalog state separately from board-root
+admission.  One exact invalid-row condition settles startup as =degraded=,
+reopens admission for new current-schema boards, and keeps dormant discovery
+and resume explicitly fenced.  Missing stores and unexpected activation errors
+remain =unavailable= and fail closed.  Live endpoint tokens are also stripped
+from durable message metadata, closing the JSON persistence failure revealed by
+the restart E2E.
+
+Regression coverage crosses the product command and current board path:
+
+- =e-board-runtime-test-startup-activation-degrades-invalid-old-row=;
+- =e-chat-surface-e2e-test-new-chat-survives-degraded-legacy-catalog=;
+- =e-harness-test-board-endpoint-token-is-not-message-metadata=;
+- board-first surface, provider-continuation, persistent-restart, and UI-work
+  E2Es using the shared =e-board-e2e-support.el= helper; and
+- E2E discovery restricted to =*-test.el= so sample live-provider config cannot
+  contaminate ordinary unit tests.
+
+Final repository gates:
+
+- =rtk eldev compile=: passed without warnings;
+- =E_E2E=1 rtk eldev -q test=: 2,007 tests, 1,982 expected passes,
+  0 unexpected results, and 25 documented optional skips;
+- all deterministic E2Es passed; ten credential-gated live-provider tests
+  skipped because this batch environment has no =E_E2E_CONFIG= or gateway
+  credential; and
+- =git diff --check=: passed.
+
+The design self-check above remains valid with one refinement: catalog
+compatibility is process-lifetime activation state owned by board runtime, not
+a reason to persistently disable fresh roots.  Endpoint tokens are
+attachment-lifetime state and never durable transcript data.  The running Emacs
+was left unchanged.

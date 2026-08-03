@@ -56,3 +56,74 @@ admission closed.
   is degraded.
 - Source-only unit, integration, full, packaging, and live/provider e2e gates
   pass with the new boundary.
+
+* Fix applied
+
+=e-board-runtime= now owns a distinct dormant-catalog state: =ready=,
+=degraded=, or =unavailable=.  Startup still closes admission while quiescence
+and preflight run.  A precisely identified
+=e-harness-instance-session-catalog-invalid-row= settles activation as
+=degraded= and reopens fresh-board admission; dormant resume requires a =ready=
+catalog and fails explicitly otherwise.  Missing stores, unexpected preflight
+errors, and admission-token failures remain globally fail-closed.
+
+The board endpoint token is now removed from transcript metadata before a user
+message is persisted.  It remains on the live attachment and queued input where
+it fences delivery, but the opaque runtime struct can no longer enter JSON
+session records.
+
+The E2E harness now submits through =e-chat-service= and drains real board
+routing/pickup.  Startup, surface chat, provider continuation, persistent
+restart, and UI-work tests therefore cover the current board-only product path
+instead of the retired harness prompt wrappers.  E2E discovery loads only
+=*-test.el= files, so the sample live Anthropic configuration is not executed
+as test setup or allowed to mutate unit-test provider state.
+
+* Verification
+
+- =e-board-runtime-test-startup-activation-degrades-invalid-old-row= proves
+  fresh admission reopens while dormant resume stays fenced.
+- =e-chat-surface-e2e-test-new-chat-survives-degraded-legacy-catalog= invokes
+  the real =e-chat-new= command after the rejected legacy-row preflight.
+- =e-harness-test-board-endpoint-token-is-not-message-metadata= and the
+  persistent restart E2E prove the opaque attachment token is runtime-only.
+- =rtk eldev compile= completed without warnings.
+- =E_E2E=1 rtk eldev -q test= ran 2,007 tests with 1,982 expected passes,
+  0 unexpected results, and 25 documented optional skips.  All deterministic
+  E2Es passed.  Ten live-provider tests skipped because =E_E2E_CONFIG= and its
+  Anthropic gateway credential are unavailable in this batch environment.
+- =git diff --check= passed.
+
+The running Emacs was used only for the bounded diagnosis above and was left
+unchanged.  A restart or explicit =e-dev-reload= is required before that Emacs
+uses the corrected startup behavior.
+
+* Design self-check
+
+1. The package is independently useful: fresh chat works again without
+   weakening validation of dormant state.
+2. It moves toward one board-first product with catalog compatibility kept at
+   the dormant-resume boundary.
+3. Catalog schema evolution is the likely-changing decision and is represented
+   by a local state/result; fresh admission and authorization remain stable.
+4. Board runtime owns activation, admission, and dormant-resume eligibility;
+   harness owns transcript persistence.
+5. Coupling is reduced because one bad dormant row no longer controls unrelated
+   fresh roots.
+6. Stable board policy does not depend on a concrete store or UI.
+7. Validation and JSON writes stay in their existing adapter/persistence
+   boundaries.
+8. Catalog status is process-lifetime startup state; endpoint tokens remain
+   attachment-lifetime state and are not durable.
+9. The change adds constant-time state checks and no new scans or hot-path work.
+10. The catalog state is a real substitutable contract: only =ready= permits
+    dormant resume, while =degraded= permits only fresh roots.
+11. Pre-cutover dormant rows are not silently resumed; their incompatibility is
+    explicit while current-schema creation remains supported.
+12. Retired harness-root E2E calls and legacy tool registration forms were
+    removed from the migrated tests.
+13. Expected invalid-row conditions degrade the catalog; unexpected activation
+    failures surface and retain fail-closed admission.
+14. Unit tests prove admission/resume policy independently, and E2Es cross the
+    actual startup command, board delivery, persistence, provider continuation,
+    and presentation seams.
