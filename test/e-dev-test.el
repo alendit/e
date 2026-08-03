@@ -120,6 +120,7 @@
   (fmakunbound 'e-dev-perf-report)
   (fmakunbound 'e-dev-perf-list-scenarios)
   (fmakunbound 'e-dev-perf-update-baseline)
+  (fmakunbound 'e-session-persistence-status)
   (e-dev-reload default-directory)
   (should (commandp 'e-chat))
   (should (commandp 'e-chat-new))
@@ -147,6 +148,7 @@
   (should (commandp 'e-dev-perf-report))
   (should (commandp 'e-dev-perf-list-scenarios))
   (should (commandp 'e-dev-perf-update-baseline))
+  (should (fboundp 'e-session-persistence-status))
   (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
 
 (ert-deftest e-dev-test-reload-refreshes-defaults ()
