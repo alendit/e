@@ -1541,6 +1541,70 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reload-reconciles-composed-surface-windows ()
+  "Reload rebuilds the pair cache and removes shell-owned duplicate panes."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-reload-composed-surface"))
+         transcript-window
+         composer
+         duplicate)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer (selected-window) buffer)
+            (setq transcript-window (get-buffer-window buffer))
+            (with-current-buffer buffer
+              (setq composer
+                    (window-buffer
+                     (e-chat--surface-display-composer transcript-window)))))
+          (with-current-buffer buffer
+            (with-current-buffer composer
+              (goto-char (point-max))
+              (insert "draft survives reload"))
+            (should (= (length
+                        (e-chat--surface-owned-composer-windows
+                         (window-frame transcript-window)))
+                       1))
+            ;; Reinitializing `e-chat-mode' clears buffer-local derived state,
+            ;; while the window and its ownership parameter remain live.
+            (e-chat--attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id)
+            (e-chat--after-display-buffer buffer)
+            (should (eq e-chat--surface-composer-buffer composer))
+            (should (= (length e-chat--surface-window-pairs) 1))
+            (should (= (length
+                        (e-chat--surface-owned-composer-windows
+                         (window-frame transcript-window)))
+                       1))
+            (with-current-buffer composer
+              (should (equal (e-chat--composer-text)
+                             "draft survives reload")))
+            ;; Reconcile a duplicate left by the old reload behavior without
+            ;; touching windows that merely display the internal buffer.
+            (setq duplicate
+                  (split-window transcript-window
+                                (- e-chat-composer-window-min-height)
+                                'below))
+            (set-window-buffer duplicate composer)
+            (set-window-parameter duplicate 'e-chat-composer buffer)
+            (should (= (length
+                        (e-chat--surface-owned-composer-windows
+                         (window-frame transcript-window)))
+                       2))
+            (e-chat--surface-display-composer transcript-window)
+            (should-not (window-live-p duplicate))
+            (should (= (length e-chat--surface-window-pairs) 1))
+            (should (= (length
+                        (e-chat--surface-owned-composer-windows
+                         (window-frame transcript-window)))
+                       1))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-after-display-active-turn-focuses-latest-output ()
   "Displaying a running chat tails to the active output, not stale scrollback."
   (let ((buffer (e-chat-test--buffer nil "chat-display-active-output"))

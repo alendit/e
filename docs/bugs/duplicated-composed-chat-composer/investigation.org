@@ -1,0 +1,89 @@
+#+title: Duplicated Composed Chat Composer Investigation
+#+startup: overview
+
+* Evidence
+
+The screenshot shows one transcript followed by two panes with the identical
+internal composer buffer name.  This rules out duplicate composer buffers; the
+same composer buffer is displayed in two windows.
+
+A bounded live probe found the transcript still referenced that composer
+buffer, but its =e-chat--surface-window-pairs= cache was empty.  The screenshot's
+workspace was no longer visible when the probe ran, so the old windows could
+not be inspected directly.
+
+Source inspection identified the lifecycle gap:
+
+- =e-chat--surface-display-composer= records the transcript/composer window
+  pair in a buffer-local alist and marks the composer window with the owning
+  transcript in its =e-chat-composer= window parameter.
+- =e-chat--attach-buffer= calls =e-chat-mode= during development reload.  Mode
+  reinitialization clears the buffer-local alist.
+- The composer buffer and its displayed window survive that reload.
+- The next =e-chat--after-display-buffer= call looks only in the cleared alist,
+  fails to find the surviving window, and splits a second pane.
+
+* Design
+
+The pair alist is derived presentation state.  It should not become durable or
+require special preservation through reload.
+
+The existing =e-chat-composer= window parameter is the live ownership source.
+Before displaying a composer, the transcript now:
+
+1. prunes dead cached pairs;
+2. reconstructs missing pairs from shell-owned composer windows directly below
+   visible transcript windows;
+3. removes shell-owned composer windows that cannot be paired with any visible
+   transcript window; and
+4. splits a new composer only when reconciliation found no existing pair.
+
+Windows that merely display the internal composer buffer are untouched unless
+they also carry the shell's ownership parameter.
+
+* Architecture Self-Check
+
+1. The slice independently makes composed chat display and reload idempotent.
+2. It advances the separate transcript/composer shell without changing harness
+   or service behavior.
+3. Window geometry is changeable and local; the stable ownership marker remains
+   the narrow reconstruction contract.
+4. =e-chat= owns this behavior because it is presentation window lifecycle.
+5. Coupling is unchanged outside the shell and the cache gains one clear source
+   of truth.
+6. No dependency points from core policy toward presentation code.
+7. Window creation and cleanup remain at the outer display boundary.
+8. No state is added.  A resettable buffer-local cache is rebuilt from live
+   window state.
+9. Reconciliation scans only the selected frame's bounded window list when a
+   composer is displayed; ordinary progress and transcript rendering are
+   unaffected.
+10. A paired window must show the composer, carry the transcript owner marker,
+    and either remain in a valid cached pair or sit directly below its
+    transcript.
+11. Existing composed windows are recovered.  Monolithic chat behavior and
+    manually displayed buffers remain unchanged.
+12. No compatibility branch or obsolete persistent pair state is introduced.
+13. Nondeletable windows are retained; unexpected window errors still surface.
+14. The integration test reinitializes the real chat mode with live windows,
+    preserves a draft, and reconciles an old-style duplicate.
+
+* Validation
+
+The integration regression reinitializes =e-chat-mode= while the transcript and
+composer windows are live, confirms the same composer buffer and draft survive,
+then introduces an old-style duplicate and verifies reconciliation returns the
+surface to exactly one owned composer window.
+
+- The regression and two adjacent composed-surface tests pass: 3 passed,
+  0 unexpected.
+- The chat test file excluding its known fixed-timeout async index-load test
+  passes: 320 passed, 0 unexpected, 1 optional skip.
+- The unfiltered chat test run reports the same unrelated async index-load
+  timeout: 320 passed, 1 failed, 1 skipped.
+- The board cutover structure tests pass: 6 passed, 0 unexpected.
+- =eldev compile -W lisp/shells/chat/e-chat.el= passes.
+- =git diff --check= passes.
+
+Repository-side validation loaded source through Eldev.  The running Emacs was
+inspected only with bounded read-only probes and was not reloaded.

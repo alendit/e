@@ -1480,11 +1480,64 @@ composer buffer; transcript rendering never calls it."
                 (eq (window-buffer (cdr pair)) e-chat--surface-composer-buffer)))
          e-chat--surface-window-pairs)))
 
+(defun e-chat--surface-owned-composer-windows (frame)
+  "Return FRAME windows owned by the current transcript's composer."
+  (let ((transcript (current-buffer))
+        (composer e-chat--surface-composer-buffer))
+    (cl-remove-if-not
+     (lambda (window)
+       (and (eq (window-buffer window) composer)
+            (eq (window-parameter window 'e-chat-composer) transcript)))
+     (window-list frame 'no-minibuf))))
+
+(defun e-chat--surface-window-directly-below-p
+    (transcript-window composer-window)
+  "Return non-nil when COMPOSER-WINDOW is directly below TRANSCRIPT-WINDOW."
+  (let ((transcript-edges (window-edges transcript-window))
+        (composer-edges (window-edges composer-window)))
+    (and (= (nth 0 transcript-edges) (nth 0 composer-edges))
+         (= (nth 2 transcript-edges) (nth 2 composer-edges))
+         (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
+
+(defun e-chat--surface-reconcile-window-pairs (transcript-window)
+  "Rebuild and reconcile the surface containing TRANSCRIPT-WINDOW.
+Window parameters are the live ownership source.  The buffer-local pair list
+is only a derived lookup cache and may be reset by mode reinitialization."
+  (e-chat--surface-prune-window-pairs)
+  (let* ((frame (window-frame transcript-window))
+         (transcript (current-buffer))
+         (transcript-windows
+          (cl-remove-if-not
+           (lambda (window) (eq (window-buffer window) transcript))
+           (window-list frame 'no-minibuf)))
+         (owned-composer-windows
+          (e-chat--surface-owned-composer-windows frame))
+         (paired-composer-windows
+          (mapcar #'cdr e-chat--surface-window-pairs)))
+    (dolist (window transcript-windows)
+      (unless (assoc window e-chat--surface-window-pairs)
+        (when-let ((composer-window
+                    (cl-find-if
+                     (lambda (candidate)
+                       (and (not (memq candidate paired-composer-windows))
+                            (e-chat--surface-window-directly-below-p
+                             window candidate)))
+                     owned-composer-windows)))
+          (push (cons window composer-window) e-chat--surface-window-pairs)
+          (push composer-window paired-composer-windows))))
+    ;; A shell-owned composer window with no transcript pair is residue from a
+    ;; lost cache (most notably mode reinitialization during development
+    ;; reload).  Manual displays have no ownership parameter and are untouched.
+    (dolist (window owned-composer-windows)
+      (when (and (not (memq window paired-composer-windows))
+                 (window-deletable-p window))
+        (delete-window window)))
+    (cdr (assoc transcript-window e-chat--surface-window-pairs))))
+
 (defun e-chat--surface-composer-window (&optional transcript-window)
   "Return the composer window paired with TRANSCRIPT-WINDOW, if any."
-  (e-chat--surface-prune-window-pairs)
-  (cdr (assoc (or transcript-window (selected-window))
-              e-chat--surface-window-pairs)))
+  (e-chat--surface-reconcile-window-pairs
+   (or transcript-window (selected-window))))
 
 (defun e-chat--surface-member-window-p (window transcript composer)
   "Return non-nil when WINDOW belongs to TRANSCRIPT and COMPOSER's surface."
