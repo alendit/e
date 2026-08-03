@@ -18,6 +18,9 @@
 (require 'e-session)
 
 (define-error 'e-session-persistence-error "Session persistence error")
+(define-error 'e-session-persistence-command-error
+  "Invalid session persistence command"
+  'e-session-persistence-error)
 (defgroup e-session-persistence nil
   "Asynchronous persistent session storage."
   :group 'e-session)
@@ -60,6 +63,12 @@
   outbox-head outbox-tail retry-cursor
   (callbacks (make-hash-table :test 'equal))
   checkpoint-timer retry-timer last-error)
+
+(cl-defstruct (e-session-persistence-command
+               (:constructor e-session-persistence-command--create)
+               (:conc-name e-session-persistence-command-))
+  "One validated writer request and its immutable wire representation."
+  request wire)
 
 (defun e-session-persistence--directory ()
   "Return the directory containing this library."
@@ -114,19 +123,34 @@
 (defun e-session-persistence--encode-command (request)
   "Return REQUEST as one bounded newline-terminated writer command."
   (unless (e-session-persistence--command-within-budget-p request)
-    (signal 'e-session-persistence-error
+    (signal 'e-session-persistence-command-error
             (list "Writer command exceeds pre-encoding budget")))
-  (let ((encoded (concat (json-encode request) "\n")))
+  (let ((encoded
+         (condition-case err
+             (concat (json-encode request) "\n")
+           (json-error
+            (signal 'e-session-persistence-command-error
+                    (list "Writer command is not JSON-encodable" err))))))
     (when (> (string-bytes encoded)
              e-session-persistence-command-byte-limit)
-      (signal 'e-session-persistence-error
+      (signal 'e-session-persistence-command-error
               (list "Writer command exceeds byte budget")))
     encoded))
 
-(defun e-session-persistence--send (controller request)
-  "Send one bounded REQUEST to CONTROLLER's live writer."
+(defun e-session-persistence--prepare-command (request)
+  "Return a validated immutable writer command for REQUEST."
+  (e-session-persistence-command--create
+   :request request
+   :wire (e-session-persistence--encode-command request)))
+
+(defun e-session-persistence--send (controller command)
+  "Send one prepared COMMAND to CONTROLLER's live writer.
+Raw request plists remain accepted for controllers created before a live
+reload; new submissions always prepare once before entering the outbox."
   (process-send-string (e-session-persistence-process controller)
-                       (e-session-persistence--encode-command request)))
+                       (if (e-session-persistence-command-p command)
+                           (e-session-persistence-command-wire command)
+                         (e-session-persistence--encode-command command))))
 
 (defun e-session-persistence--append-outbox-id (controller id)
   "Append ID to CONTROLLER's O(1) retry-order queue."
@@ -188,11 +212,27 @@
          (callbacks (and (stringp id)
                          (gethash id (e-session-persistence-callbacks controller)))))
     (if (eq (plist-get response :ok) :json-false)
-        (progn
-          (setf (e-session-persistence-last-error controller)
-                (list 'e-session-persistence-error
-                      (or (plist-get response :error) "Writer rejected command")))
-          (e-session-persistence--restart-later controller))
+        (let ((err (list 'e-session-persistence-error
+                         (or (plist-get response :error)
+                             "Writer rejected command"))))
+          (setf (e-session-persistence-last-error controller) err)
+          (if (eq (plist-get response :retryable) :json-false)
+              (progn
+                (when (and (stringp id)
+                           (gethash id (e-session-persistence-outbox controller)))
+                  (remhash id (e-session-persistence-outbox controller))
+                  (e-session-persistence--trim-outbox-order controller)
+                  (remhash id (e-session-persistence-callbacks controller))
+                  (e-session--adjust-unsettled-writes
+                   (e-session-persistence-store controller) -1))
+                (when-let ((on-error (cdr callbacks)))
+                  (funcall on-error err))
+                (unless (cdr callbacks)
+                  (display-warning 'e-session-persistence
+                                   (error-message-string err)
+                                   :error)))
+            ;; Older writers omit `retryable'; preserve their retry behavior.
+            (e-session-persistence--restart-later controller)))
       (when (stringp id)
         (when (gethash id (e-session-persistence-outbox controller))
           (remhash id (e-session-persistence-outbox controller))
@@ -203,6 +243,20 @@
         (when-let ((on-done (car callbacks)))
           (funcall on-done (plist-get response :result)))
         (setf (e-session-persistence-last-error controller) nil)))))
+
+(defun e-session-persistence-status (controller)
+  "Return bounded operational status for persistence CONTROLLER."
+  (let ((err (e-session-persistence-last-error controller)))
+    (list :writer-live (and (e-session-persistence--live-p controller) t)
+          :outbox-count (hash-table-count
+                         (e-session-persistence-outbox controller))
+          :retry-pending (and (timerp
+                               (e-session-persistence-retry-timer controller))
+                              t)
+          :last-error (and err
+                           (condition-case nil
+                               (error-message-string err)
+                             (error (format "%S" err)))))))
 
 (defun e-session-persistence--consume-output (controller text)
   "Consume newline-delimited writer protocol TEXT."
@@ -248,8 +302,17 @@
          (request (append (list :id id :sequence sequence
                                 :directory (e-session-store-directory
                                             (e-session-persistence-store controller)))
-                          operation)))
-    (puthash id request (e-session-persistence-outbox controller))
+                          operation))
+         (command
+          (condition-case err
+              (e-session-persistence--prepare-command request)
+            (e-session-persistence-command-error
+             (setf (e-session-persistence-last-error controller) err)
+             (when on-error
+               (funcall on-error err))
+             (signal (car err) (cdr err))))))
+    ;; Only transport-ready commands become durable outbox obligations.
+    (puthash id command (e-session-persistence-outbox controller))
     (e-session-persistence--append-outbox-id controller id)
     (when (or on-done on-error)
       (puthash id (cons on-done on-error)
@@ -259,7 +322,7 @@
     (condition-case err
         (progn
           (e-session-persistence--ensure controller)
-          (e-session-persistence--send controller request))
+          (e-session-persistence--send controller command))
       (error
        (setf (e-session-persistence-last-error controller) err)
        (e-session-persistence--restart-later controller)))

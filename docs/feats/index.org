@@ -83,3 +83,4 @@ Status values for coding agents:
 | 70 | Done | 70-chat-surface-composition/ | Chat Surface Composition |
 | 71 | Done | 71-profile-memory-bounds/ | Profile Memory Bounds |
 | 72 | Done | 72-transcript-only-reasoning-blocks/ | Transcript-Only Reasoning Blocks |
+| 73 | In-progress | 73-persistence-preflight/ | Persistence Command Preflight |

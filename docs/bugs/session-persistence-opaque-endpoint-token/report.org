@@ -1,0 +1,13 @@
+#+title: Session Persistence Retries Opaque Endpoint Tokens Forever
+#+startup: overview
+
+* Report
+
+After the 2026-08-03 Grimoire daily run completed, asynchronous session
+persistence remained unsettled with 24 queued writes.
+The last error was a JSON encoding failure for an
+=e-board-runtime-endpoint-token= value.
+
+The affected records were user messages and =turn-steered= activity events from
+three child sessions on the daily board.
+The writer kept retrying the same locally unencodable records.

@@ -1,0 +1,33 @@
+#+title: Persistence Command Preflight
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Goal
+
+Prevent deterministic serialization failures from becoming permanent session
+persistence retry loops while retaining asynchronous, exactly-once delivery for
+transport and filesystem failures.
+
+* Plan
+
+1. Encode and budget-check each writer request before it enters the outbox.
+2. Store the prepared wire command so retries do not re-encode application data.
+3. Classify deterministic writer protocol rejections as terminal while leaving
+   filesystem failures retryable.
+4. Expose a bounded controller status with writer, outbox, retry, and last-error
+   fields.
+5. Add the persistence module to the supported development reload sequence.
+6. Cover the production opaque endpoint-token type and terminal rejection path
+   with focused tests.
+
+* Boundaries
+
+This work does not serialize board routing, subscriptions, observers, focus,
+selection, or the in-memory board event stream.
+Board identity and immutable board messages remain the durable facts.
+
+Repairing already-poisoned live outbox records is an operator action, not a
+compatibility sanitizer in the steady-state persistence path.

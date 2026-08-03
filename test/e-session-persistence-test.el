@@ -8,6 +8,7 @@
 (require 'ert)
 (require 'e-session)
 (require 'e-session-persistence)
+(require 'e-board-runtime)
 
 (defun e-session-persistence-test--await-durable (store)
   "Wait in this test process for STORE's asynchronous durability boundary."
@@ -43,7 +44,7 @@
           (funcall callback)
           (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
                      1))
-          (let ((request (car sent)))
+          (let ((request (e-session-persistence-command-request (car sent))))
             (e-session-persistence--handle-response
              controller (list :id (plist-get request :id) :ok t)))
           (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
@@ -60,6 +61,75 @@
        (e-session-persistence--encode-command '(:value "123456789"))
        :type 'e-session-persistence-error)
       (should-not encoded))))
+
+(ert-deftest e-session-persistence-test-json-error-never-enters-outbox ()
+  "Opaque runtime state fails before it becomes an unsettled retry obligation."
+  (let* ((directory (make-temp-file "e-session-persistence-json-error-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (token (e-board-runtime-endpoint-token--create
+                 :harness-id :live
+                 :harness-object-generation 7
+                 :session-id "session"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         callback-error)
+    (unwind-protect
+        (progn
+          (should-error
+           (e-session-persistence--submit
+            controller
+            (list :op "append" :session-id "session"
+                  :record (list :type "message"
+                                :metadata (list :board-endpoint-token token)))
+            nil
+            (lambda (err) (setq callback-error err)))
+           :type 'e-session-persistence-command-error)
+          (should callback-error)
+          (should (= (hash-table-count
+                      (e-session-persistence-outbox controller))
+                     0))
+          (should (= (e-session-store-unsettled-write-count store) 0))
+          (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
+                     0))
+          (should-not (e-session-persistence-retry-timer controller))
+          (should (string-match-p
+                   "not JSON-encodable"
+                   (plist-get (e-session-persistence-status controller)
+                              :last-error))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-retry-reuses-prepared-wire-command ()
+  "A queued request is JSON-encoded once and retries reuse the same wire text."
+  (let* ((directory (make-temp-file "e-session-persistence-wire-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (original-json-encode (symbol-function 'json-encode))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (encode-count 0)
+         sent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'json-encode)
+                   (lambda (value)
+                     (setq encode-count (1+ encode-count))
+                     (funcall original-json-encode value)))
+                  ((symbol-function 'e-session-persistence--ensure)
+                   (lambda (_controller) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_process wire) (push wire sent))))
+          (let* ((id (e-session-persistence--submit
+                      controller (list :op "checkpoint")))
+                 (command (gethash id
+                                   (e-session-persistence-outbox controller))))
+            (should (e-session-persistence-command-p command))
+            (e-session-persistence--send controller command)
+            (should (= encode-count 1))
+            (should (= (length sent) 2))
+            (should (equal (car sent) (cadr sent)))
+            (e-session-persistence--handle-response
+             controller (list :id id :ok t))))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-persistence-test-retry-resends-fixed-pages ()
   "A writer restart yields after each fixed retry page."
@@ -169,6 +239,37 @@
             (should (equal (mapcar (lambda (message) (plist-get message :content))
                                    (e-session-messages loaded "session-1"))
                            '("ordered retry")))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-writer-request-rejection-is-terminal ()
+  "A deterministic writer protocol rejection settles instead of retrying forever."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-reject-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         failure)
+    (unwind-protect
+        (progn
+          (e-session-persistence--submit
+           controller (list :op "unsupported") nil
+           (lambda (err) (setq failure err)))
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (not failure) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should failure)
+          (should (= (hash-table-count
+                      (e-session-persistence-outbox controller))
+                     0))
+          (should (= (e-session-store-unsettled-write-count store) 0))
+          (should-not (e-session-persistence-retry-timer controller))
+          (should (string-match-p
+                   "Unsupported writer operation"
+                   (plist-get (e-session-persistence-status controller)
+                              :last-error))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

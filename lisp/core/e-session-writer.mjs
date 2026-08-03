@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 const knownCommandsByDirectory = new Map();
 
+class WriterRequestError extends Error {}
+
 async function sessionsDirectory(directory) {
   const result = path.join(directory, "sessions");
   await fs.mkdir(result, { recursive: true });
@@ -95,7 +97,9 @@ export async function rebuildIndex(directory) {
 
 async function handle(request) {
   const directory = request.directory;
-  if (!directory || !request.op) throw new Error("Writer request needs directory and op");
+  if (typeof directory !== "string" || !directory || typeof request.op !== "string" || !request.op) {
+    throw new WriterRequestError("Writer request needs string directory and op");
+  }
   if (request.op === "append") {
     const known = await knownCommands(directory);
     if (!known.has(request.id)) {
@@ -107,7 +111,7 @@ async function handle(request) {
   } else if (request.op === "checkpoint") {
     await rebuildIndex(directory);
   } else {
-    throw new Error(`Unsupported writer operation ${request.op}`);
+    throw new WriterRequestError(`Unsupported writer operation ${request.op}`);
   }
 }
 
@@ -123,7 +127,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
         const result = await handle(request);
         process.stdout.write(JSON.stringify({ id: request.id, ok: true, result }) + "\n");
       } catch (error) {
-        process.stdout.write(JSON.stringify({ id: request?.id ?? null, ok: false, error: error?.message || String(error) }) + "\n");
+        process.stdout.write(JSON.stringify({
+          id: request?.id ?? null,
+          ok: false,
+          retryable: !(error instanceof WriterRequestError || error instanceof SyntaxError),
+          error: error?.message || String(error),
+        }) + "\n");
       }
     });
   });

@@ -1,0 +1,44 @@
+#+title: Investigation: Session Persistence Retries Opaque Endpoint Tokens Forever
+#+startup: overview
+
+* Live evidence
+
+The completed daily board had no active turn, but its persistence controller
+reported 24 unsettled writes, 24 outbox entries, an active retry timer, and a
+=json-error= naming =e-board-runtime-endpoint-token=.
+
+The entries belonged to three child sessions.
+They comprised 12 user-message records and 12 =turn-steered= activity records.
+Each contained the live endpoint token under durable metadata.
+
+The running =e-harness--append-user-message= definition was older than the
+checkout and did not contain the current endpoint-token removal.
+The running Emacs was inspected with bounded scalar probes and was not reloaded
+or mutated.
+
+* Source evidence
+
+=e-harness--append-user-message= in the checkout removes
+=:board-endpoint-token= before appending transcript metadata.
+Its regression test previously used a JSON-safe vector stand-in rather than the
+production opaque struct.
+
+=e-session-persistence--submit= encoded only while sending.
+It first inserted the raw request into the outbox and incremented unsettled
+state, so a deterministic local encoding error became an endlessly retried
+outbox obligation.
+
+The Node writer also returned all command failures without a retryability
+classification, so deterministic protocol errors and filesystem failures had
+the same retry policy.
+
+* Conclusion
+
+Writer commands must be validated and encoded before outbox ownership begins.
+The outbox should retain that prepared wire representation for retries.
+Deterministic local encoding and writer protocol errors must surface and settle;
+process and filesystem failures remain retryable.
+
+The existing live outbox needs a separate one-time repair before reload so the
+24 records can be sanitized and delivered without losing their stable command
+identities.
