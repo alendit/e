@@ -48,7 +48,20 @@
       (should (string-prefix-p "ptc_" (e-board-participant-id participant)))
       (should (string-prefix-p "sub_"
                              (e-board-participant-create-pickup-subscription-id
-                              participant))))))
+                             participant))))))
+
+(ert-deftest e-board-test-import-reserves-fallback-message-identities ()
+  "A restored board allocates new messages after imported numeric ids."
+  (e-board-test--with-empty-registry
+    (let ((board (e-board-create :id "board")))
+      (e-board-import-message
+       board '(:id "msg_7" :kind output :author "test"
+               :tags (main) :content "restored"
+               :source-output-key (test 1 1)))
+      (let ((message
+             (e-board-publication-message
+              (e-board-post-input board :author "test" :content "new"))))
+        (should (equal (e-board-message-id message) "msg_8"))))))
 
 (ert-deftest e-board-test-exact-address-ignores-tags ()
   "Addressed input reaches only the built-in subscription of its target."

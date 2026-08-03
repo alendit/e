@@ -1,0 +1,38 @@
+#+title: Investigation: restored board message id conflict
+#+startup: overview
+
+* Source inspected
+
+- =e-chat-service--bind-session= reconstructs a board and imports its durable
+  message envelopes before accepting new input.
+- =e-board-import-message= preserved imported =msg_N= identities but did not
+  advance the process-local fallback identity sequence.
+- A later post could therefore allocate an identity already present in the
+  restored board and fail in =e-board--make-message=.
+
+* Conclusion
+
+Replay restored the message table but not the state of the fallback identity
+allocator.
+The next generated message identity could collide with imported history.
+
+* Fix applied
+
+- Reserve each successfully imported numeric fallback message identity by
+  advancing the process-local sequence to at least its suffix.
+- Leave injected identity functions responsible for their own identity domain.
+- Add a pure board regression proving that importing =msg_7= makes the next
+  fallback message =msg_8=.
+
+* Verification
+
+- =eldev compile=: passed without warnings.
+- =eldev test --file test/e-board-test.el=: 64 expected, 0 unexpected.
+- =eldev test --file test/e-modernchat-test.el=: 14 expected, 0 unexpected.
+- =E_E2E=1 eldev test --file e2e/e-session-restart-e2e-test.el=: 1 expected,
+  0 unexpected, including messages posted both before and after restart.
+
+* Live access
+
+The diagnosis used bounded read-only probes of the running Emacs session.
+No source reload or runtime mutation was performed during diagnosis.

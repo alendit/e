@@ -28,10 +28,15 @@
     (unwind-protect
         (progn
           (let* ((store (e-session-persistent-index-store-create directory))
-                 (harness (e-harness-create :sessions store)))
+                 (backend (e-backend-fake-create
+                           :items '((:type assistant-message
+                                     :content "before restart")
+                                    (:type done :reason stop))))
+                 (harness (e-harness-create :backend backend :sessions store)))
             (setq session-id
                   (e-board-e2e-create-session
                    harness :id session-id :metadata (list :project-root root)))
+            (e-board-e2e-prompt-batch harness session-id "before restart")
             (setq board-id
                   (plist-get
                    (plist-get (e-session-get store session-id)
@@ -60,8 +65,8 @@
               (should (equal (mapcar (lambda (message)
                                        (plist-get message :role))
                                      messages)
-                             '(user assistant)))
-              (should (equal (plist-get (cadr messages) :content)
+                             '(user assistant user assistant)))
+              (should (equal (plist-get (car (last messages)) :content)
                              "after restart")))))
       (delete-directory directory t))))
 

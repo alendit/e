@@ -1,0 +1,10 @@
+#+title: Restored board rejects new chat input with a message id conflict
+#+startup: overview
+
+* Report
+
+After reopening the board-backed Grimoire daily chat, sending a new message
+fails with =e board id conflict: "msg_7"=.
+
+The persisted transcript renders, but the restored board cannot accept new
+input.

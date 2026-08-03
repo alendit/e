@@ -261,6 +261,19 @@ exists so callers need not supply ids outside deterministic tests."
       (signal 'e-board-error (list "Id generator returned nil" kind)))
     id))
 
+(defun e-board--reserve-imported-fallback-message-id (board id)
+  "Advance the fallback allocator past imported message ID when applicable.
+
+An injected board id function owns its own identity domain.  The built-in
+process-local allocator uses numeric `msg_N' identities, so replay must reserve
+the highest imported suffix before the restored board accepts new messages."
+  (when (and (null (e-board-id-function board))
+             (stringp id)
+             (string-match "\\`msg_\\([0-9]+\\)\\'" id))
+    (setq e-board--id-sequence
+          (max e-board--id-sequence
+               (string-to-number (match-string 1 id))))))
+
 (defun e-board--require-id (id name)
   "Return ID or signal that required identity NAME is absent."
   (unless id
@@ -2857,9 +2870,10 @@ an activity tag by itself cannot re-enter a participant inbox."
 The restored message receives a fresh process-local sequence while preserving
 its durable source identity fields and order in the imported stream."
   (let* ((kind (plist-get envelope :kind))
+         (id (plist-get envelope :id))
          (message
           (e-board--make-message
-           board kind (plist-get envelope :id)
+           board kind id
            (plist-get envelope :author)
            (plist-get envelope :requester-actor)
            (plist-get envelope :tags)
@@ -2878,6 +2892,7 @@ its durable source identity fields and order in the imported stream."
            (plist-get envelope :source-turn-id)
            (plist-get envelope :activity-kind)
            (plist-get envelope :created-at))))
+    (e-board--reserve-imported-fallback-message-id board id)
     (setf (e-board-message-routing-state message)
           (and (eq kind 'input)
                (or (plist-get envelope :routing-state) 'historical))
