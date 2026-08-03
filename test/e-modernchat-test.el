@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-bayesian-reasoning)
 (require 'e-chat-service)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-modernchat)
 (require 'e-modernchat-view-model)
 (require 'e-session)
@@ -37,7 +38,7 @@
   (let ((harness (e-harness-create
                   :backend (e-backend-create :name "noop")
                   :enabled-layer-ids nil)))
-    (e-harness-create-session
+    (e-harness-test-create-board-session
      harness
      :id "session-1"
      :metadata '(:project-root "/tmp/project/"
@@ -69,7 +70,7 @@ client."
                   :enabled-layer-ids nil)))
     (e-harness-activate-capability
      harness (e-bayesian-reasoning-capability-create))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-session-append-message
      (e-harness-sessions harness)
      "session-1"
@@ -107,7 +108,7 @@ messages so the transcript reads as one clean answer."
   (let ((harness (e-harness-create
                   :backend (e-backend-create :name "noop")
                   :enabled-layer-ids nil)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     ;; Superseded/hidden private attempts are deliberately never published.
     (e-modernchat-test--post-board-output
      harness "session-1" "m-0" "visible reply")
@@ -201,8 +202,16 @@ messages so the transcript reads as one clean answer."
         (e-chat-service--board-bindings (make-hash-table :test 'equal)))
     (let* ((board (e-board-registry-create :id "shared"))
            (harness (e-harness-create :enabled-layer-ids nil)))
-      (e-harness-create-session harness :id "one")
-      (e-harness-create-session harness :id "two")
+      (e-harness-create-session harness :id "pre-board")
+      (should-error
+       (e-chat-service-open-board board harness "pre-board")
+       :type 'e-session-missing)
+      (e-harness-test-create-board-session
+       harness :id "one" :board-id "shared"
+       :principal (e-board-registry-board-principal board))
+      (e-harness-test-create-board-session
+       harness :id "two" :board-id "shared"
+       :principal (e-board-registry-board-principal board))
       (let* ((one (e-chat-service-open-board
                    board harness "one" :participant-id "one"))
              (_two (e-chat-service-open-board

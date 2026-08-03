@@ -110,8 +110,8 @@
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))
 
-(ert-deftest e-chat-surface-e2e-test-new-chat-survives-degraded-legacy-catalog ()
-  "A rejected dormant legacy row cannot block the real fresh-chat command."
+(ert-deftest e-chat-surface-e2e-test-new-chat-is-board-native ()
+  "The real fresh-chat command creates only board-native persistent state."
   (let* ((e-board--registry (make-hash-table :test 'equal))
          (e-board-registry--boards (make-hash-table :test 'equal))
          (e-board-registry--unsettled-pickup-count 0)
@@ -122,34 +122,6 @@
          (e-board-runtime--session-attachments (make-hash-table :test 'equal))
          (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
          (e-board-runtime--admission-open-p t)
-         (e-board-runtime--admission-epoch 0)
-         (e-board-runtime--quiescence-current nil)
-         (e-board-runtime--activation-current nil)
-         (e-board-runtime--catalog-state 'unknown)
-         (e-board-runtime--catalog-condition nil)
-         (e-board-runtime--unsettled-control-count 0)
-         (e-board-runtime--unsettled-invocation-count 0)
-         (e-board-runtime--unsettled-deferred-hook-count 0)
-         (e-board-runtime--unsettled-producer-count 0)
-         (e-board-runtime--unsettled-generation 0)
-         (e-board-runtime--unsettled-change-function nil)
-         (e-board-runtime--unsettled-change-functions nil)
-         (e-harness--aggregate-active-turn-count 0)
-         (e-harness--aggregate-queued-input-count 0)
-         (e-harness--aggregate-unsettled-generation 0)
-         (e-harness--aggregate-unsettled-change-functions nil)
-         (e-work--unsettled-count 0)
-         (e-work--unsettled-generation 0)
-         (e-work--unsettled-change-function nil)
-         (e-work--unsettled-change-functions nil)
-         (e-session--unsettled-write-count 0)
-         (e-session--unsettled-generation 0)
-         (e-session--unsettled-change-function nil)
-         (e-session--unsettled-change-functions nil)
-         (e-task-queue--unsettled-write-count 0)
-         (e-task-queue--failed-write-count 0)
-         (e-task-queue--unsettled-generation 0)
-         (e-task-queue--unsettled-change-functions nil)
          (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
          (e-chat-service--board-bindings (make-hash-table :test 'equal))
          (e-chat-service--board-log-owners (make-hash-table :test 'equal))
@@ -157,47 +129,29 @@
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
-         (e-harness-instance--session-stores (make-hash-table :test 'equal))
          (e-chat-default-harness-id :chat-e2e)
-         (condition
-          '(e-harness-instance-session-catalog-invalid-row
-            "default-chat-sessions" "legacy-session"))
-         (harness
-          (e-harness-create
-           :backend (e-backend-fake-create :items nil)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
          buffer)
     (e-board-e2e-reset-runtime)
     (e-harness-activate-capability
      harness (e-chat-session-capability-create))
     (e-harness-registry-register :chat-e2e harness)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-harness-instance-session-stores)
-                   (lambda () '((:session-store-id "default-chat-sessions"))))
-                  ((symbol-function
-                    'e-harness-instance-session-catalog-preflight-start)
-                   (lambda (&rest arguments)
-                     (funcall (plist-get arguments :on-error) condition)
-                     (let ((request
-                            (e-request-lifecycle-create :id "preflight")))
-                       (e-request-fail request condition)
-                       request))))
-          (let* ((activation (e-board-runtime-startup-activation))
-                 (request (e-board-runtime-activation-request activation)))
-            (should (eq (e-request-lifecycle-state request) 'finished))
-            (should (eq (plist-get (e-board-runtime-catalog-state) :state)
-                        'degraded)))
+        (progn
           (setq buffer (e-chat-new))
           (should (buffer-live-p buffer))
           (with-current-buffer buffer
-            (should (equal e-chat-harness harness))
-            (should (stringp e-chat-board-id))
-            (should (eq (e-board-registry-board-state
-                         (e-board-registry-get e-chat-board-id))
-                        'active))
-            (should (plist-get
-                     (e-session-get (e-harness-sessions harness)
-                                    e-chat-session-id)
-                     :board-session-state))))
+            (let* ((board (e-board-registry-get e-chat-board-id))
+                   (session (e-session-get (e-harness-sessions harness)
+                                           e-chat-session-id))
+                   (state (plist-get session :board-session-state)))
+              (should (equal e-chat-harness harness))
+              (should (eq (e-board-registry-board-state board) 'active))
+              (should (equal state
+                             (list :board-id e-chat-board-id
+                                   :principal
+                                   (e-board-registry-board-principal board)))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

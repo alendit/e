@@ -58,16 +58,6 @@
   :type 'number
   :group 'e-chat)
 
-(defcustom e-chat-buffer-name "*e-chat*"
-  "Legacy fallback e chat buffer name."
-  :type 'string
-  :group 'e-chat)
-
-(defcustom e-chat-default-session-id "default"
-  "Legacy fallback chat session id for internal callers."
-  :type 'string
-  :group 'e-chat)
-
 (defcustom e-chat-context-buffer-name "*e-chat-context*"
   "Buffer name for read-only context previews."
   :type 'string
@@ -1699,7 +1689,7 @@ ordinary transcript rendering must leave the composer buffer untouched."
   (e-harness-instance-list :kind 'chat))
 
 (defun e-chat--default-chat-instance ()
-  "Return the configured default chat instance, or nil for legacy config."
+  "Return the configured default chat instance, or nil."
   (e-harness-instance-get e-chat-default-harness-id))
 
 (defun e-chat--harness-for-instance (instance)
@@ -8181,9 +8171,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
          (session (when (or new-session (not session-id))
                     (e-chat--create-session
                      chat-harness nil chat-instance-id)))
-         (chat-session-id (or session-id
-                              (plist-get session :id)
-                              e-chat-default-session-id))
+         (chat-session-id (or session-id (plist-get session :id)))
          (buffer (or (e-chat--find-session-buffer
                       chat-session-id chat-harness chat-instance-id)
                      (get-buffer-create
@@ -8216,12 +8204,14 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   "Return non-nil when the attached session has a running active turn."
   (and e-chat-harness
        e-chat-session-id
+       (e-chat--board-session-id-p e-chat-harness e-chat-session-id)
        (e-chat-service-active-turn-p e-chat-harness e-chat-session-id)))
 
 (defun e-chat--harness-session-active-turn-p (harness session-id)
   "Return non-nil when HARNESS has a running active turn for SESSION-ID."
   (and (e-harness-p harness)
        session-id
+       (e-chat--board-session-id-p harness session-id)
        (e-chat-service-active-turn-p harness session-id)))
 
 (defun e-chat--submit-intent (prefix)
@@ -8505,31 +8495,36 @@ When SESSION-ID is nil, create a private execution session for the participant."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when (derived-mode-p 'e-chat-mode)
-            (let ((session-id (or e-chat-session-id
-                                  e-chat-default-session-id))
-                  (harness
-                   (if (or (e-chat-service-binding
+            (let ((session-id e-chat-session-id))
+              (when (and session-id
+                         (e-harness-p e-chat-harness)
+                         (e-chat-service-board-session-p
+                          e-chat-harness session-id))
+                (let* ((candidate
+                        (if (or (e-chat-service-binding
+                                 e-chat-harness session-id)
+                                (e-chat--harness-session-active-turn-p
+                                 e-chat-harness session-id))
                             e-chat-harness
-                            (or e-chat-session-id e-chat-default-session-id))
-                           (e-chat--harness-session-active-turn-p
-                            e-chat-harness
-                            (or e-chat-session-id e-chat-default-session-id)))
-                       e-chat-harness
-                     (condition-case err
-                         (if e-chat-harness-instance-id
-                             (e-chat--harness-for-instance
-                              (e-harness-instance-get e-chat-harness-instance-id))
-                           (e-chat--default-harness))
-                       (user-error
-                        (if (e-harness-p e-chat-harness)
-                            e-chat-harness
-                          (signal (car err) (cdr err))))))))
-              (setq count (1+ count))
-              (e-chat--attach-buffer
-               buffer
-               harness
-               session-id
-               e-chat-harness-instance-id))))))
+                          (condition-case err
+                              (if e-chat-harness-instance-id
+                                  (e-chat--harness-for-instance
+                                   (e-harness-instance-get
+                                    e-chat-harness-instance-id))
+                                (e-chat--default-harness))
+                            (user-error
+                             (if (e-harness-p e-chat-harness)
+                                 e-chat-harness
+                               (signal (car err) (cdr err)))))))
+                       (harness
+                        (if (e-chat-service-board-session-p
+                             candidate session-id)
+                            candidate
+                          e-chat-harness)))
+                  (setq count (1+ count))
+                  (e-chat--attach-buffer
+                   buffer harness session-id
+                   e-chat-harness-instance-id))))))))
     (when (called-interactively-p 'interactive)
       (message "Refreshed %d e chat buffer%s"
                count
@@ -8747,13 +8742,14 @@ timestamp."
             (let ((harness (e-chat--harness-for-instance instance))
                   (instance-id (e-harness-instance-id instance)))
               (dolist (session (e-harness-root-session-list harness))
-                (when (e-chat--session-belongs-to-instance-p
+                (when (and (e-chat--board-session-p session)
+                           (e-chat--session-belongs-to-instance-p
                             harness
                             session
                             instance-id
                             default-instance-id
                             (e-chat--shared-session-store-p
-                             harness store-counts))
+                             harness store-counts)))
                   (push (list :instance instance
                               :instance-id instance-id
                               :harness harness
@@ -8772,8 +8768,18 @@ timestamp."
                         (list :harness harness
                               :session session
                               :session-id (plist-get session :id)))
-                      (e-harness-root-session-list harness)))))
+                      (seq-filter #'e-chat--board-session-p
+                                  (e-harness-root-session-list harness))))))
     candidates))
+
+(defun e-chat--board-session-p (session)
+  "Return non-nil when SESSION carries board-native persistent identity."
+  (or (plist-get (plist-get session :board-session-state) :board-id)
+      (plist-get session :board-id)))
+
+(defun e-chat--board-session-id-p (harness session-id)
+  "Return non-nil when HARNESS SESSION-ID names a board-native session."
+  (e-chat-service-board-session-p harness session-id))
 
 (defun e-chat--candidate-for-label (candidates labels label)
   "Return session candidate from CANDIDATES matching LABELS LABEL."
@@ -8843,7 +8849,8 @@ timestamp."
 
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
-  (or (plist-get (car (e-harness-root-session-list harness)) :id)
+  (or (plist-get (seq-find #'e-chat--board-session-p
+                           (e-harness-root-session-list harness)) :id)
       (plist-get (e-chat--create-session harness) :id)))
 
 (defun e-chat--context-session-target ()
@@ -9565,7 +9572,8 @@ face properties so the preview still reflects chat rendering."
                                        e-chat-overview--harness
                                        (e-chat--default-harness))))
                        (setq harness target)
-                       (e-harness-root-session-list target))))
+                       (seq-filter #'e-chat--board-session-p
+                                   (e-harness-root-session-list target)))))
          (inhibit-read-only t))
     (setq-local e-chat-overview--harness harness)
     (erase-buffer)

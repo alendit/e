@@ -17,6 +17,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-subagent-registry)
 (require 'e-subagent-runner)
@@ -51,8 +52,8 @@
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
-      (e-harness-create-session parent :id "parent-1")
-      (e-harness-create-session parent :id "parent-2")
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (e-harness-test-create-board-session parent :id "parent-2")
       (e-subagents-shell-test--spawn registry parent "parent-1" "child a")
       (e-subagents-shell-test--spawn registry parent "parent-2" "child b")
       (let ((buffer (e-subagents-list-buffer
@@ -73,7 +74,7 @@
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
-      (e-harness-create-session parent :id "parent-1")
+      (e-harness-test-create-board-session parent :id "parent-1")
       (let ((buffer (e-subagents-list-buffer
                      :registry registry :parent-session-id "parent-1")))
         (unwind-protect

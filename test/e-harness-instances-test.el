@@ -1,13 +1,7 @@
 ;;; e-harness-instances-test.el --- Tests for harness instance catalog -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
-
-;; Author: Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
-
-;;; Commentary:
-
-;; Tests for user-facing configured harness instance registration.
 
 ;;; Code:
 
@@ -24,27 +18,23 @@
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
-         (e-harness-instance--session-stores (make-hash-table :test 'equal))
-         (e-harness-instance--generation 0)
-         (e-harness-instance--request-sequence 0))
+         (e-harness-instance--generation 0))
      ,@body))
 
 (ert-deftest e-harness-instances-test-registers-and-lists-by-kind ()
   "Registered harness instances can be listed by shell kind."
   (e-harness-instances-test--with-empty-registries
     (e-harness-instance-register
-     :id :chat-alpha
-     :name "Alpha"
-     :kind 'chat
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil)))
+     :id :chat-alpha :name "Alpha" :kind 'chat
+     :factory (lambda ()
+                (e-harness-create
+                 :backend (e-backend-fake-create :items nil)))
      :metadata '(:model "alpha"))
     (e-harness-instance-register
-     :id :other
-     :name "Other"
-     :kind 'canvas
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil))))
+     :id :other :name "Other" :kind 'canvas
+     :factory (lambda ()
+                (e-harness-create
+                 :backend (e-backend-fake-create :items nil))))
     (should (equal (mapcar #'e-harness-instance-id
                            (e-harness-instance-list :kind 'chat))
                    '(:chat-alpha)))
@@ -58,11 +48,9 @@
   (e-harness-instances-test--with-empty-registries
     (let ((calls 0))
       (e-harness-instance-register
-       :id :chat-alpha
-       :name "Alpha"
-       :kind 'chat
+       :id :chat-alpha :name "Alpha" :kind 'chat
        :factory (lambda ()
-                  (setq calls (1+ calls))
+                  (cl-incf calls)
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
       (let ((first (e-harness-instance-get-or-create :chat-alpha))
@@ -74,508 +62,23 @@
 (ert-deftest e-harness-instances-test-default-is-kind-scoped ()
   "Defaults are selected independently for each harness instance kind."
   (e-harness-instances-test--with-empty-registries
+    (e-harness-instance-register :id :chat-alpha :name "Alpha" :kind 'chat)
     (e-harness-instance-register
-     :id :chat-alpha
-     :name "Alpha"
-     :kind 'chat
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil))))
-    (e-harness-instance-register
-     :id :chat-beta
-     :name "Beta"
-     :kind 'chat
-     :default t
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil))))
+     :id :chat-beta :name "Beta" :kind 'chat :default t)
     (should (eq (e-harness-instance-id
                  (e-harness-instance-default :kind 'chat))
                 :chat-beta))))
 
-(ert-deftest e-harness-instances-test-catalog-ports-never-activate-a-harness ()
-  "Session data ports are declarative metadata, not factory entry points."
-  (e-harness-instances-test--with-empty-registries
-    (let ((factory-calls 0)
-          (catalog (lambda (&rest _arguments) 'pending))
-          (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :dormant :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((instance (e-harness-instance-get :dormant)))
-        (should (equal (e-harness-instance-session-store-id instance) "store"))
-        (should (eq (e-harness-instance-session-catalog instance) catalog))
-        (should (eq (e-harness-instance-session-access-store instance) access-store))
-        (should (= factory-calls 0))))))
-
-(ert-deftest e-harness-instances-test-shared-session-store-requires-identical-ports ()
-  "Two views of one store must not expose divergent catalog contracts."
-  (e-harness-instances-test--with-empty-registries
-    (let ((catalog (lambda (&rest _arguments) 'pending))
-          (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register :id :first :kind 'chat :session-store-id "store"
-                                   :session-catalog catalog :session-access-store access-store)
-      (e-harness-instance-register :id :second :kind 'chat :session-store-id "store"
-                                   :session-catalog catalog :session-access-store access-store)
-      (should-error
-       (e-harness-instance-register
-        :id :conflict :kind 'chat :session-store-id "store"
-        :session-catalog (lambda (&rest _arguments) 'pending)
-        :session-access-store access-store)
-       :type 'e-harness-instance-store-conflict))))
-
 (ert-deftest e-harness-instances-test-replaces-duplicate-registration ()
-  "Registering the same instance id replaces catalog metadata."
+  "Registering the same instance id replaces its presentation metadata."
   (e-harness-instances-test--with-empty-registries
+    (e-harness-instance-register :id :chat-alpha :name "Alpha" :kind 'chat)
     (e-harness-instance-register
-     :id :chat-alpha
-     :name "Alpha"
-     :kind 'chat
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil))))
-    (e-harness-instance-register
-     :id :chat-alpha
-     :name "Renamed Alpha"
-     :kind 'chat
-     :factory (lambda () (e-harness-create
-                          :backend (e-backend-fake-create :items nil))))
+     :id :chat-alpha :name "Renamed Alpha" :kind 'chat)
     (should (equal (e-harness-instance-name
                     (e-harness-instance-get :chat-alpha))
                    "Renamed Alpha"))
-    (should (equal (mapcar #'e-harness-instance-id
-                           (e-harness-instance-list :kind 'chat))
-                   '(:chat-alpha)))))
-
-(ert-deftest e-harness-instances-test-session-stores-deduplicate-eligible-instances ()
-  "Host catalog metadata returns a shared store once without starting it."
-  (e-harness-instances-test--with-empty-registries
-    (let ((catalog (lambda (&rest _arguments) 'pending))
-          (access-store (lambda (&rest _arguments) 'pending)))
-      (dolist (id '(:second :first))
-        (e-harness-instance-register :id id :kind 'chat :session-store-id "store"
-                                     :session-catalog catalog :session-access-store access-store))
-      (let ((stores (e-harness-instance-session-stores)))
-        (should (= (length stores) 1))
-        (should (equal (plist-get (car stores) :eligible-instance-ids)
-                       '(:first :second)))))))
-
-(ert-deftest e-harness-instances-test-replacement-updates-index-and-generation ()
-  "Replacing one instance moves only its store eligibility and fences snapshots."
-  (e-harness-instances-test--with-empty-registries
-    (let ((catalog (lambda (&rest _arguments) 'pending))
-          (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register :id :instance :kind 'chat
-                                   :session-store-id "old"
-                                   :session-catalog catalog
-                                   :session-access-store access-store)
-      (should (= e-harness-instance--generation 1))
-      (e-harness-instance-register :id :instance :kind 'chat
-                                   :session-store-id "new"
-                                   :session-catalog catalog
-                                   :session-access-store access-store)
-      (should (= e-harness-instance--generation 2))
-      (let ((stores (e-harness-instance-session-stores)))
-        (should (equal (mapcar (lambda (entry)
-                                (plist-get entry :session-store-id))
-                              stores)
-                       '("new")))
-        (should (equal (plist-get (car stores) :eligible-instance-ids)
-                       '(:instance)))))))
-
-(ert-deftest e-harness-instances-test-catalog-page-is-pending-and-non-activating ()
-  "A held store leaves one bounded request pending without invoking a factory."
-  (e-harness-instances-test--with-empty-registries
-    (let* (arguments succeed fail
-           (factory-calls 0)
-           (catalog (lambda (request on-done on-error)
-                      (setq arguments request
-                            succeed on-done
-                            fail on-error)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (dolist (id '(:second :first))
-        (e-harness-instance-register
-         :id id :kind 'chat :session-store-id "store"
-         :session-catalog catalog :session-access-store access-store
-         :factory (lambda () (cl-incf factory-calls) (e-harness-create))))
-      (let ((request (e-harness-instance-session-catalog-page-start
-                      "store" :principal "owner" :after "cursor" :limit 2)))
-        (should (eq (e-request-lifecycle-state request) 'started))
-        (should (equal (plist-get arguments :operation) 'list-page))
-        (should (equal (plist-get arguments :principal) "owner"))
-        (should (equal (plist-get arguments :after) "cursor"))
-        (should (= factory-calls 0))
-        (should (functionp succeed))
-        (should (functionp fail))
-        (funcall succeed
-                 '(:sessions
-                   ((:session-id "session" :state dormant
-                     :access-record
-                     (:controller "owner" :version 2
-                      :discover-principals nil :resume-principals nil)
-                     :board-output-sequence 4 :board-activity-sequence 7))
-                   :next-after "next"))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (let* ((page (e-request-lifecycle-terminal-payload request))
-               (session (car (plist-get page :sessions))))
-          (should (equal (plist-get page :session-store-id) "store"))
-          (should (equal (plist-get page :eligible-instance-ids)
-                         '(:first :second)))
-          (should (equal (plist-get session :session-id) "session"))
-          (should (equal (plist-get session :eligible-instance-ids)
-                         '(:first :second))))))))
-
-(ert-deftest e-harness-instances-test-catalog-read-is-exact-and-current-schema ()
-  "Exact dormant lookup stays pending and accepts only a current persisted row."
-  (e-harness-instances-test--with-empty-registries
-    (let* (arguments succeed
-           (factory-calls 0)
-           (catalog (lambda (request on-done _on-error)
-                      (setq arguments request
-                            succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-harness-instance-session-catalog-read-start
-              "store" "session" :principal "owner")))
-        (should (eq (e-request-lifecycle-state request) 'started))
-        (should (eq (plist-get arguments :operation) 'read))
-        (should (equal (plist-get arguments :session-id) "session"))
-        (should (= factory-calls 0))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record
-                   (:controller "owner" :version 3
-                    :discover-principals nil :resume-principals nil)
-                   :board-output-sequence 8 :board-activity-sequence 13))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (let ((row (e-request-lifecycle-terminal-payload request)))
-          (should (equal (plist-get row :session-store-id) "store"))
-          (should (equal (plist-get row :eligible-instance-ids)
-                         '(:instance)))
-          (should (= (plist-get row :board-activity-sequence) 13)))))))
-
-(ert-deftest e-harness-instances-test-catalog-read-rejects-outdated-row ()
-  "Exact lookup fails instead of synthesizing missing publication counters."
-  (e-harness-instances-test--with-empty-registries
-    (let* (succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (let ((request
-             (e-harness-instance-session-catalog-read-start
-              "store" "session")))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record (:controller "owner" :version 3)))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-harness-instance-session-catalog-invalid-row))))))
-
-(ert-deftest e-harness-instances-test-catalog-page-fences-stale-mapping ()
-  "A delayed page cannot commit after configured instance metadata changes."
-  (e-harness-instances-test--with-empty-registries
-    (let* (succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :first :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (let ((request
-             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
-        (e-harness-instance-register :id :unrelated :kind 'chat)
-        (funcall succeed '(:sessions nil))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-harness-instance-session-catalog-stale))))))
-
-(ert-deftest e-harness-instances-test-catalog-page-cancellation-fences-late-success ()
-  "Cancelling a held page reaches its adapter and prevents later resettlement."
-  (e-harness-instances-test--with-empty-registries
-    (let* (succeed
-           (cancel-calls 0)
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      (lambda () (cl-incf cancel-calls))))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (let ((request
-             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
-        (e-request-cancel request 'user-cancelled)
-        (should (= cancel-calls 1))
-        (should (eq (e-request-lifecycle-state request) 'cancelled))
-        (funcall succeed '(:sessions ((:session-id "late"))))
-        (should (eq (e-request-lifecycle-state request) 'cancelled))
-        (should (eq (e-request-lifecycle-terminal-payload request)
-                    'user-cancelled))))))
-
-(ert-deftest e-harness-instances-test-catalog-page-rejects-over-limit-result ()
-  "A catalog adapter cannot settle a request with more rows than requested."
-  (e-harness-instances-test--with-empty-registries
-    (let* (succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (let ((request
-             (e-harness-instance-session-catalog-page-start "store" :limit 1)))
-        (funcall succeed
-                 '(:sessions ((:session-id "first") (:session-id "second"))))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-harness-instance-session-catalog-invalid-page))))))
-
-(ert-deftest e-harness-instances-test-catalog-preflight-pages-all-stores ()
-  "Global preflight validates current rows without retaining them or activating."
-  (e-harness-instances-test--with-empty-registries
-    (let (scheduled calls
-          (factory-calls 0)
-          (access-store (lambda (&rest _arguments) 'pending)))
-      (dolist (store-id '("second" "first"))
-        (e-harness-instance-register
-         :id (intern (concat ":" store-id)) :kind 'chat
-         :session-store-id store-id
-         :session-catalog
-         (lambda (arguments on-done on-error)
-           (setq calls (append calls (list (list arguments on-done on-error))))
-           nil)
-         :session-access-store access-store
-         :factory (lambda () (cl-incf factory-calls) (e-harness-create))))
-      (cl-letf (((symbol-function 'run-at-time)
-                 (lambda (_seconds _repeat function &rest arguments)
-                   (setq scheduled
-                         (append scheduled
-                                 (list (lambda ()
-                                         (apply function arguments))))))))
-        (let ((request
-               (e-harness-instance-session-catalog-preflight-start :limit 1)))
-          (should (eq (e-request-lifecycle-state request) 'started))
-          (should (= (length scheduled) 1))
-          (funcall (pop scheduled))
-          (let* ((call (pop calls))
-                 (arguments (car call)))
-            (should (eq (plist-get arguments :operation) 'preflight-page))
-            (should (equal (plist-get arguments :session-store-id) "first"))
-            (funcall
-             (cadr call)
-             '(:sessions
-               ((:session-id "one" :state dormant
-                 :access-record
-                 (:controller "owner" :version 0
-                  :discover-principals nil :resume-principals nil)
-                 :board-output-sequence 0 :board-activity-sequence 0))
-               :next-after "next")))
-          (funcall (pop scheduled))
-          (let* ((call (pop calls))
-                 (arguments (car call)))
-            (should (equal (plist-get arguments :after) "next"))
-            (funcall (cadr call) '(:sessions nil)))
-          (funcall (pop scheduled))
-          (let ((call (pop calls)))
-            (should (equal (plist-get (car call) :session-store-id) "second"))
-            (funcall
-             (cadr call)
-             '(:sessions
-               ((:session-id "two" :state dormant
-                 :access-record
-                 (:controller "owner" :version 1
-                  :discover-principals nil :resume-principals nil)
-                 :board-output-sequence 3 :board-activity-sequence 4)))))
-          (funcall (pop scheduled))
-          (should (eq (e-request-lifecycle-state request) 'finished))
-          (should (= factory-calls 0))
-          (should (equal (e-request-lifecycle-terminal-payload request)
-                         '(:generation 2 :session-store-count 2
-                           :session-count 2))))))))
-
-(ert-deftest e-harness-instances-test-catalog-preflight-rejects-cursor-cycle ()
-  "A repeated opaque continuation fails instead of looping over a store."
-  (e-harness-instances-test--with-empty-registries
-    (let (scheduled calls)
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog
-       (lambda (_arguments on-done _on-error)
-         (setq calls (append calls (list on-done)))
-         nil)
-       :session-access-store (lambda (&rest _arguments) 'pending))
-      (cl-letf (((symbol-function 'run-at-time)
-                 (lambda (_seconds _repeat function &rest arguments)
-                   (setq scheduled
-                         (append scheduled
-                                 (list (lambda ()
-                                         (apply function arguments))))))))
-        (let ((request
-               (e-harness-instance-session-catalog-preflight-start :limit 1)))
-          (funcall (pop scheduled))
-          (funcall (pop calls) '(:sessions nil :next-after "same"))
-          (funcall (pop scheduled))
-          (funcall (pop calls) '(:sessions nil :next-after "same"))
-          (should (eq (e-request-lifecycle-state request) 'failed))
-          (should (eq (car (e-request-lifecycle-terminal-payload request))
-                      'e-harness-instance-session-catalog-preflight-cycle))
-          (should-not scheduled))))))
-
-(ert-deftest e-harness-instances-test-catalog-preflight-cancellation-fences-child ()
-  "Cancelling global validation cancels its sole page and ignores late success."
-  (e-harness-instances-test--with-empty-registries
-    (let (scheduled succeed
-          (cancel-calls 0))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog
-       (lambda (_arguments on-done _on-error)
-         (setq succeed on-done)
-         (lambda () (cl-incf cancel-calls)))
-       :session-access-store (lambda (&rest _arguments) 'pending))
-      (cl-letf (((symbol-function 'run-at-time)
-                 (lambda (_seconds _repeat function &rest arguments)
-                   (setq scheduled
-                         (append scheduled
-                                 (list (lambda ()
-                                         (apply function arguments))))))))
-        (let ((request
-               (e-harness-instance-session-catalog-preflight-start :limit 1)))
-          (funcall (pop scheduled))
-          (e-request-cancel request 'user-cancelled)
-          (should (= cancel-calls 1))
-          (funcall succeed '(:sessions nil))
-          (should (eq (e-request-lifecycle-state request) 'cancelled))
-          (should-not scheduled))))))
-
-(ert-deftest e-harness-instances-test-access-store-is-controlled-and-non-activating ()
-  "Optimistic ACL mutation remains pending without activating any harness."
-  (e-harness-instances-test--with-empty-registries
-    (let* (arguments succeed fail
-           (factory-calls 0)
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store
-            (lambda (request on-done on-error)
-              (setq arguments request
-                    succeed on-done
-                    fail on-error)
-              nil)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-harness-instance-session-access-start
-              "store" 'grant
-              '(:session-id "session" :requester-principal "owner"
-                :expected-version 3 :principal "member" :rights (discover resume)))))
-        (should (eq (e-request-lifecycle-state request) 'started))
-        (should (equal (plist-get arguments :operation) 'grant))
-        (should (equal (plist-get arguments :session-store-id) "store"))
-        (should (= (plist-get arguments :expected-version) 3))
-        (should (= factory-calls 0))
-        (should (functionp succeed))
-        (should (functionp fail))
-        (funcall succeed
-                 '(:access-record
-                   (:controller "owner" :version 4
-                    :discover-principals nil :resume-principals nil)))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (let ((result (e-request-lifecycle-terminal-payload request)))
-          (should (equal (plist-get result :session-store-id) "store"))
-          (should (= (plist-get (plist-get result :access-record) :version)
-                     4)))))))
-
-(ert-deftest e-harness-instances-test-access-store-requires-optimistic-auth-inputs ()
-  "Access mutation rejects unsupported or unauthenticated requests before I/O."
-  (e-harness-instances-test--with-empty-registries
-    (let ((calls 0)
-          (catalog (lambda (&rest _arguments) 'pending))
-          (access-store (lambda (&rest _arguments) (cl-incf calls))))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (should-error
-       (e-harness-instance-session-access-start
-        "store" 'delete
-        '(:session-id "session" :requester-principal "owner"
-          :expected-version 1))
-       :type 'e-harness-instance-session-access-invalid-operation)
-      (should-error
-       (e-harness-instance-session-access-start
-        "store" 'grant
-        '(:session-id "session" :requester-principal "owner"))
-       :type 'wrong-type-argument)
-      (should (= calls 0)))))
-
-(ert-deftest e-harness-instances-test-session-access-rights-are-explicit ()
-  "Controller and explicit ACLs grant discover/resume without implication gaps."
-  (let ((record '(:controller "owner" :version 1
-                  :discover-principals ("reader")
-                  :resume-principals ("resumer"))))
-    (should (e-harness-instance-session-access-allows-p
-             record "owner" 'resume))
-    (should (e-harness-instance-session-access-allows-p
-             record "reader" 'discover))
-    (should-not (e-harness-instance-session-access-allows-p
-                 record "reader" 'resume))
-    (should (e-harness-instance-session-access-allows-p
-             record "resumer" 'discover))
-    (should (e-harness-instance-session-access-allows-p
-             record "resumer" 'resume))))
-
-(ert-deftest e-harness-instances-test-session-activation-is-held-and-factory-free ()
-  "Dormant loading uses the async activation port, never the legacy factory."
-  (e-harness-instances-test--with-empty-registries
-    (let* (arguments succeed fail
-           (factory-calls 0)
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending))
-           (activation
-            (lambda (request on-done on-error)
-              (setq arguments request
-                    succeed on-done
-                    fail on-error)
-              nil)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :session-activation activation
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-harness-instance-session-activation-start
-              :instance '(:session-store-id "store" :session-id "session"))))
-        (should (eq (e-request-lifecycle-state request) 'started))
-        (should (equal (plist-get arguments :session-id) "session"))
-        (should (= factory-calls 0))
-        (should-not (e-harness-registry-get :live))
-        (should (functionp succeed))
-        (should (functionp fail))
-        (let ((harness (e-harness-create)))
-          (e-harness-create-session harness :id "session")
-          (funcall succeed harness)
-          (should (eq (e-request-lifecycle-state request) 'finished))
-          (should (eq (e-request-lifecycle-terminal-payload request) harness))
-          (should-not (e-harness-registry-get :live))
-          (should (= factory-calls 0)))))))
-
-(ert-deftest e-harness-instances-test-session-store-requires-both-data-ports ()
-  "A declared durable store cannot silently omit a required port."
-  (e-harness-instances-test--with-empty-registries
-    (should-error
-     (e-harness-instance-register :id :incomplete :kind 'chat :session-store-id "store"
-                                  :session-catalog (lambda (&rest _arguments) 'pending))
-     :type 'e-harness-instance-store-conflict)))
+    (should (= (e-harness-instance-generation) 2))))
 
 (provide 'e-harness-instances-test)
 

@@ -173,33 +173,31 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
-(ert-deftest e-session-persistence-test-catalog-port-returns-current-board-rows ()
-  "The writer serves bounded preflight pages without transcript reads in Emacs."
+(ert-deftest e-session-persistence-test-checkpoint-indexes-board-identity ()
+  "The writer checkpoints board identity without dormant-session policy rows."
   (skip-unless (executable-find e-session-persistence-node-executable))
-  (let* ((directory (make-temp-file "e-session-catalog-port-" t))
+  (let* ((directory (make-temp-file "e-session-board-index-" t))
          (store (e-session-persistent-index-store-create directory))
-         (controller (e-session-persistence-enable store))
-         result failure)
+         (controller (e-session-persistence-enable store)))
     (unwind-protect
         (progn
           (e-session-create store :id "session-1")
           (e-session-persistence-declare-board-state
-           controller "session-1" "principal:owner")
+           controller "session-1" "principal:owner" "board-1")
           (e-session-persistence-test--await-durable store)
-          (e-session-persistence-catalog-request
-           controller '(:operation preflight-page :limit 1)
-           (lambda (value) (setq result value))
-           (lambda (err) (setq failure err)))
-          (while (and (not result) (not failure))
-            (accept-process-output (e-session-persistence-process controller) 0.05))
-          (should-not failure)
-          (let ((row (car (plist-get result :sessions))))
-            (should (equal (plist-get row :session-id) "session-1"))
-            (should (eq (plist-get row :state) 'dormant))
-            (should (equal (plist-get (plist-get row :access-record) :controller)
-                           "principal:owner"))
-            (should (= (plist-get row :board-output-sequence) 0))
-            (should (= (plist-get row :board-activity-sequence) 0))))
+          (let* ((indexed-store
+                  (e-session-persistent-index-store-create directory))
+                 (entry (car (e-session-list indexed-store))))
+            (should (equal (plist-get entry :id) "session-1"))
+            (should (equal (plist-get entry :board-id) "board-1"))
+            (should (equal (plist-get entry :principal) "principal:owner"))
+            (should-not (plist-member entry :state)))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (state (plist-get (e-session-get loaded "session-1")
+                                   :board-session-state)))
+            (should (equal state
+                           '(:board-id "board-1"
+                             :principal "principal:owner")))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

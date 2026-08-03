@@ -22,6 +22,7 @@
 (require 'e-default-harnesses)
 (require 'e-events)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -103,7 +104,7 @@
   (let ((buffer (find-file-noselect file)))
     (with-current-buffer buffer
       (org-mode)
-      (e-harness-create-session
+      (e-harness-test-create-board-session
        harness
        :id session-id
        :metadata (list :project-root (file-name-as-directory
@@ -320,7 +321,7 @@
               (insert "* Topic\nBody\n")
               (e-buffer-set-workspace source target-workspace))
             (set-window-buffer (selected-window) source)
-            (e-harness-create-session harness :id "session-1")
+            (e-harness-test-create-board-session harness :id "session-1")
             (e-org-canvas--mark-session
              harness "session-1" source :scope 'thread :target-folder nil)
             (setq chat-buffer
@@ -363,7 +364,7 @@
          input)
     (unwind-protect
         (progn
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (with-current-buffer target
             (org-mode)
             (e-buffer-set-workspace target token))
@@ -585,7 +586,7 @@
           (with-current-buffer buffer
             (org-mode)
             (insert "* Helper\nbody\n"))
-          (e-harness-create-session harness :id "helper-session")
+          (e-harness-test-create-board-session harness :id "helper-session")
           (e-org-canvas--mark-session harness "helper-session" buffer)
           (cl-letf (((symbol-function 'e-workspace-find-buffer)
                      (cl-function
@@ -617,7 +618,7 @@
             (erase-buffer)
             (org-mode)
             (insert "* Stale\n"))
-          (e-harness-create-session
+          (e-harness-test-create-board-session
            harness
            :id "session-1"
            :metadata
@@ -727,7 +728,8 @@
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     (with-temp-buffer
       (org-mode)
-      (e-session-create store :id "org-canvas-status")
+      (e-harness-test-create-board-session
+       harness :id "org-canvas-status")
       (e-session-append-message
        store "org-canvas-status" '(:role user :content "context question"))
       (setq-local e-org-canvas-harness harness)
@@ -781,7 +783,8 @@
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     (with-temp-buffer
       (org-mode)
-      (e-session-create store :id "org-canvas-usage")
+      (e-harness-test-create-board-session
+       harness :id "org-canvas-usage")
       (setq-local e-org-canvas-harness harness)
       (setq-local e-org-canvas-session-id "org-canvas-usage")
       (e-org-canvas-mode 1)
@@ -883,8 +886,8 @@
       (rename-buffer "org-canvas-context" t)
       (org-mode)
       (insert "* Topic\nBody\n")
-      (e-harness-create-session harness :id "plain")
-      (e-harness-create-session harness :id "org")
+      (e-harness-test-create-board-session harness :id "plain")
+      (e-harness-test-create-board-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (let ((plain (plist-get (e-harness-context harness "plain")
@@ -921,7 +924,7 @@
       (rename-buffer "org-canvas-snapshot-context" t)
       (org-mode)
       (insert "* Live heading\nBody\n")
-      (e-harness-create-session harness :id "org")
+      (e-harness-test-create-board-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-session-append-message
@@ -949,7 +952,7 @@
 (ert-deftest e-org-canvas-test-plain-session-does-not-get-org-source-style ()
   "Org Canvas style guidance is gated by Org Canvas session metadata."
   (let ((harness (e-org-canvas-test--harness t)))
-    (e-harness-create-session harness :id "plain")
+    (e-harness-test-create-board-session harness :id "plain")
     (let* ((context (e-harness-context harness "plain"))
            (content (mapconcat
                      (lambda (message) (or (plist-get message :content) ""))
@@ -969,7 +972,7 @@
       (rename-buffer "org-canvas-document-context" t)
       (org-mode)
       (insert "* Topic\nBody\n")
-      (e-harness-create-session harness :id "org")
+      (e-harness-test-create-board-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'document :target-folder nil)
       (e-session-append-message
@@ -1018,7 +1021,7 @@
       (rename-buffer "org-canvas-submit" t)
       (org-mode)
       (insert "* Topic\nBody\n")
-      (e-harness-create-session harness :id "session-1")
+      (e-harness-test-create-board-session harness :id "session-1")
       (e-org-canvas--mark-session
        harness "session-1" (current-buffer) :scope 'thread :target-folder nil)
       (let (call)
@@ -1092,7 +1095,7 @@
               (insert "* Topic\nBody\n"))
             (set-window-buffer original-window source)
             (select-window original-window)
-            (e-harness-create-session
+            (e-harness-test-create-board-session
              harness
              :id "session-1"
              :metadata (list :project-root default-directory))
@@ -1133,7 +1136,7 @@
   (let ((harness (e-org-canvas-test--harness))
         input
         expected-uri)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (with-temp-buffer
       (org-mode)
       (let ((target (current-buffer))
@@ -1209,7 +1212,7 @@
   "A source selection used for s-i is cleared when the Org Canvas turn is done."
   (let ((harness (e-org-canvas-test--harness))
         input)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (with-temp-buffer
       (rename-buffer "org-canvas-selected-source" t)
       (org-mode)
@@ -1296,7 +1299,7 @@
   (let* ((harness (e-org-canvas-test--harness))
          call
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (unwind-protect
         (with-temp-buffer
           (rename-buffer "org-canvas-submit-input" t)
@@ -1335,7 +1338,7 @@
   "Progress emitted during submit remains visible after the composer is removed."
   (let* ((harness (e-org-canvas-test--harness))
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (unwind-protect
         (with-temp-buffer
           (rename-buffer "org-canvas-submit-progress" t)
@@ -1396,7 +1399,7 @@
          window
          original-window
          original-buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (unwind-protect
         (progn
           (setq original-window (selected-window))
@@ -1456,7 +1459,7 @@
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-ui-work-target"))
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (unwind-protect
         (progn
           (setq buffer
@@ -1496,7 +1499,7 @@
   "Submitted input panes show a done line when a turn has no assistant output."
   (let* ((harness (e-org-canvas-test--harness))
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (setq buffer (e-org-canvas--input-buffer
                   :harness harness :session-id "session-1"
                   :scope 'thread :target-buffer (current-buffer)))
@@ -1535,7 +1538,7 @@
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-result-target"))
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (setq buffer (e-org-canvas--input-buffer
                   :harness harness :session-id "session-1"
                   :scope 'thread :target-buffer target))
@@ -1591,7 +1594,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-follow-target"))
          buffer)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (setq buffer (e-org-canvas--input-buffer
                   :harness harness :session-id "session-1"
                   :scope 'thread :target-buffer target))
@@ -1677,7 +1680,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
           request))))
     (unwind-protect
         (progn
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (with-current-buffer target
             (org-mode)
             (erase-buffer)
@@ -1720,7 +1723,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
   "Reopening a prior prompt restores its scope and draft body."
   (let ((harness (e-org-canvas-test--harness))
         input)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-org-canvas-test--import-board-input
      harness "session-1" "prompt-1" "revise the outline"
      '(:org-canvas-scope document))
@@ -1765,7 +1768,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-temp-buffer
           (rename-buffer "unsaved-org-canvas" t)
           (org-mode)
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (e-org-canvas--mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
@@ -1814,7 +1817,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-temp-buffer
           (rename-buffer "unsaved-org-canvas-backend" t)
           (org-mode)
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (e-org-canvas--mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
@@ -1843,7 +1846,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-temp-buffer
           (rename-buffer "unsaved-org-canvas-empty-backend" t)
           (org-mode)
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (e-org-canvas--mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
@@ -1882,7 +1885,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-temp-buffer
           (rename-buffer "unsaved-org-canvas-no-tools" t)
           (org-mode)
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (e-harness-set-session-model harness "session-1" "model-for-names")
           (e-org-canvas--mark-session
            harness "session-1" (current-buffer)
@@ -1969,7 +1972,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-temp-buffer
           (rename-buffer "unsaved-org-canvas-unsafe-manual" t)
           (org-mode)
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (e-org-canvas--mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
@@ -2068,7 +2071,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
       (org-mode)
       (insert "* Parent\n** Child\nBody\n* Other\n")
       (goto-char (point-min))
-      (e-harness-create-session harness :id "org")
+      (e-harness-test-create-board-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-actions-call 'org-canvas :overview nil
@@ -2094,7 +2097,7 @@ Body
 * Other
 ")
       (goto-char (point-min))
-      (e-harness-create-session harness :id "org")
+      (e-harness-test-create-board-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-actions-call
@@ -2120,7 +2123,7 @@ Body
 (ert-deftest e-org-canvas-test-visibility_tools_fail_outside_org_canvas ()
   "Org visibility tools report explicit errors for ordinary chat sessions."
   (let ((harness (e-org-canvas-test--harness t)))
-    (e-harness-create-session harness :id "plain")
+    (e-harness-test-create-board-session harness :id "plain")
     (should-error
      (e-actions-call 'org-canvas :show-all nil
                      (list :harness harness :session-id "plain"))
@@ -2176,7 +2179,7 @@ Body
   "Responding to threads opens a document-scoped pane listing open threads."
   (let ((harness (e-org-canvas-test--harness))
         input)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (with-temp-buffer
       (org-mode)
       (setq buffer-file-name "/tmp/e-org-canvas-threads.org")
@@ -2204,7 +2207,7 @@ Body
 (ert-deftest e-org-canvas-test-respond-to-threads-requires-saved-file ()
   "An unsaved canvas has no file-keyed threads to answer."
   (let ((harness (e-org-canvas-test--harness)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (with-temp-buffer
       (org-mode)
       (let ((target (current-buffer)))

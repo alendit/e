@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Durable JSONL writer for e session persistence.  This process intentionally
-// owns filesystem I/O and catalog rebuilding; Emacs only owns the outbox.
+// owns filesystem I/O and session-index rebuilding; Emacs only owns the outbox.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -33,7 +33,7 @@ async function knownCommands(directory) {
   return known;
 }
 
-export function updateCatalogEntry(entry, record, file) {
+export function updateIndexEntry(entry, record, file) {
   const timestamp = record.timestamp || record["updated-at"] || entry["updated-at"];
   entry["updated-at"] = timestamp || entry["updated-at"];
   entry.file = file;
@@ -59,8 +59,8 @@ export function updateCatalogEntry(entry, record, file) {
     entry["last-message-at"] = null;
     entry["latest-assistant-marker"] = null;
   } else if (record.type === "board-session-state") {
-    entry.state = record.state;
-    entry["access-record"] = record["access-record"];
+    entry["board-id"] = record["board-id"] || record["board-state"]?.["board-id"];
+    entry.principal = record.principal || record["board-state"]?.principal;
     entry["board-output-sequence"] = record["board-output-sequence"];
     entry["board-activity-sequence"] = record["board-activity-sequence"];
   }
@@ -72,7 +72,7 @@ function titleFor(entry) {
   return `Untitled ${entry["created-at"] || entry.id}`;
 }
 
-export async function rebuildCatalog(directory) {
+export async function rebuildIndex(directory) {
   const dir = await sessionsDirectory(directory);
   const entries = [];
   for (const name of await fs.readdir(dir)) {
@@ -81,7 +81,7 @@ export async function rebuildCatalog(directory) {
     const entry = { id: path.basename(name, ".jsonl"), "message-count": 0, loaded: false, file };
     const content = await fs.readFile(file, "utf8").catch(() => "");
     for (const line of content.split("\n")) {
-      try { updateCatalogEntry(entry, JSON.parse(line), file); } catch (_) {}
+      try { updateIndexEntry(entry, JSON.parse(line), file); } catch (_) {}
     }
     entry.title = titleFor(entry);
     entries.push(entry);
@@ -105,29 +105,7 @@ async function handle(request) {
       known.add(request.id);
     }
   } else if (request.op === "checkpoint") {
-    await rebuildCatalog(directory);
-  } else if (request.op === "catalog-page") {
-    const target = path.join(directory, "index.json");
-    const entries = JSON.parse(await fs.readFile(target, "utf8").catch(() => "[]"));
-    const rows = entries
-      .map((entry) => ({
-        "session-id": entry.id,
-        state: entry.state,
-        "access-record": entry["access-record"],
-        "board-output-sequence": entry["board-output-sequence"],
-        "board-activity-sequence": entry["board-activity-sequence"],
-      }))
-      .sort((left, right) => String(left["session-id"]).localeCompare(String(right["session-id"])));
-    if (request["catalog-operation"] === "read") {
-      return rows.find((row) => row["session-id"] === request["session-id"]) ?? null;
-    }
-    const after = request.after == null ? null : String(request.after);
-    const limit = Math.max(1, Math.min(Number(request.limit) || 32, 32));
-    const start = after == null ? 0 : rows.findIndex((row) => String(row["session-id"]) > after);
-    const offset = start < 0 ? rows.length : start;
-    const page = rows.slice(offset, offset + limit);
-    const more = offset + page.length < rows.length;
-    return { sessions: page, "next-after": more ? page.at(-1)["session-id"] : null };
+    await rebuildIndex(directory);
   } else {
     throw new Error(`Unsupported writer operation ${request.op}`);
   }

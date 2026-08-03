@@ -39,7 +39,7 @@
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (should-error
      (e-chat-session-submit harness "session-1" "")
      :type 'user-error)
@@ -56,7 +56,7 @@
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-chat-session-submit
      harness
      "session-1"
@@ -78,7 +78,7 @@
                    :backend (e-backend-create :name "noop"))))
     (unwind-protect
         (progn
-          (e-harness-create-session
+          (e-harness-test-create-board-session
            harness
            :id "session-1"
            :metadata '(:name "Chat"
@@ -114,7 +114,7 @@
                    :name "held"
                    :start (lambda (&rest _args) nil)))
          (harness (e-harness-create :backend backend)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-chat-session-submit harness "session-1" "running")
     (e-chat-session-test--drain-board harness "session-1")
     (should-error
@@ -150,7 +150,7 @@
                                       (e-backend-request-create))
                              nil))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-chat-session-submit harness "session-1" "running")
     (e-chat-session-test--drain-board harness "session-1")
     (should-error
@@ -172,7 +172,7 @@
                   :backend (e-backend-create
                             :name "delayed"
                             :stream (lambda (&rest _args) nil)))))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-chat-session-submit harness "session-1" "hello")
     (e-chat-session-test--drain-board harness "session-1")
     (e-chat-session-abort harness "session-1")
@@ -212,7 +212,7 @@
          (harness (e-harness-create :backend backend))
          record
          failure)
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (let ((store (e-harness-sessions harness)))
       (e-session-append-message store "session-1"
                                 '(:role user :content "old"))
@@ -256,7 +256,7 @@
          (harness (e-harness-create :backend backend))
          (store (e-harness-sessions harness)))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-session-append-message store "session-1"
                               '(:role user :content "old"))
     (e-session-append-message store "session-1"
@@ -285,7 +285,7 @@
   "Chat-session actions update options and build context preview data."
   (let ((harness (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (e-chat-session-set-model harness "session-1" "gpt-test")
     (e-chat-session-set-effort harness "session-1" "high")
     (should (equal (e-harness-session-options harness "session-1")
@@ -328,7 +328,7 @@
   "Canvas attachments are rebuilt from current live buffer state per context."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
-    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-create-board-session harness :id "session-1")
     (with-temp-buffer
       (rename-buffer "e-chat-session-canvas" t)
       (insert "first canvas state")
@@ -384,7 +384,7 @@
         (progn
           (write-region "disk state" nil file nil 'silent)
           (e-harness-activate-capability harness (e-chat-session-capability-create))
-          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-create-board-session harness :id "session-1")
           (let ((buffer (find-file-noselect file)))
             (unwind-protect
                 (with-current-buffer buffer

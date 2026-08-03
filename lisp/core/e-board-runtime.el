@@ -33,15 +33,6 @@
 (define-error 'e-board-runtime-session-missing
   "e board runtime session is missing"
   'e-board-runtime-error)
-(define-error 'e-board-runtime-instance-ineligible
-  "e board runtime harness instance is not eligible for session attachment"
-  'e-board-runtime-error)
-(define-error 'e-board-runtime-resume-denied
-  "e board runtime dormant session resume is not authorized"
-  'e-board-runtime-error)
-(define-error 'e-board-runtime-resume-version-conflict
-  "e board runtime dormant session access version is stale"
-  'e-board-runtime-error)
 (define-error 'e-board-runtime-control-committed
   "e board runtime control request already committed"
   'e-board-runtime-error)
@@ -50,15 +41,6 @@
   'e-board-runtime-error)
 (define-error 'e-board-runtime-quiescence-active
   "e board runtime quiescence request is already active"
-  'e-board-runtime-error)
-(define-error 'e-board-runtime-activation-active
-  "e board runtime activation request is already active"
-  'e-board-runtime-error)
-(define-error 'e-board-runtime-activation-preflight
-  "e board runtime activation preflight failed"
-  'e-board-runtime-error)
-(define-error 'e-board-runtime-catalog-degraded
-  "e board runtime dormant catalog is degraded"
   'e-board-runtime-error)
 (define-error 'e-board-runtime-producer-disabled
   "e board runtime producer has no current live binding"
@@ -73,11 +55,6 @@
                (:constructor e-board-runtime--quiescence-create))
   "One controlled process-quiescence request and its admission authority."
   request admission-token)
-
-(cl-defstruct (e-board-runtime-activation
-               (:constructor e-board-runtime--activation-create))
-  "One startup activation gate over quiescence and store preflight."
-  request quiescence preflight)
 
 (cl-defstruct (e-board-runtime-producer-binding
                (:constructor e-board-runtime--producer-binding-create))
@@ -99,25 +76,10 @@
 (defvar e-board-runtime--quiescence-current nil
   "The one active controlled process-quiescence request, if any.")
 
-(defvar e-board-runtime--activation-current nil
-  "The one active startup activation gate, if any.")
-
-(defvar e-board-runtime--catalog-state 'unknown
-  "Current dormant-session catalog state.
-Values are `unknown', `validating', `ready', `degraded', or `unavailable'.")
-
-(defvar e-board-runtime--catalog-condition nil
-  "The bounded condition explaining degraded or unavailable catalog state.")
-
 (defun e-board-runtime-admission-state ()
   "Return the current bounded board-runtime admission state."
   (list :state (if e-board-runtime--admission-open-p 'open 'closed)
         :epoch e-board-runtime--admission-epoch))
-
-(defun e-board-runtime-catalog-state ()
-  "Return the current dormant-session catalog status and condition."
-  (list :state e-board-runtime--catalog-state
-        :condition (copy-tree e-board-runtime--catalog-condition)))
 
 (defun e-board-runtime-close-admission ()
   "Close admission for new public board-runtime roots in O(1).
@@ -252,8 +214,8 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
-  turn-activity turn-tags turn-delivery-ids instance-id instance-catalog-generation harness-id harness-object-generation
-  session-store-id endpoint-token state reconciliation)
+  turn-activity turn-tags turn-delivery-ids instance-id instance-catalog-generation
+  harness-id harness-object-generation endpoint-token state reconciliation)
 
 (cl-defstruct (e-board-runtime-reconciliation
                (:constructor e-board-runtime-reconciliation--create)
@@ -263,7 +225,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (cl-defstruct (e-board-runtime-endpoint-token
                (:constructor e-board-runtime-endpoint-token--create)
                (:conc-name e-board-runtime-endpoint-token-))
-  harness-id harness-object-generation session-store-id session-id)
+  harness-id harness-object-generation session-id)
 
 (cl-defstruct (e-board-runtime-turn-activity
                (:constructor e-board-runtime-turn-activity--create)
@@ -758,110 +720,6 @@ retain the returned admission token and reopen it explicitly when appropriate."
     (e-board-runtime--quiescence-evaluate quiescence)
     quiescence))
 
-(defun e-board-runtime--activation-fail (activation condition)
-  "Fail ACTIVATION with CONDITION while leaving admission closed."
-  (when (eq activation e-board-runtime--activation-current)
-    (setq e-board-runtime--activation-current nil)
-    (e-request-fail (e-board-runtime-activation-request activation) condition)))
-
-(defun e-board-runtime--activation-invalid-row-p (condition)
-  "Return non-nil when CONDITION is one incompatible dormant catalog row."
-  (eq (car-safe condition) 'e-harness-instance-session-catalog-invalid-row))
-
-(defun e-board-runtime--activation-finish (activation result state condition)
-  "Reopen ACTIVATION and finish it with RESULT and catalog STATE.
-CONDITION is retained as bounded diagnostic evidence when STATE is degraded."
-  (when (eq activation e-board-runtime--activation-current)
-    (condition-case reopen-error
-        (progn
-          (e-board-runtime-reopen-admission
-           (e-board-runtime-quiescence-admission-token
-            (e-board-runtime-activation-quiescence activation)))
-          (setq e-board-runtime--catalog-state state
-                e-board-runtime--catalog-condition (copy-tree condition))
-          (e-request-finish
-           (e-board-runtime-activation-request activation) result)
-          (setq e-board-runtime--activation-current nil))
-      (error
-       (setq e-board-runtime--catalog-state 'unavailable
-             e-board-runtime--catalog-condition (copy-tree reopen-error))
-       (e-board-runtime--activation-fail activation reopen-error)))))
-
-(defun e-board-runtime--require-catalog-ready ()
-  "Reject dormant resume while startup catalog validation is not ready."
-  (unless (eq e-board-runtime--catalog-state 'ready)
-    (signal 'e-board-runtime-catalog-degraded
-            (list e-board-runtime--catalog-state
-                  (copy-tree e-board-runtime--catalog-condition)))))
-
-(defun e-board-runtime--activation-preflight (activation)
-  "Start configured-store preflight for quiescent ACTIVATION."
-  (if (null (e-harness-instance-session-stores))
-      (let ((condition
-             (list 'e-board-runtime-activation-preflight
-                   "No configured session store is available for activation")))
-        (setq e-board-runtime--catalog-state 'unavailable
-              e-board-runtime--catalog-condition (copy-tree condition))
-        (e-board-runtime--activation-fail activation condition))
-    (condition-case err
-        (setf
-         (e-board-runtime-activation-preflight activation)
-         (e-harness-instance-session-catalog-preflight-start
-          :limit e-harness-instance-session-preflight-page-limit
-          :on-done
-          (lambda (result)
-            (when (eq activation e-board-runtime--activation-current)
-              (e-board-runtime--activation-finish
-               activation result 'ready nil)))
-          :on-error
-          (lambda (condition)
-            (if (e-board-runtime--activation-invalid-row-p condition)
-                (e-board-runtime--activation-finish
-                 activation
-                 (list :catalog-state 'degraded
-                       :condition (copy-tree condition))
-                 'degraded condition)
-              (setq e-board-runtime--catalog-state 'unavailable
-                    e-board-runtime--catalog-condition (copy-tree condition))
-              (e-board-runtime--activation-fail activation condition)))))
-      (error
-       (setq e-board-runtime--catalog-state 'unavailable
-             e-board-runtime--catalog-condition (copy-tree err))
-       (e-board-runtime--activation-fail activation err)))))
-
-(defun e-board-runtime-startup-activation ()
-  "Fence roots, quiesce owners, and asynchronously preflight configured stores.
-Successful settlement is the only path that reopens runtime admission."
-  (when e-board-runtime--activation-current
-    (signal 'e-board-runtime-activation-active nil))
-  (setq e-board-runtime--catalog-state 'validating
-        e-board-runtime--catalog-condition nil)
-  (let* ((request (e-request-lifecycle-create
-                   :id (format "runtime-activation-%d"
-                               (1+ e-board-runtime--admission-epoch))
-                   :owner 'e-board-runtime-activation))
-         (quiescence (e-board-runtime-request-quiescence))
-         (activation (e-board-runtime--activation-create
-                      :request request :quiescence quiescence))
-         (quiescence-request (e-board-runtime-quiescence-request quiescence)))
-    (setq e-board-runtime--activation-current activation)
-    (e-request-start request (list :state 'quiescing))
-    (if (e-request-terminal-p quiescence-request)
-        (if (eq (e-request-lifecycle-state quiescence-request) 'finished)
-            (e-board-runtime--activation-preflight activation)
-          (e-board-runtime--activation-fail
-           activation (e-request-lifecycle-terminal-payload quiescence-request)))
-      (let ((cleanup (e-request-lifecycle-cleanup-trigger quiescence-request)))
-        (setf (e-request-lifecycle-cleanup-trigger quiescence-request)
-              (lambda (settled)
-                (when cleanup (funcall cleanup settled))
-                (if (eq (e-request-lifecycle-state settled) 'finished)
-                    (e-board-runtime--activation-preflight activation)
-                  (e-board-runtime--activation-fail
-                   activation
-                   (e-request-lifecycle-terminal-payload settled)))))))
-    activation))
-
 (defun e-board-runtime--track-control-request (request)
   "Count REQUEST until its first terminal transition."
   (let ((cleanup (e-request-lifecycle-cleanup-trigger request)))
@@ -890,19 +748,11 @@ Successful settlement is the only path that reopens runtime admission."
   "Return the concrete endpoint lookup key for HARNESS SESSION-ID."
   (list harness session-id))
 
-(defun e-board-runtime--resolved-session-attachment-key
-    (harness session-id session-store-id)
-  "Return stable reverse key for one resolved session endpoint."
-  (if session-store-id
-      (list 'session-store session-store-id session-id)
-    (e-board-runtime--session-key harness session-id)))
-
 (defun e-board-runtime--attachment-session-key (attachment)
-  "Return ATTACHMENT's stable reverse session identity."
-  (e-board-runtime--resolved-session-attachment-key
+  "Return ATTACHMENT's concrete reverse session identity."
+  (e-board-runtime--session-key
    (e-board-runtime-attachment-harness attachment)
-   (e-board-runtime-attachment-session-id attachment)
-   (e-board-runtime-attachment-session-store-id attachment)))
+   (e-board-runtime-attachment-session-id attachment)))
 
 (defun e-board-runtime--attachment-composite-generation (attachment)
   "Return ATTACHMENT's frozen instance/concrete-harness generation pair."
@@ -1721,15 +1571,14 @@ When omitted, the conservative idle-only harness delivery port is used."
     (board-or-id harness session-id
                  &key participant-id author principal controller delivery-function
                  instance-id instance-catalog-generation harness-id
-                 harness-object-generation session-store-id endpoint-token)
+                 harness-object-generation endpoint-token)
   "Attach one already-resolved endpoint with optional qualified metadata."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
   (unless (or (null delivery-function) (functionp delivery-function))
     (signal 'wrong-type-argument (list 'functionp delivery-function)))
   (e-board-runtime--require-live-session harness session-id)
-  (let ((session-key (e-board-runtime--resolved-session-attachment-key
-                      harness session-id session-store-id))
+  (let ((session-key (e-board-runtime--session-key harness session-id))
         (endpoint-key (e-board-runtime--session-key harness session-id)))
     (when (or (gethash session-key e-board-runtime--session-attachments)
               (gethash endpoint-key e-board-runtime--endpoint-attachments))
@@ -1748,7 +1597,6 @@ When omitted, the conservative idle-only harness delivery port is used."
       :instance-catalog-generation instance-catalog-generation
       :harness-id harness-id
       :harness-object-generation harness-object-generation
-      :session-store-id session-store-id
       :endpoint-token endpoint-token))))
 
 (cl-defun e-board-runtime-attach-instance
@@ -1769,12 +1617,9 @@ This operation never invokes an instance factory or loads dormant history."
   (let* ((instance-generation (e-harness-instance-generation))
          (instance (or (e-harness-instance-get instance-id)
                        (signal 'e-harness-instance-missing (list instance-id))))
-         (store-id (e-harness-instance-session-store-id instance))
          (harness-id (e-harness-instance-harness-id instance))
          (harness (e-harness-registry-get harness-id))
          (harness-generation (e-harness-registry-generation harness-id)))
-    (unless store-id
-      (signal 'e-board-runtime-instance-ineligible (list instance-id)))
     (unless harness
       (signal 'e-harness-registry-missing (list harness-id)))
     (unless (= instance-generation (e-harness-instance-generation))
@@ -1782,7 +1627,6 @@ This operation never invokes an instance factory or loads dormant history."
     (let ((token (e-board-runtime-endpoint-token--create
                   :harness-id harness-id
                   :harness-object-generation harness-generation
-                  :session-store-id store-id
                   :session-id session-id)))
       (e-board-runtime--attach-resolved
        board-or-id harness session-id
@@ -1793,203 +1637,7 @@ This operation never invokes an instance factory or loads dormant history."
        :instance-catalog-generation instance-generation
        :harness-id harness-id
        :harness-object-generation harness-generation
-      :session-store-id store-id
-      :endpoint-token token))))
-
-(cl-defun e-board-runtime--resume-instance-start
-    (board-or-id instance-id session-store-id session-id requester-principal
-                 expected-version activate-offline
-                 &key participant-id author delivery-function on-done on-error)
-  "Start controlled resume, optionally activating an offline INSTANCE-ID.
-Every path first validates one exact dormant catalog row.  When
-ACTIVATE-OFFLINE is non-nil and the concrete harness is absent, the named
-instance's asynchronous activation port loads the session without registering
-it.  A second exact catalog read then revalidates version, controller, resume
-rights, and eligibility before one bounded registry/attachment commit."
-  (unless (and requester-principal
-               (integerp expected-version) (>= expected-version 0))
-    (signal 'wrong-type-argument
-            (list 'resume-authorization requester-principal expected-version)))
-  (let* ((board (e-board-runtime--active-board board-or-id))
-         (instance (or (e-harness-instance-get instance-id)
-                       (signal 'e-harness-instance-missing (list instance-id))))
-         (store (e-harness-instance-session-store session-store-id))
-         (eligible (plist-get store :eligible-instance-ids))
-         (harness-id (e-harness-instance-harness-id instance))
-         children
-         activated-harness
-         validated-controller
-         request)
-    (unless (and (equal (e-harness-instance-session-store-id instance)
-                        session-store-id)
-                 (memq instance-id eligible))
-      (signal 'e-board-runtime-instance-ineligible
-              (list instance-id session-store-id)))
-    (cl-labels
-        ((fail (condition)
-           (when (e-request-fail request condition)
-             (when on-error
-               (funcall on-error condition))))
-         (track (child)
-           (push child children)
-           child)
-         (validate-row (row revalidation-p)
-           (let ((access-record (plist-get row :access-record)))
-             (unless (= (plist-get access-record :version) expected-version)
-               (signal 'e-board-runtime-resume-version-conflict
-                       (list session-store-id session-id expected-version
-                             (plist-get access-record :version))))
-             (unless (e-harness-instance-session-access-allows-p
-                      access-record requester-principal 'resume)
-               (signal 'e-board-runtime-resume-denied
-                       (list session-store-id session-id requester-principal)))
-             (unless (memq instance-id (plist-get row :eligible-instance-ids))
-               (signal 'e-board-runtime-instance-ineligible
-                       (list instance-id session-store-id session-id)))
-             (when (and revalidation-p
-                        (not (equal validated-controller
-                                    (plist-get access-record :controller))))
-               (signal 'e-board-runtime-resume-version-conflict
-                       (list session-store-id session-id expected-version
-                             'controller-changed)))
-             access-record))
-         (finish-attachment (access-record)
-           (unless (e-request-terminal-p request)
-             (let (attachment)
-               (condition-case condition
-                   (setq attachment
-                         (e-board-runtime--attach-instance-resolved
-                          board instance-id session-id
-                          :participant-id participant-id :author author
-                          :principal requester-principal
-                          :controller (plist-get access-record :controller)
-                          :delivery-function delivery-function))
-                 (error
-                  (fail condition)))
-               (when (and attachment (e-request-finish request attachment))
-                 (when on-done
-                   (funcall on-done attachment))))))
-         (revalidation-finished (row)
-           (unless (e-request-terminal-p request)
-             (let (access-record current)
-               (condition-case condition
-                   (progn
-                     (setq access-record (validate-row row t)
-                           current (e-harness-registry-get harness-id))
-                     (when (and current (not (eq current activated-harness)))
-                       (signal 'e-board-runtime-session-busy
-                               (list session-store-id session-id harness-id)))
-                     (unless current
-                       (e-harness-registry-register harness-id activated-harness))
-                     (e-request-progress
-                      request (list :phase 'revalidated
-                                    :session-store-id session-store-id
-                                    :session-id session-id))
-                     (finish-attachment access-record))
-                 (error
-                  (fail condition))))))
-         (activation-finished (harness)
-           (unless (e-request-terminal-p request)
-             (setq activated-harness harness)
-             (e-request-progress
-              request (list :phase 'revalidating
-                            :session-store-id session-store-id
-                            :session-id session-id))
-             (condition-case condition
-                 (track
-                  (e-harness-instance-session-catalog-read-start
-                   session-store-id session-id :principal requester-principal
-                   :on-done #'revalidation-finished :on-error #'fail))
-               (error
-                (fail condition)))))
-         (catalog-finished (row)
-           (unless (e-request-terminal-p request)
-             (let (access-record)
-               (condition-case condition
-                   (progn
-                     (setq access-record (validate-row row nil)
-                           validated-controller
-                           (plist-get access-record :controller))
-                     (e-request-progress
-                      request (list :phase 'validated
-                                    :session-store-id session-store-id
-                                    :session-id session-id))
-                     (if (e-harness-registry-get harness-id)
-                         (finish-attachment access-record)
-                       (unless activate-offline
-                         (signal 'e-harness-registry-missing (list harness-id)))
-                       (e-request-progress
-                        request (list :phase 'activating
-                                      :session-store-id session-store-id
-                                      :session-id session-id))
-                       (track
-                        (e-harness-instance-session-activation-start
-                         instance-id
-                         (list :session-store-id session-store-id
-                               :session-id session-id
-                               :requester-principal requester-principal
-                               :expected-version expected-version)
-                         :on-done #'activation-finished :on-error #'fail))))
-                 (error
-                  (fail condition)))))))
-      (setq request
-            (e-board-runtime--track-control-request
-             (e-request-lifecycle-create
-              :id (format "board-resume-%d"
-                          (cl-incf e-board-runtime--control-sequence))
-              :owner 'e-board-runtime-resume
-              :session-id session-id
-              :generation (e-harness-instance-generation)
-              :state 'created
-              :cancel-function
-              (lambda (_request)
-                (dolist (child children)
-                  (unless (e-request-terminal-p child)
-                    (e-request-cancel child 'resume-cancelled)))))))
-      (e-request-start
-       request (list :phase 'catalog-read :instance-id instance-id
-                     :session-store-id session-store-id :session-id session-id))
-      (condition-case condition
-          (track
-           (e-harness-instance-session-catalog-read-start
-            session-store-id session-id :principal requester-principal
-            :on-done #'catalog-finished :on-error #'fail))
-        (error
-         (if (e-request-terminal-p request)
-             (signal (car condition) (cdr condition))
-           (fail condition))))
-      request)))
-
-(cl-defun e-board-runtime-resume-live-instance-start
-    (board-or-id instance-id session-store-id session-id requester-principal
-                 expected-version
-                 &key participant-id author delivery-function on-done on-error)
-  "Start authorized resume of an already-live loaded dormant session.
-The operation never invokes either the legacy factory or dormant activation
-port.  An offline instance therefore fails visibly after authorization."
-  (e-board-runtime--require-admission)
-  (e-board-runtime--require-catalog-ready)
-  (e-board-runtime--resume-instance-start
-   board-or-id instance-id session-store-id session-id requester-principal
-   expected-version nil
-   :participant-id participant-id :author author
-   :delivery-function delivery-function :on-done on-done :on-error on-error))
-
-(cl-defun e-board-runtime-resume-instance-start
-    (board-or-id instance-id session-store-id session-id requester-principal
-                 expected-version
-                 &key participant-id author delivery-function on-done on-error)
-  "Start authorized dormant resume through the named configured instance.
-Offline loading uses only the instance's asynchronous activation port.  The
-loaded harness remains unregistered and unattached until a second exact catalog
-read proves the expected authorization and controller are still current."
-  (e-board-runtime--require-admission)
-  (e-board-runtime--require-catalog-ready)
-  (e-board-runtime--resume-instance-start
-   board-or-id instance-id session-store-id session-id requester-principal
-   expected-version t
-   :participant-id participant-id :author author
-   :delivery-function delivery-function :on-done on-done :on-error on-error))
+       :endpoint-token token))))
 
 (defun e-board-runtime--make-attachment
     (board participant harness session-id delivery-function generation
@@ -2008,7 +1656,6 @@ read proves the expected authorization and controller are still current."
    :harness-id (plist-get metadata :harness-id)
    :harness-object-generation
    (plist-get metadata :harness-object-generation)
-   :session-store-id (plist-get metadata :session-store-id)
    :endpoint-token
    (or (plist-get metadata :endpoint-token)
        (e-board-runtime-endpoint-token--create
@@ -2228,7 +1875,6 @@ read proves the expected authorization and controller are still current."
            :harness-id (e-board-runtime-attachment-harness-id old)
            :harness-object-generation
            (e-board-runtime-attachment-harness-object-generation old)
-           :session-store-id (e-board-runtime-attachment-session-store-id old)
            :endpoint-token (e-board-runtime-attachment-endpoint-token old))))
     (condition-case condition
         (progn

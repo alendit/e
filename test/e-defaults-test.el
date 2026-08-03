@@ -163,23 +163,6 @@
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities debug))))))))
 
-(ert-deftest e-defaults-test-registers-chat-instance-for-legacy-spec ()
-  "Legacy chat-default specs still register the default chat instance."
-  (e-defaults-test--with-empty-harness-registry
-    (e-default-harnesses-register
-     '((:id :chat-default
-        :factory e-default-chat-harness-create
-        :sync e-default-chat-harness-sync)))
-    (let ((instance (e-harness-instance-default :kind 'chat)))
-      (should (eq (e-harness-instance-id instance) :chat-default))
-      (should (equal (e-harness-instance-session-store-id instance)
-                     e-default-session-store-id))
-      (should (eq (e-harness-instance-session-catalog instance)
-                  #'e-default-session-catalog-port))
-      (should (eq (e-harness-instance-session-access-store instance)
-                  #'e-default-session-access-port))
-      (should (functionp (e-harness-instance-session-activation instance))))))
-
 (ert-deftest e-defaults-test-layer-specs-include-dev-harness-base-and-os-base ()
   "Built-in layer specs include dev, harness, and OS base layer ids."
   (should (memq 'e-dev
@@ -563,6 +546,7 @@
   (let ((e-layer--registry (make-hash-table :test 'eq))
         (e-shell--registry (make-hash-table :test 'eq))
         (e-shell--scoped-registry (make-hash-table :test 'eq))
+        (e-default-chat-layer-ids e-default-chat-layer-ids)
         (current-shell-id 'old-topic))
     (e-layer-register
      (e-layer-spec-create

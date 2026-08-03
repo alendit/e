@@ -16,7 +16,6 @@
 
 (require 'cl-lib)
 (require 'e-backend)
-(require 'e-board-runtime)
 (require 'e-capabilities)
 (require 'e-default-layers)
 (require 'e-context)
@@ -138,40 +137,6 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
              :write-mode 'queued)))
     (e-session-persistence-enable e-default--chat-sessions)
     e-default--chat-sessions))
-
-(defconst e-default-session-store-id "default-chat-sessions"
-  "Stable configured-store identity for the default indexed session store.")
-
-(defun e-default-session-catalog-port (arguments on-done on-error)
-  "Serve bounded default catalog ARGUMENTS through the writer adapter."
-  (let* ((store (e-default-session-store))
-         (controller (e-session-store-persistence-controller store)))
-    (e-session-persistence-catalog-request
-     controller arguments on-done on-error)))
-
-(defun e-default-session-access-port (_arguments _on-done on-error)
-  "Fail unsupported default access mutation without synthesizing policy."
-  (funcall on-error
-           (list 'e-session-persistence-error
-                 "Default session access mutations require an explicit policy adapter"))
-  nil)
-
-(defun e-default-session-activation-port (factory arguments on-done on-error)
-  "Activate one dormant session asynchronously through FACTORY."
-  (let* ((cancelled nil)
-         (timer
-         (run-at-time
-          0 nil
-          (lambda ()
-            (unless cancelled
-              (condition-case err
-                  (let ((harness (funcall factory)))
-                    (e-harness-state harness (plist-get arguments :session-id))
-                    (funcall on-done harness))
-                (error (funcall on-error err))))))))
-    (lambda ()
-      (setq cancelled t)
-      (when (timerp timer) (cancel-timer timer)))))
 
 (defun e-default-chat--record-layer-ids (harness)
   "Record HARNESS explicitly enabled registered layer ids as default chat config."
@@ -472,32 +437,17 @@ factories are recorded, but no harness is created."
   (dolist (spec (e-default-harness--effective-specs specs))
     (let* ((id (plist-get spec :id))
            (factory (plist-get spec :factory))
-           (legacy-chat-default-p (eq id :chat-default))
-           (kind (or (plist-get spec :kind)
-                     (and legacy-chat-default-p 'chat))))
+           (kind (plist-get spec :kind)))
       (e-harness-registry-register-factory id factory)
       (when kind
         (e-harness-instance-register
          :id id
-         :name (or (plist-get spec :name)
-                   (and legacy-chat-default-p "Default Chat"))
+         :name (plist-get spec :name)
          :kind kind
          :factory factory
          :harness-id id
          :metadata (plist-get spec :metadata)
-         :session-store-id
-         (or (plist-get spec :session-store-id) e-default-session-store-id)
-         :session-catalog
-         (or (plist-get spec :session-catalog) #'e-default-session-catalog-port)
-         :session-access-store
-         (or (plist-get spec :session-access-store) #'e-default-session-access-port)
-         :session-activation
-         (or (plist-get spec :session-activation)
-             (lambda (arguments on-done on-error)
-               (e-default-session-activation-port
-                factory arguments on-done on-error)))
-         :default (or (plist-get spec :default)
-                      legacy-chat-default-p)))))
+         :default (plist-get spec :default)))))
   (e-default-harness--effective-specs specs))
 
 (defun e-default-harnesses-sync-instances (&optional specs)
@@ -520,9 +470,7 @@ Factories remain registered so the next lookup recreates fresh harnesses."
 (defun e-default-harnesses-startup ()
   "Register default harness factories and reconcile live default instances."
   (e-default-harnesses-register)
-  (e-default-harnesses-sync-instances)
-  (unless noninteractive
-    (e-board-runtime-startup-activation)))
+  (e-default-harnesses-sync-instances))
 
 (add-hook 'e-startup-layer-hook #'e-default-harnesses-startup)
 

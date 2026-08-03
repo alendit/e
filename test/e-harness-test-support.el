@@ -3,6 +3,8 @@
 ;;; Code:
 
 (require 'e-harness)
+(require 'e-chat-service)
+(require 'e-session)
 
 (defconst e-harness-test--attachment-token 'e-harness-test-attachment)
 
@@ -11,6 +13,22 @@
 
 (defvar e-harness-test--production-authorizer nil
   "Production private-port authorizer wrapped by the test authorizer.")
+
+(cl-defun e-harness-test-create-board-session
+    (harness &key id metadata board-id principal)
+  "Create a board-native test session on HARNESS and return its session value.
+ID and METADATA match `e-harness-create-session'.  BOARD-ID and PRINCIPAL may
+pin an already-created board's durable identity.  The ordinary path exercises
+the same board/session creation service used by presentation shells."
+  (if board-id
+      (let* ((session
+              (e-harness-create-session harness :id id :metadata metadata))
+             (session-id (plist-get session :id)))
+        (e-session-declare-board-state
+         (e-harness-sessions harness) session-id principal board-id)
+        (e-session-get (e-harness-sessions harness) session-id))
+    (e-chat-service-create-session
+     :harness harness :id id :metadata metadata)))
 
 (defun e-harness-test--session-tokens (harness)
   "Return the synthetic token table for HARNESS."

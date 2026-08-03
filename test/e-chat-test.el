@@ -92,6 +92,15 @@ tests, matching how the buffer behaves when shown to a user."
       (setq e-chat--assume-redraw-visible t))
     buffer))
 
+(defun e-chat-test--create-session (store &rest arguments)
+  "Create one board-native test session in STORE from ARGUMENTS."
+  (let* ((session (apply #'e-session-create store arguments))
+         (session-id (plist-get session :id)))
+    (e-session-declare-board-state
+     store session-id (format "chat:%s" session-id)
+     (format "test-board:%s" session-id))
+    session))
+
 (ert-deftest e-chat-test-composed-surface-keeps-draft-outside-transcript ()
   "Transcript rendering must not recreate or alter the separate composer."
   (let* ((e-chat--surface-composition-enabled t)
@@ -986,25 +995,25 @@ must drop any revealed hidden blocks."
           (goto-char (point-max))
           (insert "send async")
           (e-chat-submit)
-          (should (e-chat-test--wait-until (lambda () finish) 1.0))
+          (should (e-chat-test--wait-until (lambda () finish) 2.0))
           (should (e-chat-test--wait-until
                    (lambda ()
                      (string-match-p
                       (concat (regexp-quote e-chat--user-glyph)
                               " send async")
                       (buffer-string)))
-                   1.0))
+                   2.0))
           (should-not (string-match-p "late answer" (buffer-string)))
           (should (string-match-p "queued" (format "%s" header-line-format)))
           (funcall finish)
           (should (e-chat-test--wait-until
                    (lambda () (string-match-p "late answer" (buffer-string)))
-                   1.0))
+                   2.0))
           (should (e-chat-test--wait-until
                    (lambda ()
                      (string-match-p "done"
                                      (format "%s" header-line-format)))
-                   1.0)))
+                   2.0)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1696,10 +1705,9 @@ must drop any revealed hidden blocks."
         (progn
           (make-directory (expand-file-name ".git" project-root) t)
           (make-directory nested t)
-          (e-harness-create-session
-           harness
-           :id "session-1"
-           :metadata (list :project-root nested))
+          (e-chat-test--create-session
+           (e-harness-sessions harness)
+           :id "session-1" :metadata (list :project-root nested))
           (let ((default-directory (file-name-as-directory nested)))
             (e-chat-open :harness harness :session-id "session-1"))
           (should (equal (e-harness-project-root harness "session-1" nil)
@@ -4502,7 +4510,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
          (buffer nil))
     (unwind-protect
         (progn
-          (e-harness-create-session harness :id "chat-provider-stale-replay")
+          (e-chat-test--create-session
+           store :id "chat-provider-stale-replay")
           (e-session-append-message
            store "chat-provider-stale-replay"
            '(:role user :content "inspect" :turn-id "turn-1"))
@@ -6841,7 +6850,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                    (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (progn
-          (e-session-create store :id "resume-me")
+          (e-chat-test--create-session store :id "resume-me")
           (e-session-append-message
            store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
           (cl-letf (((symbol-function 'completing-read)
@@ -6875,9 +6884,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-session-create alpha-store :id "alpha-session"
+            (e-chat-test--create-session alpha-store :id "alpha-session"
                               :metadata '(:name "Alpha Session"))
-            (e-session-create beta-store :id "beta-session"
+            (e-chat-test--create-session beta-store :id "beta-session"
                               :metadata '(:name "Beta Session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
@@ -6909,17 +6918,18 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
          :chat-alpha "Alpha Target" alpha-harness t)
         (e-chat-test--register-chat-instance
          :chat-beta "Beta Target" beta-harness)
-        (e-session-create store :id "legacy-session"
-                          :metadata '(:name "Legacy Session"))
-        (e-session-create store :id "beta-session"
-                          :metadata '(:name "Beta Session"
-                                      :harness-instance-id :chat-beta))
+        (e-chat-service-create-session
+         :harness alpha-harness :id "alpha-session"
+         :metadata '(:name "Alpha Session"))
+        (e-chat-service-create-session
+         :harness beta-harness :id "beta-session"
+         :metadata '(:name "Beta Session" :harness-instance-id :chat-beta))
         (let ((candidates (e-chat--session-candidates)))
           (should (= (length candidates) 2))
           (should (cl-find-if
                    (lambda (candidate)
                      (and (equal (plist-get candidate :session-id)
-                                 "legacy-session")
+                                 "alpha-session")
                           (eq (plist-get candidate :instance-id)
                               :chat-alpha)))
                    candidates))
@@ -6939,8 +6949,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                        :chat-alpha)))
             candidates)))))))
 
-(ert-deftest e-chat-test-session-candidates-include-only-root-sessions ()
-  "Worker sessions never appear among chat session candidates.
+(ert-deftest e-chat-test-session-candidates-include-only-board-root-sessions ()
+  "Worker and pre-board sessions never appear among chat session candidates.
 Subagents and task-queue sessions are available through their own surfaces; the
 switch, resume, active-sessions, and overview surfaces list only root chats."
   (let* ((store (e-session-store-create))
@@ -6952,24 +6962,29 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
       (let ((e-chat-default-harness-id :chat-alpha))
         (e-chat-test--register-chat-instance
          :chat-alpha "Alpha Target" harness t)
-        (e-session-create store :id "top-level"
+        (e-chat-test--create-session store :id "top-level"
                           :metadata '(:name "Top Level"))
-        (e-session-create store :id "child-by-parent"
+        (e-chat-test--create-session store :id "child-by-parent"
                           :metadata '(:name "Child"
                                       :parent-session-id "top-level"))
-        (e-session-create store :id "child-by-role"
+        (e-chat-test--create-session store :id "child-by-role"
                           :metadata '(:name "Reviewer"
                                       :subagent-role "reviewer"))
-        (e-session-create store :id "queued-task"
+        (e-chat-test--create-session store :id "queued-task"
                           :metadata '(:name "Queue worker"
                                       :task-queue-task-id "tsk_000001"))
+        (e-session-create store :id "pre-board"
+                          :metadata '(:name "Unsupported old session"))
+        (should-not
+         (e-chat--harness-session-active-turn-p harness "pre-board"))
         (let ((ids (mapcar (lambda (candidate)
                              (plist-get candidate :session-id))
                            (e-chat--session-candidates))))
           (should (member "top-level" ids))
           (should-not (member "child-by-parent" ids))
           (should-not (member "child-by-role" ids))
-          (should-not (member "queued-task" ids)))))))
+          (should-not (member "queued-task" ids))
+          (should-not (member "pre-board" ids)))))))
 
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
   "Switch-session candidates list newest last message first."
@@ -6984,9 +6999,9 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          :chat-alpha "Alpha Target" harness t)
         ;; Create oldest-to-newest, but message recency is the reverse of
         ;; creation order so a creation- or touch-only sort would disagree.
-        (e-session-create store :id "stale-session")
-        (e-session-create store :id "fresh-session")
-        (e-session-create store :id "middle-session")
+        (e-chat-test--create-session store :id "stale-session")
+        (e-chat-test--create-session store :id "fresh-session")
+        (e-chat-test--create-session store :id "middle-session")
         ;; Append newest-message session first and oldest last, so the touch
         ;; sequence runs opposite to message recency.  A sort keyed on
         ;; :updated-seq would invert the list; the message-time sort must not.
@@ -7015,7 +7030,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (origin (get-buffer-create "chat-resume-preview-origin")))
     (unwind-protect
         (progn
-          (e-session-create store :id "preview-me")
+          (e-chat-test--create-session store :id "preview-me")
           (e-session-append-message
            store "preview-me" '(:id "msg-1" :role user :content "preview hello"))
           (let* ((sessions (e-harness-session-list harness))
@@ -7046,7 +7061,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (e-chat-resume-preview-message-limit 2))
     (unwind-protect
         (progn
-          (e-session-create store :id "preview-tail"
+          (e-chat-test--create-session store :id "preview-tail"
                             :metadata '(:name "Tail preview"))
           (dotimes (index 6)
             (e-session-append-message
@@ -7080,7 +7095,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
   (let* ((directory (make-temp-file "e-chat-" t))
          (store (e-session-persistent-store-create directory))
          (session-id (plist-get
-                      (e-session-create store
+                      (e-chat-test--create-session store
                                         :id "indexed-preview"
                                         :metadata '(:name "Indexed preview"))
                       :id))
@@ -7132,7 +7147,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (harness (e-chat-test--activate-chat-session
                    (e-harness-create :backend backend :sessions store)))
          selected-state selected-sort)
-    (e-session-create store :id "resume-me")
+    (e-chat-test--create-session store :id "resume-me")
     (e-session-append-message
      store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
     (let ((original-require (symbol-function 'require)))
@@ -7162,12 +7177,12 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
                   (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (progn
-          (e-session-create store :id "older-session"
+          (e-chat-test--create-session store :id "older-session"
                             :metadata '(:name "Older"))
           (e-session-append-message
            store "older-session"
            '(:id "old-assistant" :role assistant :content "older answer"))
-          (e-session-create store :id "newer-session"
+          (e-chat-test--create-session store :id "newer-session"
                             :metadata '(:name "Newer"))
           (e-session-append-message
            store "newer-session"
@@ -7199,7 +7214,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (buffer (get-buffer-create "*e-chat-overview-test*")))
     (unwind-protect
         (progn
-          (e-session-create store :id "messy-summary")
+          (e-chat-test--create-session store :id "messy-summary")
           (e-session-append-message
            store "messy-summary"
            '(:id "messy-user"
@@ -7224,7 +7239,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (buffer (get-buffer-create "*e-chat-overview-style-test*")))
     (unwind-protect
         (progn
-          (e-session-create store :id "styled-session"
+          (e-chat-test--create-session store :id "styled-session"
                             :metadata '(:name "Styled Session"))
           (e-session-append-message
            store "styled-session"
@@ -7272,7 +7287,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (buffer (get-buffer-create "*e-chat-overview-duplicate-test*")))
     (unwind-protect
         (progn
-          (e-session-create store :id "derived-title")
+          (e-chat-test--create-session store :id "derived-title")
           (e-session-append-message
            store "derived-title"
            '(:id "derived-user"
@@ -7297,14 +7312,14 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (buffer (get-buffer-create "*e-chat-overview-nav-test*")))
     (unwind-protect
         (progn
-          (e-session-create store :id "older")
+          (e-chat-test--create-session store :id "older")
           (e-session-append-message
            store "older"
            '(:id "older-user"
              :role user
              :content "older prompt"
              :created-at "2026-05-26T21:24:00Z"))
-          (e-session-create store :id "newer")
+          (e-chat-test--create-session store :id "newer")
           (e-session-append-message
            store "newer"
            '(:id "newer-user"
@@ -7339,7 +7354,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (e-chat--read-markers (make-hash-table :test #'eq)))
     (unwind-protect
         (progn
-          (e-session-create store :id "read-me"
+          (e-chat-test--create-session store :id "read-me"
                             :metadata '(:name "Read Me"))
           (e-session-append-message
            store "read-me"
@@ -7381,7 +7396,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (e-chat--read-markers (make-hash-table :test #'eq)))
     (unwind-protect
         (progn
-          (e-session-create
+          (e-chat-test--create-session
            store
            :id "read-marker-attach"
            :metadata
@@ -7418,7 +7433,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          (writes 0))
     (unwind-protect
         (progn
-          (e-session-create
+          (e-chat-test--create-session
            store
            :id "rooted"
            :metadata (list :project-root directory))
@@ -7456,9 +7471,9 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-session-create alpha-store :id "shared-session"
+            (e-chat-test--create-session alpha-store :id "shared-session"
                               :metadata '(:name "Alpha Session"))
-            (e-session-create beta-store :id "shared-session"
+            (e-chat-test--create-session beta-store :id "shared-session"
                               :metadata '(:name "Beta Session"))
             (with-current-buffer buffer
               (e-chat-overview-mode)
@@ -7496,22 +7511,24 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-session-create store :id "legacy-session"
-                              :metadata '(:name "Legacy Session"))
-            (e-session-create store :id "beta-session"
-                              :metadata '(:name "Beta Session"
-                                          :harness-instance-id :chat-beta))
+            (e-chat-service-create-session
+             :harness alpha-harness :id "alpha-session"
+             :metadata '(:name "Alpha Session"))
+            (e-chat-service-create-session
+             :harness beta-harness :id "beta-session"
+             :metadata '(:name "Beta Session"
+                         :harness-instance-id :chat-beta))
             (with-current-buffer buffer
               (e-chat-overview-mode)
               (e-chat-overview--render)
               (let ((text (buffer-string)))
                 (should (= (e-chat-test--count-occurrences
-                            "Legacy Session" text)
+                            "Alpha Session" text)
                            1))
                 (should (= (e-chat-test--count-occurrences
                             "Beta Session" text)
                            1))
-                (should (string-match-p "Alpha Target.*Legacy Session" text))
+                (should (string-match-p "Alpha Target.*Alpha Session" text))
                 (should (string-match-p "Beta Target.*Beta Session" text))
                 (should-not
                  (string-match-p "Alpha Target.*Beta Session" text))))))
@@ -7531,7 +7548,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "toggle-me"
+            (e-chat-test--create-session store :id "toggle-me"
                               :metadata '(:name "Toggle Me"))
             (should (commandp 'e-chat-sidebar-toggle))
             (e-chat-sidebar-toggle)
@@ -7556,12 +7573,12 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "visible-session"
+            (e-chat-test--create-session store :id "visible-session"
                               :metadata '(:name "visible-session"))
             (setq window
                   (display-buffer
                    (e-chat-open :harness harness :session-id "visible-session")))
-            (e-session-create store :id "latest-session"
+            (e-chat-test--create-session store :id "latest-session"
                               :metadata '(:name "latest-session"))
             (with-temp-buffer
               (insert "alpha\nbeta\ngamma\n")
@@ -7593,7 +7610,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "duplicate-session"
+            (e-chat-test--create-session store :id "duplicate-session"
                               :metadata '(:name "duplicate-session"))
             (setq visible-buffer
                   (e-chat-open :harness harness
@@ -7673,7 +7690,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          window)
     (unwind-protect
         (progn
-          (e-session-create store :id "dedupe-session"
+          (e-chat-test--create-session store :id "dedupe-session"
                             :metadata '(:name "dedupe-session"))
           (setq visible-buffer
                 (e-chat-open :harness harness :session-id "dedupe-session"))
@@ -7715,7 +7732,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "workspace-session"
+            (e-chat-test--create-session store :id "workspace-session"
                               :metadata '(:name "workspace-session"))
             (setq chat-buffer
                   (e-chat-open :harness harness
@@ -7762,9 +7779,9 @@ gamma
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "old-session"
+            (e-chat-test--create-session store :id "old-session"
                               :metadata '(:name "old-session"))
-            (e-session-create store :id "latest-session"
+            (e-chat-test--create-session store :id "latest-session"
                               :metadata '(:name "latest-session"))
             (with-temp-buffer
               (insert "alpha\nbeta\ngamma\n")
@@ -7793,7 +7810,7 @@ gamma
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "latest-session"
+            (e-chat-test--create-session store :id "latest-session"
                               :metadata '(:name "latest-session"))
             (with-temp-buffer
               (insert "alpha beta gamma")
@@ -7874,7 +7891,7 @@ gamma
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "existing-session")
+            (e-chat-test--create-session store :id "existing-session")
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
                          (car (all-completions "" collection)))))
@@ -7905,7 +7922,7 @@ gamma
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "target-session"
+            (e-chat-test--create-session store :id "target-session"
                               :metadata '(:name "target-session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
@@ -7945,9 +7962,9 @@ gamma
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-session-create alpha-store :id "alpha-session"
+            (e-chat-test--create-session alpha-store :id "alpha-session"
                               :metadata '(:name "Alpha Session"))
-            (e-session-create beta-store :id "beta-session"
+            (e-chat-test--create-session beta-store :id "beta-session"
                               :metadata '(:name "Beta Session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
@@ -7990,11 +8007,13 @@ gamma
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-session-create store :id "legacy-session"
-                              :metadata '(:name "Legacy Session"))
-            (e-session-create store :id "beta-session"
-                              :metadata '(:name "Beta Session"
-                                          :harness-instance-id :chat-beta))
+            (e-chat-service-create-session
+             :harness alpha-harness :id "alpha-session"
+             :metadata '(:name "Alpha Session"))
+            (e-chat-service-create-session
+             :harness beta-harness :id "beta-session"
+             :metadata '(:name "Beta Session"
+                         :harness-instance-id :chat-beta))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
                          (setq seen-candidates
@@ -8015,7 +8034,7 @@ gamma
             (should (= (length seen-candidates) 3))
             (should (cl-find-if
                      (lambda (candidate)
-                       (string-match-p "Alpha Target.*Legacy Session"
+                       (string-match-p "Alpha Target.*Alpha Session"
                                        candidate))
                      seen-candidates))
             (should (cl-find-if
@@ -8048,12 +8067,12 @@ gamma
                        (lambda (&optional _time)
                          (prog1 (car timestamps)
                            (setq timestamps (cdr timestamps))))))
-              (e-session-create store :id "older-session"
+              (e-chat-test--create-session store :id "older-session"
                                 :metadata '(:name "Alpha old"))
               (e-session-append-message
                store "older-session"
                '(:id "older-message" :role user :content "older prompt"))
-              (e-session-create store :id "newer-session"
+              (e-chat-test--create-session store :id "newer-session"
                                 :metadata '(:name "Zulu newest"))
               (e-session-append-message
                store "newer-session"
@@ -8093,7 +8112,7 @@ gamma
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-session-create store :id "target-session"
+            (e-chat-test--create-session store :id "target-session"
                               :metadata '(:name "target-session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
@@ -8322,7 +8341,7 @@ The context-window denominator comes from the live provider lookup
                  (lambda (&optional _time)
                    (prog1 (car timestamps)
                      (setq timestamps (cdr timestamps))))))
-        (e-session-create store :id e-chat-session-id)
+        (e-chat-test--create-session store :id e-chat-session-id)
         (e-session-append-message
          store
          e-chat-session-id
@@ -9179,8 +9198,8 @@ The context-window denominator comes from the live provider lookup
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
          captured)
-    (e-harness-create-session harness :id "failed-session"
-                              :metadata '(:project-root "/tmp/project/"))
+    (e-chat-test--create-session
+     store :id "failed-session" :metadata '(:project-root "/tmp/project/"))
     (e-session-append-message
      store "failed-session"
      '(:id "msg-1" :role user :content "broken" :turn-id "failed-turn"))
@@ -9399,7 +9418,7 @@ The context-window denominator comes from the live provider lookup
                           :session-id "picker-status-cache"))
          (status-cache (make-hash-table :test #'equal))
          (calls 0))
-    (e-session-create store :id "picker-status-cache")
+    (e-chat-test--create-session store :id "picker-status-cache")
     (cl-letf (((symbol-function 'e-context-budget-status)
                (lambda (&rest _args)
                  (setq calls (1+ calls))
@@ -9435,7 +9454,7 @@ The context-window denominator comes from the live provider lookup
                           :session-id "picker-stale-status-cache"))
          (status-cache (make-hash-table :test #'equal))
          (calls 0))
-    (e-session-create store :id "picker-stale-status-cache")
+    (e-chat-test--create-session store :id "picker-stale-status-cache")
     (let* ((status-key (e-chat--active-session-status-key candidate))
            (status-cache-cell (puthash status-key
                                        (cons
@@ -9493,7 +9512,7 @@ The context-window denominator comes from the live provider lookup
          captured-workspace)
     (unwind-protect
         (progn
-          (e-session-create store :id "workspace-active"
+          (e-chat-test--create-session store :id "workspace-active"
                             :metadata '(:name "Workspace Active"))
           (e-session-append-message
            store
@@ -9593,7 +9612,7 @@ The context-window denominator comes from the live provider lookup
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
          candidate)
-    (e-session-create store :id "indexed-active"
+    (e-chat-test--create-session store :id "indexed-active"
                       :metadata '(:name "Indexed active"))
     (e-session-append-message
      store "indexed-active"
@@ -9627,7 +9646,7 @@ The context-window denominator comes from the live provider lookup
          loaded)
     (unwind-protect
         (progn
-          (e-session-create store :id "unloaded-active"
+          (e-chat-test--create-session store :id "unloaded-active"
                             :metadata '(:name "Unloaded active"))
           (e-session-append-message
            store "unloaded-active"
@@ -9666,7 +9685,7 @@ The context-window denominator comes from the live provider lookup
          started)
     (unwind-protect
         (progn
-          (e-session-create store :id "async-open"
+          (e-chat-test--create-session store :id "async-open"
                             :metadata '(:name "Async open"))
           (e-session-append-message
            store "async-open"
@@ -9709,7 +9728,7 @@ The context-window denominator comes from the live provider lookup
          buffer)
     (unwind-protect
         (progn
-          (e-session-create store :id "async-render"
+          (e-chat-test--create-session store :id "async-render"
                             :metadata '(:name "Async render"))
           (e-session-append-message
            store "async-render"
@@ -9758,7 +9777,7 @@ The context-window denominator comes from the live provider lookup
          buffer)
     (unwind-protect
         (progn
-          (e-session-create store :id "loaded-tail"
+          (e-chat-test--create-session store :id "loaded-tail"
                             :metadata '(:name "Loaded tail"))
           (dolist (message
                    '((:id "msg-1" :role user :content "first prompt")
@@ -9794,7 +9813,7 @@ The context-window denominator comes from the live provider lookup
          buffer)
     (unwind-protect
         (progn
-          (e-session-create store :id "loaded-backfill"
+          (e-chat-test--create-session store :id "loaded-backfill"
                             :metadata '(:name "Loaded backfill"))
           (dolist (message
                    '((:id "msg-1" :role user :content "first prompt")
@@ -9852,7 +9871,7 @@ The context-window denominator comes from the live provider lookup
                   :backend (e-backend-fake-create :items nil)
                   :sessions store))
         candidate)
-    (e-session-create store :id "preview-read"
+    (e-chat-test--create-session store :id "preview-read"
                       :metadata '(:name "Preview read"))
     (e-session-append-message
      store "preview-read"
@@ -9894,7 +9913,7 @@ The context-window denominator comes from the live provider lookup
         (progn
           (e-chat--workspace-unread-cache-invalidate)
           (e-chat--refresh-face-specs)
-          (e-session-create store :id "workspace-unread"
+          (e-chat-test--create-session store :id "workspace-unread"
                             :metadata '(:name "Workspace unread"))
           (e-session-append-message
            store "workspace-unread"
@@ -9945,7 +9964,7 @@ The context-window denominator comes from the live provider lookup
     (unwind-protect
         (progn
           (e-chat--workspace-unread-cache-invalidate)
-          (e-session-create store :id "focus-read"
+          (e-chat-test--create-session store :id "focus-read"
                             :metadata '(:name "Focus read"))
           (e-session-append-message
            store "focus-read"

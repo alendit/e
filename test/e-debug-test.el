@@ -19,6 +19,7 @@
 (require 'e-context-inspection)
 (require 'e-debug)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
@@ -382,7 +383,7 @@
            (e-debug--popup-frame nil)
            hidden
            deleted)
-      (e-harness-create-session harness :id "debug-session"
+      (e-harness-test-create-board-session harness :id "debug-session"
                                 :metadata '(:source e-debug))
       (unwind-protect
           (cl-letf (((symbol-function 'selected-frame)
@@ -464,7 +465,7 @@
          (e-debug--popup-frame nil)
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil))
-    (e-harness-create-session harness :id "debug-session"
+    (e-harness-test-create-board-session harness :id "debug-session"
                               :metadata '(:source e-debug))
     (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
@@ -486,7 +487,7 @@
          (e-debug--popup-frame nil)
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil))
-    (e-harness-create-session harness :id "debug-session"
+    (e-harness-test-create-board-session harness :id "debug-session"
                               :metadata '(:source e-debug))
     (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
@@ -525,9 +526,9 @@
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil)
          (e-debug--notification-session-id nil))
-    (e-harness-create-session harness :id "debug-session-1"
+    (e-harness-test-create-board-session harness :id "debug-session-1"
                               :metadata '(:source e-debug))
-    (e-harness-create-session harness :id "debug-session-2"
+    (e-harness-test-create-board-session harness :id "debug-session-2"
                               :metadata '(:source e-debug))
     (e-debug--ensure-notification-subscription harness "debug-session-1")
     (let ((first e-debug--notification-subscription))
@@ -606,7 +607,7 @@
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store)))
-    (e-harness-create-session harness :id "failed-session"
+    (e-harness-test-create-board-session harness :id "failed-session"
                               :metadata '(:project-root "/tmp/project/"))
     (e-session-append-message
      store "failed-session"
@@ -682,7 +683,7 @@
                         :sessions (e-session-store-create)))
          submitted
          (e-debug--session-id nil))
-    (e-harness-create-session chat-harness :id "plain-session"
+    (e-harness-test-create-board-session chat-harness :id "plain-session"
                               :metadata '(:project-root "/tmp/project/"))
     (cl-letf (((symbol-function 'e-debug--default-harness)
                (lambda () debug-harness))

@@ -79,9 +79,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--admission-open-p t)
           (e-board-runtime--admission-epoch 0)
           (e-board-runtime--quiescence-current nil)
-          (e-board-runtime--activation-current nil)
-          (e-board-runtime--catalog-state 'ready)
-          (e-board-runtime--catalog-condition nil)
           (e-board-runtime--unsettled-control-count 0)
           (e-board-runtime--unsettled-invocation-count 0)
           (e-board-runtime--unsettled-deferred-hook-count 0)
@@ -232,11 +229,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
                    board harness "session" :participant-id "participant"))
                 (lambda () (e-board-runtime-attach-instance nil nil nil))
                 (lambda ()
-                  (e-board-runtime-resume-live-instance-start
-                   nil nil nil nil nil 0))
-                (lambda ()
-                  (e-board-runtime-resume-instance-start nil nil nil nil nil 0))
-                (lambda ()
                   (e-board-runtime-remove-participant-start nil nil nil))
                 (lambda ()
                   (e-board-runtime-rebind-start nil nil nil nil nil))
@@ -327,72 +319,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
                      '((task-persistence.writes . 1))))
       (e-task-queue--adjust-writer-state 'writes -1)
       (should (eq (e-request-lifecycle-state request) 'finished)))))
-
-(ert-deftest e-board-runtime-test-startup-activation-reopens-only-after-preflight ()
-  "The startup gate orders quiescence before current-store validation."
-  (e-board-runtime-test--with-empty-state
-    (cl-letf (((symbol-function 'e-harness-instance-session-stores)
-               (lambda () '((:session-store-id "store"))))
-              ((symbol-function
-                'e-harness-instance-session-catalog-preflight-start)
-               (lambda (&rest arguments)
-                 (funcall (plist-get arguments :on-done)
-                          '(:generation 1 :session-store-count 1
-                            :session-count 0))
-                 (let ((request (e-request-lifecycle-create :id "preflight")))
-                   (e-request-finish request t)
-                   request))))
-      (let* ((activation (e-board-runtime-startup-activation))
-             (request (e-board-runtime-activation-request activation)))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (should (equal (e-board-runtime-admission-state)
-                       '(:state open :epoch 1)))
-        (should (equal (e-board-runtime-catalog-state)
-                       '(:state ready :condition nil)))))))
-
-(ert-deftest e-board-runtime-test-startup-activation-degrades-invalid-old-row ()
-  "An outdated dormant row fences resume without blocking fresh board roots."
-  (e-board-runtime-test--with-empty-state
-    (let ((condition
-           '(e-harness-instance-session-catalog-invalid-row
-             "store" "old-session")))
-      (cl-letf (((symbol-function 'e-harness-instance-session-stores)
-                 (lambda () '((:session-store-id "store"))))
-                ((symbol-function
-                  'e-harness-instance-session-catalog-preflight-start)
-                 (lambda (&rest arguments)
-                   (funcall (plist-get arguments :on-error) condition)
-                   (let ((request (e-request-lifecycle-create :id "preflight")))
-                     (e-request-fail request condition)
-                     request))))
-        (let* ((activation (e-board-runtime-startup-activation))
-               (request (e-board-runtime-activation-request activation))
-               (board (e-board-registry-create :id "fresh")))
-          (should (eq (e-request-lifecycle-state request) 'finished))
-          (should (equal (e-board-runtime-admission-state)
-                         '(:state open :epoch 1)))
-          (should (equal (e-board-runtime-catalog-state)
-                         (list :state 'degraded :condition condition)))
-          (should-error
-           (e-board-runtime-resume-instance-start
-            board :missing "store" "old-session" "principal" 0)
-           :type 'e-board-runtime-catalog-degraded))))))
-
-(ert-deftest e-board-runtime-test-startup-activation-fails-closed-without-store ()
-  "A missing production store port cannot yield a false-green activation."
-  (e-board-runtime-test--with-empty-state
-    (cl-letf (((symbol-function 'e-harness-instance-session-stores)
-               (lambda () nil)))
-      (let* ((activation (e-board-runtime-startup-activation))
-             (request (e-board-runtime-activation-request activation)))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (equal (e-board-runtime-admission-state)
-                       '(:state closed :epoch 1)))
-        (should (eq (plist-get (e-board-runtime-catalog-state) :state)
-                    'unavailable))
-        (e-board-runtime-reopen-admission
-         (e-board-runtime-quiescence-admission-token
-          (e-board-runtime-activation-quiescence activation)))))))
 
 (ert-deftest e-board-runtime-test-cancelled-quiescence-keeps-admission-closed ()
   "Cancelling observation never silently reopens the fenced admission epoch."
@@ -599,42 +525,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should (= (plist-get (e-board-runtime-unsettled-state) :producer-items)
                    0))))))
 
-(ert-deftest e-board-runtime-test-admitted-resume-finishes-after-close ()
-  "Closing admission does not reject a previously accepted resume callback."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
-           (harness (e-harness-create))
-           succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-board-registry-authorize-principal board "owner" "resumer" 'member)
-      (e-harness-create-session harness :id "session")
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
-      (e-harness-registry-register :live harness)
-      (let* ((request
-              (e-board-runtime-resume-live-instance-start
-               board :instance "store" "session" "resumer" 3
-               :participant-id "participant"))
-             (token (e-board-runtime-close-admission)))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record
-                   (:controller "controller" :version 3
-                    :discover-principals nil :resume-principals ("resumer"))
-                   :board-output-sequence 0 :board-activity-sequence 0))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (should
-         (e-board-runtime--current-attachment-p
-          (e-request-lifecycle-terminal-payload request)))
-        (should-error
-         (e-board-runtime-post-input board :id "later" :content "blocked")
-         :type 'e-board-runtime-admission-closed)
-        (e-board-runtime-reopen-admission token)))))
-
 (ert-deftest e-board-runtime-test-deferred-hooks-use-bounded-fifo-drains ()
   "Deferred hooks preserve order and yield after each configured record page."
   (e-board-runtime-test--with-empty-state
@@ -777,14 +667,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
            (factory-calls 0)
-           deliveries
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending)))
+           deliveries)
       (e-harness-create-session harness :id "session")
       (e-harness-instance-register
        :id :qualified :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
        :factory (lambda () (cl-incf factory-calls) harness))
       (should-error
        (e-board-runtime-attach-instance
@@ -812,8 +698,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should (= (e-board-runtime-attachment-harness-object-generation
                     attachment)
                    1))
-        (should (equal (e-board-runtime-attachment-session-store-id attachment)
-                       "store"))
         (should (eq (e-board-runtime-endpoint-token-harness-id token) :live))
         (should (equal (e-board-runtime-endpoint-token-session-id token)
                        "session"))
@@ -840,14 +724,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending))
            observed)
       (e-harness-create-session harness :id "session")
       (e-harness-instance-register
-       :id :qualified :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
+       :id :qualified :kind 'chat :harness-id :live)
       (e-harness-registry-register :live harness)
       (let ((attachment
              (e-board-runtime-attach-instance
@@ -885,14 +765,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
   "An endpoint replacement during delivery cannot accept the stale attempt."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create))
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending)))
+           (harness (e-harness-create)))
       (e-harness-create-session harness :id "session")
       (e-harness-instance-register
-       :id :qualified :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
+       :id :qualified :kind 'chat :harness-id :live)
       (e-harness-registry-register :live harness)
       (e-board-runtime-attach-instance
        board :qualified "session" :participant-id "participant"
@@ -1519,260 +1395,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should-not
          (gethash "participant"
                   (e-board-registry-board-participants source)))))))
-
-(ert-deftest e-board-runtime-test-qualified-store-session-attaches-only-once ()
-  "Two harness objects cannot attach the same stable store/session identity."
-  (e-board-runtime-test--with-empty-state
-    (let* ((first-board (e-board-registry-create :id "first-board"))
-           (second-board (e-board-registry-create :id "second-board"))
-           (first-harness (e-harness-create))
-           (second-harness (e-harness-create))
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-create-session first-harness :id "session")
-      (e-harness-create-session second-harness :id "session")
-      (e-harness-instance-register
-       :id :first :kind 'chat :harness-id :first-harness
-       :session-store-id "shared-store"
-       :session-catalog catalog :session-access-store access-store)
-      (e-harness-instance-register
-       :id :second :kind 'chat :harness-id :second-harness
-       :session-store-id "shared-store"
-       :session-catalog catalog :session-access-store access-store)
-      (e-harness-registry-register :first-harness first-harness)
-      (e-harness-registry-register :second-harness second-harness)
-      (e-board-runtime-attach-instance
-       first-board :first "session" :participant-id "first")
-      (should-error
-       (e-board-runtime-attach-instance
-        second-board :second "session" :participant-id "second")
-       :type 'e-board-runtime-session-busy)
-      (should (= (hash-table-count
-                  (e-board-registry-board-participants second-board))
-                 0)))))
-
-(ert-deftest e-board-runtime-test-live-resume-validates-catalog-before-attach ()
-  "Authorized current dormant row attaches later without invoking a factory."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "board-owner"))
-           (harness (e-harness-create))
-           (factory-calls 0)
-           succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-board-registry-authorize-principal
-       board "board-owner" "resumer" 'member)
-      (e-harness-create-session harness :id "session")
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) harness))
-      (e-harness-registry-register :live harness)
-      (let ((request
-             (e-board-runtime-resume-live-instance-start
-              board :instance "store" "session" "resumer" 3
-              :participant-id "participant")))
-        (should (eq (e-request-lifecycle-state request) 'started))
-        (should (= (hash-table-count
-                    (e-board-registry-board-participants board))
-                   0))
-        (should (= factory-calls 0))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record
-                   (:controller "controller" :version 3
-                    :discover-principals nil :resume-principals ("resumer"))
-                   :board-output-sequence 5 :board-activity-sequence 8))
-        (should (eq (e-request-lifecycle-state request) 'finished))
-        (let* ((attachment (e-request-lifecycle-terminal-payload request))
-               (participant
-                (e-board-runtime-attachment-participant attachment)))
-          (should (equal (e-board-registry-participant-principal participant)
-                         "resumer"))
-          (should (equal (e-board-registry-participant-controller participant)
-                         "controller"))
-          (should (= factory-calls 0)))))))
-
-(ert-deftest e-board-runtime-test-live-resume-denial-precedes-factory-or-membership ()
-  "Denied durable resume creates no harness, grant, participant, or attachment."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
-           (factory-calls 0)
-           succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :offline
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-board-runtime-resume-live-instance-start
-              board :instance "store" "session" "requester" 2
-              :participant-id "participant")))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record
-                   (:controller "controller" :version 2
-                    :discover-principals ("requester") :resume-principals nil)
-                   :board-output-sequence 0 :board-activity-sequence 0))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-board-runtime-resume-denied))
-        (should (= factory-calls 0))
-        (should (= (hash-table-count
-                    (e-board-registry-board-participants board))
-                   0))))))
-
-(ert-deftest e-board-runtime-test-live-resume-offline-instance-never-calls-factory ()
-  "Authorized offline resume fails visibly instead of invoking legacy factory."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
-           (factory-calls 0)
-           succeed
-           (catalog (lambda (_request on-done _on-error)
-                      (setq succeed on-done)
-                      nil))
-           (access-store (lambda (&rest _arguments) 'pending)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :offline
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-board-runtime-resume-live-instance-start
-              board :instance "store" "session" "requester" 2
-              :participant-id "participant")))
-        (funcall succeed
-                 '(:session-id "session" :state dormant
-                   :access-record
-                   (:controller "requester" :version 2
-                    :discover-principals nil :resume-principals nil)
-                   :board-output-sequence 0 :board-activity-sequence 0))
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-harness-registry-missing))
-        (should (= factory-calls 0))
-        (should (= (hash-table-count
-                    (e-board-registry-board-participants board))
-                   0))))))
-
-(ert-deftest e-board-runtime-test-offline-resume-revalidates-before-atomic-attach ()
-  "Offline activation stays private until a second authorized catalog read."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
-           (factory-calls 0)
-           catalog-requests
-           activation-arguments
-           activation-succeed
-           (catalog
-            (lambda (arguments on-done on-error)
-              (setq catalog-requests
-                    (append catalog-requests
-                            (list (list arguments on-done on-error))))
-              nil))
-           (access-store (lambda (&rest _arguments) 'pending))
-           (activation
-            (lambda (arguments on-done _on-error)
-              (setq activation-arguments arguments
-                    activation-succeed on-done)
-              nil))
-           (row '(:session-id "session" :state dormant
-                  :access-record
-                  (:controller "controller" :version 3
-                   :discover-principals nil :resume-principals ("requester"))
-                  :board-output-sequence 5 :board-activity-sequence 8)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :offline
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :session-activation activation
-       :factory (lambda () (cl-incf factory-calls) (e-harness-create)))
-      (let ((request
-             (e-board-runtime-resume-instance-start
-              board :instance "store" "session" "requester" 3
-              :participant-id "participant")))
-        (should (= (length catalog-requests) 1))
-        (funcall (nth 1 (car catalog-requests)) row)
-        (should (equal activation-arguments
-                       '(:session-store-id "store" :session-id "session"
-                         :requester-principal "requester" :expected-version 3)))
-        (should-not (e-harness-registry-get :offline))
-        (should-not
-         (gethash "participant" (e-board-registry-board-participants board)))
-        (let ((harness (e-harness-create)))
-          (e-harness-create-session harness :id "session")
-          (funcall activation-succeed harness)
-          (should (= (length catalog-requests) 2))
-          (should-not (e-harness-registry-get :offline))
-          (should-not
-           (gethash "participant" (e-board-registry-board-participants board)))
-          (funcall (nth 1 (cadr catalog-requests)) row)
-          (should (eq (e-request-lifecycle-state request) 'finished))
-          (should (eq (e-harness-registry-get :offline) harness))
-          (let* ((attachment (e-request-lifecycle-terminal-payload request))
-                 (participant (e-board-runtime-attachment-participant attachment)))
-            (should (equal (e-board-registry-participant-principal participant)
-                           "requester"))
-            (should (equal (e-board-registry-participant-controller participant)
-                           "controller"))))
-        (should (= factory-calls 0))))))
-
-(ert-deftest e-board-runtime-test-offline-resume-revocation-during-load-stays-dormant ()
-  "A version/authorization change during loading prevents registry mutation."
-  (e-board-runtime-test--with-empty-state
-    (let* ((board (e-board-registry-create :id "board" :principal "requester"))
-           catalog-requests
-           activation-succeed
-           (catalog
-            (lambda (arguments on-done on-error)
-              (setq catalog-requests
-                    (append catalog-requests
-                            (list (list arguments on-done on-error))))
-              nil))
-           (access-store (lambda (&rest _arguments) 'pending))
-           (activation
-            (lambda (_arguments on-done _on-error)
-              (setq activation-succeed on-done)
-              nil))
-           (authorized
-            '(:session-id "session" :state dormant
-              :access-record
-              (:controller "controller" :version 3
-               :discover-principals nil :resume-principals ("requester"))
-              :board-output-sequence 0 :board-activity-sequence 0))
-           (revoked
-            '(:session-id "session" :state dormant
-              :access-record
-              (:controller "controller" :version 4
-               :discover-principals nil :resume-principals nil)
-              :board-output-sequence 0 :board-activity-sequence 0)))
-      (e-harness-instance-register
-       :id :instance :kind 'chat :harness-id :offline
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store
-       :session-activation activation)
-      (let ((request
-             (e-board-runtime-resume-instance-start
-              board :instance "store" "session" "requester" 3
-              :participant-id "participant")))
-        (funcall (nth 1 (car catalog-requests)) authorized)
-        (let ((harness (e-harness-create)))
-          (e-harness-create-session harness :id "session")
-          (funcall activation-succeed harness))
-        (funcall (nth 1 (cadr catalog-requests)) revoked)
-        (should (eq (e-request-lifecycle-state request) 'failed))
-        (should (eq (car (e-request-lifecycle-terminal-payload request))
-                    'e-board-runtime-resume-version-conflict))
-        (should-not (e-harness-registry-get :offline))
-        (should-not
-         (gethash "participant"
-                  (e-board-registry-board-participants board)))))))
 
 (ert-deftest e-board-runtime-test-rebind-preserves-participant-and-fences-old-session ()
   "A participant rebind retains its logical identity and uses the new endpoint."
@@ -2593,14 +2215,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
-           (catalog (lambda (&rest _arguments) 'pending))
-           (access-store (lambda (&rest _arguments) 'pending))
            (calls 0))
       (e-harness-create-session harness :id "session")
       (e-harness-instance-register
-       :id :qualified :kind 'chat :harness-id :live
-       :session-store-id "store"
-       :session-catalog catalog :session-access-store access-store)
+       :id :qualified :kind 'chat :harness-id :live)
       (e-harness-registry-register :live harness)
       (e-board-runtime-attach-instance
        board :qualified "session" :participant-id "participant")

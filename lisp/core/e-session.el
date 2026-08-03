@@ -1268,6 +1268,10 @@ and RECORD supplies persisted identity fields during replay."
         :latest-assistant-marker
         (or (plist-get session :latest-assistant-marker)
             (e-session--latest-assistant-marker session))
+        :board-id
+        (plist-get (plist-get session :board-session-state) :board-id)
+        :principal
+        (plist-get (plist-get session :board-session-state) :principal)
         :file (plist-get session :file)
         :loaded (plist-get session :loaded)))
 
@@ -1733,6 +1737,13 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
              :summary (plist-get entry :summary)
              :message-count (or (plist-get entry :message-count) 0)
              :last-message-at (plist-get entry :last-message-at)
+             :board-id (plist-get entry :board-id)
+             :principal (plist-get entry :principal)
+             :board-session-state
+             (when (and (plist-get entry :board-id)
+                        (plist-get entry :principal))
+               (list :board-id (plist-get entry :board-id)
+                     :principal (plist-get entry :principal)))
              :file (or (plist-get entry :file)
                        (e-session--session-file store id))
              :loaded nil)))))
@@ -2106,26 +2117,20 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
      (list :type "board-messages-cleared" :session-id session-id))
     nil))
 
-(defun e-session-declare-board-state
-    (store session-id controller-principal board-id)
-  "Persist SESSION-ID's dormant board identity and access owner."
+(defun e-session-declare-board-state (store session-id principal board-id)
+  "Persist SESSION-ID's board identity and PRINCIPAL."
   (let* ((session (e-session-get store session-id))
-         (board-state
-          (list :board-id board-id :state 'dormant
-                :access-record
-                (list :controller controller-principal :version 0
-                      :discover-principals nil :resume-principals nil))))
+         (board-state (list :board-id board-id :principal principal)))
     (plist-put session :board-session-state (copy-tree board-state))
     (e-session--append-record
      store session-id
      (list :type "board-session-state" :session-id session-id
-           :board-state board-state
-           :state "dormant"
-           :access-record (plist-get board-state :access-record)
+           :board-state board-state :board-id board-id :principal principal
            :board-output-sequence
            (or (plist-get session :board-output-sequence) 0)
            :board-activity-sequence
            (or (plist-get session :board-activity-sequence) 0)))
+    (e-session--write-index store)
     board-state))
 
 (defun e-session--fork-message-seed (message)

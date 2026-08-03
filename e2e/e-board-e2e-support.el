@@ -19,7 +19,7 @@
 (require 'e-harness)
 
 (defun e-board-e2e-reset-runtime ()
-  "Put the batch-only board runtime in an open, catalog-ready test state."
+  "Put the batch-only board runtime in an open board-native test state."
   (setq e-board--registry (make-hash-table :test 'equal)
         e-board--id-sequence 0
         e-board-registry--boards (make-hash-table :test 'equal)
@@ -41,9 +41,6 @@
         e-chat-service--board-log-owners (make-hash-table :test 'equal)
         e-board-runtime--admission-open-p t
         e-board-runtime--quiescence-current nil
-        e-board-runtime--activation-current nil
-        e-board-runtime--catalog-state 'ready
-        e-board-runtime--catalog-condition nil
         e-board-runtime--pending-pickup-head nil
         e-board-runtime--pending-pickup-tail nil
         e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)

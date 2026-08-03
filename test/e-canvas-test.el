@@ -17,6 +17,7 @@
 (require 'e-canvas)
 (require 'e-chat-session)
 (require 'e-harness)
+(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-registry)
 (require 'e-shells)
 
@@ -84,7 +85,7 @@
             (with-temp-buffer
               (rename-buffer "canvas-existing" t)
               (insert "canvas body")
-              (e-harness-create-session harness :id "session-1")
+              (e-harness-test-create-board-session harness :id "session-1")
               (e-chat-session-attach-context
                harness
                "session-1"
@@ -128,7 +129,7 @@
         (e-canvas-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :canvas-test))
             (e-harness-registry-register :canvas-test harness)
-            (e-harness-create-session harness :id "target-session")
+            (e-harness-test-create-board-session harness :id "target-session")
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
                          (car collection))))

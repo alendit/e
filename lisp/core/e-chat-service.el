@@ -153,6 +153,15 @@
         (remhash session-id bindings)
         nil))))
 
+(defun e-chat-service-board-session-p (harness session-id)
+  "Return non-nil when HARNESS SESSION-ID has durable board identity."
+  (condition-case nil
+      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+             (state (plist-get session :board-session-state)))
+        (and (stringp (plist-get state :board-id))
+             (plist-get state :principal)))
+    (e-session-missing nil)))
+
 (defun e-chat-service--board-has-active-subscriber-p (board-id)
   "Return non-nil when BOARD-ID has any live presentation subscriber."
   (cl-some
@@ -516,14 +525,15 @@
           binding))))
 
 (defun e-chat-service--bind-session (harness session-id)
-  "Create one new top-level board and bind HARNESS SESSION-ID as its main member."
+  "Restore and bind board-native HARNESS SESSION-ID as its main member."
   (or (e-chat-service-binding harness session-id)
       (let* ((session (e-session-get (e-harness-sessions harness) session-id))
              (board-state (plist-get session :board-session-state))
-             (principal (or (plist-get (plist-get board-state :access-record)
-                                       :controller)
-                            (format "chat:%s" session-id)))
+             (principal (plist-get board-state :principal))
              (board-id (plist-get board-state :board-id))
+             (_ (unless (and (stringp board-id) principal)
+                  (signal 'e-session-missing
+                          (list session-id 'board-session-state))))
              (existing (and board-id
                             (condition-case nil
                                 (e-board-registry-get board-id)
@@ -539,33 +549,45 @@
         (e-chat-service--install-participant-binding
          board harness session-id :principal principal))))
 
+(defun e-chat-service--persist-board-state
+    (store session-id principal board-id)
+  "Persist SESSION-ID's BOARD-ID and PRINCIPAL through STORE's owning path."
+  (if-let ((controller (e-session-store-persistence-controller store)))
+      (e-session-persistence-declare-board-state
+       controller session-id principal board-id)
+    (e-session-declare-board-state store session-id principal board-id)))
+
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
   (let* ((harness (or harness (e-chat-service-default-harness)))
          (session (e-harness-create-session harness :id id :metadata metadata))
-         (binding (e-chat-service--bind-session harness (plist-get session :id)))
+         (session-id (plist-get session :id))
+         (principal (format "chat:%s" session-id))
+         (board (e-board-registry-create :principal principal))
          (store (e-harness-sessions harness)))
-    (let ((principal (e-board-registry-board-principal
-                      (e-chat-service-binding-board binding)))
-          (board-id (e-board-registry-board-id
-                     (e-chat-service-binding-board binding))))
-      (if-let ((controller (e-session-store-persistence-controller store)))
-          (e-session-persistence-declare-board-state
-           controller (plist-get session :id) principal board-id)
-        (e-session-declare-board-state
-         store (plist-get session :id) principal board-id)))
-    binding))
+    (e-chat-service--persist-board-state
+     store session-id principal (e-board-registry-board-id board))
+    (e-chat-service--install-participant-binding
+     board harness session-id :principal principal)))
 
 (cl-defun e-chat-service-open-board
     (board harness session-id &key participant-id pickup-selector
            observer-selector default-tags default-to)
   "Open existing BOARD by attaching HARNESS SESSION-ID as one participant."
-  (e-chat-service--install-participant-binding
-   (e-board-registry-get board) harness session-id
-   :participant-id participant-id
-   :pickup-selector (or pickup-selector '(:tags (main)))
-   :observer-selector (or observer-selector '(:tags (main)))
-   :default-tags (or default-tags '(main)) :default-to default-to))
+  (let* ((board (e-board-registry-get board))
+         (session (e-session-get (e-harness-sessions harness) session-id))
+         (state (plist-get session :board-session-state)))
+    (unless (and (equal (plist-get state :board-id)
+                        (e-board-registry-board-id board))
+                 (equal (plist-get state :principal)
+                        (e-board-registry-board-principal board)))
+      (signal 'e-session-missing (list session-id 'board-session-state)))
+    (e-chat-service--install-participant-binding
+     board harness session-id
+     :participant-id participant-id
+     :pickup-selector (or pickup-selector '(:tags (main)))
+     :observer-selector (or observer-selector '(:tags (main)))
+     :default-tags (or default-tags '(main)) :default-to default-to)))
 
 (cl-defun e-chat-service-list-boards-page (&key after limit)
   "Return one bounded registry board page after AFTER.
@@ -581,9 +603,14 @@ LIMIT defaults to the registry's fixed page bound."
   (let* ((session (e-harness-create-session harness :id id :metadata metadata))
          (session-id (plist-get session :id))
          (participant-id (or participant-id (format "participant:%s" session-id)))
+         (board (e-board-registry-get board))
+         (principal (e-board-registry-board-principal board))
+         (store (e-harness-sessions harness))
+         (_ (e-chat-service--persist-board-state
+             store session-id principal (e-board-registry-board-id board)))
          (binding
           (e-chat-service--install-participant-binding
-           (e-board-registry-get board) harness session-id
+           board harness session-id
            :participant-id participant-id
            :pickup-selector (or pickup-selector '(:tags (main)))
            :observer-selector
@@ -592,15 +619,7 @@ LIMIT defaults to the registry's fixed page bound."
              (or observer-selector '(:tags (main))))
            :default-tags default-tags
            :default-to (if (eq default-to :self) participant-id default-to))))
-    (let* ((store (e-harness-sessions harness))
-           (principal (e-board-registry-board-principal
-                       (e-chat-service-binding-board binding)))
-           (board-id (e-board-registry-board-id
-                      (e-chat-service-binding-board binding))))
-      (if-let ((controller (e-session-store-persistence-controller store)))
-          (e-session-persistence-declare-board-state
-           controller session-id principal board-id)
-        (e-session-declare-board-state store session-id principal board-id)))
+    (ignore binding)
     session))
 
 (defun e-chat-service--harness-has-capability-p (harness capability-id)
