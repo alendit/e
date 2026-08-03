@@ -202,7 +202,14 @@ task-queue layer, and stay idempotent afterward."
                          :directory (file-name-as-directory dir)
                          :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
             (e-task-queue-enqueue writer :prompt "persisted")
-            (e-task-queue-flush writer))
+            (let ((deadline (+ (float-time) 5.0)) done failure)
+              (e-task-queue-finalize
+               writer (lambda (_queue) (setq done t))
+               (lambda (err) (setq failure err)))
+              (while (and (not done) (not failure) (< (float-time) deadline))
+                (accept-process-output nil 0.02))
+              (should-not failure)
+              (should done)))
           ;; The default queue starts empty and unloaded.
           (put 'e-task-queue-actions-default-queue 'loaded nil)
           (clrhash (e-task-queue-records e-task-queue-actions-default-queue))

@@ -21,7 +21,7 @@
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
 (declare-function e-session-persistence-submit-record "e-session-persistence")
 (declare-function e-session-persistence-request-checkpoint "e-session-persistence")
-(declare-function e-session-persistence-flush "e-session-persistence")
+(declare-function e-session-persistence-finalize "e-session-persistence")
 
 (define-error 'e-session-missing "Session does not exist")
 (define-error 'e-session-duplicate "Session already exists")
@@ -1316,14 +1316,14 @@ and RECORD supplies persisted identity fields during replay."
                    (e-session--queued-index-entry store)))
            (e-session--write-index-now store)))))))
 
-(defun e-session-flush (store &optional timeout)
-  "Synchronously establish STORE's requested durability boundary.
-When STORE owns an asynchronous persistence controller, wait for the writer's
-acknowledgements up to TIMEOUT.  Legacy stores retain their queued-write
-behavior.  Interactive mutation paths must not call this function."
+(defun e-session-finalize (store on-done on-error)
+  "Asynchronously finalize STORE's current durability boundary.
+STORE must own the production persistence controller.  Call ON-DONE after its
+checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
   (if-let ((controller (e-session--persistence-controller store)))
-      (e-session-persistence-flush controller timeout)
-    (e-session-flush-write-queue store)))
+      (e-session-persistence-finalize controller on-done on-error)
+    (signal 'e-session-persistence-unavailable
+            (list "Session store has no asynchronous persistence controller"))))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."

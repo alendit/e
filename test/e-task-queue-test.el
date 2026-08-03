@@ -72,6 +72,17 @@ tests need a runner whose handle carries one."
            (lambda (r) (eq (plist-get r :status) 'running))
            (e-task-queue-list queue))))
 
+(defun e-task-queue-test--await-durable (queue)
+  "Wait in this test process for QUEUE's asynchronous durability boundary."
+  (let ((deadline (+ (float-time) 5.0)) done failure)
+    (e-task-queue-finalize
+     queue (lambda (_queue) (setq done t)) (lambda (err) (setq failure err)))
+    (while (and (not done) (not failure) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (should-not failure)
+    (should done)
+    queue))
+
 (ert-deftest e-task-queue-test-enqueue-returns-record ()
   "Enqueue returns a record and the task is admitted under the cap."
   (e-task-queue-test--with-instances
@@ -440,7 +451,7 @@ tests need a runner whose handle carries one."
                  (a (e-task-queue-enqueue queue :prompt "first"))
                  (b (e-task-queue-enqueue queue :prompt "second")))
             ;; a is running under the cap, b is queued.
-            (e-task-queue-flush queue)
+            (e-task-queue-test--await-durable queue)
             (let ((reloaded (e-task-queue-create
                              :max-parallel 1
                              :directory dir
@@ -482,7 +493,7 @@ tests need a runner whose handle carries one."
                                 :settle)
                      :status 'done)
             (e-task-queue-pause queue (plist-get paused :task-id))
-            (e-task-queue-flush queue)
+            (e-task-queue-test--await-durable queue)
             (let ((reloaded (e-task-queue-create :directory dir)))
               ;; Keep the gate set so paused/done tasks are not re-dispatched.
               (setf (e-task-queue-paused-p reloaded) t)
@@ -507,8 +518,37 @@ tests need a runner whose handle carries one."
       (e-task-queue-enqueue queue :prompt "a")
       (should (null (e-task-queue-directory queue)))
       (should (null (e-task-queue--record-file queue)))
-      ;; Flush is a no-op and must not signal for an in-memory queue.
-      (should (eq (e-task-queue-flush queue) queue)))))
+      (should-error (e-task-queue-finalize queue #'ignore #'ignore)
+                    :type 'e-task-queue-error))))
+
+(ert-deftest e-task-queue-test-enqueue-enforces-record-and-byte-caps ()
+  "Enqueue rejects work beyond fixed record and retained-byte limits."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((e-task-queue-max-records 1)
+           (e-task-queue-record-byte-limit 8)
+           (recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :runner (e-task-queue-test--fake-runner recorder))))
+      (should-error (e-task-queue-enqueue queue :prompt "123456789")
+                    :type 'e-task-queue-error)
+      (e-task-queue-enqueue queue :prompt "short")
+      (should-error (e-task-queue-enqueue queue :prompt "next")
+                    :type 'e-task-queue-error))))
+
+(ert-deftest e-task-queue-test-snapshot-budget-precedes-serialization ()
+  "An oversized snapshot is rejected before printer allocation."
+  (let* ((queue (e-task-queue-create))
+         (e-task-queue-snapshot-byte-limit 8)
+         printed)
+    (puthash "one" (list :task-id "one" :prompt "123456789")
+             (e-task-queue-records queue))
+    (setf (e-task-queue-order queue) '("one"))
+    (cl-letf (((symbol-function 'prin1-to-string)
+               (lambda (_value) (setq printed t) "ignored")))
+      (should-error (e-task-queue--snapshot-string queue)
+                    :type 'e-task-queue-error)
+      (should-not printed))))
 
 (ert-deftest e-task-queue-test-failed-task-auto-retries ()
   "A failed task with retries left is re-armed as a fresh queued attempt.
@@ -620,7 +660,7 @@ without one there is nothing to analyze, so the task terminates."
                                           recorder))
                                     :settle)))
             (funcall settle :status 'failed :error "boom")
-            (e-task-queue-flush queue)
+            (e-task-queue-test--await-durable queue)
             (let ((reloaded (e-task-queue-create
                              :max-retries 1
                              :directory dir
@@ -644,8 +684,10 @@ without one there is nothing to analyze, so the task terminates."
                (lambda (_seconds _repeat function &rest arguments)
                  (setq callback (lambda () (apply function arguments)))
                  (timer-create)))
-              ((symbol-function 'e-task-queue--write-now)
-               (lambda (_queue) (setq wrote t))))
+              ((symbol-function 'e-task-queue--start-async-write)
+               (lambda (_queue)
+                 (setq wrote t)
+                 (e-task-queue--adjust-writer-state 'writes -1))))
       (let ((queue (e-task-queue-create :directory "/tmp/task-writer-test")))
         (e-task-queue--schedule-write queue)
         (should (equal (e-task-queue-unsettled-state)
@@ -653,6 +695,29 @@ without one there is nothing to analyze, so the task terminates."
         (funcall callback)
         (should wrote)
         (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0))))))
+
+(ert-deftest e-task-queue-test-dirty-writer-keeps-one-quiescence-slot ()
+  "A dirty worker handoff never exposes a false quiescent edge."
+  (let* ((queue (e-task-queue-create :directory "/tmp/task-writer-test"))
+         (e-task-queue--unsettled-write-count 1)
+         (e-task-queue--failed-write-count 0)
+         (e-task-queue--unsettled-generation 1)
+         (first 'first)
+         (second 'second)
+         started)
+    (setf (e-task-queue-write-process queue) first
+          (e-task-queue-write-dirty-p queue) t)
+    (cl-letf (((symbol-function 'process-status) (lambda (_process) 'exit))
+              ((symbol-function 'process-exit-status) (lambda (_process) 0))
+              ((symbol-function 'e-task-queue--start-async-write)
+               (lambda (target)
+                 (setq started t)
+                 (setf (e-task-queue-write-process target) second))))
+      (e-task-queue--writer-finished queue first)
+      (should started)
+      (should (= (plist-get (e-task-queue-unsettled-state) :writes) 1))
+      (e-task-queue--writer-finished queue second)
+      (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0)))))
 
 (provide 'e-task-queue-test)
 

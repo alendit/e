@@ -781,7 +781,7 @@ process.
 - =e-defaults-test-registers-chat-instance-for-legacy-spec= proves default
   instances carry every required store/activation port.
 
-** TODO High: Main-thread bounds remain incomplete
+** DONE High: Main-thread bounds remain incomplete
 
 *** Expected
 
@@ -852,25 +852,63 @@ fixed-cap commit; overflow fails visibly with zero partial pickups.
 =e-board-test-routing-finalization-pages-and-rejects-fanout-over-cap= drives a
 65-participant match through a fake scheduler, observes multiple intervening
 heartbeats, proves the pickup registry remains empty between pages, and ends in
-=fanout-limit-exceeded= with no pickup ids.  The finding remains open for
-board-only history projection, task/session writers, and bounded =await=
-materialization.
+=fanout-limit-exceeded= with no pickup ids.  History projection now consumes
+bounded board observer pages; chat replay no longer reconstructs presentation
+from a private transcript.
 
 The =await= seam is now bounded independently: one invocation accepts at most
 32 references, and callback result projection stops after a fixed 128-node or
 4096-string-byte budget.  Oversized values become a result-reference tombstone
 instead of being serialized into the tool reply.  Tests prove an over-cap set
-invokes zero resolvers and a large settled result remains out of line.  The
-finding remains open for board-only history and asynchronous task/session
-writers.
+invokes zero resolvers and a large settled result remains out of line.
+
+Task durability now retains at most 128 records with fixed per-record node/byte
+budgets and a 2 MiB/32768-node snapshot budget checked before printing.  Its
+timer sends the bounded snapshot to a one-shot Node writer; no task-queue timer
+or public finalization path performs =with-temp-file= or synchronous I/O.
+=e-task-queue-finalize= is callback-based, and a dirty worker handoff keeps the
+same quiescence slot until the last acknowledged snapshot.
+
+Session writer commands likewise pass fixed node and string-byte preflight
+before =json-encode=.  Restart recovery walks an O(1) FIFO outbox in fixed
+32-command scheduler pages instead of sorting and resending the entire table.
+=e-session-finalize= and =e-session-persistence-finalize= expose only
+acknowledgement callbacks; the former fails closed for a store without the
+production asynchronous controller.  The former blocking flush API and its
+legacy synchronous fallback are absent.
+
+*** Resolution
+
+Every production interaction carrier named by this finding now has an explicit
+cardinality/byte budget and yields or leaves heavy serialization/I/O to its
+worker.  Routing commits atomically within a fixed cap, replay consumes board
+pages, await materialization stays bounded/out of line, and durability exposes
+asynchronous completion without a main-thread wait.
+
+*** Evidence
+
+- =e-board-test-routing-finalization-pages-and-rejects-fanout-over-cap= proves
+  paged all-or-none fan-out with intervening scheduler work.
+- The await over-cap and oversized-result tests prove bounded reference
+  cardinality and out-of-line values.
+- =e-task-queue-test-snapshot-budget-precedes-serialization= proves rejection
+  before printer allocation; the persistence round-trip proves the Node worker
+  commit; and =e-task-queue-test-dirty-writer-keeps-one-quiescence-slot= proves
+  writer backlog cannot expose a false idle edge.
+- =e-session-persistence-test-command-budget-precedes-json-encoding= proves
+  byte rejection before JSON allocation, while
+  =e-session-persistence-test-retry-resends-fixed-pages= proves restart work
+  yields at the configured page boundary.
 
 #+begin_src sh
 rtk eldev test test/e-board-test.el test/e-board-registry-test.el test/e-board-runtime-test.el
 rtk eldev test test/e-await-tool-test.el
+rtk eldev test test/e-task-queue-test.el test/e-task-queue-shell-test.el test/e-task-queue-actions-test.el test/e-session-persistence-test.el test/e-session-test.el
 #+end_src
 
 #+begin_example
-Ran 160 tests, 160 results as expected, 0 unexpected
+Routing and await: 160 tests, 160 results as expected, 0 unexpected
+Persistence selection: 133 tests, 133 results as expected, 0 unexpected
 #+end_example
 
 ** DONE High: Retained board messages are not immutable

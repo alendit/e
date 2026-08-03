@@ -384,7 +384,7 @@ messages so the transcript reads as one clean answer."
           (should (= (length (e-session-board-messages
                               store "persistent-board"))
                      1))
-          (e-session-flush store 5)
+          (e-session-flush-write-queue store)
           ;; Model a fresh Emacs process while retaining only the session store.
           (setq e-board--registry (make-hash-table :test 'equal)
                 e-board-registry--boards (make-hash-table :test 'equal)

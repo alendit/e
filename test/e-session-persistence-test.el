@@ -9,6 +9,16 @@
 (require 'e-session)
 (require 'e-session-persistence)
 
+(defun e-session-persistence-test--await-durable (store)
+  "Wait in this test process for STORE's asynchronous durability boundary."
+  (let ((deadline (+ (float-time) 5.0)) done failure)
+    (e-session-finalize
+     store (lambda (_value) (setq done t)) (lambda (err) (setq failure err)))
+    (while (and (not done) (not failure) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (should-not failure)
+    (should done)))
+
 (ert-deftest e-session-persistence-test-unsettled-transfer-has-no-false-zero ()
   "Checkpoint timer ownership transfers to the writer outbox atomically."
   (let* ((directory (make-temp-file "e-session-persistence-count-" t))
@@ -40,6 +50,45 @@
                      0)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-command-budget-precedes-json-encoding ()
+  "An oversized command is rejected before JSON allocates its representation."
+  (let ((e-session-persistence-command-byte-limit 8)
+        encoded)
+    (cl-letf (((symbol-function 'json-encode)
+               (lambda (_value) (setq encoded t) "{}")))
+      (should-error
+       (e-session-persistence--encode-command '(:value "123456789"))
+       :type 'e-session-persistence-error)
+      (should-not encoded))))
+
+(ert-deftest e-session-persistence-test-retry-resends-fixed-pages ()
+  "A writer restart yields after each fixed retry page."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "test"))
+         (e-session-persistence-retry-page-size 2)
+         sent continuation)
+    (dolist (id '("one" "two" "three"))
+      (puthash id (list :id id) (e-session-persistence-outbox controller))
+      (e-session-persistence--append-outbox-id controller id))
+    (setf (e-session-persistence-retry-cursor controller)
+          (e-session-persistence-outbox-head controller))
+    (cl-letf (((symbol-function 'e-session-persistence--send)
+               (lambda (_controller request) (push (plist-get request :id) sent)))
+              ((symbol-function 'e-session-persistence--live-p)
+               (lambda (_controller) t))
+              ((symbol-function 'run-at-time)
+               (lambda (_seconds _repeat function &rest arguments)
+                 (setq continuation (lambda () (apply function arguments)))
+                 (timer-create))))
+      (e-session-persistence--resend-page controller)
+      (should (equal (nreverse sent) '("one" "two")))
+      (should continuation)
+      (setq sent nil)
+      (funcall continuation)
+      (should (equal sent '("three")))
+      (should-not (e-session-persistence-retry-cursor controller)))))
+
 (ert-deftest e-session-persistence-test-writer-commits-journal-and-catalog ()
   "The writer owns durable JSONL and catalog work outside the Emacs mutation path."
   (skip-unless (executable-find e-session-persistence-node-executable))
@@ -58,13 +107,13 @@
            store "session-1" '(:role user :content "writer owned"))
           ;; No session file operation is performed by this Emacs process.
           (should (= writes 0))
-          (e-session-flush store 5)
+          (e-session-persistence-test--await-durable store)
           (should (= writes 0))
           (should (string-match-p "^[0-9A-Z]+:[0-9]+\\'"
                                   (e-session-persistence-submit-record
                                    controller "session-1"
                                    '(:type "session-info" :metadata (:retry t)))))
-          (e-session-flush store 5)
+          (e-session-persistence-test--await-durable store)
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (plist-get (car (e-session-messages loaded "session-1"))
                                       :content)
@@ -111,7 +160,7 @@
           (dolist (request (nreverse sent))
             (e-session-persistence--send controller request)
             (e-session-persistence--send controller request))
-          (e-session-flush store 5)
+          (e-session-persistence-test--await-durable store)
           (with-temp-buffer
             (insert-file-contents
              (expand-file-name "sessions/session-1.jsonl" directory))
@@ -136,7 +185,7 @@
           (e-session-create store :id "session-1")
           (e-session-persistence-declare-board-state
            controller "session-1" "principal:owner")
-          (e-session-persistence-flush controller 5)
+          (e-session-persistence-test--await-durable store)
           (e-session-persistence-catalog-request
            controller '(:operation preflight-page :limit 1)
            (lambda (value) (setq result value))

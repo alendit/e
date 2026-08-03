@@ -58,6 +58,36 @@ in-memory."
   :type 'number
   :group 'e-task-queue)
 
+(defcustom e-task-queue-max-records 128
+  "Maximum retained records in one task queue."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-record-byte-limit (* 16 1024)
+  "Maximum string bytes retained by one durable task record."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-record-node-limit 512
+  "Maximum Lisp value nodes retained by one durable task record."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-snapshot-byte-limit (* 2 1024 1024)
+  "Maximum encoded size of one durable task snapshot."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-snapshot-node-limit 32768
+  "Maximum Lisp value nodes inspected before encoding a task snapshot."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-node-executable "node"
+  "Node executable used by the asynchronous task snapshot writer."
+  :type 'string
+  :group 'e-task-queue)
+
 (defcustom e-task-queue-max-retries 1
   "How many times a `failed' task is automatically retried.
 A retry runs a fresh session that references the failed one and is prompted to
@@ -100,6 +130,26 @@ tests); handlers must not mutate the queue.")
 (define-error 'e-task-queue-error "Task queue error")
 (define-error 'e-task-queue-unknown-task "Unknown task id" 'e-task-queue-error)
 
+(defun e-task-queue--value-within-budget-p (value node-limit byte-limit)
+  "Return non-nil when VALUE fits NODE-LIMIT and BYTE-LIMIT."
+  (let ((pending (list value)) (nodes 0) (bytes 0) valid)
+    (setq valid t)
+    (while (and pending valid)
+      (let ((item (pop pending)))
+        (setq nodes (1+ nodes))
+        (when (> nodes node-limit) (setq valid nil))
+        (cond
+         ((stringp item)
+          (setq bytes (+ bytes (string-bytes item)))
+          (when (> bytes byte-limit) (setq valid nil)))
+         ((consp item)
+          (push (car item) pending)
+          (push (cdr item) pending))
+         ((vectorp item)
+          (dotimes (index (length item))
+            (push (aref item index) pending))))))
+    valid))
+
 (cl-defstruct (e-task-queue (:constructor e-task-queue--create))
   "An in-memory task queue with a bounded dispatcher.
 RECORDS maps task ids to mutable task plists.  ORDER lists task ids in enqueue
@@ -121,7 +171,10 @@ WRITE-TIMER coalesces those writes."
   max-retries
   directory
   write-timer
-  write-failed-p)
+  write-process
+  write-dirty-p
+  write-failed-p
+  write-callbacks)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
                                     runner producer-binding max-retries directory)
@@ -361,6 +414,10 @@ dropped.  A `cancelled' settle for a task the operator asked to pause lands
 QUEUE after a real transition."
   (let ((record (gethash task-id (e-task-queue-records queue))))
     (when (and record (eq (plist-get record :status) 'running))
+      (unless (e-task-queue--value-within-budget-p
+               args e-task-queue-record-node-limit e-task-queue-record-byte-limit)
+        (setq status 'failed
+              args (list :error "Task result exceeds retention budget")))
       (when (plist-member args :outputs)
         (plist-put record :outputs (plist-get args :outputs)))
       (when (plist-member args :error)
@@ -458,6 +515,13 @@ default, resolved at dispatch time.  Dispatch runs before returning, so a task
 may already be running when this returns."
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
+  (unless (e-task-queue--value-within-budget-p
+           (list prompt summary metadata)
+           e-task-queue-record-node-limit e-task-queue-record-byte-limit)
+    (signal 'e-task-queue-error (list "Task record exceeds retention budget")))
+  (when (>= (hash-table-count (e-task-queue-records queue))
+            e-task-queue-max-records)
+    (signal 'e-task-queue-error (list "Task queue record limit reached")))
   (when (and (null (e-task-queue-runner queue))
              (not (e-board-runtime-producer-binding-live-p
                    (e-task-queue-producer-binding queue))))
@@ -653,30 +717,93 @@ The transient `:handle', `:pausing', and the live harness are never persisted.")
                             (gethash task-id (e-task-queue-records queue))))
                          (e-task-queue-order queue))))
 
-(defun e-task-queue--write-now (queue)
-  "Write QUEUE's durable state to disk immediately."
-  (when-let ((file (e-task-queue--record-file queue)))
-    (make-directory (file-name-directory file) t)
-    (let ((coding-system-for-write 'utf-8))
-      (with-temp-file file
-        (let ((print-length nil)
-              (print-level nil))
-          (prin1 (e-task-queue--serialize queue) (current-buffer)))))))
+(defun e-task-queue--snapshot-string (queue)
+  "Return QUEUE's bounded durable snapshot string."
+  (let ((value (e-task-queue--serialize queue)))
+    (unless (e-task-queue--value-within-budget-p
+             value e-task-queue-snapshot-node-limit
+             e-task-queue-snapshot-byte-limit)
+      (signal 'e-task-queue-error
+              (list "Task queue snapshot exceeds pre-encoding budget")))
+    (let ((snapshot (let ((print-length nil) (print-level nil))
+                      (prin1-to-string value))))
+      (when (> (string-bytes snapshot) e-task-queue-snapshot-byte-limit)
+        (signal 'e-task-queue-error
+                (list "Task queue snapshot exceeds byte limit")))
+      snapshot)))
 
-(defun e-task-queue--complete-write (queue)
-  "Perform QUEUE's pending write and maintain quiescence state."
-  (condition-case err
-      (progn
-        (e-task-queue--write-now queue)
-        (when (e-task-queue-write-failed-p queue)
-          (setf (e-task-queue-write-failed-p queue) nil)
-          (e-task-queue--adjust-writer-state 'failures -1)))
-    (error
-     (unless (e-task-queue-write-failed-p queue)
-       (setf (e-task-queue-write-failed-p queue) t)
-       (e-task-queue--adjust-writer-state 'failures 1))
-     (signal (car err) (cdr err))))
-  queue)
+(defun e-task-queue--writer-script ()
+  "Return the bundled asynchronous task writer path."
+  (expand-file-name
+   "e-task-queue-writer.mjs"
+   (file-name-directory
+    (file-truename (or load-file-name buffer-file-name
+                       (locate-library "e-task-queue") default-directory)))))
+
+(defun e-task-queue--set-write-failure (queue failed)
+  "Set QUEUE's FAILED writer state and its quiescence counter."
+  (unless (eq failed (e-task-queue-write-failed-p queue))
+    (setf (e-task-queue-write-failed-p queue) failed)
+    (e-task-queue--adjust-writer-state 'failures (if failed 1 -1))))
+
+(defun e-task-queue--finish-callbacks (queue succeeded error-value)
+  "Finish QUEUE callbacks with SUCCEEDED and ERROR-VALUE."
+  (let ((callbacks (nreverse (e-task-queue-write-callbacks queue))))
+    (setf (e-task-queue-write-callbacks queue) nil)
+    (dolist (callback callbacks)
+      (if succeeded
+          (when (car callback) (funcall (car callback) queue))
+        (when (cdr callback) (funcall (cdr callback) error-value))))))
+
+(defun e-task-queue--writer-finished (queue process)
+  "Handle terminal PROCESS state for QUEUE's current writer."
+  (when (and (memq (process-status process) '(exit signal))
+             (eq process (e-task-queue-write-process queue)))
+    (setf (e-task-queue-write-process queue) nil)
+    (let ((failed (not (zerop (process-exit-status process)))))
+      (when failed
+        (setf (e-task-queue-write-dirty-p queue) nil))
+      (e-task-queue--set-write-failure queue failed)
+      (if (and (not failed) (e-task-queue-write-dirty-p queue))
+          (progn
+            (setf (e-task-queue-write-dirty-p queue) nil)
+            (condition-case err
+                (e-task-queue--start-async-write queue)
+              (error
+               (e-task-queue--set-write-failure queue t)
+               (e-task-queue--adjust-writer-state 'writes -1)
+               (e-task-queue--finish-callbacks queue nil err))))
+        (e-task-queue--adjust-writer-state 'writes -1)
+        (e-task-queue--finish-callbacks
+         queue (not failed)
+         (and failed
+              (list 'e-task-queue-error "Task queue writer failed")))))))
+
+(defun e-task-queue--start-async-write (queue)
+  "Send one bounded QUEUE snapshot to the external writer."
+  (let* ((file (e-task-queue--record-file queue))
+         (node (executable-find e-task-queue-node-executable))
+         (snapshot (e-task-queue--snapshot-string queue)))
+    (unless node
+      (signal 'e-task-queue-error
+              (list "Cannot find task queue Node writer")))
+    (make-directory (file-name-directory file) t)
+    (let ((process
+           (make-process
+            :name "e-task-queue-writer" :buffer nil :noquery t
+            :command (list node (e-task-queue--writer-script) file)
+            :connection-type 'pipe :coding 'utf-8-unix
+            :sentinel (lambda (process _event)
+                        (e-task-queue--writer-finished queue process)))))
+      (setf (e-task-queue-write-process queue) process)
+      (condition-case err
+          (progn
+            (process-send-string process snapshot)
+            (process-send-eof process))
+        (error
+         (setf (e-task-queue-write-process queue) nil)
+         (when (process-live-p process) (delete-process process))
+         (signal (car err) (cdr err)))))))
 
 (defun e-task-queue--schedule-write (queue)
   "Schedule a coalesced durable write for QUEUE.
@@ -684,25 +811,48 @@ No-op for an in-memory queue.  Reuses a pending timer so a burst of mutations
 collapses into one write off the hot enqueue/settle path."
   (when (and (e-task-queue-directory queue)
              (not (timerp (e-task-queue-write-timer queue))))
-    (e-task-queue--adjust-writer-state 'writes 1)
-    (setf (e-task-queue-write-timer queue)
-          (run-at-time
-           (max 0 (or e-task-queue-write-delay 0)) nil
-           (lambda ()
-             (when (e-task-queue-p queue)
-               (setf (e-task-queue-write-timer queue) nil)
-               (unwind-protect
-                   (e-task-queue--complete-write queue)
-                 (e-task-queue--adjust-writer-state 'writes -1))))))))
+    (if (process-live-p (e-task-queue-write-process queue))
+        (setf (e-task-queue-write-dirty-p queue) t)
+      (e-task-queue--adjust-writer-state 'writes 1)
+      (setf (e-task-queue-write-timer queue)
+            (run-at-time
+             (max 0 (or e-task-queue-write-delay 0)) nil
+             (lambda ()
+               (when (e-task-queue-p queue)
+                 (setf (e-task-queue-write-timer queue) nil)
+                 (condition-case err
+                     (e-task-queue--start-async-write queue)
+                   (error
+                    (e-task-queue--set-write-failure queue t)
+                    (e-task-queue--adjust-writer-state 'writes -1)
+                    (signal (car err) (cdr err)))))))))))
 
-(defun e-task-queue-flush (queue)
-  "Flush any pending durable write for QUEUE synchronously.  Return QUEUE."
-  (when-let ((timer (e-task-queue-write-timer queue)))
-    (cancel-timer timer)
+(defun e-task-queue-finalize (queue on-done on-error)
+  "Asynchronously finalize QUEUE's current durability boundary.
+Call ON-DONE with QUEUE after the worker commits the current snapshot, or call
+ON-ERROR with the writer error.  Return QUEUE immediately."
+  (unless (e-task-queue-directory queue)
+    (signal 'e-task-queue-error (list "In-memory task queue is not durable")))
+  (push (cons on-done on-error) (e-task-queue-write-callbacks queue))
+  (cond
+   ((process-live-p (e-task-queue-write-process queue)) nil)
+   ((timerp (e-task-queue-write-timer queue))
+    (cancel-timer (e-task-queue-write-timer queue))
     (setf (e-task-queue-write-timer queue) nil)
-    (e-task-queue--adjust-writer-state 'writes -1))
-  (when (e-task-queue-directory queue)
-    (e-task-queue--complete-write queue))
+    (condition-case err
+        (e-task-queue--start-async-write queue)
+      (error
+       (e-task-queue--set-write-failure queue t)
+       (e-task-queue--adjust-writer-state 'writes -1)
+       (e-task-queue--finish-callbacks queue nil err))))
+   (t
+    (e-task-queue--adjust-writer-state 'writes 1)
+    (condition-case err
+        (e-task-queue--start-async-write queue)
+      (error
+       (e-task-queue--set-write-failure queue t)
+       (e-task-queue--adjust-writer-state 'writes -1)
+       (e-task-queue--finish-callbacks queue nil err)))))
   queue)
 
 (defun e-task-queue--persist-on-change (queue)

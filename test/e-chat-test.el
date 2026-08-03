@@ -9722,7 +9722,7 @@ The context-window denominator comes from the live provider lookup
             :backend (e-backend-fake-create :items nil)
             :sessions store)
            "async-render")
-          (e-session-flush store)
+          (e-session-flush-write-queue store)
           (let* ((indexed-store
                   (e-session-persistent-index-store-create directory))
                  (harness (e-harness-create

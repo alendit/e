@@ -17,9 +17,6 @@
 (require 'e-session)
 
 (define-error 'e-session-persistence-error "Session persistence error")
-(define-error 'e-session-persistence-timeout "Session persistence timed out"
-  'e-session-persistence-error)
-
 (defgroup e-session-persistence nil
   "Asynchronous persistent session storage."
   :group 'e-session)
@@ -39,9 +36,19 @@
   :type 'number
   :group 'e-session-persistence)
 
-(defcustom e-session-persistence-flush-timeout 5.0
-  "Maximum seconds an explicit durability boundary waits for the writer."
-  :type 'number
+(defcustom e-session-persistence-retry-page-size 32
+  "Maximum writer requests resent by one retry callback."
+  :type 'integer
+  :group 'e-session-persistence)
+
+(defcustom e-session-persistence-command-byte-limit (* 256 1024)
+  "Maximum encoded size of one writer command."
+  :type 'integer
+  :group 'e-session-persistence)
+
+(defcustom e-session-persistence-command-node-limit 4096
+  "Maximum Lisp value nodes inspected before encoding one writer command."
+  :type 'integer
   :group 'e-session-persistence)
 
 (cl-defstruct (e-session-persistence
@@ -49,6 +56,7 @@
                (:conc-name e-session-persistence-))
   store process stderr-buffer input-fragment
   instance-id (next-sequence 0) (outbox (make-hash-table :test 'equal))
+  outbox-head outbox-tail retry-cursor
   (callbacks (make-hash-table :test 'equal))
   checkpoint-timer retry-timer last-error)
 
@@ -77,16 +85,82 @@
   (let ((process (e-session-persistence-process controller)))
     (and process (process-live-p process))))
 
-(defun e-session-persistence--send (controller request)
-  "Send REQUEST to CONTROLLER's live writer."
-  (process-send-string (e-session-persistence-process controller)
-                       (concat (json-encode request) "\n")))
+(defun e-session-persistence--command-within-budget-p (request)
+  "Return non-nil when REQUEST fits fixed pre-encoding budgets."
+  (let ((pending (list request))
+        (nodes 0)
+        (string-bytes 0)
+        valid)
+    (setq valid t)
+    (while (and pending valid)
+      (let ((value (pop pending)))
+        (setq nodes (1+ nodes))
+        (when (> nodes e-session-persistence-command-node-limit)
+          (setq valid nil))
+        (cond
+         ((stringp value)
+          (setq string-bytes (+ string-bytes (string-bytes value)))
+          (when (> string-bytes e-session-persistence-command-byte-limit)
+            (setq valid nil)))
+         ((consp value)
+          (push (car value) pending)
+          (push (cdr value) pending))
+         ((vectorp value)
+          (dotimes (index (length value))
+            (push (aref value index) pending))))))
+    valid))
 
-(defun e-session-persistence--ordered-outbox (controller)
-  "Return CONTROLLER requests in submission order."
-  (sort (hash-table-values (e-session-persistence-outbox controller))
-        (lambda (left right)
-          (< (plist-get left :sequence) (plist-get right :sequence)))))
+(defun e-session-persistence--encode-command (request)
+  "Return REQUEST as one bounded newline-terminated writer command."
+  (unless (e-session-persistence--command-within-budget-p request)
+    (signal 'e-session-persistence-error
+            (list "Writer command exceeds pre-encoding budget")))
+  (let ((encoded (concat (json-encode request) "\n")))
+    (when (> (string-bytes encoded)
+             e-session-persistence-command-byte-limit)
+      (signal 'e-session-persistence-error
+              (list "Writer command exceeds byte budget")))
+    encoded))
+
+(defun e-session-persistence--send (controller request)
+  "Send one bounded REQUEST to CONTROLLER's live writer."
+  (process-send-string (e-session-persistence-process controller)
+                       (e-session-persistence--encode-command request)))
+
+(defun e-session-persistence--append-outbox-id (controller id)
+  "Append ID to CONTROLLER's O(1) retry-order queue."
+  (let ((cell (list id)))
+    (if-let ((tail (e-session-persistence-outbox-tail controller)))
+        (setcdr tail cell)
+      (setf (e-session-persistence-outbox-head controller) cell))
+    (setf (e-session-persistence-outbox-tail controller) cell)))
+
+(defun e-session-persistence--trim-outbox-order (controller)
+  "Drop acknowledged ids from the front of CONTROLLER's retry queue."
+  (let ((head (e-session-persistence-outbox-head controller))
+        (outbox (e-session-persistence-outbox controller)))
+    (while (and head (not (gethash (car head) outbox)))
+      (setq head (cdr head)))
+    (setf (e-session-persistence-outbox-head controller) head)
+    (unless head
+      (setf (e-session-persistence-outbox-tail controller) nil))))
+
+(defun e-session-persistence--resend-page (controller)
+  "Resend one fixed retry page for CONTROLLER and yield between pages."
+  (let ((cursor (e-session-persistence-retry-cursor controller))
+        (scanned 0))
+    (while (and cursor (< scanned e-session-persistence-retry-page-size))
+      (when-let ((request (gethash (car cursor)
+                                  (e-session-persistence-outbox controller))))
+        (e-session-persistence--send controller request))
+      (setq cursor (cdr cursor)
+            scanned (1+ scanned)))
+    (setf (e-session-persistence-retry-cursor controller) cursor)
+    (when cursor
+      (run-at-time 0 nil
+                   (lambda ()
+                     (when (e-session-persistence--live-p controller)
+                       (e-session-persistence--resend-page controller)))))))
 
 (defun e-session-persistence--catalog-result (result)
   "Normalize writer catalog RESULT into the core symbolic row contract."
@@ -115,8 +189,9 @@
              (condition-case err
                  (progn
                    (e-session-persistence--ensure controller)
-                   (dolist (request (e-session-persistence--ordered-outbox controller))
-                     (e-session-persistence--send controller request)))
+                   (setf (e-session-persistence-retry-cursor controller)
+                         (e-session-persistence-outbox-head controller))
+                   (e-session-persistence--resend-page controller))
                (error
                 (setf (e-session-persistence-last-error controller) err)
                 (e-session-persistence--restart-later controller))))))))
@@ -132,6 +207,7 @@
         (if (plist-get request :ephemeral)
             (progn
               (remhash id (e-session-persistence-outbox controller))
+              (e-session-persistence--trim-outbox-order controller)
               (remhash id (e-session-persistence-callbacks controller))
               (e-session--adjust-unsettled-writes
                (e-session-persistence-store controller) -1)
@@ -147,6 +223,7 @@
       (when (stringp id)
         (when (gethash id (e-session-persistence-outbox controller))
           (remhash id (e-session-persistence-outbox controller))
+          (e-session-persistence--trim-outbox-order controller)
           (remhash id (e-session-persistence-callbacks controller))
           (e-session--adjust-unsettled-writes
            (e-session-persistence-store controller) -1))
@@ -204,6 +281,7 @@
                                             (e-session-persistence-store controller)))
                           operation)))
     (puthash id request (e-session-persistence-outbox controller))
+    (e-session-persistence--append-outbox-id controller id)
     (when (or on-done on-error)
       (puthash id (cons on-done on-error)
                (e-session-persistence-callbacks controller)))
@@ -267,25 +345,19 @@ content.  The derived catalog checkpoint remains asynchronous."
            (e-session--adjust-unsettled-writes
             (e-session-persistence-store controller) -1)))))
 
-(defun e-session-persistence-flush (controller &optional timeout)
-  "Wait for CONTROLLER's current records and a catalog checkpoint.
-This is for controlled durability boundaries, never ordinary interaction."
+(defun e-session-persistence-finalize (controller on-done on-error)
+  "Asynchronously finalize CONTROLLER's current durability boundary.
+Call ON-DONE after the writer acknowledges the checkpoint, or ON-ERROR if the
+writer rejects it.  Return the stable checkpoint command id."
   (let ((timer (e-session-persistence-checkpoint-timer controller)))
     (when timer (cancel-timer timer))
-    (e-session-persistence--submit controller (list :op "checkpoint"))
-    (when timer
-      (setf (e-session-persistence-checkpoint-timer controller) nil)
-      (e-session--adjust-unsettled-writes
-       (e-session-persistence-store controller) -1)))
-  (let ((deadline (+ (float-time) (or timeout e-session-persistence-flush-timeout))))
-    (while (and (> (hash-table-count (e-session-persistence-outbox controller)) 0)
-                (< (float-time) deadline))
-      (accept-process-output (e-session-persistence--ensure controller) 0.02))
-    (when (> (hash-table-count (e-session-persistence-outbox controller)) 0)
-      (signal 'e-session-persistence-timeout
-              (list "Session writer did not acknowledge durability boundary"
-                    (e-session-persistence-last-error controller)))))
-  controller)
+    (prog1
+        (e-session-persistence--submit
+         controller (list :op "checkpoint") on-done on-error)
+      (when timer
+        (setf (e-session-persistence-checkpoint-timer controller) nil)
+        (e-session--adjust-unsettled-writes
+         (e-session-persistence-store controller) -1)))))
 
 (defun e-session-persistence-enable (store)
   "Attach and return an asynchronous persistence controller for STORE."

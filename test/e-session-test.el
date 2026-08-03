@@ -39,7 +39,7 @@
                      1))
           (e-session-clear-board-messages store "board-session")
           (e-session-append-board-message store "board-session" second)
-          (e-session-flush store 5)
+          (e-session-flush-write-queue store)
           (let ((reopened (e-session-persistent-store-create directory)))
             (let ((messages (e-session-board-messages
                              reopened "board-session")))
@@ -135,7 +135,7 @@
           (e-session-create store :id "output-replay")
           (e-session-append-message
            store "output-replay" '(:role assistant :content "first"))
-          (e-session-flush store)
+          (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (message (e-session-append-message
                            reopened "output-replay"
@@ -163,7 +163,7 @@
           (e-session-create store :id "activity-replay")
           (e-session-append-activity-event
            store "activity-replay" "turn" 'tool-started nil)
-          (e-session-flush store)
+          (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (event (e-session-append-activity-event
                          reopened "activity-replay" "turn" 'tool-finished nil)))
