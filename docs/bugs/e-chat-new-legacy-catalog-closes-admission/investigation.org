@@ -1,0 +1,58 @@
+#+title: Investigation: e-chat-new blocked by legacy catalog preflight
+#+startup: overview
+
+* Source inspected
+
+- =lisp/defaults/e-default-harnesses.el= starts
+  =e-board-runtime-startup-activation= during interactive startup.
+- =lisp/core/e-board-runtime.el= closes the single global admission epoch before
+  asynchronously validating every configured dormant-session catalog row.
+- =lisp/core/e-harness-instances.el= correctly rejects dormant rows without the
+  current access record and publication high-watermarks.
+- =lisp/core/e-chat-service.el= creates a fresh session and board, then attaches
+  its main participant through the same global admission gate used by dormant
+  resume/attachment.
+- =lisp/shells/chat/e-chat.el= reaches that path synchronously from
+  =e-chat-new= through =e-chat-open= and =e-chat-service-create-session=.
+
+* Live access
+
+Bounded read-only probes of the freshly restarted Emacs found:
+
+- runtime admission was =closed= at epoch 1;
+- no startup activation remained in flight;
+- one configured persistent store was present and its writer was healthy;
+- the store contained 252 loaded sessions; and
+- a separate bounded catalog preflight failed with
+  =e-harness-instance-session-catalog-invalid-row= for one pre-cutover session
+  in =default-chat-sessions=.
+
+The temporary diagnostic request/result symbols used to capture that condition
+were removed immediately after the probe.  No session, board, or store state
+was changed.
+
+* Conclusion
+
+The catalog validator is behaving correctly, but activation gives its result
+the wrong ownership scope.  One incompatible dormant row permanently closes
+all board roots, including creation of a new current-schema session that does
+not read, resume, or mutate that row.  The startup activation object is then
+dropped, so =e-chat-new= exposes only a generic closed-admission failure.
+
+This is unnecessary coupling between dormant catalog compatibility and fresh
+live-board creation.  A catalog schema failure should keep catalog discovery
+and resume unavailable while allowing the healthy writer to create a fresh
+current-schema board session.  Missing stores, missing ports, writer failures,
+and failures that make fresh persistence unsafe must continue to leave global
+admission closed.
+
+* Required coverage
+
+- Activation distinguishes an incompatible dormant catalog from a global
+  persistence/activation failure and records the degraded catalog condition.
+- A legacy invalid row cannot be discovered or resumed through the current
+  catalog boundary.
+- =e-chat-new= creates and attaches a current-schema board while catalog state
+  is degraded.
+- Source-only unit, integration, full, packaging, and live/provider e2e gates
+  pass with the new boundary.

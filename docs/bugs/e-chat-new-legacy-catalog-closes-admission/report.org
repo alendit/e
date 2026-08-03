@@ -1,0 +1,15 @@
+#+title: e-chat-new blocked by legacy catalog preflight
+#+startup: overview
+
+* Report
+
+After a full Emacs restart, invoking =M-x e-chat-new= fails with a board/runtime
+closed error before a new chat buffer can be attached.
+
+The failure occurs for a brand-new session rather than while resuming an older
+session.  Restarting Emacs does not recover it.  Fresh chat creation must remain
+available when an unrelated dormant legacy catalog row cannot be resumed, while
+that incompatible row must still fail closed at the catalog/resume boundary.
+
+The regression must be covered at the real =e-chat-new= command path and in the
+end-to-end suite, not only by a mocked activation helper.
