@@ -8,7 +8,6 @@
 (require 'ert)
 (require 'e-session)
 (require 'e-session-persistence)
-(require 'e-board-runtime)
 
 (defun e-session-persistence-test--await-durable (store)
   "Wait in this test process for STORE's asynchronous durability boundary."
@@ -64,6 +63,7 @@
 
 (ert-deftest e-session-persistence-test-json-error-never-enters-outbox ()
   "Opaque runtime state fails before it becomes an unsettled retry obligation."
+  (require 'e-board-runtime)
   (let* ((directory (make-temp-file "e-session-persistence-json-error-" t))
          (store (e-session-persistent-index-store-create directory))
          (controller (e-session-persistence-enable store))

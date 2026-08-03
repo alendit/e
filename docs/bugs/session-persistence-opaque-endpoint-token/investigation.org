@@ -42,3 +42,15 @@ process and filesystem failures remain retryable.
 The existing live outbox needs a separate one-time repair before reload so the
 24 records can be sanitized and delivered without losing their stable command
 identities.
+
+* Resolution
+
+Commit =064f54f0= validates and encodes commands before outbox ownership,
+reuses the prepared wire form on retries, classifies deterministic writer
+request failures as terminal, and exposes bounded controller status.
+
+Commit =5bb0856d= adds session persistence to the development reload sequence
+with regression coverage.
+
+The running Emacs was intentionally not reloaded or repaired during repository
+implementation.
