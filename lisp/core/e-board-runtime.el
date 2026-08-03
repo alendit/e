@@ -57,6 +57,9 @@
 (define-error 'e-board-runtime-activation-preflight
   "e board runtime activation preflight failed"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-catalog-degraded
+  "e board runtime dormant catalog is degraded"
+  'e-board-runtime-error)
 (define-error 'e-board-runtime-producer-disabled
   "e board runtime producer has no current live binding"
   'e-board-runtime-error)
@@ -99,10 +102,22 @@
 (defvar e-board-runtime--activation-current nil
   "The one active startup activation gate, if any.")
 
+(defvar e-board-runtime--catalog-state 'unknown
+  "Current dormant-session catalog state.
+Values are `unknown', `validating', `ready', `degraded', or `unavailable'.")
+
+(defvar e-board-runtime--catalog-condition nil
+  "The bounded condition explaining degraded or unavailable catalog state.")
+
 (defun e-board-runtime-admission-state ()
   "Return the current bounded board-runtime admission state."
   (list :state (if e-board-runtime--admission-open-p 'open 'closed)
         :epoch e-board-runtime--admission-epoch))
+
+(defun e-board-runtime-catalog-state ()
+  "Return the current dormant-session catalog status and condition."
+  (list :state e-board-runtime--catalog-state
+        :condition (copy-tree e-board-runtime--catalog-condition)))
 
 (defun e-board-runtime-close-admission ()
   "Close admission for new public board-runtime roots in O(1).
@@ -749,13 +764,45 @@ retain the returned admission token and reopen it explicitly when appropriate."
     (setq e-board-runtime--activation-current nil)
     (e-request-fail (e-board-runtime-activation-request activation) condition)))
 
+(defun e-board-runtime--activation-invalid-row-p (condition)
+  "Return non-nil when CONDITION is one incompatible dormant catalog row."
+  (eq (car-safe condition) 'e-harness-instance-session-catalog-invalid-row))
+
+(defun e-board-runtime--activation-finish (activation result state condition)
+  "Reopen ACTIVATION and finish it with RESULT and catalog STATE.
+CONDITION is retained as bounded diagnostic evidence when STATE is degraded."
+  (when (eq activation e-board-runtime--activation-current)
+    (condition-case reopen-error
+        (progn
+          (e-board-runtime-reopen-admission
+           (e-board-runtime-quiescence-admission-token
+            (e-board-runtime-activation-quiescence activation)))
+          (setq e-board-runtime--catalog-state state
+                e-board-runtime--catalog-condition (copy-tree condition))
+          (e-request-finish
+           (e-board-runtime-activation-request activation) result)
+          (setq e-board-runtime--activation-current nil))
+      (error
+       (setq e-board-runtime--catalog-state 'unavailable
+             e-board-runtime--catalog-condition (copy-tree reopen-error))
+       (e-board-runtime--activation-fail activation reopen-error)))))
+
+(defun e-board-runtime--require-catalog-ready ()
+  "Reject dormant resume while startup catalog validation is not ready."
+  (unless (eq e-board-runtime--catalog-state 'ready)
+    (signal 'e-board-runtime-catalog-degraded
+            (list e-board-runtime--catalog-state
+                  (copy-tree e-board-runtime--catalog-condition)))))
+
 (defun e-board-runtime--activation-preflight (activation)
   "Start configured-store preflight for quiescent ACTIVATION."
   (if (null (e-harness-instance-session-stores))
-      (e-board-runtime--activation-fail
-       activation
-       (list 'e-board-runtime-activation-preflight
-             "No configured session store is available for activation"))
+      (let ((condition
+             (list 'e-board-runtime-activation-preflight
+                   "No configured session store is available for activation")))
+        (setq e-board-runtime--catalog-state 'unavailable
+              e-board-runtime--catalog-condition (copy-tree condition))
+        (e-board-runtime--activation-fail activation condition))
     (condition-case err
         (setf
          (e-board-runtime-activation-preflight activation)
@@ -764,26 +811,31 @@ retain the returned admission token and reopen it explicitly when appropriate."
           :on-done
           (lambda (result)
             (when (eq activation e-board-runtime--activation-current)
-              (condition-case reopen-error
-                  (progn
-                    (e-board-runtime-reopen-admission
-                     (e-board-runtime-quiescence-admission-token
-                      (e-board-runtime-activation-quiescence activation)))
-                    (setq e-board-runtime--activation-current nil)
-                    (e-request-finish
-                     (e-board-runtime-activation-request activation) result))
-                (error
-                 (e-board-runtime--activation-fail activation reopen-error)))))
+              (e-board-runtime--activation-finish
+               activation result 'ready nil)))
           :on-error
           (lambda (condition)
-            (e-board-runtime--activation-fail activation condition))))
-      (error (e-board-runtime--activation-fail activation err)))))
+            (if (e-board-runtime--activation-invalid-row-p condition)
+                (e-board-runtime--activation-finish
+                 activation
+                 (list :catalog-state 'degraded
+                       :condition (copy-tree condition))
+                 'degraded condition)
+              (setq e-board-runtime--catalog-state 'unavailable
+                    e-board-runtime--catalog-condition (copy-tree condition))
+              (e-board-runtime--activation-fail activation condition)))))
+      (error
+       (setq e-board-runtime--catalog-state 'unavailable
+             e-board-runtime--catalog-condition (copy-tree err))
+       (e-board-runtime--activation-fail activation err)))))
 
 (defun e-board-runtime-startup-activation ()
   "Fence roots, quiesce owners, and asynchronously preflight configured stores.
 Successful settlement is the only path that reopens runtime admission."
   (when e-board-runtime--activation-current
     (signal 'e-board-runtime-activation-active nil))
+  (setq e-board-runtime--catalog-state 'validating
+        e-board-runtime--catalog-condition nil)
   (let* ((request (e-request-lifecycle-create
                    :id (format "runtime-activation-%d"
                                (1+ e-board-runtime--admission-epoch))
@@ -1916,6 +1968,7 @@ rights, and eligibility before one bounded registry/attachment commit."
 The operation never invokes either the legacy factory or dormant activation
 port.  An offline instance therefore fails visibly after authorization."
   (e-board-runtime--require-admission)
+  (e-board-runtime--require-catalog-ready)
   (e-board-runtime--resume-instance-start
    board-or-id instance-id session-store-id session-id requester-principal
    expected-version nil
@@ -1931,6 +1984,7 @@ Offline loading uses only the instance's asynchronous activation port.  The
 loaded harness remains unregistered and unattached until a second exact catalog
 read proves the expected authorization and controller are still current."
   (e-board-runtime--require-admission)
+  (e-board-runtime--require-catalog-ready)
   (e-board-runtime--resume-instance-start
    board-or-id instance-id session-store-id session-id requester-principal
    expected-version t

@@ -1824,6 +1824,22 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (should-not (eq (plist-get payload :endpoint-token) token))
       (should (equal (plist-get payload :endpoint-generation) '(3 7))))))
 
+(ert-deftest e-harness-test-board-endpoint-token-is-not-message-metadata ()
+  "A live endpoint fence is excluded from durable transcript metadata."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (token [endpoint :live 7 "store" "session"]))
+    (e-harness-create-session harness :id "session")
+    (e-harness-test-prompt-batch
+     harness "session" "board input"
+     :metadata (list :input-origin 'board :board-endpoint-token token))
+    (let ((metadata (plist-get (car (e-harness-messages harness "session"))
+                               :metadata)))
+      (should (eq (plist-get metadata :input-origin) 'board))
+      (should-not (plist-member metadata :board-endpoint-token)))))
+
 (ert-deftest e-harness-test-discards-only-fenced-queued-board-head ()
   "Queued board discard preserves FIFO and acknowledges the exact endpoint."
   (let* ((harness (e-harness-create))

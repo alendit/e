@@ -80,6 +80,8 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--admission-epoch 0)
           (e-board-runtime--quiescence-current nil)
           (e-board-runtime--activation-current nil)
+          (e-board-runtime--catalog-state 'ready)
+          (e-board-runtime--catalog-condition nil)
           (e-board-runtime--unsettled-control-count 0)
           (e-board-runtime--unsettled-invocation-count 0)
           (e-board-runtime--unsettled-deferred-hook-count 0)
@@ -344,7 +346,37 @@ Tests that explicitly provide `:requester' retain that exact requester."
              (request (e-board-runtime-activation-request activation)))
         (should (eq (e-request-lifecycle-state request) 'finished))
         (should (equal (e-board-runtime-admission-state)
-                       '(:state open :epoch 1)))))))
+                       '(:state open :epoch 1)))
+        (should (equal (e-board-runtime-catalog-state)
+                       '(:state ready :condition nil)))))))
+
+(ert-deftest e-board-runtime-test-startup-activation-degrades-invalid-old-row ()
+  "An outdated dormant row fences resume without blocking fresh board roots."
+  (e-board-runtime-test--with-empty-state
+    (let ((condition
+           '(e-harness-instance-session-catalog-invalid-row
+             "store" "old-session")))
+      (cl-letf (((symbol-function 'e-harness-instance-session-stores)
+                 (lambda () '((:session-store-id "store"))))
+                ((symbol-function
+                  'e-harness-instance-session-catalog-preflight-start)
+                 (lambda (&rest arguments)
+                   (funcall (plist-get arguments :on-error) condition)
+                   (let ((request (e-request-lifecycle-create :id "preflight")))
+                     (e-request-fail request condition)
+                     request))))
+        (let* ((activation (e-board-runtime-startup-activation))
+               (request (e-board-runtime-activation-request activation))
+               (board (e-board-registry-create :id "fresh")))
+          (should (eq (e-request-lifecycle-state request) 'finished))
+          (should (equal (e-board-runtime-admission-state)
+                         '(:state open :epoch 1)))
+          (should (equal (e-board-runtime-catalog-state)
+                         (list :state 'degraded :condition condition)))
+          (should-error
+           (e-board-runtime-resume-instance-start
+            board :missing "store" "old-session" "principal" 0)
+           :type 'e-board-runtime-catalog-degraded))))))
 
 (ert-deftest e-board-runtime-test-startup-activation-fails-closed-without-store ()
   "A missing production store port cannot yield a false-green activation."
@@ -356,6 +388,8 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should (eq (e-request-lifecycle-state request) 'failed))
         (should (equal (e-board-runtime-admission-state)
                        '(:state closed :epoch 1)))
+        (should (eq (plist-get (e-board-runtime-catalog-state) :state)
+                    'unavailable))
         (e-board-runtime-reopen-admission
          (e-board-runtime-quiescence-admission-token
           (e-board-runtime-activation-quiescence activation)))))))

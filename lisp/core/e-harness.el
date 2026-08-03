@@ -2581,6 +2581,13 @@ Returns the updated message, or nil when no such message exists."
 (defun e-harness--append-user-message
     (harness session-id turn-id prompt &optional metadata)
   "Append PROMPT as the user message in HARNESS for SESSION-ID and TURN-ID."
+  ;; Endpoint tokens fence one live attachment.  They remain on the active
+  ;; entry and queued input while in use, but are neither transcript context
+  ;; nor durable data (and production tokens are intentionally opaque
+  ;; structs, not JSON values).
+  (setq metadata
+        (e-session--plist-remove
+         (copy-sequence metadata) :board-endpoint-token))
   (e-harness--append-message
    harness
    session-id
