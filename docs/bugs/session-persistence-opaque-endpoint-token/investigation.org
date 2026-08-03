@@ -16,6 +16,25 @@ checkout and did not contain the current endpoint-token removal.
 The running Emacs was inspected with bounded scalar probes and was not reloaded
 or mutated.
 
+** Recurrence after persistence preflight
+
+The same opaque token reached persistence in the later Grimoire session
+=20260803T164156-136fc3d8a0af=, displayed as “Hyper overload handling: goals,
+measures, and load balancing.”  The turn failed with
+=e-session-persistence-command-error= wrapping the expected =json-error=.
+
+A bounded live fingerprint reported =:loaded-sanitizer nil= for
+=e-harness--append-user-message=.  The affected session was already idle with
+178 messages.  Its persistence controller reported a live writer, zero outbox
+entries, no pending retry, and no retained last error.  This proves that the
+preflight fix was active and settled the deterministic failure, while the
+loaded harness still predated the endpoint-token removal.
+
+The running Emacs was again left unchanged.  The supported =e-dev-reload=
+sequence now reloads both =e-session-persistence.el= and =e-harness.el=, so a
+full reload when Emacs is idle will align the running definitions with the
+checkout.
+
 * Source evidence
 
 =e-harness--append-user-message= in the checkout removes
@@ -54,3 +73,7 @@ with regression coverage.
 
 The running Emacs was intentionally not reloaded or repaired during repository
 implementation.
+
+The later recurrence does not require another steady-state source fix.  It is a
+stale mixed-version runtime: the checkout and reload sequence already contain
+both halves of the resolution.
