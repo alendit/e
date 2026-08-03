@@ -1,0 +1,12 @@
+#+title: e-chat Settled Surface Opens at Stale Scrollback
+#+startup: overview
+
+* Report
+
+Opening an existing composed =e-chat= can leave the transcript above the newest
+completed turn while focus correctly lands in the separate composer.  The chat
+should show the latest turn output whenever its interaction surface is entered.
+
+Previous attempts fixed running-turn following and workspace restoration, but
+the settled-session case still fails.  Rework the behavior around a clear
+surface contract and remove any scrolling complexity that is no longer needed.

@@ -576,26 +576,63 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
 Read markers are presentation state for unread indicators.  They are
 intentionally not persisted in session metadata.")
 
-(defvar e-chat--window-selection-hook-installed-p nil
-  "Non-nil when e-chat installed its window-selection hook.")
+(defvar-local e-chat--surface-activation-handle nil
+  "Deferred UI work completing explicit activation of this chat surface.")
 
-(defvar-local e-chat--tail-active-turn-handle nil
-  "Deferred UI work used to tail active output after window focus settles.")
+(defvar-local e-chat--surface-activation-generation 0
+  "Generation token for stale chat-surface activation callbacks.")
 
-(defvar-local e-chat--tail-active-turn-generation 0
-  "Generation token for stale active-turn tail callbacks.")
+(defconst e-chat--selected-surface-frame-parameter
+  'e-chat-selected-surface
+  "Frame parameter holding the last selected chat surface.")
 
 (defun e-chat--workspace-unread-cache-invalidate ()
   "Mark the workspace unread cache stale."
   (setq e-chat--workspace-unread-cache-valid-p nil))
 
+(defun e-chat--transcript-buffer-for (buffer)
+  "Return BUFFER's owning chat transcript, or nil.
+BUFFER may itself be a transcript or its dedicated composer."
+  (when (buffer-live-p buffer)
+    (let ((transcript
+           (or (buffer-local-value 'e-chat--surface-transcript-buffer buffer)
+               buffer)))
+      (and (buffer-live-p transcript)
+           (buffer-local-value 'e-chat-harness transcript)
+           (buffer-local-value 'e-chat-session-id transcript)
+           transcript))))
+
+(defun e-chat--selected-chat-surface (&optional selected)
+  "Return SELECTED window's chat surface as (TRANSCRIPT . TRANSCRIPT-WINDOW).
+SELECTED defaults to the selected window.
+The selected window may contain either a monolithic transcript or a composed
+surface's dedicated input pane.  In both cases TRANSCRIPT owns output state and
+TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
+  (let* ((selected (or selected (selected-window)))
+         (selected-buffer (window-buffer selected))
+         (transcript (e-chat--transcript-buffer-for selected-buffer)))
+    (when transcript
+      (let ((transcript-window
+             (if (eq selected-buffer transcript)
+                 selected
+               (with-current-buffer transcript
+                 (or (car (rassq
+                           selected
+                           (buffer-local-value
+                            'e-chat--surface-window-pairs transcript)))
+                     (cl-find-if
+                      (lambda (window)
+                        (and (eq (window-frame window) (window-frame selected))
+                             (e-chat--surface-window-directly-below-p
+                              window selected)))
+                      (get-buffer-window-list transcript nil t)))))))
+        (when (and (window-live-p transcript-window)
+                   (eq (window-buffer transcript-window) transcript))
+          (cons transcript transcript-window))))))
+
 (defun e-chat--selected-chat-buffer ()
-  "Return the selected e-chat buffer, or nil."
-  (let ((buffer (window-buffer (selected-window))))
-    (and (buffer-live-p buffer)
-         (buffer-local-value 'e-chat-harness buffer)
-         (buffer-local-value 'e-chat-session-id buffer)
-         buffer)))
+  "Return the transcript owning the selected e-chat surface, or nil."
+  (car-safe (e-chat--selected-chat-surface)))
 
 (defun e-chat--refresh-workspace-unread-presentation ()
   "Refresh cached unread state and workspace displays."
@@ -607,7 +644,8 @@ intentionally not persisted in session metadata.")
 
 (defun e-chat--mark-buffer-session-read-if-selected (&optional buffer)
   "Mark BUFFER's latest assistant output read when BUFFER is selected."
-  (let ((buffer (or buffer (current-buffer))))
+  (let ((buffer (e-chat--transcript-buffer-for
+                 (or buffer (current-buffer)))))
     (when (and (eq buffer (e-chat--selected-chat-buffer))
                (buffer-live-p buffer))
       (with-current-buffer buffer
@@ -625,50 +663,92 @@ intentionally not persisted in session metadata.")
   (when-let ((buffer (e-chat--selected-chat-buffer)))
     (e-chat--mark-buffer-session-read-if-selected buffer)))
 
-(defun e-chat--tail-active-turn-buffer-if-selected (buffer)
-  "Show BUFFER's active-turn tail when BUFFER is still selected."
-  (when (and (buffer-live-p buffer)
-             (eq buffer (e-chat--selected-chat-buffer)))
-    (with-current-buffer buffer
-      (when (e-chat--active-turn-running-p)
-        (e-chat--show-latest-output)))))
+(defun e-chat--show-surface-latest-output (surface)
+  "Show latest output in SURFACE without changing its selected input pane."
+  (let ((buffer (car-safe surface))
+        (window (cdr-safe surface)))
+    (when (and (buffer-live-p buffer)
+               (window-live-p window)
+               (eq (window-buffer window) buffer))
+      (with-current-buffer buffer
+        (e-chat--show-latest-output window)))))
 
-(defun e-chat--schedule-tail-active-turn-buffer (buffer)
-  "Schedule a post-focus active-turn tail check for BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (e-work-handle-p e-chat--tail-active-turn-handle)
-        (e-ui-work-cancel e-chat--tail-active-turn-handle)
-        (setq e-chat--tail-active-turn-handle nil))
-      (setq e-chat--tail-active-turn-generation
-            (1+ e-chat--tail-active-turn-generation))
-      (let ((generation e-chat--tail-active-turn-generation))
-        (setq e-chat--tail-active-turn-handle
-              (e-ui-work-schedule
-               (e-ui-work-spec-create
-                :id "chat_active_turn_tail"
-                :description "Tail active chat output after focus settles."
-                :owner 'active-turn-tail
-                :target-buffer buffer
-                :key 'selected-window
-                :generation generation
-                :delay 0
-                :coalesce t
-                :focus-policy 'explicit
-                :reentrancy-policy 'defer
-                :apply
-                (lambda (_job _handle)
-                  (setq e-chat--tail-active-turn-handle nil)
-                  (when (= generation e-chat--tail-active-turn-generation)
-                    (e-chat--tail-active-turn-buffer-if-selected buffer))))
-               :on-event (lambda (&rest _)
-                           (e-chat--refresh-ui-work-diagnostics))))))))
+(defun e-chat--show-surface-latest-output-if-selected (surface)
+  "Show SURFACE's latest output when it remains the selected surface."
+  (let* ((window (cdr-safe surface))
+         (frame (and (window-live-p window) (window-frame window))))
+    (when (and (frame-live-p frame)
+               (equal surface
+                      (e-chat--selected-chat-surface
+                       (frame-selected-window frame))))
+      (e-chat--show-surface-latest-output surface))))
 
-(defun e-chat--tail-selected-active-turn (&rest _)
-  "Show the latest active-turn output when selecting a running chat window."
-  (when-let ((buffer (e-chat--selected-chat-buffer)))
-    (e-chat--tail-active-turn-buffer-if-selected buffer)
-    (e-chat--schedule-tail-active-turn-buffer buffer)))
+(defun e-chat--schedule-surface-activation (surface)
+  "Schedule a post-focus latest-output restore for selected SURFACE."
+  (let ((buffer (car-safe surface)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (e-work-handle-p e-chat--surface-activation-handle)
+          (e-ui-work-cancel e-chat--surface-activation-handle)
+          (setq e-chat--surface-activation-handle nil))
+        (setq e-chat--surface-activation-generation
+              (1+ e-chat--surface-activation-generation))
+        (let ((generation e-chat--surface-activation-generation))
+          (setq e-chat--surface-activation-handle
+                (e-ui-work-schedule
+                 (e-ui-work-spec-create
+                  :id "chat_surface_activation"
+                  :description "Finish chat surface activation after focus settles."
+                  :owner 'surface-activation
+                  :target-buffer buffer
+                  :key (cdr surface)
+                  :generation generation
+                  :delay 0
+                  :coalesce t
+                  :focus-policy 'explicit
+                  :reentrancy-policy 'defer
+                  :apply
+                  (lambda (_job _handle)
+                    (setq e-chat--surface-activation-handle nil)
+                    (when (= generation e-chat--surface-activation-generation)
+                      (e-chat--show-surface-latest-output-if-selected surface))))
+                 :on-event (lambda (&rest _)
+                             (e-chat--refresh-ui-work-diagnostics)))))))))
+
+(defun e-chat--activate-surface (surface)
+  "Explicitly activate SURFACE at its latest output.
+The immediate update is the presentation contract.  A single coalesced retry
+wins host window-restoration races without observing every unrelated window
+configuration change."
+  (when surface
+    (let ((frame (window-frame (cdr surface))))
+      (when (equal surface
+                   (e-chat--selected-chat-surface
+                    (frame-selected-window frame)))
+        (set-frame-parameter frame
+                             e-chat--selected-surface-frame-parameter
+                             surface)))
+    (e-chat--show-surface-latest-output surface)
+    (e-chat--schedule-surface-activation surface)))
+
+(defun e-chat--activate-selected-surface-on-selection (&optional changed-frame)
+  "Activate latest output when selection enters a different chat surface."
+  (let* ((frame (if (frame-live-p changed-frame)
+                    changed-frame
+                  (selected-frame)))
+         (surface (e-chat--selected-chat-surface
+                   (frame-selected-window frame)))
+         (previous (frame-parameter
+                    frame e-chat--selected-surface-frame-parameter)))
+    (set-frame-parameter frame e-chat--selected-surface-frame-parameter surface)
+    (when (and surface (not (equal surface previous)))
+      (e-chat--show-surface-latest-output surface)
+      (e-chat--schedule-surface-activation surface))))
+
+(defun e-chat--activate-selected-surface-after-workspace-switch (&rest _)
+  "Activate selected chat output after a workspace switch."
+  (when-let ((surface (e-chat--selected-chat-surface)))
+    (e-chat--activate-surface surface)))
 
 (defvar e-chat--surface-activation-in-progress nil
   "Non-nil while a selected composed chat surface is being restored.")
@@ -689,18 +769,23 @@ display commands do."
 
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
+  ;; These hooks implemented the pre-surface active-turn policy.  Remove them
+  ;; explicitly so reloading this feature cannot leave obsolete behavior live.
+  (remove-hook 'window-selection-change-functions
+               'e-chat--tail-selected-active-turn)
+  (remove-hook 'window-configuration-change-hook
+               'e-chat--tail-selected-active-turn)
+  (when (boundp 'persp-activated-functions)
+    (remove-hook 'persp-activated-functions
+                 'e-chat--tail-selected-active-turn))
   (unless (memq #'e-chat--mark-selected-session-read
                 window-selection-change-functions)
     (add-hook 'window-selection-change-functions
               #'e-chat--mark-selected-session-read))
-  (unless (memq #'e-chat--tail-selected-active-turn
+  (unless (memq #'e-chat--activate-selected-surface-on-selection
                 window-selection-change-functions)
     (add-hook 'window-selection-change-functions
-              #'e-chat--tail-selected-active-turn))
-  (unless (memq #'e-chat--tail-selected-active-turn
-                window-configuration-change-hook)
-    (add-hook 'window-configuration-change-hook
-              #'e-chat--tail-selected-active-turn))
+              #'e-chat--activate-selected-surface-on-selection))
   (unless (memq #'e-chat--flush-deferred-hidden-redraws
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
@@ -727,11 +812,10 @@ display commands do."
                   persp-activated-functions)
       (add-hook 'persp-activated-functions
                 #'e-chat--mark-selected-session-read))
-    (unless (memq #'e-chat--tail-selected-active-turn
+    (unless (memq #'e-chat--activate-selected-surface-after-workspace-switch
                   persp-activated-functions)
       (add-hook 'persp-activated-functions
-                #'e-chat--tail-selected-active-turn)))
-  (setq e-chat--window-selection-hook-installed-p t))
+                #'e-chat--activate-selected-surface-after-workspace-switch))))
 
 (e-chat--ensure-window-selection-hook)
 
@@ -7379,11 +7463,12 @@ revealed block when revealing, or on the block that was focused when hiding."
           (ignore-errors
             (recenter -2)))))))
 
-(defun e-chat--show-latest-output ()
-  "Show the latest chat output while keeping input focus in the composer."
+(defun e-chat--show-latest-output (&optional window)
+  "Show the latest chat output in WINDOW while preserving composer focus.
+WINDOW defaults to an arbitrary visible window for the current transcript."
   (let ((position (e-chat--output-follow-position)))
     (goto-char position)
-    (when-let ((window (e-chat--visible-window)))
+    (when-let ((window (or window (e-chat--visible-window))))
       (e-chat--follow-output-window window position))))
 
 (defun e-chat--enter-composer-input-state ()
@@ -7406,14 +7491,15 @@ revealed block when revealing, or on the block that was focused when hiding."
 
 (defun e-chat--after-display-buffer (buffer)
   "Restore chat-local editing invariants after displaying BUFFER."
-  (with-current-buffer buffer
-    (e-chat--disable-modal-editing)
-    (e-chat--disable-completion)
-    (when (e-chat--surface-transcript-p)
-      (e-chat--surface-display-composer))
-    (e-chat--enter-composer-input-state)
-    (when (e-chat--active-turn-running-p)
-      (e-chat--show-latest-output)))
+  (let ((transcript-window (get-buffer-window buffer t)))
+    (with-current-buffer buffer
+      (e-chat--disable-modal-editing)
+      (e-chat--disable-completion)
+      (when (e-chat--surface-transcript-p)
+        (e-chat--surface-display-composer))
+      (e-chat--enter-composer-input-state))
+    (when (window-live-p transcript-window)
+      (e-chat--activate-surface (cons buffer transcript-window))))
   buffer)
 
 (defun e-chat--side-window-p (&optional window)

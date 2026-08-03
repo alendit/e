@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-settled-surface-opens-stale-scrollback/ | e-chat settled surface opens at stale scrollback |
 | Closed | e-chat-new-board-admission-closed/ | e-chat-new reports board is closed after restart |
 | Closed | doom-startup-missing-chat-service/ | Doom startup missing chat service |
 | Closed | process-reporting-lockf-float-timeout/ | Process reporting lockf float timeout |

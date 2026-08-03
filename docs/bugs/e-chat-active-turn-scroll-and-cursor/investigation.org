@@ -75,3 +75,11 @@ Validation:
   installed in both =window-selection-change-functions= and
   =persp-activated-functions=, and a live active redraw returned =:tail-grew t=,
   =:point-at-new-tail t=, and =:window-point-at-new-tail t=.
+
+* Superseded activation policy
+
+The active-turn selection policy above was replaced by the transcript-owned
+surface activation contract documented in
+=../e-chat-settled-surface-opens-stale-scrollback/investigation.org=.  Running
+redraw preservation remains valid, but activation now covers settled output and
+no longer tails on every window-configuration change.

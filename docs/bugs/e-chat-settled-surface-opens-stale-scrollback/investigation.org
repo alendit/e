@@ -1,0 +1,115 @@
+#+title: e-chat Settled Surface Opens at Stale Scrollback Investigation
+#+startup: overview
+
+* Reproduction
+
+The running Emacs reproduced the report without changing live state.  The
+selected buffer was the dedicated composer for session
+=20260803T164156-136fc3d8a0af=, while its owning transcript had:
+
+- no active turn and no running-status bounds;
+- =window-start= 21309, =window-point= 21531, and =window-end= 22070;
+- =point-max= 23089 and latest final block bounds 22987--23087;
+- a window-local output-follow value of =nil=.
+
+The newest final output was therefore entirely below the visible viewport.
+
+A focused ERT reproduction renders a long settled turn in a composed surface,
+places the transcript at =point-min=, selects the composer, and calls the common
+display boundary.  Before the fix, =window-point= stayed at 1 instead of moving
+to transcript =point-max= 5120.
+
+* Source and history inspected
+
+- =e-chat--after-display-buffer= only called =e-chat--show-latest-output= when
+  =e-chat--active-turn-running-p= was true.  Settled sessions had no activation
+  policy.
+- =e-chat--selected-chat-buffer= returned the selected composer buffer.  The
+  active-tail hook then ran output code in the input pane instead of the owning
+  transcript.
+- Previous fixes accumulated active-turn handlers on window selection,
+  workspace activation, and every =window-configuration-change-hook= event,
+  plus one deferred retry.  The broad configuration hook could move a viewport
+  for unrelated layout changes and still did not define settled-session
+  behavior.
+- The per-window output-follow state and running-status display-state restore
+  serve a separate, valid purpose: live redraw follows only viewports already at
+  the tail and preserves deliberate scrollback.  They are retained.
+- The composed-surface restoration hook remains necessary for generic
+  =switch-to-buffer= calls, which otherwise replace the transcript window and
+  omit its input pane.
+
+* Design
+
+Presentation activation now owns a concrete chat-surface value:
+=(TRANSCRIPT . TRANSCRIPT-WINDOW)=.  A selected composer resolves through its
+owner link and window pair to that value.  Transcript state and output positions
+are read from =TRANSCRIPT=; only =TRANSCRIPT-WINDOW= may be moved.
+
+There are three explicit activation boundaries:
+
+1. chat display commands and restored generic buffer switches;
+2. entry into a different selected chat surface;
+3. workspace activation, which may restore the same selected window without a
+   window-selection event.
+
+Activation always shows the latest output, whether the session is running or
+settled.  It performs the update immediately and schedules one coalesced retry
+for the same surface so a host workspace restore cannot put back an older
+window point after the display command returns.
+
+Remaining within the same composed surface is not activation.  Moving between
+its transcript and composer therefore preserves deliberate scrollback.  Normal
+progress redraw also continues to use the independent per-window follow flag.
+
+The old active-turn-only helpers, state names, and unconditional
+=window-configuration-change-hook= tail were removed.  Reload setup explicitly
+removes the obsolete hook symbol so an existing Emacs does not retain the old
+policy after feature reload.
+
+* Validation
+
+- Focused surface/display/viewport suite: 7 expected passes.
+- Broad suite excluding that unrelated timeout: 322 expected passes, 1 expected
+  skip, and no unexpected results.
+- Full =test/e-chat-test.el=: 322 expected passes, 1 expected skip, and 1
+  unrelated async-index timeout.  The failing
+  =e-chat-test-open-session-renders-after-async-index-load= reproduces alone and
+  times out while its 16-byte chunk loader is still at 720/2298 bytes; it does
+  not exercise the changed activation path.
+- The running Emacs was used only for the bounded reproduction probe and was
+  not reloaded or otherwise changed.
+
+* Design self-check
+
+1. The package fixes settled activation and removes a layout-wide scrolling
+   side effect, so it is useful independently.
+2. It moves chat toward a composed presentation surface with one explicit
+   activation contract.
+3. Host restoration timing remains the only uncertain decision; it is isolated
+   in one coalesced retry.  Surface identity and explicit latest-output behavior
+   are stable.
+4. =e-chat= presentation owns activation because it owns transcript/composer
+   windows and viewport policy.
+5. Coupling is reduced: callers pass one narrow transcript/window pair instead
+   of consulting active-turn state and global window events separately.
+6. No stable harness, session, board, or backend policy depends on presentation
+   code.
+7. Window movement remains at the presentation boundary; core rendering and
+   session state gain no side effects.
+8. Added state is one transient frame parameter for selected surface identity
+   and one buffer-local deferred handle/generation.  Both are rebuildable UI
+   state with frame/buffer lifetime.
+9. Activation is constant-time and schedules at most one coalesced callback per
+   transcript.  Removing the layout-wide hook reduces work on unrelated window
+   changes.
+10. The surface pair is a real data contract shared by monolithic and composed
+    presentations without weakening either behavior.
+11. Generic buffer switching and live reload remain supported; the obsolete
+    active-tail hook is explicitly removed on reload.
+12. The active-only state, helpers, and window-configuration tail were removed.
+13. A surface is ignored when its buffer/window is no longer live or selected;
+    unexpected rendering and work-scheduling errors still surface normally.
+14. Focused tests independently prove settled display, composer-to-transcript
+    ownership, one-shot selection, deferred host restore, hook scope, running
+    output, and live-redraw scrollback preservation.

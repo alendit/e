@@ -1642,6 +1642,42 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-after-display-settled-composed-chat-shows-latest-output ()
+  "Displaying a settled composed chat shows its newest transcript output."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-display-settled-output"))
+         transcript-window composer-window)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            ;; Selecting the composer changes `current-buffer'; continue the
+            ;; viewport assertions in the owning transcript.
+            (set-buffer buffer)
+            (set-window-point transcript-window (point-min))
+            (set-window-start transcript-window (point-min))
+            (e-chat--set-window-output-follow-state transcript-window nil)
+            (should (< (window-point transcript-window) (point-max)))
+            (e-chat--after-display-buffer buffer)
+            (should (eq (selected-window) composer-window))
+            (should (= (window-point transcript-window) (point-max)))
+            (should (plist-get
+                     (e-chat--window-output-follow-state transcript-window)
+                     :follow))))
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
   "Chat buffers declare a non-normal Evil state when Evil is available."
   (let (configured)
@@ -5062,70 +5098,97 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))))
 
-(ert-deftest e-chat-test-window-config-tail-survives-late-window-restore ()
-  "Active chat window-configuration focus tails after restored old point."
-  (let ((buffer (e-chat-test--buffer nil "chat-active-focus-tail-late"))
-        (window nil))
+(ert-deftest e-chat-test-surface-activation-survives-late-window-restore ()
+  "One deferred surface activation wins a host restoring stale scrollback."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-surface-activation-late"))
+         transcript-window composer-window)
     (unwind-protect
         (progn
-          (setq window (display-buffer buffer))
-          (select-window window)
+          (setq transcript-window (display-buffer buffer))
           (with-current-buffer buffer
-            (e-chat--render-event
-             (e-events-make :type 'turn-started
-                            :session-id e-chat-session-id
-                            :turn-id "turn-1"
-                            :created-at 10))
-            (e-chat-test--mark-active-turn "turn-1")
-            (e-chat--render-event
-             (e-events-make :type 'provider-request-started
-                            :session-id e-chat-session-id
-                            :turn-id "turn-1"
-                            :created-at 11))
-            (e-chat--render-event
-             (e-events-make :type 'reasoning-delta
-                            :session-id e-chat-session-id
-                            :turn-id "turn-1"
-                            :payload '(:content "first chunk\nsecond chunk")))
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)))
-            (goto-char (point-min))
-            (search-forward "first chunk")
-            (let ((stale-point (point))
-                  (tail (cdr (e-chat--running-status-bounds))))
-              (should tail)
-              (set-window-point window stale-point)
-              (set-window-start window stale-point)
-              (goto-char stale-point)
-              (let ((window-configuration-change-hook
-                     '(e-chat--tail-selected-active-turn)))
-                (run-hooks 'window-configuration-change-hook))
-              (with-current-buffer buffer
-                (should (e-chat-test--live-work-handle-p
-                         e-chat--tail-active-turn-handle))
-                (let ((job (car (e-chat-test--pending-ui-work
-                                 'active-turn-tail
-                                 'selected-window))))
-                  (should job)
-                  (should (equal (plist-get job :key)
-                                 'selected-window))
-                  (should (equal (plist-get job :generation)
-                                 e-chat--tail-active-turn-generation))))
-              (should (= (window-point window)
-                         (marker-position e-chat--composer-start-marker)))
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (let ((stale-point (point-min))
+                  (tail (point-max))
+                  (surface (cons buffer transcript-window)))
+              (set-window-point transcript-window stale-point)
+              (set-window-start transcript-window stale-point)
+              (e-chat--set-window-output-follow-state transcript-window nil)
+              (e-chat--activate-surface surface)
+              (should (e-chat-test--live-work-handle-p
+                       e-chat--surface-activation-handle))
+              (let ((job (car (e-chat-test--pending-ui-work
+                               'surface-activation transcript-window))))
+                (should job)
+                (should (eq (plist-get job :key) transcript-window))
+                (should (equal (plist-get job :generation)
+                               e-chat--surface-activation-generation)))
+              (should (= (window-point transcript-window) tail))
               ;; Doom workspace restoration can put the old point back after
-              ;; focus hooks run.  The deferred tail must win that race.
-              (set-window-point window stale-point)
-              (set-window-start window stale-point)
-              (goto-char stale-point)
+              ;; activation returns.  The one deferred retry wins that race.
+              (set-window-point transcript-window stale-point)
+              (set-window-start transcript-window stale-point)
               (should
                (e-chat-test--wait-until
                 (lambda ()
-                  (= (window-point window)
-                     (marker-position e-chat--composer-start-marker)))
+                  (= (window-point transcript-window) tail))
                 0.2)))))
-      (when (window-live-p window)
-        (delete-window window))
+      (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-selection-activates-transcript-once ()
+  "Entering a composer tails its transcript, but staying there preserves scrollback."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-composer-surface-entry"))
+         transcript-window composer-window)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (let ((surface (cons buffer transcript-window))
+                  (tail (point-max)))
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              (e-chat--set-window-output-follow-state transcript-window nil)
+              (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+              (e-chat--activate-selected-surface-on-selection)
+              (should (equal (e-chat--selected-chat-surface) surface))
+              (should (= (window-point transcript-window) tail))
+              (should (eq (selected-window) composer-window))
+              (when (e-work-handle-p e-chat--surface-activation-handle)
+                (e-ui-work-cancel e-chat--surface-activation-handle)
+                (setq e-chat--surface-activation-handle nil))
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              (e-chat--set-window-output-follow-state transcript-window nil)
+              (e-chat--activate-selected-surface-on-selection)
+              (should (= (window-point transcript-window) (point-min)))
+              (should-not e-chat--surface-activation-handle))))
+      (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -10225,22 +10288,32 @@ The context-window denominator comes from the live provider lookup
     (should-not (memq #'e-chat--mark-selected-session-read
                       post-command-hook))))
 
-(ert-deftest e-chat-test-installs-workspace-switch-read-hook ()
-  "Chat focus hooks include Doom workspace activation when available."
+(ert-deftest e-chat-test-installs-surface-activation-hooks ()
+  "Chat activation follows selection/workspaces, not arbitrary layout changes."
   (cl-progv '(window-selection-change-functions
               window-configuration-change-hook
               persp-activated-functions)
-      '(nil nil nil)
+      '((e-chat--tail-selected-active-turn)
+        (e-chat--tail-selected-active-turn)
+        (e-chat--tail-selected-active-turn))
     (e-chat--ensure-window-selection-hook)
+    (should-not (memq 'e-chat--tail-selected-active-turn
+                      window-selection-change-functions))
+    (should-not (memq 'e-chat--tail-selected-active-turn
+                      window-configuration-change-hook))
+    (should-not (memq 'e-chat--tail-selected-active-turn
+                      persp-activated-functions))
     (should (memq #'e-chat--mark-selected-session-read
                   window-selection-change-functions))
-    (should (memq #'e-chat--tail-selected-active-turn
+    (should (memq #'e-chat--activate-selected-surface-on-selection
                   window-selection-change-functions))
-    (should (memq #'e-chat--tail-selected-active-turn
-                  window-configuration-change-hook))
+    (should-not (memq #'e-chat--activate-selected-surface-on-selection
+                      window-configuration-change-hook))
+    (should-not (memq #'e-chat--activate-selected-surface-after-workspace-switch
+                      window-configuration-change-hook))
     (should (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions))
-    (should (memq #'e-chat--tail-selected-active-turn
+    (should (memq #'e-chat--activate-selected-surface-after-workspace-switch
                   persp-activated-functions))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
