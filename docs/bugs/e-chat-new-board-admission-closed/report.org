@@ -1,0 +1,15 @@
+#+title: e-chat-new reports board is closed after restart
+#+startup: overview
+
+* Report
+
+After a full Emacs restart, invoking =M-x e-chat-new= fails with =board is
+closed= before a new chat buffer can be attached.
+
+The failure occurs for a brand-new chat.  Restarting Emacs does not recover it.
+Fresh chat creation must use the board framework directly and must be covered
+at the real command path plus deterministic E2E.
+
+The final correction must not retain a second persisted-session discovery,
+authorization, activation, or migration lifecycle.  Old sessions may be
+abandoned; only newly created board-native sessions need to resume.

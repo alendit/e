@@ -25,10 +25,8 @@ The remediation makes the board the sole live interaction substrate:
 - default, tag, and exact dispatch share authenticated ingress; subagents join
   the parent board; bundled producers choose observable fact versus
   dispatchable input explicitly;
-- quiescence covers every deferred owner; production startup distinguishes a
-  globally unavailable store from an incompatible dormant row, reopening fresh
-  board admission only when persistence remains safe while fencing degraded
-  catalog discovery/resume;
+- quiescence covers every deferred owner when explicitly requested, while
+  ordinary startup admits board creation without a historical-session gate;
 - retained envelopes are frozen, identities/lifecycle are registry-owned, and
   nil/stale/revoked requester contexts fail closed; and
 - routing, observation, await materialization, and persistence have fixed
@@ -84,96 +82,48 @@ All ten High findings and the Medium regression-coverage finding are closed.
 
 * Verification performed during this review pass
 
-** Focused board/runtime selection
+** Board-only chat and restart E2E
 
 #+begin_src sh
-rtk eldev test test/e-board-test.el test/e-board-registry-test.el test/e-board-runtime-test.el test/e-cutover-structure-test.el test/e-task-queue-test.el test/e-session-persistence-test.el test/e-await-tool-test.el
+E_E2E=1 rtk eldev test \
+  -f e2e/e-chat-surface-e2e-test.el \
+  -f e2e/e-session-restart-e2e-test.el \
+  -f e2e/e-provider-continuation-e2e-test.el \
+  -f e2e/e-work-e2e-test.el \
+  -f e2e/e-ui-work-e2e-test.el
 #+end_src
 
 #+begin_example
-Ran 197 tests, 197 results as expected, 0 unexpected
+Ran 6 tests, 6 results as expected, 0 unexpected.
 #+end_example
 
-** Structural and nonblocking selection
+This invokes the real =e-chat-new= surface, proves that its new session already
+has durable board identity, reconstructs that same board/session identity from
+a fresh persistent store and harness, and completes a post-restart turn.
+
+** Complete repository suite, including E2E
 
 #+begin_src sh
-rtk eldev test test/e-nonblocking-sweep-test.el test/e-ui-work-test.el test/e-cutover-structure-test.el
+E_E2E=1 rtk eldev -q test
 #+end_src
 
 #+begin_example
-Ran 20 tests, 20 results as expected, 0 unexpected
+Ran 1978 tests, 1953 results as expected, 0 unexpected, 25 skipped.
 #+end_example
 
-The green result does not close the findings below: the guards scan selected
-consumers for old symbol names, while session-first wrappers and explicitly
-allowlisted blocking paths remain accepted.
+The skipped cases are the existing optional annotation/markup cases and live
+provider cases that require external credentials.  All deterministic E2E cases
+ran in the combined gate.
 
-** Broader board/cutover selection
-
-#+begin_src sh
-rtk eldev test e-board e-board-registry e-board-runtime e-cutover e-chat-service e-chat-session e-chat-starter e-modernchat e-task-queue e-task-actions e-cron-actions e-background-session e-annotation-answer e-subagent e-tools e-await-tool
-#+end_src
-
-#+begin_example
-Ran 993 tests, 986 results as expected, 0 unexpected, 7 skipped
-#+end_example
-
-Two independently grouped rechecks also passed 218/218 tests for the board,
-runtime, cutover, UI-work, chat-session/starter, and modernchat group, and
-114/120 expected results with 6 skips for task, producer, subagent, tool, and
-=await= coverage.
-
-** Source-only full suite
-
-The authoritative full run used a source-only temporary copy so ignored stale
-bytecode in the working checkout could not affect the result.
-
-#+begin_src sh
-rtk eldev test
-#+end_src
-
-#+begin_example
-Ran 1951 tests, 1936 results as expected, 0 unexpected, 15 skipped
-#+end_example
-
-One first-run one-second timeout in
-=e-base-tools-test-bash-coalesces-streaming-progress= passed in isolation and
-the complete suite passed on immediate rerun.  It is not treated as a feature
-finding.
-
-** Batch compilation
+** Batch compilation and hygiene
 
 #+begin_src sh
 rtk eldev compile
-#+end_src
-
-#+begin_example
-Compilation succeeded.
-The existing warning set was two warnings in e-harness-instances.el and one in
-e-openai.el.
-#+end_example
-
-** Final completion validation
-
-The final source-only suite includes the exact retirement manifest, board-first
-product matrix, asynchronous writer bounds, and corrected registry/aggregate
-fixture isolation.
-
-#+begin_src sh
-rtk eldev test
-rtk eldev test test/e-modernchat-test.el test/e-chat-session-test.el test/e-chat-starter-test.el test/e-chat-test.el
-rtk eldev test test/e-nonblocking-sweep-test.el
-rtk eldev compile -W -f lisp/core/e-harness.el lisp/core/e-board-runtime.el
-rtk eldev package
 git diff --check
 #+end_src
 
 #+begin_example
-Full suite: 1988 tests, 1973 results as expected, 0 unexpected, 15 skipped.
-Chat/board product matrix: 369 tests, 368 expected, 0 unexpected, 1 skipped.
-Nonblocking sweep: 3 tests, 3 expected, 0 unexpected.
-Strict touched-source compilation succeeded.
-Package built as dist/e-0.1.0.tar.
+Compilation succeeded without compiler warnings.
 Diff whitespace validation succeeded.
 #+end_example
 
@@ -689,113 +639,49 @@ contracts.
 Ran 135 tests, 129 results as expected, 0 unexpected, 6 skipped
 #+end_example
 
-** DONE High: Quiescence and activation can report a false-safe cutover
+** DONE High: Quiescence and startup were coupled to an obsolete session model
 
 *** Expected
 
-The accepted cutover order at plan line 1742 is: close all root admission,
-asynchronously quiesce active work, every accepted queue/writer/control request,
-prepare stores exclusively, verify current schemas/access, switch the complete
-source set, and fully restart.  Any missing counter or failed phase must prevent
-activation.
+Quiescence must account for every deferred owner when an explicit runtime
+transition asks for it.  Ordinary process startup must admit a new board
+without scanning or validating unrelated session history.
 
 *** Observed
 
-=e-board-unsettled-state= tracks pickups, effects, and routing only.
-Deferred terminal classification, aggregation deadlines, client revocation
-work, task persistence, and other producer/domain timers are not all represented
-in the owner projections aggregated by =e-board-runtime--quiescence-sources= at
-=lisp/core/e-board-runtime.el:456--470=.
-
-The following exact probe leaves terminal classification queued while the
-quiescence request is already finished:
-
-#+begin_example
-(:quiescence-state finished
- :queued-classifications 1
- :scheduled-drains 1
- :board-unsettled (:generation 0 :pickups 0 :effects 0 :routing 0)
- :work-unsettled (:generation 2 :work-handles 0))
-#+end_example
-
-No production caller invokes =e-board-runtime-request-quiescence=.  Default
-instance registration at =lisp/defaults/e-default-harnesses.el:433--454= omits
-the session-store/catalog/access/activation ports needed by the implemented
-preflight APIs.  The offline preparation command was removed after its source
-and tests were deleted, while =cutover-preparation.org= records that it was not
-run against user data.
-
-Raw runtime attach still accepts harness/session input directly, and session,
-runtime, tools, and authorization retain “legacy”, synthetic, missing-metadata,
-or =private-pre-cutover= branches.  The claimed one-go migration therefore has
-neither an enforced activation gate nor a clean post-cutover schema.
-
-*** Why it matters
-
-A false green can restart or activate while accepted work remains pending.
-Existing user data has no guaranteed preparation path, and compatibility
-fallbacks hide rather than reject an incomplete cutover.
-
-*** Smallest corrective direction
-
-Implement one activation service that closes every root, composes all owner
-counters and async close/finalize handles, obtains exclusive store ownership,
-runs preparation and current-schema/access verification, then enables the board
-runtime only after a full restart.  Wire production instances to its ports.
-Count terminal classification, deadlines, revocation, producer timers, and
-domain writers.  Remove raw attach and every obsolete compatibility/synthesis
-branch; missing current metadata must fail visibly.
-
-*** Verification required
-
-Hold each unsettled class independently and prove quiescence stays pending.
-Prove direct session roots are fenced.  Run the full preparation/preflight/
-restart scenario on a disposable old-schema store, including rollback and a
-current-schema readback.  A production instance missing any required port must
-fail registration/activation.
-
-*** Current remediation note
-
-Board-owned terminal classification and aggregation-deadline queues now adjust
-the same constant-time routing unsettled counter used by runtime quiescence.
-=e-board-runtime-test-quiescence-waits-for-terminal-and-deadline-queues= holds
-both reducers independently and proves the request remains started until the
-last bounded drain retires.  Producer work is counted from acceptance through
-causal terminal settlement.  Task persistence now owns constant-time pending
-and failed-writer counters: timer ownership transfers without a false-zero
-edge, a write failure remains an activation blocker, and runtime quiescence
-subscribes to those transitions.  Focused tests hold a task writer independently
-and prove quiescence settles only after the writer owner retires its slot.  The
-The production startup gate now closes admission, waits for those owner
-projections, and runs the configured-store catalog preflight before reopening
-the exact admission epoch.  Missing store ports, writer errors, outdated rows,
-or missing access/counter schema fail the activation lifecycle and leave
-admission closed.  Default chat/debug instances register one stable store id
-with catalog, access, and activation ports.  The Node persistence adapter serves
-fixed 32-row catalog pages from =index.json= without transcript reads in Emacs;
-new board sessions persist explicit controller policy plus both publication
-high-watermarks.  Existing pre-cutover data is never upgraded on read: it must
-meet the separately audited offline preparation/snapshot contract or startup
-fails closed.
+The original review found missing unsettled-owner projections.  The first
+remediation added a process-start activation gate backed by dormant-session
+catalog, access-store, and activation ports.  That compatibility architecture
+made every fresh board depend on every historical session row and caused the
+reported =board is closed= failure after restart.
 
 *** Resolution
 
-There is now one production activation service and one ordering:
-=admission fence -> owner-notified quiescence -> asynchronous configured-store
-preflight -> exact-token reopen=.  No failed or missing phase can report an
-active runtime, and interactive default startup invokes this gate from a fresh
-process.
+The owner-notified quiescence request remains available for explicit runtime
+transitions and covers board routing, deferred hooks, harness turns/queues,
+=e-work=, session persistence, and task persistence.  It is no longer invoked
+at ordinary startup.
+
+The dormant-session compatibility architecture is deleted: there is no
+configured session catalog/access/activation port, startup activation object,
+catalog state, catalog preflight, or dormant-resume runtime endpoint.  Harness
+instances describe execution targets only.  New chat sessions persist exactly
+=(:board-id ... :principal ...)= before attachment; restart reconstructs that
+board from the session journal and board-message log.  Sessions without board
+identity are unsupported and are omitted from chat resume/overview candidates.
 
 *** Evidence
 
-- =e-board-runtime-test-startup-activation-reopens-only-after-preflight= proves
-  reopening occurs only after successful store validation.
-- =e-board-runtime-test-startup-activation-fails-closed-without-store= proves a
-  missing production port cannot become a false green.
-- =e-session-persistence-test-catalog-port-returns-current-board-rows= proves
-  the writer returns dormant access/counter rows through its bounded protocol.
-- =e-defaults-test-registers-chat-instance-for-legacy-spec= proves default
-  instances carry every required store/activation port.
+- =e-board-runtime-test-quiescence-waits-for-terminal-and-deadline-queues= and
+  =e-board-runtime-test-quiescence-waits-for-task-writer= cover the explicit
+  quiescence boundary.
+- =e-chat-surface-e2e-test-new-chat-is-board-native= invokes the real
+  =e-chat-new= command and asserts the persisted board-only state.
+- =e-session-restart-e2e-test-resumes-persisted-board-session= creates a board,
+  resets every process-local registry/binding, resumes the same board id, and
+  completes a prompt through board delivery.
+- Structural searches find none of the retired catalog/access/activation or
+  dormant-resume symbols in production Lisp.
 
 ** DONE High: Main-thread bounds remain incomplete
 
@@ -1214,8 +1100,8 @@ wrapper no longer satisfies the suite.
   =e-chat-service-test-board-chat-end-to-end= cover the board-first product.
 - =e-subagent-runner-test-spawn-records-lineage-and-seeds= proves shared board
   identity, and
-  =e-board-runtime-test-startup-activation-reopens-only-after-preflight= proves
-  the asynchronous cutover gate.
+  =e-session-restart-e2e-test-resumes-persisted-board-session= proves the
+  persisted board identity and reconstruction path.
 
 * Plan coverage
 
@@ -1226,7 +1112,7 @@ wrapper no longer satisfies the suite.
 | Slice 2 -- Exact invocation subscriptions and =wait_for= | Done | Invocation effects retain endpoint generation; await has fixed reference/result budgets and returns out-of-line tombstones. |
 | Slice 3 -- Full subscription/effect and inbox settlement | Done | Routing/finalization is paged and atomic, pickup retry is fenced, and producers explicitly choose fact versus dispatchable input. |
 | Slice 4 -- Cross-harness runtime and explicit participant creation | Done | Boards host multiple participants/clients, generic default/tag/exact routing, and same-board subagents. |
-| Slice 5 -- Atomic board-only cutover | Done | Tokenless live roots, session presentation feeds, compatibility authorization, and blocking durability completion are retired; activation is preflight-gated. |
+| Slice 5 -- Atomic board-only cutover | Done | Tokenless live roots, session presentation feeds, the parallel persisted-session lifecycle, and blocking durability completion are retired; fresh startup and restart are board-native. |
 | Slice 6 -- Post-cutover measurement and tuning | Done | Fixed record/byte/page/fan-out/await/writer budgets and structural/product regression guards are verified. |
 
 * Architecture review
@@ -1302,44 +1188,38 @@ attachment-token ports.
 - Repository-side validation and the final exact command/results are recorded
   above.  The running Emacs was left unchanged.
 
-** Post-completion startup regression correction (2026-08-03)
+** Post-completion board-only correction (2026-08-03)
 
-A freshly restarted Emacs exposed a gap in the completed activation contract:
-one pre-cutover dormant catalog row failed strict validation and permanently
-left the single admission epoch closed, so even =e-chat-new= signalled =board is
-closed=.  The validator was correct, but its failure scope coupled dormant
-resume compatibility to unrelated fresh-board creation.
+A freshly restarted Emacs exposed that the interim cutover retained a second
+session lifecycle beside boards.  Startup validated dormant catalog rows and
+closed global board admission before =e-chat-new= ran.  One incompatible row
+therefore produced =board is closed= for an unrelated new chat.
 
-The corrected runtime records dormant catalog state separately from board-root
-admission.  One exact invalid-row condition settles startup as =degraded=,
-reopens admission for new current-schema boards, and keeps dormant discovery
-and resume explicitly fenced.  Missing stores and unexpected activation errors
-remain =unavailable= and fail closed.  Live endpoint tokens are also stripped
-from durable message metadata, closing the JSON persistence failure revealed by
-the restart E2E.
+The correction removes that lifecycle instead of degrading it:
 
-Regression coverage crosses the product command and current board path:
+- default startup registers/synchronizes harness targets and does not close
+  board admission;
+- harness instances no longer expose session-store ids, catalogs, access
+  stores, or session activation callbacks;
+- board runtime no longer owns startup activation/catalog state or dormant
+  resume APIs;
+- persisted chat identity is only =board-id= plus =principal=, indexed for
+  bounded shell navigation and replayed from the session journal;
+- fresh chat persists board identity before installing its participant; and
+- pre-board sessions are unsupported and absent from chat candidate surfaces.
 
-- =e-board-runtime-test-startup-activation-degrades-invalid-old-row=;
-- =e-chat-surface-e2e-test-new-chat-survives-degraded-legacy-catalog=;
-- =e-harness-test-board-endpoint-token-is-not-message-metadata=;
-- board-first surface, provider-continuation, persistent-restart, and UI-work
-  E2Es using the shared =e-board-e2e-support.el= helper; and
-- E2E discovery restricted to =*-test.el= so sample live-provider config cannot
-  contaminate ordinary unit tests.
+Regression coverage crosses the actual product seams:
 
-Final repository gates:
+- =e-chat-surface-e2e-test-new-chat-is-board-native= invokes =e-chat-new= and
+  checks its live board plus exact persisted identity;
+- =e-session-restart-e2e-test-resumes-persisted-board-session= proves new-board
+  create, process-local reset, same-board resume, routing, provider completion,
+  and transcript persistence;
+- =e-session-persistence-test-checkpoint-indexes-board-identity= proves the
+  writer index contains board identity and no dormant ACL/state row; and
+- =e-chat-test-session-candidates-include-only-board-root-sessions= proves
+  pre-board and worker sessions are not offered by resume/overview.
 
-- =rtk eldev compile=: passed without warnings;
-- =E_E2E=1 rtk eldev -q test=: 2,007 tests, 1,982 expected passes,
-  0 unexpected results, and 25 documented optional skips;
-- all deterministic E2Es passed; ten credential-gated live-provider tests
-  skipped because this batch environment has no =E_E2E_CONFIG= or gateway
-  credential; and
-- =git diff --check=: passed.
-
-The design self-check above remains valid with one refinement: catalog
-compatibility is process-lifetime activation state owned by board runtime, not
-a reason to persistently disable fresh roots.  Endpoint tokens are
-attachment-lifetime state and never durable transcript data.  The running Emacs
-was left unchanged.
+Repository validation after this correction is recorded in the feature
+completion evidence.  Batch compilation is warning-free, deterministic E2E is
+green, and the running Emacs was left unchanged.

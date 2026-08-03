@@ -3,6 +3,14 @@
 
 * Status
 
+Board-only correction (2026-08-03): persisted chat sessions are board sessions.
+The dormant session catalog/access/activation design below was rejected during
+final product verification and is superseded by this correction.  There is no
+pre-board migration or compatibility path.  New sessions persist =board-id=
+and =principal= before participant attachment; restart reconstructs that board
+from the journal; sessions without board identity are not listed or resumed.
+Ordinary startup does not close admission or preflight historical sessions.
+
 Done
 
 Slice 5 is complete in repository source.  Public shells enter through the
@@ -1247,14 +1255,18 @@ It owns the message stream, event sequence, observed work, subscriptions/activat
 A live session is attached to exactly one active board through exactly one participant record; there are no standalone or multi-board live sessions and no turn or input without that board id.
 Harnesses remain execution hosts for session state, turns, providers, and transcripts, but they do not define the outer interaction scope.
 
-Stored session history may be dormant without a live runtime attachment.
-Loading or reading a persisted session does not make it live.
-The board runtime owns an explicit attachment record whose state is =active=, =detaching=, or =dormant=; accepting inbox input, holding an active turn, or being addressable as a delivery endpoint requires =active= attachment and membership.
-Creating, resuming, forking, or spawning a live session must create its board attachment atomically before that session can accept input.
-Removing or moving that attachment first enters =detaching= and returns a pending handle, rejects new input, and asynchronously fences or drains its active turn, inbox items, and receipts before making the session dormant or atomically attaching it to the replacement board in a later bounded commit.
-Durable transcript history is never deleted merely because the live attachment becomes dormant.
-When a dormant session is attached after cutover, its earlier transcript remains private model context only.
-Those entries are not imported, backfilled, or rendered as board =input=/=activity=/=output= history, and the runtime has no transcript-to-board conversion branch; only messages accepted by the current board schema appear in board observers.
+Persisted chat history belongs to a board-native session whose durable identity
+contains exactly its =board-id= and trusted =principal=.  Loading the session
+reconstructs the process-local board registry entry and imports its durable
+board messages before attaching the main participant.  Creating a session
+persists this identity before attachment, so no chat session can become live
+without a board.  Sessions created before this contract are unsupported: they
+are not migrated, translated, listed, or resumed.
+
+The runtime attachment remains process-local and may be =active= or
+=detaching= during explicit remove/move/rebind reconciliation.  Durable
+transcript and board-message history survive process restart independently of
+that attachment object.
 
 Recommendation: *board*.
 It is plain, unused in the codebase, and names the shared interaction place without transport vocabulary: clients post messages, sessions pick them up, and executable work remains visible there.
@@ -1280,12 +1292,15 @@ An activation is identified by =(board-id, subscription-id, firing-number)=; its
 A board client is identified by =(board-id, client-id, connection-generation)= and maps to an authenticated =principal-id=; it is not a session.
 A participant is identified by =(board-id, participant-id)=; its registry record has a stable posting epoch and maps to a stable =session-attachment-key= plus the current =instance-id=, =harness-id=, opaque composite generation, and delivery =endpoint-token=.
 The posting epoch survives authorized endpoint rebind while the composite delivery generation does not.
-=instance-id= is the logical catalog id from =e-harness-instances=, while =harness-id= is the concrete =e-harness-registry= key selected by that instance.
-The composite generation is =(instance-catalog-generation, harness-object-generation)=.
-=session-attachment-key= is =(session-store-id, session-id)=; =session-store-id= is an opaque stable identity owned by/configured with the session store and shared by every harness exposing that store.
-The generation-specific endpoint token is based on =(harness-id, harness-object-generation, session-attachment-key)= and is used only for delivery/reconciliation.
-Raw session ids are therefore never sufficient cross-harness destination identities.
-The registry reverse index permits at most one active board participant record for a stable session attachment key across all boards, so two harness objects over the same store/session and later replacement generations cannot attach it twice.
+=instance-id= identifies configured execution-target metadata and =harness-id=
+identifies the current concrete harness registry object.  The composite
+generation is =(instance-catalog-generation, harness-object-generation)=.
+Within one process, the reverse attachment key is the concrete
+=(harness-object, session-id)= endpoint; the endpoint token additionally freezes
+the harness id/object generation.  Across restart, the durable =board-id= in
+the session journal is the identity used to reconstruct the board.  No global
+session-store namespace, discovery catalog, or activation lookup participates
+in attachment.
 
 An exact participant selector stores only the board-local =participant-id= inside an already-resolved board and never triggers a global session search; external resources use =board://<board-id>/participants/<participant-id>=.
 A qualified =session:<instance-id>/<session-id>= reference is accepted only by explicit participant add/resume operations and is normalized to a participant before any subscription is installed.
@@ -1308,17 +1323,13 @@ The pure registry stores ids and board state but does not require =e-harness=.
 =e-board-runtime= is the composition adapter: it supplies qualified session lookup, create/close/rebind, input delivery, fork, clock, and scheduler ports backed by harness services.
 It is composed only after the board registry and harness registry exist, keeping the board core independent of the concrete session runtime.
 
-Configured =e-harness-instance= records gain a stable =session-store-id=, an asynchronous paged read-only =session-catalog= port, and a narrow asynchronous optimistic =session-access-store= mutation port, all usable without invoking the harness factory.
-The catalog lists/reads bounded pages of dormant session summaries and current-schema access records; the access-store port supports only expected-version create/grant/revoke/transfer operations on those records and exposes no transcript or live-session mutation.
-Several instances may expose the same store.
-Registrations that share a =session-store-id= must expose the identical catalog/access-store identity or are rejected; the host catalog deduplicates them and returns each dormant =(session-store-id, session-id)= once with its explicit =eligible-instance-ids=.
-Each session access record contains a durable controlling principal, discover/resume principal ACLs, and an optimistic version; resume implies discovery.
-New-session creation stores it atomically with the session metadata.
-The controller may grant/revoke discover/resume access, and may transfer control only while the session is dormant through an expected-version store operation; transfer revokes the old controller's implicit rights and never silently rewrites board-local private grants.
-Resume names one eligible instance and the destination board; ownership/resume authorization, dormant state, access-record version, store identity, and instance eligibility are checked before any factory invocation, after which the activation service may asynchronously invoke only that instance's factory/load path and atomically attach the session in a later bounded commit.
-Catalog reads themselves never call =get-or-create=, and rejected direct resume calls create no harness, grant, or attachment even when the caller supplies a hidden/stale session id.
-Every configured harness instance eligible for session create/resume/attachment must expose the required catalog/access-store ports; missing ports fail instance registration and the global cutover preflight, and no participant operation may target that instance.
-Target lookup never substitutes catalog activation for an absent live endpoint.
+Configured =e-harness-instance= records describe execution targets only:
+presentation metadata, factory/harness id, layers, and layer configuration.
+They do not expose persisted-session discovery, authorization, storage, or
+activation ports.  Chat navigation reads the owning harness's board-native
+session index; selecting a row loads that exact session through the harness and
+reconstructs its persisted board.  Creating another participant or session is
+an explicit board application operation, never a catalog side effect.
 
 *** Clients, participants, and authorization
 
@@ -1336,58 +1347,11 @@ The creating principal/requester is an owner; a board may have several principal
 - Session-private work is visible to its poster only; a cross-participant post or a shared tag is not an implicit visibility grant.
 - A participant subscription expresses routing interest but grants no new data or control authority; visibility and target freshness are checked before selector predicates or effect payloads read result content.
 
-For a new session, the creating principal becomes its controlling principal and that identity is persisted in session metadata by the store.
-Resume reads the existing controller through the trusted catalog port and requires that controller or an explicit catalog authorization; the resuming caller never replaces ownership merely by naming a dormant session id.
-The participant record copies that controller and initially grants it both private rights for the new board attachment.
-That controller may grant/revoke them for other principals; board ownership alone permits detach/close but does not reveal the transcript or confer session control.
-=inspect-transcript= permits bounded transcript reads, and =control-session= permits rename, model, reasoning effort, output mode, compact, abort, and reset through generation-checked runtime operations.
-Sanitized activity is board-visible by default and is authorized before publication; anything that cannot be exposed to ordinary authorized board readers is not posted and remains behind transcript/control boundaries.
-Revoking a private grant commits one immediate fence for new reads/calls; revoking board/client read access commits the client-generation fence and schedules bounded observer-subscription closure before any later delivery, without removing already-committed board records or rolling back a control mutation.
-Board-local private grants expire with the participant/board; the durable controller does not.
-Every catalog row must already have the current access record and persisted output/activity counters before the board runtime starts.
-A missing/outdated record or counter is a cutover preflight error: listing/resume never synthesizes, translates, defaults, or infers it, and no harness factory runs.
-
-The requester identity comes from a generation-checked authenticated client/principal context or participant attachment token and is never accepted as an arbitrary model-supplied id.
-The board id is an address, not a credential.
-
-Subagent, fork, and resumed-session creation use these same registry operations.
-"Joins the parent's board by default" means that the spawning application service explicitly creates membership and grants as part of its transaction; it is not hidden inheritance in =e-session=.
-An agent-originated child/fork inherits the source participant's controlling principal as part of that explicit transaction; it does not inherit arbitrary third-party private grants.
-
-*** Registry and board lifecycle
-
-| State | Accepts | Rejects | Exit condition |
-|-------+---------+---------+----------------|
-| =active= | Clients, participants, messages, work enrollment, events, subscriptions, activations, effects, and delivery | Stale-generation endpoints | Explicit owner close or process shutdown |
-| =closing= | Receipts, activity/summary/output and terminal events causally rooted in admitted pre-close turns/work, pre-existing subscriptions matching those roots, plus retry/frozen effects/causally rooted pickup delivery+wakes/descendant-work enrollment | New clients, participants, unrelated root input/work, new subscriptions, unrelated wakes, and ordinary input | Every accepted delivery/effect/publication is reconciled and pre-close roots settle, or the close deadline aborts their board-bound turns and ends observation |
-| =closed= | Bounded diagnostic tombstone reads | All mutation and delivery | Registry removes the entry after the tombstone retention window |
-
-A board may outlive every client connection and participant session because owner grants belong to stable principals; it may temporarily have neither kind of live attachment.
-An empty active board remains reconnectable by an authorized principal and is subject to a bounded idle-expiry policy rather than silent immediate destruction.
-Explicit close immediately commits the =closing= fence, stops admission/ordinary wake scheduling, and queues visible expiry of unrelated pending pickups/subscriptions/activations plus reconciliation of already-applying effects.
-The close call commits =closing= and returns a handle immediately; expiry fan-out, receipt/effect reconciliation, board-bound abort, and final tombstone/retention work advance through bounded scheduled steps and never wait for quiescence on the caller's stack.
-Subscriptions installed before =board-closing= remain eligible only for activity/output/terminal/descendant records causally rooted in turns/work admitted before close, so existing chat observers, exact invocation replies, and declared continuations are not truncated merely by entering =closing=.
-Any =post-input= /=create-pickup= effect admitted by that rule may deliver and wake a participant under the same preserved root/budgets; it cannot admit an unrelated new root.
-Work observers for roots enrolled before close remain attached until those roots settle or the close deadline ends work observation.
-It does not cancel domain work by default; force-cancelling work is a separate authorized operation.
-Operation start context therefore carries =root-work-id= into every retry and child operation.
-During =closing=, only descendants, matches of preserved pre-close subscriptions, or already-frozen effects of roots enrolled before =board-closing= may enroll/post, which lets an already-running causal chain settle without admitting unrelated work.
-The configured close deadline prevents nonterminating observed work from blocking forever: its timer commits one bounded control transition and enqueues indexed record/work-unit-budgeted abort of remaining board-bound participant turns, =observation-ended= tombstones, and observer detachment rather than scanning/cancelling them inline.
-At that deadline any still-preserved subscription/activation and any unaccepted causal pickup expire visibly before final reconciliation.
-Already-started detached/domain work is not cancelled by that abort and may finish unobserved; force-cancelling it remains a separate operation.
-A board cannot become =closed= while any accepted delivery is unresolved; each must become consumed, discarded with harness acknowledgement, or uncertain if its old endpoint vanished.
-
-The first version is process-local and is not restored across Emacs restarts.
-A dormant persisted session becomes live only by joining a newly created or explicitly selected live board.
-The initial board-only cutover requires a quiescent full Emacs restart; no live registry, timer, callback, or in-flight invocation crosses that architecture boundary, and =e-dev-reload= is not a cutover mechanism.
-After that fresh process starts, a schema-unchanged code reload may keep board registry state under the generation rules below; a board-core or persisted-schema change again requires close/restart rather than state translation.
-=e-harness-instances= owns a monotonic generation for logical instance-to-harness mapping; =e-harness-registry= owns a separate monotonic generation for each concrete live harness object.
-Re-registering the identical startup mapping/object or synchronizing metadata in place preserves the relevant generation, while remap, replacement, or clear synchronously records the generation bump and enqueues bounded invalidation/reconciliation work; it never fans out across attachments inline.
-The board registry stores only the composite snapshot; =e-board-runtime= resolves and compares it.
-Board timers and callbacks also carry a board-runtime generation; reload installs exactly one fresh timer/drain/runtime-listener generation over the existing registry-owned subscriptions, cursors, predicate closures, and ready records, while stale-generation callbacks become no-ops.
-Target resolution uses a non-creating live lookup and never calls a lazy get-or-create path for a missing harness or session.
-Invalidation moves the attachment through =stale= /=detaching=, fences new ingress, and reconciles active turns/inbox receipts.
-Explicit authorized rebind captures the new endpoint generation only after asynchronous quiescence/reconciliation; the public operation returns a pending handle and there is no immediate silent takeover of a still-live old endpoint.
+For a new session, the creating principal and board id are persisted together
+before the participant binding is installed.  Resume reads those values from
+the trusted session journal; naming a session id never creates or changes
+ownership.  Explicit rebind captures a new endpoint generation only after
+bounded quiescence/reconciliation.
 
 ** Board binding and session invariants
 
@@ -1402,7 +1366,7 @@ A participant turn/action may omit it because its attachment is unique; a client
 There is no creation-order fallback.
 
 A live session cannot participate in several boards because that would splice independent board threads into one transcript.
-Moving a dormant session, or atomically detaching and reattaching a quiescent live session, changes the binding for future turns without rewriting historical turn causes.
+Atomically detaching and reattaching a quiescent live session changes the binding for future turns without rewriting historical turn causes.
 The transcript records the board id on every first user message and turn work metadata.
 Chat shells open a board, post messages with tags (default =main=) or an explicit exact participant, and render the =input=/=activity=/=output= messages matched by their non-consuming observer subscription rather than binding either direction to one session.
 The ordinary bootstrap atomically creates the first participant with a subscription matching =main=; adding another =main= subscriber intentionally broadcasts later chat posts to both.
@@ -1430,7 +1394,7 @@ Only operations that intentionally hold a model turn open are tools.
   Membership-changing actions enforce registry roles; there is no unauthenticated self-service =join=.
 - Chat has no harness/action context, so =e-chat= calls authenticated =e-board-runtime= host APIs rather than keeping a harness endpoint.
   The board API covers create/list/open/close, principal administration, client attach/detach, message post/read, and board subscriptions.
-  An asynchronous paged session-catalog API lists principal-owned/granted dormant sessions from configured store ports without activating them, manages controller-owned discover/resume ACLs and dormant ownership transfer, and explicitly resumes/attaches one through a named eligible instance as a participant in the selected board; reading the catalog never lazily creates a live harness/session.
+  The shell lists only board-native session-index rows from the selected harness; choosing one loads that exact journal and reconstructs its persisted board without a second discovery or activation service.
   Board-scoped participant-control APIs preserve rename, model/reasoning-effort selection, output mode, compact, abort, reset, fork/spawn, and bounded transcript inspection for an authorized selected participant; controls with variable work return pending handles and settle later.
   The board observation API returns an asynchronously paged selector-filtered snapshot/cursor and bounded live continuation in board sequence; it exposes neither a harness object nor an input path, and thinking/progress/turn-summary activity reaches chat only after ordinary board publication.
   These surfaces enforce board visibility plus the participant's remaining controller/private grants, delegate to the same registry/application services and trusted actor contract, and never tunnel client identity through =e-actions-call=.
@@ -1466,11 +1430,11 @@ Model-facing tool count does not grow.
 - =lisp/core/e-board-registry.el= owns generated board/client/participant identity, principal/participant roles and grants, client/participant attachments, lifecycle, endpoint-generation snapshots, and board lookup.
   It depends on board core and injected ports, not on =e-harness=.
 - =lisp/core/e-board-runtime.el= is the application/composition adapter.
-  It binds the registry to non-creating harness lookup, explicit dormant-session catalog/resume, authenticated participant controls, normalized/sanitized idempotent participant-activity publication, runtime attachment records, atomic live-session attach/detach/move, stable operation/output/activity-publication trampolines/outbox drains, timers, wake scheduling, waiting-invocation and =post-input= effect adapters, explicit forks/spawns, and input delivery.
+  It binds the registry to non-creating live-harness lookup, board-native session restore, authenticated participant controls, normalized/sanitized idempotent participant-activity publication, runtime attachment records, atomic live-session attach/detach/move, stable operation/output/activity-publication trampolines/outbox drains, timers, wake scheduling, waiting-invocation and =post-input= effect adapters, explicit forks/spawns, and input delivery.
   It also owns generation-fenced non-reentrant ready queues and fair budgeted drains for routing continuations, effects, observer handoff, publication retry, pickup attempts, wakes, deferred carrier hooks, and board-scoped cancellation/abort requests; a zero-delay timer only enqueues one bounded control/drain token as a yield boundary and never licenses draining a queue to empty.
 - =e-harness-instances= retains the logical instance catalog, stable session-store/catalog/access-store ports, eligible-instance mapping, and mapping generation, while =e-harness-registry= retains concrete harness objects and object generations plus replacement/clear invalidation events.
 - =e-session= owns session names, the one current transcript/activity-entry schema, stable durable activity-entry ids, and atomically assigns/submits monotonic =board-output-seq= and =board-activity-seq= publication counters/entry fields; only entries emitted by the canonical board-aware completion/activity paths are publication candidates.
-- The session-store layer exposes a stable opaque =session-store-id= shared by every harness view over that store and persists each session's controller/discover/resume access record, next-output/activity counters, and ordinary durable activity through its asynchronous persistence controller/writer; its debounce timer only submits, and it does not gain a board dependency.
+- The session-store layer persists each board-native session's =board-id=, trusted =principal=, board messages, output/activity counters, and ordinary durable activity through its asynchronous persistence controller/writer; its debounce timer only submits, and it does not gain a board-registry dependency.
 - =e-harness= owns active turns, session inboxes, transcript mutation, forks, and provider calls.
   Together with =e-loop=, it owns exact open-invocation slots, original endpoint/turn-generation binding, and local effect-id receipts; =e-tools= retains structured result/error shaping.
   The harness/session store remains authoritative for raw live turn state and durable activity source entries, but board runtime/registry alone owns board-publication retry/reconciliation; the harness/store never starts or retries a board publication.
@@ -1566,46 +1530,47 @@ Private stopping value: reducer tests prove that an operation or board fact can 
 
 ** Slice 4 -- Cross-harness runtime and explicit participant creation
 
-Extend the minimal attachment plumbing into full qualified participant resolution and generation reconciliation across harness instances.
-Complete non-activating session-catalog/session-access-store/store-id coverage, shared-store validation/deduplication, authenticated ACL administration, explicit-instance dormant resume, private participant controls, cross-target grants, and rebind/revoke/move reconciliation.
-Add a one-shot offline cutover-preparation command outside the live runtime.
-Build and test it in this private slice, but do not run it while the pre-cutover runtime may admit work or write session/task stores.
-Slice 5 runs it in a separate non-interactive batch process under exclusive store access after quiescence; it takes an explicit trusted controller/ACL manifest, records a restorable pre-change data snapshot, creates the current access record and initializes/persists output/activity counters for every resumable catalog row, and fails if any row or policy is missing or already ambiguous.
-After it verifies the complete current-schema catalog, its code and command are removed in Slice 5; catalog listing/resume contains no preparation, old-format branch, or lazy write.
-Land explicit request/controlled-future state machines for catalog/access-store/factory calls and every variable resume, close, move/rebind, compact, reset, fork/spawn, transcript-read, or bulk-invalidation control, each with one pending identity and bounded completion/failure commit.
-Route turn abort/board-close cancellation through indexed work queues with record/work-unit budgets, one terminal fence/enqueue per operation, and no inline scan or carrier-cancel callback.
-Generalize Slice 1's minimal harness-to-board activity publisher across harnesses and the full event set: use bounded latest-value mailboxes whose callbacks never format unbounded values or reach chat, normalize/sanitize in scheduled flushes, snapshot the current/final turn routing tags/causes, assign monotonic publication keys plus separate source-event/progress identities, coalesce before append, flush/supersede progress before terminal ordering, idempotently publish terminal =turn-summary=, fence stale endpoint generations, retain publication failures for retry/reconciliation, and maintain the board-owned open-activity projection.
-Expose fork and spawn only as explicit authorized session-management operations that atomically create/attach a participant; callers may then address that participant exactly or let it install tag subscriptions.
-Require an explicit transcript-entry =:at= for forks in the first version.
-Supply the cross-generation board ledger, stale/dormant bounded pending delivery, lost-ack reconciliation, and stale/uncertain handling for the generation-neutral state machine from Slice 3.
-Add fork caps, but no routing-triggered fork/spawn and no general autospawn.
+Extend the minimal attachment plumbing into full qualified participant
+resolution and generation reconciliation across harness instances.  Harness
+instances remain execution-target descriptions; runtime attachment resolves a
+currently live concrete harness/session and never discovers or activates
+persisted sessions through a second registry.
 
-Private stopping value: tests prove that subscriptions can reach an already-declared participant across harness instances while participant creation remains an explicit auditable decision, and cutover preflight can validate every stored row without activating it.
+Generalize harness-to-board activity publication across harnesses, preserving
+bounded mailboxes, source identities, terminal summaries, output idempotency,
+and stale endpoint rejection.  Fork/spawn remain explicit authorized
+session-management operations that create board-native identity before
+attachment; routing never autospawns.
+
+Private stopping value: tests prove cross-harness board delivery, rebind/revoke/
+move reconciliation, shared-board subagents, and the absence of any independent
+session discovery/activation path.
 
 ** Slice 5 -- Atomic board-only cutover
 
-First stop new pre-cutover-runtime and producer admission, then run an asynchronous quiescence preflight that requires no active turn, open invocation, live tool/work package, pending session/task writer, or other unsettled control request.
-It also requires every queued prompt, inbox/steering item, delivery attempt/receipt, and producer-admission item to be drained/reconciled or explicitly discarded/tombstoned by its owning pre-cutover service; the preflight itself returns pending and refuses cutover rather than waiting on the main thread or silently dropping accepted memory state.
-Only after quiescence, acquire exclusive store access, run the separate batch preparation and pre-change snapshot, verify every current access/counter schema, apply the complete source change set, and perform a full Emacs restart.
-The fresh process starts only the board runtime; no old timer, callback, closure, registry, or in-flight request survives, and neither =e-dev-reload= nor a same-process handoff may cross this boundary.
-In one change set, switch =e-chat= to connect to/open/render a board, default new posts and its observer selector to tag =main=, optionally post to or observe an explicitly selected participant/tag, and display every matched =input=/=activity=/=output= message; it retains no harness endpoint and calls no session prompt path.
-Observer callbacks accept/enqueue bounded immutable message references only; a sequence reducer then applies every accepted semantic message exactly once, while generation-fenced =e-ui-work= jobs mutate buffers/windows in record/byte-bounded pages and yield between them.
-Route dormant-session discovery/resume and selected-participant controls through authenticated host APIs, while all in-progress activity arrives through the ordinary board observer subscription.
-Split the current mixed renderer into canonical board-message rendering plus an activity reducer whose only semantic inputs are board =activity= messages.
-Retain the product's =Thinking=/=Thought=, reasoning/tool/action rows, progress coalescing, summary expansion/navigation, terminal =Turn took ...= summary, and =e-ui-work= behavior, while deleting direct =e-harness-subscribe=, =e-harness-messages=, =e-harness-session-activity-events=, and active-turn reads in favor of the asynchronous paged board snapshot/cursor/live contract.
-Use newest bounded page first plus cooperative backfill, keep semantic activity coalescing distinct from UI redraw coalescing, and never let a redraw coalesce away an accepted =output=, summary, or cursor advance.
-Correlate participant output with =turn-summary= through required =source-turn-id=, handle summary-first/output-first arrival idempotently across simultaneous main/subagent streams, and remove the missed-final transcript fallback from board mode.
-Replace every session create/resume/fork/spawn, prompt, follow-up, steering, and background-session caller with registry/runtime/board ingress operations in this same change set.
-Post each participant's final assistant response as idempotent board =output= without recursively routing it as input.
-Post cron fires, file-notify and annotation triggers, domain-operation events, task-queue changes, and subagent changes to explicitly configured boards with descriptive tags and stable source keys; every in-repository producer is board-wired or explicitly disabled before activation.
-Keep task/subagent registries authoritative and make board propagation/wake failure incapable of weakening their mutation ordering.
-Move task persistence behind the required asynchronous domain writer/controller: its timer only coalesces/submits an immutable bounded snapshot/reference, board propagation never waits for it, and missing writer setup fails preflight.
-Delete the synchronous flush surface; batch/finalization uses the writer's explicit pending close/finalize request, process exit performs no hidden main-thread flush, and a domain that defines durable commit publishes its dependent fact only from the writer's asynchronous acknowledgement.
-Delete direct live-session create/prompt/queue/steer paths, =:handler=/=:start= tool registration, the missed-final transcript fallback, direct session presentation feeds, duplicate session-input paths, every destination-specific callback continuation, and the one-shot cutover-preparation command; structurally forbid their symbols/registration keys and standalone or multi-board live-session callers.
-Require current session/access-store/counter schemas in cutover preflight and refuse activation on missing/outdated records; runtime never synthesizes or translates them.
-There is no compatibility window: tests must pass only with the board runtime active and all removed interfaces absent.
+Switch every live product caller to board creation/opening, authenticated board
+ingress, board observation, and attachment-token-checked private harness ports.
+Delete direct public live-session prompt/control roots, generic presentation
+feeds, transcript fallbacks, callback continuations, and the complete dormant
+session catalog/access/activation subsystem in the same change set.
 
-Cutover value: the board is the only top-level interaction model; all live callers and producers use it, while sessions remain private transcript-owning consumers and cannot run independently.
+New chat creation persists =board-id= and =principal= before installing the
+main participant.  Restart loads the selected board-native session journal,
+recreates the same board id, imports durable board messages, and then attaches
+the participant.  Pre-board sessions are intentionally unsupported and absent
+from chat navigation.  Ordinary startup registers execution targets and leaves
+board admission open; explicit quiescence remains a separate runtime-control
+operation for transitions that actually require it.
+
+Chat renders bounded board =input=/=activity=/=output= observation only.
+Subagents and bundled producers use explicit board operations.  Persistence
+and UI work retain their asynchronous/bounded ownership.  Structural guards
+reject the removed interfaces, and product E2E covers fresh creation plus
+restart/resume through real board delivery.
+
+Cutover value: the board is the only top-level interaction and persisted chat
+identity model; sessions remain private transcript-owning consumers and cannot
+run independently.
 
 ** Slice 6 -- Post-cutover measurement and tuning
 
@@ -1684,11 +1649,11 @@ Board identity, registry, and top-level interaction level:
 
 - identity :: trusted principal identifiers and generated client/board/participant ids occupy distinct namespaces, a board id is never a session alias, collision injection is rejected, a post-cutover schema-unchanged reload preserves live ids, and absent historical ids fail instead of resolving to new state.
 - namespace :: equal session ids under distinct store ids remain distinct, multiple harness views over one store/session resolve to one stable attachment key, participant ids survive authorized quiescent endpoint rebind, and duplicate active attachment across boards/generations is rejected.
-- catalog :: asynchronous paged listing of configured dormant stores invokes no harness factory and returns before a held fake store responds; duplicate registrations with identical catalog/access-store identity yield one session row with every eligible instance, conflicting same-store registrations fail, and any configured instance/store missing required ports or any row missing a current access record/counters fails global board-runtime activation so no partial catalog becomes live; direct resume with a hidden/stale session, wrong store/version, denied principal, active session, or ineligible instance fails before any factory/grant/attachment, while an authorized current-schema resume invokes only the named eligible instance before a later bounded atomic attachment and performs no write-on-read upgrade.
+- board session index :: checkpoints retain =board-id= and =principal= without an ACL/dormant row; shell candidates include only board-native root sessions; fresh creation persists identity before attachment; a process-local reset reloads the exact journal, reconstructs the same board id, and completes input/output delivery without write-on-read migration.
 - catalog access :: the narrow access-store port performs versioned create/grant/revoke/transfer without activating a harness or exposing transcript mutation; durable controller/discover/resume ACLs survive board removal/restart, ownership transfer is allowed only while dormant, and the former controller loses implicit catalog rights without rewriting expired or unrelated board-local grants.
 - atomicity :: a board may publish with an owner principal and no session; every session create/resume/fork/subagent operation publishes participant membership, attachment token, and live endpoint together or exposes neither.
 - invariant :: loading history stays dormant; every live session has exactly one active attachment; logical envelopes record board/participant but no endpoint generation, while each physical attempt and accepted inbox/turn/action/tool/work projection records the composite generation; detach/move cannot lose queued input, rewrite history, or leave a promptable unbound session.
-- chat boundary :: structural tests forbid =e-chat= from =e-actions-call=, retaining/subscribing to a harness endpoint, reading transcript/session activity/active-turn state, or direct session prompting; authenticated host APIs attach a client/principal, open a board, default input and the observer selector to tag =main=, optionally address/observe explicit participants or tags, preserve dormant-session discovery/resume plus selected-participant controls, and render only matched board messages.
+- chat boundary :: structural tests forbid =e-chat= from =e-actions-call=, retaining/subscribing to a harness endpoint, reading transcript/session activity/active-turn state, or direct session prompting; authenticated host APIs attach a client/principal, create or restore a persisted board, default input and the observer selector to tag =main=, optionally address/observe explicit participants or tags, and render only matched board messages.
 - board activity :: every visible provider wait/stream transition, timed =Thinking=/=Thought= boundary, board-safe reasoning update, tool start/progress/finish, action start/finish/fail, turn failure/cancellation, and navigable =turn-summary= has one board message/source identity/sequence; raw reasoning/transcript/final-answer deltas are absent, final text appears only once as =output=, and spinner ticks remain local.
 - non-consuming observation :: two clients matching the same activity/summary both render it; read-through changes only their own cursors and creates no activation/effect/pickup/wake/routedness/consumption or new board record; =create-pickup= rejects every non-=input= kind even when it carries =main=.
 - main and extension :: the default observer sees tagged chat-to-=main= input plus every causally tag-inheriting activity/summary/output and excludes unrelated subagent traffic; widening it by explicit =start-seq= plus tag/author/subject/to includes the subagent stream without a new transport, overlapping redelivery reuses the rendered =message-id= index instead of duplicating main records, and hidden board sequences are filter gaps rather than loss.
@@ -1746,11 +1711,11 @@ Target and invocation level:
 Then a scripted end-to-end scenario: chat opens a board whose first participant subscribes to =main=, posts one tagged input, and the participant runs two long work packages with a first-terminal continuation; its exact invocation result, tagged follow-up, late second completion, and final output all traverse the declared bus paths.
 Run once with one =main= subscriber, once with two =main= subscribers to prove broadcast/deduplication, and once with an explicitly addressed participant.
 During the =main=-tagged runs, prove =Thinking=, live reasoning/tool progress, terminal =Turn took ...= summary, and final answer traverse tagged board messages in one sequence: activity/summary are =activity=, final text appears once as =output=, all inherit =main=, and only local spinner ticks/render state stay off-board.
-Hold the scheduled classifier before it invokes a cheap counted predicate, plus deferred carrier-shaper/cancel/cleanup hooks, bulk cancellation, catalog/store, delivery, and observer/UI continuations in turn while a separately scheduled heartbeat and ordinary composer edit run between drain pages; release them and prove exact sequence/cursor settlement without duplicate hook side effects, cancellation, routing, output, or repaint.
+Hold the scheduled classifier before it invokes a cheap counted predicate, plus deferred carrier-shaper/cancel/cleanup hooks, bulk cancellation, session-writer checkpoints, delivery, and observer/UI continuations in turn while a separately scheduled heartbeat and ordinary composer edit run between drain pages; release them and prove exact sequence/cursor settlement without duplicate hook side effects, cancellation, routing, output, or repaint.
 In the exact-address run, install author/subject/=to= observer clauses before posting and prove visibility without requiring the descriptive =main= tag.
 Add one subagent-tagged activity stream: the default chat observer excludes it, widening the selector includes/replays it without duplicating =main=, and interleaved records keep board ordering plus independent turn correlation.
 Prove that chat used no standalone-session path, implicit root selection, harness/session presentation feed, or transcript fallback; exact tool pairing added no redundant tag input, zero generic matches did not autospawn, every causal edge is inspectable, late work remained visible, activity/output observation created no pickup/wake/consumption/implicit feedback, one explicit matching =post-input= continuation created exactly one causally linked input without recursive drain, and no rendering =e-ui-work= was enrolled.
-Resume one offline-prepared dormant session and prove its earlier transcript remains available only as private session/model context, contributes no board message or chat row, and only new board-bound input/activity/output enters the observer sequence.
+Create one board-native session, reset every process-local registry/binding, resume the same persisted board id, and prove only board-bound input/activity/output enters the observer sequence.
 Exercise every bundled cron/file/annotation/domain/task/subagent producer or its explicit disabled-state check so the cutover cannot leave an off-board live producer hidden behind an untested caller.
 That question is behavioral and unit tests will not settle it.
 
@@ -1763,7 +1728,7 @@ The first-version choices are normative and leave no architectural question bloc
 - Chat's default observer selector matches =main=; each participant activity snapshots the turn's current monotonic routing-tag accumulator and terminal summary/output use its final value, while subagent/other views widen the same selector explicitly.
 - =await= defaults omitted =mode= to =all= and omitted =timeout= to 120 seconds; explicit mode is only =all=/=any=, explicit timeout is finite and positive through the 900-second maximum, and invalid values fail rather than clamp/coerce.
 - After the full-restart cutover, a schema-unchanged reload retains each installed demonstrably-cheap trusted predicate closure until explicit replacement or cancellation; there is no registry, version protocol, or automatic conversion, historical matches remain frozen, and the closure is invoked only by a scheduled classifier outside append/settlement.
-- Non-blocking means no synchronous wait and no unbounded main-loop occupancy: bounded serialized commits and explicitly hard-bounded hook work may finish inline, while variable carrier shaping/cancel/cleanup/general hooks, bulk abort, routing fan-out, effects, delivery, observers, persistence/catalog work, checkpoint/replay, controls, and UI pages yield through the declared asynchronous/cooperative schedulers.
+- Non-blocking means no synchronous wait and no unbounded main-loop occupancy: bounded serialized commits and explicitly hard-bounded hook work may finish inline, while variable carrier shaping/cancel/cleanup/general hooks, bulk abort, routing fan-out, effects, delivery, observers, persistence/index work, checkpoint/replay, controls, and UI pages yield through the declared asynchronous/cooperative schedulers.
 - Fork requires an explicit transcript-entry =:at=.
 - Newly unobserved terminal work remains in board current state and produces one warning when the board next becomes idle; it never becomes synthetic participant input.
 - Every resource and scheduling limit is explicit configuration with conservative deterministic-test defaults, including record/byte/work-unit drain and page limits; Slice 6 tunes production values from measurements.
@@ -1781,7 +1746,7 @@ The following are explicitly deferred and do not block this plan:
 2. *Final direction?*  The board is the only top-level live interaction context and live routing/observation substrate: chat/producers post there, observer subscriptions read without consuming, orchestration subscriptions correlate or discover consumers, sessions pick up only matched input, =e-work= settles execution, and participant activity/summaries/outputs return to the board.
 3. *Likely to change vs stable?*  Principal/client/board/participant/work/message/subscription identity, exactly-one-board attachment, exact-vs-generic cardinality, input-only pickup, non-consuming observation, effect settlement, board ownership, receipts, and cursor semantics are stable.
    Tag conventions, predicate closures, budget values, retention limits, batch size, and readiness defaults remain local and reversible.
-4. *Owning component?*  Application services own local business sequencing; board core owns messages/facts including activity, selectors, observer/orchestration subscriptions, open-activity/readiness/activation/effect/causal/pickup reducers; registry owns board identity/authorization, clients/cursors, attachments, lifecycle, and cross-generation delivery state; session stores own durable dormant-session access records and internal activity; board runtime owns composition/effect/delivery plus normalized activity-publication adapters; harness owns concrete inbox receipts, transcripts, turns, and raw live activity; chat owns only the board-message activity reducer and buffer-local view state; domain services keep domain policy.
+4. *Owning component?*  Application services own local business sequencing; board core owns messages/facts including activity, selectors, observer/orchestration subscriptions, open-activity/readiness/activation/effect/causal/pickup reducers; registry owns process-local board identity/authorization, clients/cursors, attachments, lifecycle, and cross-generation delivery state; session stores own durable board identity, board messages, transcripts, and internal activity; board runtime owns composition/effect/delivery plus normalized activity-publication adapters; harness owns concrete inbox receipts, turns, and raw live activity; chat owns only the board-message activity reducer and buffer-local view state; domain services keep domain policy.
 5. *Coupling?*  =e-work= gains no board dependency.
    Posters depend on board data contracts rather than concrete consumers; exact selectors retain intentional identity coupling only where correlation/addressing requires it; chat observes by tags/conditions without producers naming it, and observation cannot call back into routing or settlement.
 6. *Dependency direction?*  Stable lifecycle and board contracts do not depend on tools, shells, task queue, subagents, or provider adapters.

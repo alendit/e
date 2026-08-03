@@ -1,74 +1,15 @@
-#+title: Work bus offline session preparation
+#+title: Retired cutover preparation design
+#+startup: overview
 
 * Status
 
-Historical Slice 4 contract.  The temporary command and its tests were removed
-at the Slice 5 source cut, as required by =plan.org=.  It was not run against
-user data during repository implementation.  The board-only runtime accepts
-only current-schema stores and fails preflight visibly rather than retaining a
-migration or lazy-write path.
+Retired on 2026-08-03.
 
-* Preconditions
+The proposed offline session preparation and compatibility lifecycle were not
+part of the final board framework.  No preparation command, schema conversion,
+discovery service, or migration path is supported.
 
-- Stop every Emacs, writer process, or other service that can mutate the target
-  session store.  The command's lock prevents two preparations from racing but
-  cannot make an unaware live writer respect the offline boundary.
-- Keep the store and its generated work directory on the same filesystem so
-  the final directory rename is a local atomic namespace operation.
-- Choose a new snapshot path outside the store and provision enough space for
-  both the snapshot and prepared working copy.
-- Supply one trusted, explicit policy for every stored session.  Do not infer a
-  controller or ACL from transcript authorship or old runtime state.
-
-* Invocation
-
-The retired command was invoked directly through Node from a non-interactive
-process:
-
-#+begin_src sh
-node lisp/core/e-session-cutover-prepare.mjs \
-  --store /absolute/path/to/session-store \
-  --manifest /absolute/path/to/trusted-manifest.json \
-  --snapshot /absolute/path/to/new-restorable-snapshot
-#+end_src
-
-The source path no longer exists.  This invocation is retained only as the
-audited historical preparation contract; it is not an available command.
-
-* Manifest
-
-The manifest schema is exact and currently versioned as =1=:
-
-#+begin_src json
-{
-  "schema-version": 1,
-  "session-store-id": "primary-session-store",
-  "sessions": [
-    {
-      "session-id": "01EXAMPLESESSION",
-      "controller": "principal:owner",
-      "discover-principals": ["principal:reader"],
-      "resume-principals": ["principal:runner"]
-    }
-  ]
-}
-#+end_src
-
-Session ids must cover the journal set exactly.  Duplicate policies,
-principals, malformed journals, missing roots, extra policies, or any existing
-=board-session-state= record fail preparation before snapshot creation.
-
-* Commit and recovery
-
-After complete validation, the command copies the untouched store to the
-snapshot, builds a prepared sibling tree, appends one current
-=board-session-state= record per journal, and rebuilds =index.json= with dormant
-state, access record, and both publication high-watermarks.  It derives the
-high-watermarks from all existing journal records so post-cutover publication
-cannot reuse an old sequence.
-
-Only a fully verified working tree replaces the store path.  If the final
-replacement rename fails after the old tree is moved aside, the command restores
-the old path before returning failure.  A successful JSON result reports the
-store, snapshot, and prepared session count.  Keep the snapshot until post-
-restart catalog and resume validation have completed.
+New chat sessions persist their =board-id= and trusted =principal= before the
+main participant is attached.  A restart reconstructs that board from the
+session journal.  Sessions without board identity are intentionally absent
+from chat navigation and resume.

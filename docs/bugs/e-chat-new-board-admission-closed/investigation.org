@@ -1,0 +1,64 @@
+#+title: Investigation: e-chat-new reports board is closed after restart
+#+startup: overview
+
+* Source inspected
+
+- Interactive startup closed global board admission and launched a separate
+  persisted-session validation/activation lifecycle.
+- Harness instances exposed storage identity plus discovery, access, and
+  activation callbacks that normal chat resume did not use.
+- =e-chat-resume= already selected sessions through the harness session index,
+  loaded the exact journal, and opened it through =e-chat-service=.
+- Fresh =e-chat-new= shared the global admission state despite not reading any
+  historical session.
+
+* Conclusion
+
+The error was a symptom of an incomplete board cutover.  The retained session
+compatibility subsystem had no product shell caller, but ordinary startup ran
+it and allowed its result to disable every new board.  Treating its failure as
+a degraded mode would preserve two competing lifecycle models.
+
+The correct boundary is board-only: a chat session has durable board identity,
+and startup does not scan unrelated history.  Sessions without that identity
+are unsupported and absent from chat navigation.
+
+* Fix applied
+
+- Removed startup activation and all associated runtime state/preflight.
+- Removed harness-instance storage/discovery/access/activation fields and APIs.
+- Removed the runtime persisted-session resume endpoints and their tests.
+- Reduced durable chat identity to =(:board-id ... :principal ...)=.
+- Persisted that identity before installing a new chat participant.
+- Added board identity to the bounded session index and reconstruct the same
+  board from the journal on restart.
+- Filter chat resume/overview candidates to board-native root sessions.
+- Removed the writer's policy-query operation while keeping ordinary
+  asynchronous session-index checkpointing.
+
+* Required coverage
+
+- =e-chat-surface-e2e-test-new-chat-is-board-native= invokes =e-chat-new= and
+  checks the active board plus exact persisted state.
+- =e-session-restart-e2e-test-resumes-persisted-board-session= creates a new
+  board session, resets all process-local state, resumes the same board id, and
+  completes a prompt through board delivery.
+- =e-session-persistence-test-checkpoint-indexes-board-identity= checks the
+  board-only index shape.
+- =e-chat-test-session-candidates-include-only-board-root-sessions= proves old
+  and worker sessions are not offered for chat resume.
+- Batch compilation must contain no warnings; focused, full, and deterministic
+  E2E suites plus =git diff --check= must pass.
+
+* Verification
+
+- =rtk eldev compile=: succeeded without compiler warnings.
+- =E_E2E=1 rtk eldev -q test=: 1,978 tests, 1,953 expected results,
+  0 unexpected, and 25 existing optional/live-provider skips.
+- =git diff --check=: succeeded.
+
+* Live access
+
+The initial diagnosis used bounded read-only probes only.  No full reload was
+performed.  Repository-side validation is authoritative for this correction;
+the running Emacs remains unchanged until the user reloads or restarts it.
