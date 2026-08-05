@@ -10,3 +10,14 @@ should show the latest turn output whenever its interaction surface is entered.
 Previous attempts fixed running-turn following and workspace restoration, but
 the settled-session case still fails.  Rework the behavior around a clear
 surface contract and remove any scrolling complexity that is no longer needed.
+
+* Restart recurrence, 2026-08-05
+
+After restarting Emacs, an existing long chat still opened above its latest
+turn output.  The composer was correctly selected and the composed surface was
+not duplicated, but the transcript viewport did not follow the completed
+session load to its actual tail.
+
+Reproduce the restart ordering, reassess the previous activation fix, and keep
+an already-following viewport at the replacement projection's new output tail
+without forcing a deliberately scrolled-back viewport there.

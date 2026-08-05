@@ -2023,14 +2023,18 @@ PROMPT forces completion even when only one/default instance exists."
              (= generation e-chat--loaded-session-backfill-generation)
              e-chat-harness
              e-chat-session-id)
-    (let* ((messages (e-chat-service-messages e-chat-harness e-chat-session-id))
+    (let* ((following-output-windows
+            (e-chat--capture-output-following-windows))
+           (messages (e-chat-service-messages e-chat-harness e-chat-session-id))
            (total-count (length messages))
            (next-count (min next-count total-count))
            (composer-state (e-chat--capture-composer-state)))
       (e-chat--clear nil t)
       (let ((inhibit-read-only t))
         (e-chat--render-loaded-session-messages messages next-count))
-      (e-chat--restore-composer-state composer-state))))
+      (e-chat--restore-composer-state composer-state)
+      (e-chat--restore-output-following-windows
+       following-output-windows))))
 
 (defun e-chat--rerender-transcript ()
   "Rebuild the attached session transcript in place, preserving the composer.
@@ -2041,11 +2045,15 @@ message's block surgically."
   (when (and e-chat-harness e-chat-session-id
              (derived-mode-p 'e-chat-mode)
              (not e-chat--preview-buffer))
-    (let ((composer-state (e-chat--capture-composer-state)))
+    (let ((composer-state (e-chat--capture-composer-state))
+          (following-output-windows
+           (e-chat--capture-output-following-windows)))
       (let ((inhibit-read-only t))
         (e-chat--clear nil t)
         (e-chat--render-session))
-      (e-chat--restore-composer-state composer-state))))
+      (e-chat--restore-composer-state composer-state)
+      (e-chat--restore-output-following-windows
+       following-output-windows))))
 
 (defun e-chat--render-loaded-session-initial ()
   "Render the initial view for the attached loaded session."
@@ -2727,11 +2735,11 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
   (when (and (derived-mode-p 'e-chat-mode)
              (not (e-chat--surface-composer-p))
              (eq (window-buffer (selected-window)) (current-buffer)))
-    (when-let ((bounds (e-chat--running-status-bounds)))
-      (e-chat--set-window-output-follow-state
-       (selected-window)
-       (e-chat--window-reaches-output-p (selected-window)
-                                         (e-chat--output-follow-position))))))
+    (e-chat--set-window-output-follow-state
+     (selected-window)
+     (let ((tail (e-chat--output-follow-position)))
+       (and (e-chat--window-reaches-output-p (selected-window) tail)
+            (>= (window-point (selected-window)) tail))))))
 
 (defun e-chat--post-command ()
   "Maintain composer and transcript viewport invariants after commands."
@@ -5517,6 +5525,21 @@ live output, and a user reading older output must retain that scrollback."
       (set-window-point window position)
       (set-window-start window start)
       (e-chat--set-window-output-follow-state window t))))
+
+(defun e-chat--capture-output-following-windows ()
+  "Return visible transcript windows whose viewport follows current output."
+  (let ((tail (e-chat--output-follow-position))
+        (bounds (e-chat--running-status-bounds)))
+    (cl-remove-if-not
+     (lambda (window)
+       (e-chat--window-follows-output-p window tail bounds))
+     (e-chat--transcript-windows))))
+
+(defun e-chat--restore-output-following-windows (windows)
+  "Move still-live transcript WINDOWS to the current output tail."
+  (let ((tail (e-chat--output-follow-position)))
+    (dolist (window windows)
+      (e-chat--follow-output-window window tail))))
 
 (defun e-chat--capture-running-status-display-state ()
   "Capture each transcript viewport before an active-status redraw.
@@ -8575,7 +8598,9 @@ When SESSION-ID is nil, create a private execution session for the participant."
       (e-chat--ensure-session harness session-id instance-id)
       (setq binding (e-chat-service-ensure-binding harness session-id)))
   (with-current-buffer buffer
-    (let* ((same-session
+    (let* ((following-output-windows
+            (e-chat--capture-output-following-windows))
+           (same-session
             (and (eq e-chat-harness harness)
                  (equal e-chat-session-id session-id)
                  (eq e-chat-harness-instance-id instance-id)))
@@ -8657,7 +8682,9 @@ When SESSION-ID is nil, create a private execution session for the participant."
       (when (e-chat--surface-transcript-p)
         (setq-local buffer-read-only t))
       (unless unloaded-session
-        (e-chat--subscribe harness buffer session-id))))
+        (e-chat--subscribe harness buffer session-id))
+      (e-chat--restore-output-following-windows
+       following-output-windows)))
     buffer))
 
 (defun e-chat-reload-buffers ()

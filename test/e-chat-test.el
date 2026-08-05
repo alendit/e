@@ -1715,6 +1715,108 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-loaded-session-reprojection-restores-following-tail ()
+  "Async session replay keeps an activated transcript at its new output tail."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "loaded history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-loaded-following-tail"))
+         transcript-window
+         composer-window
+         loading-tail)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (let ((store (e-chat-service-session-store e-chat-harness)))
+              (e-session-append-message
+               store e-chat-session-id
+               '(:id "msg-1" :role user :content "loaded question"))
+              (e-session-append-message
+               store e-chat-session-id
+               `(:id "msg-2" :role assistant :content ,history))
+              (e-chat-test--seed-board-log-from-private-fixture
+               e-chat-harness e-chat-session-id))
+            ;; Restart first displays and activates a short loading projection.
+            (let ((inhibit-read-only t))
+              (e-chat--clear t)
+              (e-chat--render-session-loading
+               '(:summary "loaded question")))
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (e-chat--after-display-buffer buffer)
+            (when (e-work-handle-p e-chat--surface-activation-handle)
+              ;; The real asynchronous load completes after this activation
+              ;; callback has already settled.
+              (e-ui-work-cancel e-chat--surface-activation-handle)
+              (setq e-chat--surface-activation-handle nil))
+            (setq loading-tail (point-max))
+            (should (= (window-point transcript-window) loading-tail))
+            (should (plist-get
+                     (e-chat--window-output-follow-state transcript-window)
+                     :follow))
+            ;; Load completion clears that projection and inserts the actual
+            ;; transcript without crossing another display/focus boundary.
+            (e-chat--attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id)
+            (should (> (point-max) loading-tail))
+            (should (= (window-point transcript-window) (point-max)))
+            (should (>= (window-end transcript-window t) (point-max)))
+            (should (eq (selected-window) composer-window))))
+      (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-settled-navigation-clears-output-follow-intent ()
+  "Navigating settled scrollback prevents later projection work from tailing."
+  (let* ((e-chat--surface-composition-enabled t)
+         (history (mapconcat (lambda (number)
+                               (format "settled history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-settled-follow-intent"))
+         transcript-window
+         composer-window)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (e-chat--show-latest-output transcript-window)
+            (should (plist-get
+                     (e-chat--window-output-follow-state transcript-window)
+                     :follow))
+            (let ((e-chat--surface-activation-in-progress t))
+              (select-window transcript-window)
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              (goto-char (point-min))
+              (redisplay t)
+              (should (eq (selected-window) transcript-window))
+              (should (= (window-point transcript-window) (point-min)))
+              (e-chat--post-command))
+            (should-not
+             (plist-get
+              (e-chat--window-output-follow-state transcript-window)
+              :follow))))
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
   "Chat buffers declare a non-normal Evil state when Evil is available."
   (let (configured)
