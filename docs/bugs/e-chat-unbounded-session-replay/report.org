@@ -1,0 +1,9 @@
+#+title: e-chat Reconstructs Too Much Session History
+#+startup: overview
+
+* Report
+
+Reopening a persisted session can make the chat window expensive to construct.
+The presentation does not need to reconstruct every retained message and
+activity record.  Keep replay bounded to a recent, useful view while leaving
+durable session and board history unchanged.

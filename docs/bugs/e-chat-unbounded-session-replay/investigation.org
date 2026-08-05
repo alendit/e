@@ -1,0 +1,112 @@
+#+title: e-chat Bounded Session Replay Investigation
+#+startup: overview
+
+* Reproduction and evidence
+
+A bounded read-only probe of the selected restarted chat reported:
+
+- 8 board-derived messages;
+- 248 board-derived activity events;
+- 89 rendered blocks and 29578 buffer characters;
+- the configured initial message limit at 200.
+
+The message count alone therefore did not explain replay cost.  One recent
+message turn could reconstruct most of the retained activity projection.
+
+Two focused regressions captured the unbounded presentation behavior:
+
+1. A five-message loaded session initially rendered a two-message tail, but
+   draining deferred work removed the omitted-history marker and rebuilt all
+   five messages.
+2. A single turn with ten tool calls reconstructed all ten even when the test
+   declared a five-event replay budget.
+
+Both failed before the bounded implementation.
+
+* Source findings
+
+- =e-chat-service= already owns a hard-capped 256-event board-derived
+  presentation projection.  Private transcript state is not a chat replay
+  source.
+- =e-chat= initially rendered up to 200 messages, then scheduled progressively
+  larger full-buffer rerenders until every retained message was visible.
+- Every =e-chat--render-session= call also read the complete retained activity
+  projection.  It repeatedly scanned that list while reconstructing each
+  assistant turn, even when the caller supplied a small message tail.
+- =e-chat--rerender-transcript= and session rename bypassed the initial-message
+  bound and reconstructed the full retained projection again.
+- The asynchronous persistent-session loader remains necessary to restore
+  durable harness state for continuation.  This change bounds only the chat
+  presentation assembled after loading; it does not weaken session durability
+  or model context.
+
+* Design
+
+The chat shell now owns two explicit positive presentation limits:
+
+- =e-chat-session-replay-message-limit= defaults to 40 recent messages;
+- =e-chat-session-replay-activity-event-limit= defaults to 64 recent activity
+  events.
+
+Replay first selects the bounded message tail.  It then keeps activity only for
+turn ids represented by those messages plus a currently active turn, and takes
+the newest configured activity-event tail.  The omitted-history marker remains
+visible for the lifetime of that view.
+
+Open, asynchronous-load completion, full transcript rerender, and session
+rename all use the same bounded replay function.  Live board events continue to
+append incrementally and are not constrained by replay limits.
+
+The progressive loaded-session backfill path was removed completely, including
+its timers, work jobs, generation and handle state, cancellation hook,
+chunk/delay settings, and render-work budget.  No replacement scheduler or
+cache was added.
+
+* Validation
+
+- Focused bounded replay, activity, active-progress, summary, async-load,
+  picker-preview, rerender, viewport, rename, composer-preservation, and
+  tool-activity suite: 14 passed, 0 unexpected.
+- Broad chat suite excluding the pre-existing fixed-timeout async index-load
+  test: 326 passed, 0 unexpected, 1 optional Markdown-rendering skip.
+- =eldev compile -W lisp/shells/chat/e-chat.el= and =git diff --check=
+  passed.
+- Running Emacs was inspected only through bounded scalar probes and was not
+  reloaded or changed.
+
+* Design self-check
+
+1. The package removes expensive work immediately and leaves a useful recent
+   transcript view, so it is valuable if work stops here.
+2. It moves chat toward a bounded presentation over durable session state.
+3. Exact default limits may change and remain local user options.  The stable
+   decision is that replay is finite and does not backfill implicitly.
+4. =e-chat= presentation owns visible replay selection; session and board
+   components retain durable lifecycle and bounded source projections.
+5. Coupling is reduced by removing a scheduler lifecycle and making every full
+   reconstruction use the same narrow replay policy.
+6. No harness, board, session, backend, or persistence dependency points toward
+   chat presentation.
+7. Rendering remains a shell side effect; durable loading and board observation
+   are unchanged.
+8. Two positive configuration values replace three scheduler settings and
+   three buffer-local backfill fields.  Replay selection itself is local,
+   synchronous, and rebuildable.
+9. Reconstruction is bounded by 40 messages and 64 relevant activity events by
+   default.  Repeated message/activity scanning is therefore bounded too, and
+   all background full-buffer backfills are removed.
+10. Message and activity limits are real independent dimensions: one turn can
+    contain many activities, as the live probe demonstrated.
+11. Persisted sessions and board projections remain compatible.  Obsolete
+    presentation backfill APIs and settings were removed rather than retained
+    behind fallback paths.
+12. Removed legacy code includes the backfill scheduler, callback, count
+    planning, cancellation, handle/generation/render-count state, and unused
+    render-work budget.
+13. Invalid non-positive limits surface as user configuration errors, and
+    unexpected board projection errors remain visible rather than being
+    treated as an empty replay.  Synthetic non-board picker previews explicitly
+    skip active-turn lookup.
+14. Tests independently prove the message tail remains bounded after deferred
+    work drains and rerender, activity reconstruction obeys its separate cap,
+    replay summaries still work, and viewport policy remains intact.

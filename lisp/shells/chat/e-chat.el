@@ -93,28 +93,20 @@
   :type 'integer
   :group 'e-chat)
 
-(defcustom e-chat-initial-session-render-message-limit 200
-  "Maximum number of transcript messages rendered when opening a loaded session.
-When a loaded transcript has more messages, the chat buffer renders an omitted
-history marker and the newest messages first.  Unloaded indexed sessions still
-use the asynchronous transcript loader."
-  :type '(choice (const :tag "Render all loaded messages" nil)
-                 integer)
+(defcustom e-chat-session-replay-message-limit 40
+  "Maximum recent transcript messages reconstructed in a chat buffer.
+Older durable messages remain available to the harness but are omitted from
+the presentation replay.  Unloaded indexed sessions still use the asynchronous
+session loader before this bounded view is rendered."
+  :type '(integer 1)
   :group 'e-chat)
 
-(defcustom e-chat-loaded-session-backfill-chunk-size 200
-  "Number of additional loaded transcript messages rendered per backfill tick."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-loaded-session-backfill-delay 0.02
-  "Seconds to wait before each loaded transcript backfill tick."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-render-work-item-budget 1
-  "Default maximum render work items processed in one scheduler tick."
-  :type 'integer
+(defcustom e-chat-session-replay-activity-event-limit 64
+  "Maximum recent activity events reconstructed in a chat buffer.
+Replay first restricts activity to turns represented by the bounded message
+tail plus any currently active turn, then retains at most this many newest
+events.  Durable board history is not changed."
+  :type '(integer 1)
   :group 'e-chat)
 
 (defcustom e-chat-ui-work-diagnostics nil
@@ -951,15 +943,6 @@ single rendered message without replaying the transcript.")
 (defvar-local e-chat--session-load-generation 0
   "Generation token for async transcript load callbacks.")
 
-(defvar-local e-chat--loaded-session-backfill-handle nil
-  "UI work handle rendering older messages for an already loaded session.")
-
-(defvar-local e-chat--loaded-session-backfill-generation 0
-  "Generation token for stale loaded-session backfill callbacks.")
-
-(defvar-local e-chat--loaded-session-rendered-message-count nil
-  "Number of loaded transcript messages currently rendered in this buffer.")
-
 (defvar-local e-chat--composer-restore-inhibited nil
   "Non-nil when transient chat rendering should not recreate a composer.")
 
@@ -1430,7 +1413,6 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-project-file-candidate-refresh nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-session-load-request nil t)
-  (add-hook 'kill-buffer-hook #'e-chat--cancel-loaded-session-backfill nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-pending-markdown-presentation nil t)
   (add-hook 'kill-buffer-hook
@@ -1917,15 +1899,6 @@ PROMPT forces completion even when only one/default instance exists."
                       (list :reason 'chat-buffer-cancelled))
     (setq e-chat--session-load-request nil)))
 
-(defun e-chat--cancel-loaded-session-backfill ()
-  "Cancel any pending loaded-session transcript backfill."
-  (setq e-chat--loaded-session-backfill-generation
-        (1+ e-chat--loaded-session-backfill-generation))
-  (when (e-work-handle-p e-chat--loaded-session-backfill-handle)
-    (e-ui-work-cancel e-chat--loaded-session-backfill-handle))
-  (setq e-chat--loaded-session-backfill-handle nil)
-  (setq e-chat--loaded-session-rendered-message-count nil))
-
 (defun e-chat--render-session-loading (session)
   "Render cheap loading state for unloaded indexed SESSION."
   (when-let ((summary (plist-get session :summary)))
@@ -1935,106 +1908,37 @@ PROMPT forces completion even when only one/default instance exists."
    (format "%s Loading transcript...\n\n" e-chat--system-glyph)
    'e-chat-activity-face))
 
-(defun e-chat--loaded-session-initial-count (messages)
-  "Return the initial loaded transcript render count for MESSAGES."
-  (let ((count (length messages)))
-    (if (and (integerp e-chat-initial-session-render-message-limit)
-             (> e-chat-initial-session-render-message-limit 0)
-             (> count e-chat-initial-session-render-message-limit))
-        e-chat-initial-session-render-message-limit
-      count)))
+(defun e-chat--validated-replay-limit (value option)
+  "Return positive integer VALUE or report invalid replay OPTION."
+  (unless (and (integerp value) (> value 0))
+    (user-error "%s must be a positive integer" option))
+  value)
 
-(defun e-chat--loaded-session-next-backfill-count (current-count total-count)
-  "Return the next loaded-session backfill count after CURRENT-COUNT."
-  (let ((chunk (if (and (integerp e-chat-loaded-session-backfill-chunk-size)
-                        (> e-chat-loaded-session-backfill-chunk-size 0))
-                   e-chat-loaded-session-backfill-chunk-size
-                total-count)))
-    (min total-count (+ current-count chunk))))
+(defun e-chat--session-replay-message-count (messages)
+  "Return the bounded number of recent MESSAGES to reconstruct."
+  (min (length messages)
+       (e-chat--validated-replay-limit
+        e-chat-session-replay-message-limit
+        'e-chat-session-replay-message-limit)))
 
-(defun e-chat--loaded-session-backfill-counts (rendered-count total-count)
-  "Return queued loaded-session backfill counts from RENDERED-COUNT."
-  (let ((counts nil)
-        (current-count rendered-count))
-    (while (< current-count total-count)
-      (setq current-count
-            (e-chat--loaded-session-next-backfill-count
-             current-count
-             total-count))
-      (push current-count counts))
-    (nreverse counts)))
-
-(defun e-chat--render-loaded-session-messages (messages rendered-count)
-  "Render newest RENDERED-COUNT loaded transcript MESSAGES."
+(defun e-chat--render-session-replay (messages)
+  "Render the bounded recent replay of loaded transcript MESSAGES.
+The caller owns composer removal and restoration."
   (let* ((total-count (length messages))
+         (rendered-count (e-chat--session-replay-message-count messages))
          (omitted (max 0 (- total-count rendered-count)))
          (tail (if (> rendered-count 0)
                    (e-chat--tail-messages messages rendered-count)
-                 nil))
-         (composer-state (e-chat--capture-composer-state)))
-    (e-chat--delete-composer)
-    (setq e-chat--loaded-session-rendered-message-count rendered-count)
+                 nil)))
     (when (> omitted 0)
       (e-chat--insert-protected
-       (format "%s %d earlier transcript message%s omitted from initial render.\n\n"
+       (format "%s %d earlier transcript message%s omitted from this view.\n\n"
                e-chat--system-glyph
                omitted
                (if (= omitted 1) "" "s"))
        'e-chat-activity-face))
     (when tail
-      (e-chat--render-session tail))
-    (e-chat--restore-composer-state composer-state)))
-
-(defun e-chat--schedule-loaded-session-backfill (rendered-count total-count)
-  "Schedule a loaded-session transcript backfill from RENDERED-COUNT."
-  (when (< rendered-count total-count)
-    (let ((generation (1+ e-chat--loaded-session-backfill-generation)))
-      (setq e-chat--loaded-session-backfill-generation generation)
-      (setq e-chat--loaded-session-backfill-handle
-            (e-ui-work-schedule-chunks
-             (current-buffer)
-             (e-chat--loaded-session-backfill-counts
-              rendered-count
-              total-count)
-             (lambda (next-count)
-               (e-chat--loaded-session-backfill generation next-count))
-             :id "chat_loaded_session_backfill"
-             :description "Render older loaded chat transcript messages."
-             :owner 'loaded-session-backfill
-             :key e-chat-session-id
-             :generation generation
-             :delay e-chat-loaded-session-backfill-delay
-             :budget e-chat-render-work-item-budget
-             :coalesce t
-             :focus-policy 'preserve
-             :reentrancy-policy 'defer
-             :on-schedule
-             (lambda (handle)
-               (setq e-chat--loaded-session-backfill-handle handle)
-               (e-chat--refresh-ui-work-diagnostics))
-             :on-finish
-             (lambda ()
-               (setq e-chat--loaded-session-backfill-handle nil)
-               (e-chat--refresh-ui-work-diagnostics)))))))
-
-(defun e-chat--loaded-session-backfill (generation next-count)
-  "Render loaded-session transcript through NEXT-COUNT for GENERATION."
-  (when (and (derived-mode-p 'e-chat-mode)
-             (= generation e-chat--loaded-session-backfill-generation)
-             e-chat-harness
-             e-chat-session-id)
-    (let* ((output-tail-windows
-            (e-chat--capture-output-tail-windows))
-           (messages (e-chat-service-messages e-chat-harness e-chat-session-id))
-           (total-count (length messages))
-           (next-count (min next-count total-count))
-           (composer-state (e-chat--capture-composer-state)))
-      (e-chat--clear nil t)
-      (let ((inhibit-read-only t))
-        (e-chat--render-loaded-session-messages messages next-count))
-      (e-chat--restore-composer-state composer-state)
-      (e-chat--restore-output-tail-windows
-       output-tail-windows))))
+      (e-chat--render-session tail))))
 
 (defun e-chat--rerender-transcript ()
   "Rebuild the attached session transcript in place, preserving the composer.
@@ -2047,23 +1951,15 @@ message's block surgically."
              (not e-chat--preview-buffer))
     (let ((composer-state (e-chat--capture-composer-state))
           (output-tail-windows
-           (e-chat--capture-output-tail-windows)))
+           (e-chat--capture-output-tail-windows))
+          (messages
+           (e-chat-service-messages e-chat-harness e-chat-session-id)))
       (let ((inhibit-read-only t))
-        (e-chat--clear nil t)
-        (e-chat--render-session))
+        (e-chat--clear t)
+        (e-chat--render-session-replay messages))
       (e-chat--restore-composer-state composer-state)
       (e-chat--restore-output-tail-windows
        output-tail-windows))))
-
-(defun e-chat--render-loaded-session-initial ()
-  "Render the initial view for the attached loaded session."
-  (e-chat--cancel-loaded-session-backfill)
-  (let ((inhibit-read-only t))
-    (let* ((messages (e-chat-service-messages e-chat-harness e-chat-session-id))
-           (total-count (length messages))
-           (rendered-count (e-chat--loaded-session-initial-count messages)))
-      (e-chat--render-loaded-session-messages messages rendered-count)
-      (e-chat--schedule-loaded-session-backfill rendered-count total-count))))
 
 (defun e-chat--session-load-current-p
     (request generation harness session-id instance-id)
@@ -7625,14 +7521,10 @@ signal; route the display to a normal window in that case."
         (format "%s\n%s\n\n" e-chat--title title)
       (concat e-chat--title "\n\n"))))
 
-(defun e-chat--clear (&optional omit-composer keep-loaded-session-backfill)
+(defun e-chat--clear (&optional omit-composer)
   "Clear and initialize the current chat buffer.
-When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only.
-When KEEP-LOADED-SESSION-BACKFILL is non-nil, preserve the current
-loaded-session backfill generation while rebuilding the transcript."
+When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
   (e-chat--cancel-pending-command-references)
-  (unless keep-loaded-session-backfill
-    (e-chat--cancel-loaded-session-backfill))
   (let ((inhibit-read-only t))
     (e-chat--cancel-pending-markdown-presentation)
     (erase-buffer)
@@ -8249,6 +8141,37 @@ separate dimmed representation instead."
       (nthcdr (- (length messages) limit) messages)
     messages))
 
+(defun e-chat--session-replay-turn-ids (messages)
+  "Return presentation turn ids needed by replayed MESSAGES and active work."
+  (let (turn-ids)
+    (dolist (message messages)
+      (when-let ((turn-id (plist-get message :turn-id)))
+        (cl-pushnew turn-id turn-ids :test #'equal)))
+    (when (e-chat-service-board-session-p
+           e-chat-harness e-chat-session-id)
+      (when-let ((active-turn
+                  (e-chat-service-active-turn
+                   e-chat-harness e-chat-session-id)))
+        (when-let ((turn-id (plist-get active-turn :id)))
+          (cl-pushnew turn-id turn-ids :test #'equal))))
+    turn-ids))
+
+(defun e-chat--session-replay-activity-events (messages)
+  "Return bounded activity events relevant to replayed MESSAGES."
+  (let* ((limit
+          (e-chat--validated-replay-limit
+           e-chat-session-replay-activity-event-limit
+           'e-chat-session-replay-activity-event-limit))
+         (turn-ids (e-chat--session-replay-turn-ids messages))
+         (events
+          (and turn-ids
+               (cl-remove-if-not
+                (lambda (event)
+                  (member (plist-get event :turn-id) turn-ids))
+                (e-chat-service-activity-events
+                 e-chat-harness e-chat-session-id)))))
+    (e-chat--tail-messages events limit)))
+
 (defun e-chat--terminal-activity-event (turn-id activity-events)
   "Return TURN-ID's terminal failure activity event, or nil."
   (cl-find-if
@@ -8307,19 +8230,23 @@ separate dimmed representation instead."
                  (not (e-chat--stale-progress-turn-p turn-id)))
         (e-chat--render-turn-activity-events turn-id activity-events)))))
 
-(defun e-chat--render-session (&optional messages)
+(cl-defun e-chat--render-session (&optional (messages nil messages-supplied-p))
   "Render the attached session transcript in the current buffer.
-When MESSAGES is non-nil, render that message list instead of the
+When MESSAGES is supplied, render that message list instead of the
 attached session's full transcript."
-  (let ((messages (or messages
-                      (e-chat-service-messages e-chat-harness e-chat-session-id)))
-        (turn-index 0)
-        (activity-events (ignore-errors
-                           (e-chat-service-activity-events
-                            e-chat-harness
-                            e-chat-session-id)))
-        turn-id
-        record)
+  (let* ((messages (if messages-supplied-p
+                       messages
+                     (e-chat-service-messages
+                      e-chat-harness e-chat-session-id)))
+         (turn-index 0)
+         (activity-events
+          (if messages-supplied-p
+              (e-chat--session-replay-activity-events messages)
+            (ignore-errors
+              (e-chat-service-activity-events
+               e-chat-harness e-chat-session-id))))
+         turn-id
+         record)
     (dolist (message messages)
       (when (or (plist-get message :turn-id)
                 (not turn-id)
@@ -8657,8 +8584,7 @@ When SESSION-ID is nil, create a private execution session for the participant."
           (progn
             (let ((inhibit-read-only t))
               (e-chat--clear t)
-              (e-chat--render-session-loading unloaded-session)
-              (e-chat--insert-composer))
+              (e-chat--render-session-loading unloaded-session))
             (setq e-chat--session-load-generation
                   (1+ e-chat--session-load-generation))
             (setq e-chat--session-load-request
@@ -8668,11 +8594,12 @@ When SESSION-ID is nil, create a private execution session for the participant."
                    session-id
                    instance-id
                    e-chat--session-load-generation)))
-        (e-chat--clear)
-        (e-chat--render-loaded-session-initial)
+        (let ((inhibit-read-only t))
+          (e-chat--clear t)
+          (e-chat--render-session-replay
+           (e-chat-service-messages harness session-id)))
         (e-chat--mark-buffer-session-read-if-selected buffer))
-      (when composer-state
-        (e-chat--restore-composer-state composer-state))
+      (e-chat--restore-composer-state composer-state)
       (e-chat--set-status
        (if unloaded-session "loading session" "idle")
        (not unloaded-session))
@@ -10053,8 +9980,12 @@ not open an unbounded process-wide presentation subscription."
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-session-rename e-chat-harness e-chat-session-id name)
   (e-chat--rename-buffer-for-session)
-  (e-chat--clear)
-  (e-chat--render-session)
+  (let ((composer-state (e-chat--capture-composer-state))
+        (inhibit-read-only t))
+    (e-chat--clear t)
+    (e-chat--render-session-replay
+     (e-chat-service-messages e-chat-harness e-chat-session-id))
+    (e-chat--restore-composer-state composer-state))
   (e-chat--set-status "idle" t)
   (current-buffer))
 

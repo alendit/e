@@ -10205,7 +10205,7 @@ The context-window denominator comes from the live provider lookup
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         (e-chat-initial-session-render-message-limit 2)
+         (e-chat-session-replay-message-limit 2)
          buffer)
     (unwind-protect
         (progn
@@ -10233,39 +10233,29 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-open-loaded-session-backfills-older-messages ()
-  "Loaded-session open backfills older transcript messages after initial paint."
+(ert-deftest e-chat-test-open-loaded-session-replay-remains-bounded ()
+  "Loaded-session replay never backfills omitted transcript history."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         (e-chat-initial-session-render-message-limit 2)
-         (e-chat-loaded-session-backfill-chunk-size 2)
-         (e-chat-loaded-session-backfill-delay 0.01)
+         (e-chat-session-replay-message-limit 2)
          buffer)
     (unwind-protect
         (progn
-          (e-chat-test--create-session store :id "loaded-backfill"
-                            :metadata '(:name "Loaded backfill"))
+          (e-chat-test--create-session store :id "loaded-bounded"
+                            :metadata '(:name "Loaded bounded"))
           (dolist (message
                    '((:id "msg-1" :role user :content "first prompt")
                      (:id "msg-2" :role assistant :content "first response")
                      (:id "msg-3" :role user :content "middle prompt")
                      (:id "msg-4" :role user :content "last prompt")
                      (:id "msg-5" :role assistant :content "last response")))
-            (e-session-append-message store "loaded-backfill" message))
+            (e-session-append-message store "loaded-bounded" message))
           (e-chat-test--seed-board-log-from-private-fixture
-           harness "loaded-backfill")
-          (setq buffer (e-chat-open-session harness "loaded-backfill"))
+           harness "loaded-bounded")
+          (setq buffer (e-chat-open-session harness "loaded-bounded"))
           (with-current-buffer buffer
-            (should (e-chat-test--live-work-handle-p
-                     e-chat--loaded-session-backfill-handle))
-            (let ((pending (e-chat-test--pending-ui-work
-                            'loaded-session-backfill
-                            "loaded-backfill")))
-              (should (= (length pending) 1))
-              (should (eq (plist-get (car pending) :handle)
-                          e-chat--loaded-session-backfill-handle)))
             (goto-char (point-max))
             (insert "next")
             (should (equal (e-chat--composer-text) "next"))
@@ -10273,26 +10263,71 @@ The context-window denominator comes from the live provider lookup
               (should (string-match-p
                        "3 earlier transcript messages omitted" text))
               (should-not (string-match-p "first prompt" text))))
-          (should
-           (e-chat-test--wait-until
-            (lambda ()
-              (with-current-buffer buffer
-                (let ((text (buffer-string)))
-                  (and (not (e-chat-test--live-work-handle-p
-                             e-chat--loaded-session-backfill-handle))
-                       (not (e-chat-test--pending-ui-work
-                             'loaded-session-backfill
-                             "loaded-backfill"))
-                       (string-match-p "first prompt" text)
-                       (string-match-p "first response" text)
-                       (string-match-p "middle prompt" text)
-                       (string-match-p "last prompt" text)
-                       (string-match-p "last response" text)
-                       (not (string-match-p
-                             "earlier transcript messages omitted"
-                             text))
-                       (equal (e-chat--composer-text) "next")))))
-            1.0)))
+          ;; Drain any deferred presentation work.  Omitted history must not
+          ;; reappear after the initial paint has returned.
+          (with-current-buffer buffer
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
+            (let ((text (buffer-string)))
+              (should (string-match-p
+                       "3 earlier transcript messages omitted" text))
+              (should-not (string-match-p "first prompt" text))
+              (should-not (string-match-p "first response" text))
+              (should-not (string-match-p "middle prompt" text))
+              (should (string-match-p "last prompt" text))
+              (should (string-match-p "last response" text))
+              (should (equal (e-chat--composer-text) "next")))
+            (e-chat--rerender-transcript)
+            (let ((text (buffer-string)))
+              (should (string-match-p
+                       "3 earlier transcript messages omitted" text))
+              (should-not (string-match-p "first prompt" text))
+              (should-not (string-match-p "middle prompt" text))
+              (should (string-match-p "last response" text))
+              (should (equal (e-chat--composer-text) "next")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-loaded-session-replay-bounds-activity-events ()
+  "Loaded-session replay retains only a bounded activity-event tail."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         buffer)
+    (unwind-protect
+        (progn
+          (e-chat-test--create-session store :id "loaded-activity"
+                            :metadata '(:name "Loaded activity"))
+          (e-session-append-message
+           store "loaded-activity"
+           '(:id "msg-1" :role user :content "inspect" :turn-id "turn-1"))
+          (dotimes (index 10)
+            (let ((call-id (format "call-%d" index)))
+              (e-session-append-activity-event
+               store "loaded-activity" "turn-1" 'tool-started
+               `(:type tool-call :id ,call-id :name "read"))
+              (e-session-append-activity-event
+               store "loaded-activity" "turn-1" 'tool-finished
+               `(:tool-call (:type tool-call :id ,call-id :name "read")
+                 :result (:status ok :content ,call-id)))))
+          (e-session-append-activity-event
+           store "loaded-activity" "turn-1" 'turn-finished nil)
+          (e-session-append-message
+           store "loaded-activity"
+           '(:id "msg-2" :role assistant :content "done" :turn-id "turn-1"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "loaded-activity")
+          (let ((e-chat-session-replay-activity-event-limit 5))
+            (setq buffer (e-chat-open-session harness "loaded-activity")))
+          (with-current-buffer buffer
+            (let* ((turn-id
+                    (plist-get
+                     (car (e-chat-service-messages harness "loaded-activity"))
+                     :turn-id))
+                   (record (e-chat--existing-turn-record turn-id)))
+              (should record)
+              (should (= (length (e-chat--activity-tool-items record)) 2)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

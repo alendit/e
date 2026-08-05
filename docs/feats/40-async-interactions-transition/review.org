@@ -2904,3 +2904,31 @@ Result: full default perf scenario run completed with no regressions: regression
 
 - Live Emacs reload and scalar live probes could not run in this environment because =emacsclient= repeatedly failed with =Connection refused= for the server socket.
 - The final checklist is therefore source/test/perf backed, but not live-session backed in this continuation.
+
+* Follow-up: Permanently Bounded Chat Replay
+
+The progressive loaded-session backfill described in the historical review
+above has been removed.  A live read-only probe showed that the selected chat
+had only 8 board-derived messages but 248 activity events, 89 rendered blocks,
+and 29578 buffer characters.  Limiting the initial message paint alone did not
+bound replay work because activity reconstruction remained independent and the
+backfill eventually rebuilt all retained messages anyway.
+
+The chat shell now reconstructs at most 40 recent messages and 64 recent
+activity events by default.  Activity is first restricted to turns represented
+by the visible message tail plus the currently active turn.  Open, async-load
+completion, rerender, preview, and rename all use bounded inputs.  Durable
+session loading and the board projection remain unchanged, and live events
+continue to append incrementally.
+
+The old backfill timer, count planning, job state, cancellation hook, settings,
+and its otherwise-unused render-work budget were deleted.  Replay now has one
+message-tail policy, one relevant-activity-tail policy, and one composer
+transaction; omitted history stays omitted for that view.
+
+Validation passed with 14 focused replay, async-load, preview, composer, and
+viewport tests, then 326 broad chat tests with 0 unexpected results and 1
+optional skip after excluding the pre-existing fixed-timeout async index-load
+test.  Focused byte compilation and =git diff --check= also passed.  The
+running Emacs was inspected only through bounded read-only probes and was not
+reloaded.
