@@ -64,7 +64,12 @@ fell to 1.
 - Full transcript replacement occurs in three presentation-owned paths:
   loaded-session attachment, older-message backfill, and explicit transcript
   rerender.  All three previously cleared and rebuilt text without preserving
-  the viewport's output-follow intent.
+  whether the old viewport physically showed its output tail.
+- An initial revision reused the cached live-output follow flag for full
+  replacement and broadened post-command tracking to settled transcripts.  A
+  counterexample moved the paired transcript with its composer still selected:
+  the stale flag remained true and replay incorrectly tailed the window.  That
+  state coupling was removed.
 
 * Design
 
@@ -81,21 +86,21 @@ its transcript and composer preserves deliberate scrollback.
 ** Projection replacement contract
 
 Projection replacement changes the text underneath an already-visible surface
-and must preserve whether a viewport follows output without manufacturing
-another focus event.
+and must carry one local fact across the clear/replay boundary without
+manufacturing another focus event.
 
 Immediately before a full replacement, =e-chat= captures only visible
-transcript windows currently following the old output tail.  After replay, it
-moves those same live windows to the new tail.  Windows in deliberate
-scrollback are not forced to the tail.  This applies uniformly to asynchronous
-attach, loaded-message backfill, and explicit rerender.
+transcript windows whose viewport and window point are physically at the old
+output tail.  After replay, it moves those same live windows to the new tail.
+Windows physically showing scrollback are not forced there.  This applies
+uniformly to asynchronous attach, loaded-message backfill, and explicit
+rerender.
 
-The follow flag remains transient window-owned presentation state.  Settled
-transcript navigation now refreshes it too, rather than only doing so while a
-running-status block exists.  A selected transcript follows only when both its
-viewport and its point reach the output tail.  This prevents a tall window that
-happens to include the tail from overriding an explicit older reading
-position.
+The existing window-local follow flag remains limited to changing live output,
+where intent must survive incremental status movement.  Full replacement does
+not consult it and settled navigation does not maintain it.  Projection uses
+the physical pre-replay viewport because that is the complete fact required by
+this operation.
 
 No new timer, global hook, persisted state, or harness/session dependency was
 introduced.  The prior activation machinery remains because its late host
@@ -104,7 +109,8 @@ restore regression proves a distinct responsibility.
 * Validation
 
 - Focused attach/activation/backfill/rerender/viewport suite: 8 expected passes,
-  including the restart-order regression and settled navigation intent.
+  including restart-order tail restoration and composer-focused physical
+  scrollback.
 - Broad =test/e-chat-test.el= suite excluding the known unrelated timeout: 325
   expected passes, 1 expected skip, and no unexpected results.
 - =eldev compile -W lisp/shells/chat/e-chat.el= completed without warnings.
@@ -121,8 +127,9 @@ restore regression proves a distinct responsibility.
    makes backfill and rerender obey the same viewport contract.
 2. It moves chat toward explicit presentation lifecycles: surface activation
    and transcript projection replacement have separate owners and contracts.
-3. Asynchronous load timing is variable but local to attach.  Stable follow
-   intent is modeled directly; no speculative scheduling layer was added.
+3. Asynchronous load timing is variable but local to attach.  Projection uses
+   an immediate physical snapshot; no speculative scheduling or durable intent
+   layer was added.
 4. =e-chat= presentation owns the behavior because it owns transcript text,
    windows, and viewport policy.  Harness and session code remain unchanged.
 5. Coupling is reduced by reusing one consumer-shaped capture/restore contract
@@ -131,13 +138,15 @@ restore regression proves a distinct responsibility.
    persistence policy toward chat windows.
 7. All window side effects remain in the presentation shell, after projection
    rendering completes.
-8. No state was added.  Existing follow intent stays on each window, has window
-   lifetime, changes after navigation, and is rebuilt from viewport position.
+8. No state was added.  The projection snapshot is a local list that exists
+   only across one synchronous clear/replay operation.  Live-output follow
+   state retains its narrower window lifetime and purpose.
 9. Each full reprojection performs two bounded scans of visible transcript
    windows.  Rendering already dominates this work, and ordinary incremental
    output receives no added cost.
-10. Following output is a real substitutable viewport behavior for monolithic
-    and composed transcripts; neither presentation weakens its preconditions.
+10. Physical output-tail position is a real substitutable viewport fact for
+    monolithic and composed transcripts; neither presentation weakens its
+    preconditions.
 11. Restarted indexed sessions, loaded sessions, generic switching, and live
     reload remain supported.  No legacy fallback was added.
 12. No new legacy code was created.  The previous broad layout hook remains
@@ -145,6 +154,6 @@ restore regression proves a distinct responsibility.
 13. Dead or repurposed windows are ignored during restore.  Unexpected replay
     and rendering errors continue to surface at their existing top boundary.
 14. The restart-order test proves the real load-completion path; a second test
-    proves explicit settled navigation clears follow intent.  Adjacent tests
-    independently cover activation, late restore, backfill, reattach, rerender,
-    and deliberate scrollback.
+    proves stale live-follow state cannot override a composer-focused physical
+    scrollback viewport.  Adjacent tests independently cover activation, late
+    restore, backfill, reattach, rerender, and deliberate scrollback.

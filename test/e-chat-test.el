@@ -1775,21 +1775,32 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-settled-navigation-clears-output-follow-intent ()
-  "Navigating settled scrollback prevents later projection work from tailing."
+(ert-deftest e-chat-test-loaded-session-reprojection-does-not-tail-scrollback ()
+  "Session replay does not tail a transcript physically showing scrollback."
   (let* ((e-chat--surface-composition-enabled t)
          (history (mapconcat (lambda (number)
                                (format "settled history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
-         (buffer (e-chat-test--buffer nil "chat-settled-follow-intent"))
+         (buffer (e-chat-test--buffer nil "chat-loaded-scrollback"))
          transcript-window
          composer-window)
     (unwind-protect
         (progn
           (setq transcript-window (display-buffer buffer))
           (with-current-buffer buffer
-            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (let ((store (e-chat-service-session-store e-chat-harness)))
+              (e-session-append-message
+               store e-chat-session-id
+               '(:id "msg-1" :role user :content "loaded question"))
+              (e-session-append-message
+               store e-chat-session-id
+               `(:id "msg-2" :role assistant :content ,history))
+              (e-chat-test--seed-board-log-from-private-fixture
+               e-chat-harness e-chat-session-id))
+            (e-chat--attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id)
             (setq composer-window
                   (e-chat--surface-display-composer transcript-window t))
             (set-buffer buffer)
@@ -1797,19 +1808,21 @@ must drop any revealed hidden blocks."
             (should (plist-get
                      (e-chat--window-output-follow-state transcript-window)
                      :follow))
-            (let ((e-chat--surface-activation-in-progress t))
-              (select-window transcript-window)
-              (set-window-point transcript-window (point-min))
-              (set-window-start transcript-window (point-min))
-              (goto-char (point-min))
-              (redisplay t)
-              (should (eq (selected-window) transcript-window))
-              (should (= (window-point transcript-window) (point-min)))
-              (e-chat--post-command))
-            (should-not
-             (plist-get
-              (e-chat--window-output-follow-state transcript-window)
-              :follow))))
+            ;; `scroll-other-window' and host restoration can move the paired
+            ;; transcript while leaving its composer selected.  The stored
+            ;; live-output flag is intentionally not consulted by a full
+            ;; projection replacement; the physical pre-replay viewport is
+            ;; the complete fact that operation needs.
+            (set-window-point transcript-window (point-min))
+            (set-window-start transcript-window (point-min))
+            (redisplay t)
+            (should (eq (selected-window) composer-window))
+            (should (= (window-point transcript-window) (point-min)))
+            (e-chat--attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id)
+            (should (< (window-point transcript-window) (point-max)))
+            (should (= (window-start transcript-window) (point-min)))))
       (when (window-live-p composer-window)
         (delete-window composer-window))
       (when (window-live-p transcript-window)
