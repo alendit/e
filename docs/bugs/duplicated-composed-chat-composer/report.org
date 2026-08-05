@@ -3,19 +3,23 @@
 
 * Report
 
-The user reported that the Grimoire daily chat displayed two separate composer
-panes beneath one transcript after updating and reloading =e=.
+The user reported on 2026-08-03 that a Grimoire daily chat displayed two
+composer panes beneath one transcript after updating and reloading =e=.  Both
+panes showed the same internal =*e-chat input:...*= buffer.
 
-Both panes showed the same internal =*e-chat input:...*= buffer.
+The issue recurred on 2026-08-05 after the first reconciliation fix.  The user
+reported that the composer frame was still duplicated and suspected an
+interaction with chat focus restoration.
 
 * Expected
 
-Each visible transcript window should own exactly one paired composer window.
-Reloading or redisplaying a composed chat should preserve that pair rather than
-split another composer pane.
+Each visible transcript window owns exactly one paired composer window.  Mode
+reload, workspace restoration, buffer switching, and focus restoration must
+converge on that one surface.
 
 * Actual
 
-The surviving composer window was no longer present in the transcript's
-buffer-local pair cache, so surface activation created a second window for the
-same composer buffer.
+The live frame contained one transcript, one paired composer window, and a
+second window showing the identical internal composer buffer.  The paired
+window carried the =e-chat-composer= parameter; the extra restored window did
+not, so the first reconciliation fix deliberately ignored it.

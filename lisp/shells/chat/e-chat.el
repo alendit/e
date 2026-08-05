@@ -1564,14 +1564,12 @@ composer buffer; transcript rendering never calls it."
                 (eq (window-buffer (cdr pair)) e-chat--surface-composer-buffer)))
          e-chat--surface-window-pairs)))
 
-(defun e-chat--surface-owned-composer-windows (frame)
-  "Return FRAME windows owned by the current transcript's composer."
-  (let ((transcript (current-buffer))
-        (composer e-chat--surface-composer-buffer))
+(defun e-chat--surface-composer-windows (frame)
+  "Return FRAME windows displaying the current transcript's composer."
+  (let ((composer e-chat--surface-composer-buffer))
     (cl-remove-if-not
      (lambda (window)
-       (and (eq (window-buffer window) composer)
-            (eq (window-parameter window 'e-chat-composer) transcript)))
+       (eq (window-buffer window) composer))
      (window-list frame 'no-minibuf))))
 
 (defun e-chat--surface-window-directly-below-p
@@ -1585,8 +1583,9 @@ composer buffer; transcript rendering never calls it."
 
 (defun e-chat--surface-reconcile-window-pairs (transcript-window)
   "Rebuild and reconcile the surface containing TRANSCRIPT-WINDOW.
-Window parameters are the live ownership source.  The buffer-local pair list
-is only a derived lookup cache and may be reset by mode reinitialization."
+The composer buffer owns its transcript identity.  Pair caches and window
+parameters are derived presentation state that mode or workspace restoration
+may discard."
   (e-chat--surface-prune-window-pairs)
   (let* ((frame (window-frame transcript-window))
          (transcript (current-buffer))
@@ -1594,10 +1593,12 @@ is only a derived lookup cache and may be reset by mode reinitialization."
           (cl-remove-if-not
            (lambda (window) (eq (window-buffer window) transcript))
            (window-list frame 'no-minibuf)))
-         (owned-composer-windows
-          (e-chat--surface-owned-composer-windows frame))
+         (composer-windows
+          (e-chat--surface-composer-windows frame))
          (paired-composer-windows
           (mapcar #'cdr e-chat--surface-window-pairs)))
+    (dolist (window paired-composer-windows)
+      (set-window-parameter window 'e-chat-composer transcript))
     (dolist (window transcript-windows)
       (unless (assoc window e-chat--surface-window-pairs)
         (when-let ((composer-window
@@ -1606,13 +1607,14 @@ is only a derived lookup cache and may be reset by mode reinitialization."
                        (and (not (memq candidate paired-composer-windows))
                             (e-chat--surface-window-directly-below-p
                              window candidate)))
-                     owned-composer-windows)))
+                     composer-windows)))
           (push (cons window composer-window) e-chat--surface-window-pairs)
-          (push composer-window paired-composer-windows))))
-    ;; A shell-owned composer window with no transcript pair is residue from a
-    ;; lost cache (most notably mode reinitialization during development
-    ;; reload).  Manual displays have no ownership parameter and are untouched.
-    (dolist (window owned-composer-windows)
+          (push composer-window paired-composer-windows)
+          (set-window-parameter composer-window 'e-chat-composer transcript))))
+    ;; A composer buffer is an internal part of its transcript surface, never
+    ;; an independently displayable shell.  Window/workspace restoration may
+    ;; recreate it without custom parameters; remove every unpaired view.
+    (dolist (window composer-windows)
       (when (and (not (memq window paired-composer-windows))
                  (window-deletable-p window))
         (delete-window window)))
@@ -7410,9 +7412,10 @@ revealed block when revealing, or on the block that was focused when hiding."
   "Refresh composer spacer for the current visible window."
   (cond
    ((e-chat--surface-transcript-p)
-    (e-chat--surface-prune-window-pairs)
-    (dolist (pair e-chat--surface-window-pairs)
-      (e-chat--surface-fit-composer-window (cdr pair))))
+    (when-let ((transcript-window (get-buffer-window (current-buffer) t)))
+      (e-chat--surface-reconcile-window-pairs transcript-window)
+      (dolist (pair e-chat--surface-window-pairs)
+        (e-chat--surface-fit-composer-window (cdr pair)))))
    ((e-chat--surface-composer-p)
     (when-let ((transcript e-chat--surface-transcript-buffer))
       (with-current-buffer transcript
@@ -7436,8 +7439,10 @@ revealed block when revealing, or on the block that was focused when hiding."
             (with-current-buffer buffer
               (when (derived-mode-p 'e-chat-mode)
                 (if (e-chat--surface-transcript-p)
-                    (progn
-                      (e-chat--surface-prune-window-pairs)
+                    (when-let ((transcript-window
+                                (get-buffer-window buffer t)))
+                      (e-chat--surface-reconcile-window-pairs
+                       transcript-window)
                       (dolist (pair e-chat--surface-window-pairs)
                         (e-chat--surface-fit-composer-window (cdr pair))))
                   (e-chat--refresh-composer-position))))))))))

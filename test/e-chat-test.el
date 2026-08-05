@@ -1564,7 +1564,7 @@ must drop any revealed hidden blocks."
               (goto-char (point-max))
               (insert "draft survives reload"))
             (should (= (length
-                        (e-chat--surface-owned-composer-windows
+                        (e-chat--surface-composer-windows
                          (window-frame transcript-window)))
                        1))
             ;; Reinitializing `e-chat-mode' clears buffer-local derived state,
@@ -1576,7 +1576,7 @@ must drop any revealed hidden blocks."
             (should (eq e-chat--surface-composer-buffer composer))
             (should (= (length e-chat--surface-window-pairs) 1))
             (should (= (length
-                        (e-chat--surface-owned-composer-windows
+                        (e-chat--surface-composer-windows
                          (window-frame transcript-window)))
                        1))
             (with-current-buffer composer
@@ -1591,16 +1591,53 @@ must drop any revealed hidden blocks."
             (set-window-buffer duplicate composer)
             (set-window-parameter duplicate 'e-chat-composer buffer)
             (should (= (length
-                        (e-chat--surface-owned-composer-windows
+                        (e-chat--surface-composer-windows
                          (window-frame transcript-window)))
                        2))
             (e-chat--surface-display-composer transcript-window)
             (should-not (window-live-p duplicate))
             (should (= (length e-chat--surface-window-pairs) 1))
             (should (= (length
-                        (e-chat--surface-owned-composer-windows
+                        (e-chat--surface-composer-windows
                          (window-frame transcript-window)))
                        1))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-window-refresh-removes-unmarked-composer-duplicate ()
+  "Window restoration cannot leave a second view of an internal composer."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-restored-composer-duplicate"))
+         transcript-window
+         composer-window
+         composer
+         duplicate)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer (selected-window) buffer)
+            (setq transcript-window (selected-window))
+            (setq duplicate
+                  (split-window transcript-window
+                                (- (* 2 e-chat-composer-window-min-height))
+                                'below))
+            (with-current-buffer buffer
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window t)))
+            (setq composer (window-buffer composer-window)))
+          ;; A workspace/window-state restore can recreate a window showing the
+          ;; internal composer buffer without restoring custom window params.
+          (set-window-buffer duplicate composer)
+          (should-not (window-parameter duplicate 'e-chat-composer))
+          (should (= (length (get-buffer-window-list composer nil t)) 2))
+          (e-chat--refresh-visible-composers)
+          (should (= (length (get-buffer-window-list composer nil t)) 1))
+          (should (eq (window-buffer composer-window) composer))
+          (should (eq (window-parameter composer-window 'e-chat-composer)
+                      buffer)))
       (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
