@@ -1,0 +1,80 @@
+#+title: Investigation: subagent await rejects handles as unknown board work
+
+* Finding
+
+The =await= tool resolves =subagent:<id>= and =work:<id>= references to valid process-local =e-work= handles.
+In board-attached turns, it then delegates to =e-board-runtime--subscribe-aggregation=.
+That function requires every watched handle id to already exist in the current session board's =work-table=.
+
+The subagent mirror handle violates that precondition.
+=e-subagent--drive-turn= creates it with =e-work-start= and stores it in the subagent registry, but never enrolls it on the parent board.
+The waitable resolver therefore succeeds while =e-board-subscribe-aggregation= rejects the handle as =Unknown board work=.
+
+The same ownership mismatch affects detached child work.
+A detachable Bash wrapper enrolls its raw process child on the child session board.
+After detachment, =work:<id>= resolves globally, but a later =await= tries to subscribe from the current invocation board.
+If that board is different, aggregation rejects the valid handle.
+
+* Evidence
+
+- =lisp/layers/agents/e-subagent-runner.el=: =e-subagent--drive-turn= starts the mirror handle directly with =e-work-start= and has no parent-board enrollment step.
+- =lisp/core/e-await-tool.el=: =e-await-tool--start= prefers the injected =:board-subscribe-aggregation= port whenever present.
+- =lisp/core/e-board-runtime.el=: =e-board-runtime--subscribe-aggregation= passes the resolved handle ids to the current attachment's source board.
+- =lisp/core/e-board.el=: =e-board-subscribe-aggregation= signals =Unknown board work= for any id absent from that board.
+- =test/e-subagent-runner-test.el=: existing awaitability coverage proves only that a resolver returns an =e-work= handle; it does not exercise model-facing =await= through a board-attached parent.
+- =test/e-await-tool-test.el=: board aggregation is tested with an injected fake subscriber that accepts arbitrary handles, so it cannot detect board ownership mismatch.
+
+* Child-session reconstruction
+
+The four children described as stalled were active:
+
+- Agentic sessions first used the unavailable =python= command, retried with =python3=, hit the helper's 10-second timeout, then launched a longer detachable command.
+  Its own =await work:bash/6004= failed with the same =Unknown board work= error.
+- Gmail had fetched the listing and was preparing its digest when cancelled.
+- Slack had completed searches and thread reads and had started another provider request when cancelled.
+- Previous-day completion had read the archived note and sidecars and was still processing them when cancelled.
+
+The parent cancellation caused the apparent stall endpoint.
+The children did not independently deadlock.
+
+* Root cause
+
+=await= assumes that every resolved process-global waitable handle is enrolled on the invoking board.
+The =subagent= and detached =work= schemes do not guarantee that invariant.
+The board aggregation adapter rejects these handles before it can subscribe to their terminal lifecycle.
+
+* Fix direction
+
+Choose one ownership contract and test it end to end:
+
+1. Enroll parent-owned subagent mirror handles on the parent board before they start.
+   This fixes =subagent:= fan-in but does not by itself fix cross-board detached work.
+2. Let =await= group handles by owning board and use board aggregation only for handles observed by the invoking board, with direct =e-work-await-set= for process-global handles outside that board.
+3. Add an explicit board-owner locator to waitable resolution and subscribe on the owning board while preserving the awaiting invocation as the effect target.
+
+The first implemented slice enrolls subagent mirror handles through the parent harness's work-enrollment port and proves that the handle is board-visible before aggregation subscription.
+A separate follow-up should reproduce and fix detached Bash from a child followed by =await work:<id>=.
+
+* Implementation
+
+- Store the parent harness on the private subagent registry record so resume can enroll each fresh mirror handle on the same parent board.
+- Prepare the mirror handle, enroll it through the parent harness port, then start it before launching the child turn.
+- Keep the parent harness private; normalized records and model-facing output remain unchanged.
+- Add focused coverage that spawns a child, resolves its mirror handle, verifies parent-board enrollment, and installs a real aggregation without =Unknown board work=.
+
+* Verification
+
+- =eldev -p test test -f test/e-subagent-runner-test.el=: 22/22 passed.
+- =eldev compile -W lisp/layers/agents/e-subagent-registry.el lisp/layers/agents/e-subagent-runner.el=: passed.
+- The running Emacs was not reloaded.
+
+* Test gap
+
+Add a test that:
+
+1. Creates a board-attached parent session.
+2. Spawns two subagents with captured runners.
+3. Invokes the real model-facing =await= tool with their =subagent:= references through the parent's tool lifecycle.
+4. Settles both child runners.
+5. Drains board classification and effects.
+6. Asserts that =await= returns both results rather than =Unknown board work=.

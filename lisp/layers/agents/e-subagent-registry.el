@@ -76,7 +76,7 @@ List buffers hook onto this to track live subagent status.")
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness producer-binding)
+              child-harness parent-harness producer-binding)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
@@ -94,6 +94,7 @@ internally so steer/read reach the child session on its own harness."
                        :label label
                        :schedule schedule
                        :child-harness child-harness
+                       :parent-harness parent-harness
                        :producer-binding producer-binding
                        :work-handle nil
                        :result-summary nil
@@ -134,6 +135,10 @@ internally so steer/read reach the child session on its own harness."
 (defun e-subagent-registry-child-harness (registry subagent-id)
   "Return the live child harness stored for SUBAGENT-ID, or nil."
   (plist-get (e-subagent-registry--record registry subagent-id) :child-harness))
+
+(defun e-subagent-registry-parent-harness (registry subagent-id)
+  "Return the live parent harness stored for SUBAGENT-ID, or nil."
+  (plist-get (e-subagent-registry--record registry subagent-id) :parent-harness))
 
 (defun e-subagent-registry-work-handle (registry subagent-id)
   "Return the live `e-work' handle stored for SUBAGENT-ID, or nil.

@@ -633,6 +633,31 @@ report is child-side and must not be on the parent surface."
         ;; An unknown id is a per-reference error, not a signal.
         (should (plist-get (e-waitable-resolve "subagent:sub_999999") :error))))))
 
+(ert-deftest e-subagent-runner-test-awaitable-handle-is-enrolled-on-parent-board ()
+  "The mirror handle is board-visible before a parent await subscribes to it."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (lambda (_h _s _p _seed _on)
+                                (list :cancel #'ignore))))
+             (handle (e-subagent-registry-work-handle
+                      registry (plist-get record :subagent-id)))
+             (binding (e-chat-service-binding parent "parent-1"))
+             (board (e-board-registry-board-source-board
+                     (e-chat-service-binding-board binding))))
+        (should (eq (e-board-work-handle
+                     (e-board-observed-work board (e-work-handle-id handle)))
+                    handle))
+        (let ((aggregation
+               (e-board-subscribe-aggregation
+                board (list (e-work-handle-id handle)) 'all "target")))
+          (should aggregation))))))
+
 (provide 'e-subagent-runner-test)
 
 ;;; e-subagent-runner-test.el ends here

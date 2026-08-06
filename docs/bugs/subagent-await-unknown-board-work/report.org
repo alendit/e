@@ -1,0 +1,23 @@
+#+title: Subagent await rejects handles as unknown board work
+
+* Report
+
+A parent session spawned six direct subagents and then called the model-facing =await= tool with their =subagent:<id>= references.
+The call failed immediately with =e board error: "Unknown board work"= for a subagent work id.
+A retry on the still-running subset failed the same way.
+The children continued running until the parent cancelled four of them and completed their tasks inline.
+
+* User-visible impact
+
+- Fan-out succeeds, but fan-in fails.
+- The parent cannot use the prescribed event-driven await path.
+- A parent may mistake active children for stalled work and cancel them prematurely.
+- Slow child-owned tools can also fail when the child tries to await detached =work:bash/...= handles.
+
+* Reproduction evidence
+
+- Parent session: =20260806T064955-249a82cf1d33=.
+- Parent population turn: =01KZB5EMDMB01BM2DYV08D2EVB=.
+- Parent =await= failed at 2026-08-06 09:13 UTC with unknown board work =subagent/5768=.
+- Child =sub_000009= later detached =bash/6004= and its own =await= failed with unknown board work =bash/6004=.
+- The Gmail and Slack children were still making provider and tool progress when the parent cancelled their turns at 09:15:14 UTC.

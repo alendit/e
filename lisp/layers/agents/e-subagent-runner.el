@@ -220,7 +220,8 @@ never resurrected."
       (apply #'e-subagent-registry-update registry subagent-id fields))))
 
 (defun e-subagent--drive-turn
-    (registry subagent-id child-harness session-id prompt seed-messages runner)
+    (registry subagent-id parent-harness parent-session-id
+              child-harness session-id prompt seed-messages runner)
   "Start one child turn for SUBAGENT-ID and wire its settle + work handle.
 Mint a fresh cooperative `e-work' handle, mirror the record's terminal state
 onto it, and settle the record from RUNNER's callback.  Store the handle and
@@ -228,25 +229,29 @@ any `:cancel' function on the record.  Return RUNNER's handle plist.  Shared by
 `e-subagent-spawn' (first turn) and `e-subagent-resume' (a later turn on an
 existing child session)."
   (let* ((runner (or runner #'e-subagent-direct-runner))
-         ;; A cooperative work handle mirrors the record's terminal state so a
-         ;; subagent is awaitable as an `e-work' handle.  Its runner defers; the
-         ;; settle callback below finishes/fails/cancels it.  Resume mints a new
-         ;; handle here because the prior one is already spent, and the waitable
-         ;; resolver reads the record's current `:work-handle', so `await'
-         ;; re-tracks the resumed turn without touching the resolver registry.
-         (work-handle (e-work-start (e-subagent--work-spec) nil))
-         (handle (funcall runner
-                          child-harness session-id prompt seed-messages
-                          (lambda (status &rest args)
-                            (e-subagent--settle-work-handle
-                             work-handle status args)
-                            (apply #'e-subagent--settle
-                                   registry subagent-id status args)))))
+         ;; Prepare before enrollment: board ownership must be established
+         ;; before runner entry, just as it is for model-facing tool work.
+         (work-handle
+          (e-work-prepare
+           (e-subagent--work-spec) nil
+           :context (list :session-id parent-session-id
+                          :work-kind 'subagent
+                          :domain-ref (format "subagent:%s" subagent-id)))))
+    (when-let ((enroll (e-harness-work-enrollment-function parent-harness)))
+      (funcall enroll work-handle nil))
+    (e-work-start-prepared work-handle)
     (e-subagent-registry-update registry subagent-id :work-handle work-handle)
-    (when (and (listp handle) (functionp (plist-get handle :cancel)))
-      (e-subagent-registry-update registry subagent-id
-                                  :cancel (plist-get handle :cancel)))
-    handle))
+    (let ((handle
+           (funcall runner
+                    child-harness session-id prompt seed-messages
+                    (lambda (status &rest args)
+                      (e-subagent--settle-work-handle work-handle status args)
+                      (apply #'e-subagent--settle
+                             registry subagent-id status args)))))
+      (when (and (listp handle) (functionp (plist-get handle :cancel)))
+        (e-subagent-registry-update registry subagent-id
+                                    :cancel (plist-get handle :cancel)))
+      handle)))
 
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
@@ -288,11 +293,12 @@ returns a handle plist carrying `:cancel'."
                   :label label
                   :schedule schedule
                   :child-harness child-harness
+                  :parent-harness parent-harness
                   :producer-binding producer-binding))
          (subagent-id (plist-get record :subagent-id)))
     (e-subagent--drive-turn
-     registry subagent-id child-harness child-session-id
-     prompt seed-messages runner)
+     registry subagent-id parent-harness parent-session-id
+     child-harness child-session-id prompt seed-messages runner)
     ;; A synchronous runner may already have settled the record; only a
     ;; still-live record advances to running.
     (when (memq (e-subagent-registry-status registry subagent-id)
@@ -337,7 +343,10 @@ handle, and re-arms the settle callback.  Return the normalized record."
                                 :finished-at nil
                                 :reported nil)
     (e-subagent--drive-turn
-     registry subagent-id harness session-id prompt nil runner)
+     registry subagent-id
+     (e-subagent-registry-parent-harness registry subagent-id)
+     (plist-get record :parent-session-id)
+     harness session-id prompt nil runner)
     (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent--normalize-type (value)
