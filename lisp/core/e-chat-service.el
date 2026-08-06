@@ -60,6 +60,10 @@
                (:constructor e-chat-service--subscription-create))
   binding function active-p client observer drain-scheduled state)
 
+(cl-defstruct (e-chat-service-view
+               (:constructor e-chat-service--view-create))
+  cursor messages activity-events subscription)
+
 (defvar e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key)
   "Board-backed chat bindings, first by harness identity then session id.")
 
@@ -378,6 +382,41 @@
               (aref ring (mod (+ head offset)
                               e-chat-service-projection-capacity))))))
 
+(defun e-chat-service--events-messages (events)
+  "Return copied durable messages represented by board EVENTS."
+  (let (messages)
+    (dolist (event events (nreverse messages))
+      (when (eq (plist-get event :type) 'message-added)
+        (push (copy-tree (plist-get (plist-get event :payload) :message))
+              messages)))))
+
+(defun e-chat-service--events-activity-events (events)
+  "Return copied shell activity records represented by board EVENTS."
+  (let (activities)
+    (dolist (event events (nreverse activities))
+      (unless (memq (plist-get event :type) '(message-added board-fact))
+        (push (append (list :event-type (plist-get event :type)
+                            :created-at (plist-get event :created-at))
+                      (copy-tree event))
+              activities)))))
+
+(defun e-chat-service--seed-binding-projection (binding)
+  "Seed BINDING from one bounded reverse-history observer page."
+  (let* ((board (e-chat-service-binding-board binding))
+         (client (e-chat-service-binding-client binding))
+         (observer (e-chat-service-binding-observer binding))
+         (page (e-board-registry-prepare-observer-history-page
+                board (e-board-registry-client-id client)
+                (e-board-observer-id observer)
+                :limit e-chat-service-projection-capacity)))
+    (dolist (message (plist-get page :messages))
+      (e-chat-service--projection-record
+       binding (e-chat-service--message-event binding message)))
+    (when-let ((receipt (plist-get page :receipt)))
+      (e-board-registry-accept-observer-history-page
+       board (e-board-registry-client-id client)
+       (e-board-observer-id observer) receipt))))
+
 (defun e-chat-service--notify-subscribers (binding message)
   "Deliver MESSAGE from BINDING to each current shell subscriber."
   (when-let ((event (e-chat-service--message-event binding message)))
@@ -480,9 +519,13 @@
                (_main-subscription
                 (e-board-registry-install-subscription
                  board participant pickup-selector))
+               (source-board (e-board-registry-board-source-board board))
+               (snapshot-cursor (e-board-next-seq source-board))
                (observer (e-board-registry-install-observer
                           board (e-board-registry-client-id client)
-                          observer-selector :start-seq 0))
+                          observer-selector
+                          :start-seq snapshot-cursor
+                          :history-before-seq (1+ snapshot-cursor)))
                (binding
                 (e-chat-service--binding-create
                  :harness harness :session-id session-id :board board
@@ -519,9 +562,10 @@
                       (e-chat-service--schedule-subscription-drain
                        subscription))
                     (e-chat-service--schedule-observer-drain current))))
-          ;; Materialize one fixed page so initial shell render has a bounded
-          ;; board snapshot; any continuation remains timer-driven.
-          (e-chat-service--drain-observer binding)
+          ;; Materialize only the recent bounded tail.  The observer's live
+          ;; cursor already starts at the same high watermark, so retained
+          ;; history is never rescanned to fill a fixed-capacity projection.
+          (e-chat-service--seed-binding-projection binding)
           binding))))
 
 (defun e-chat-service--bind-session (harness session-id)
@@ -675,8 +719,9 @@ LIMIT defaults to the registry's fixed page bound."
   "Return HARNESS SESSION-ID's board binding, creating it when needed."
   (e-chat-service--bind-session harness session-id))
 
-(defun e-chat-service-subscribe (harness session-id function)
-  "Subscribe FUNCTION to board-observed events for HARNESS SESSION-ID."
+(cl-defun e-chat-service--subscribe
+    (harness session-id function &key start-seq history-before-seq)
+  "Create one board observer for FUNCTION at the requested cursors."
   (unless (functionp function)
     (signal 'wrong-type-argument (list 'functionp function)))
   (let* ((binding (e-chat-service--bind-session harness session-id))
@@ -694,7 +739,8 @@ LIMIT defaults to the registry's fixed page bound."
                     (copy-tree
                      (e-board-observer-selector
                       (e-chat-service-binding-observer binding)))
-                    :start-seq 0))
+                    :start-seq start-seq
+                    :history-before-seq history-before-seq))
          (subscription (e-chat-service--subscription-create
                         :binding binding :function function :active-p t
                         :client client :observer observer :state 'active)))
@@ -703,6 +749,45 @@ LIMIT defaults to the registry's fixed page bound."
           (cons subscription (e-chat-service-binding-subscribers binding)))
     (e-chat-service--schedule-subscription-drain subscription)
     subscription))
+
+(defun e-chat-service-subscribe (harness session-id function)
+  "Subscribe FUNCTION to future board events for HARNESS SESSION-ID.
+Retained history is a snapshot concern and is never replayed implicitly."
+  (e-chat-service--subscribe harness session-id function))
+
+(defun e-chat-service-subscribe-view (harness session-id function)
+  "Return a bounded snapshot plus live subscription for HARNESS SESSION-ID.
+The snapshot and subscription share one board high-watermark cursor.  EVENTS
+before that cursor appear only in the snapshot; later events appear only via
+FUNCTION."
+  (let* ((binding (e-chat-service--bind-session harness session-id))
+         (board (e-chat-service-binding-board binding))
+         (source (e-board-registry-board-source-board board))
+         (cursor (e-board-next-seq source))
+         (subscription
+          (e-chat-service--subscribe
+           harness session-id function
+           :start-seq cursor :history-before-seq (1+ cursor)))
+         (client (e-chat-service-subscription-client subscription))
+         (observer (e-chat-service-subscription-observer subscription))
+         (page (e-board-registry-prepare-observer-history-page
+                board (e-board-registry-client-id client)
+                (e-board-observer-id observer)
+                :limit e-chat-service-projection-capacity))
+         events)
+    (dolist (message (plist-get page :messages))
+      (when-let ((event (e-chat-service--message-event binding message)))
+        (push event events)))
+    (setq events (nreverse events))
+    (when-let ((receipt (plist-get page :receipt)))
+      (e-board-registry-accept-observer-history-page
+       board (e-board-registry-client-id client)
+       (e-board-observer-id observer) receipt))
+    (e-chat-service--view-create
+     :cursor cursor
+     :messages (e-chat-service--events-messages events)
+     :activity-events (e-chat-service--events-activity-events events)
+     :subscription subscription)))
 
 (defun e-chat-service-unsubscribe (subscription)
   "Idempotently retire board-observer SUBSCRIPTION."
@@ -849,25 +934,15 @@ values delivered by `e-chat-service-subscribe'."
 
 (defun e-chat-service-messages (harness session-id)
   "Return SESSION-ID's bounded board-derived message projection."
-  (let ((binding (e-chat-service--bind-session harness session-id))
-        messages)
-    (dolist (event (e-chat-service--projection-events binding)
-                   (nreverse messages))
-      (when (eq (plist-get event :type) 'message-added)
-        (push (copy-tree (plist-get (plist-get event :payload) :message))
-              messages)))))
+  (e-chat-service--events-messages
+   (e-chat-service--projection-events
+    (e-chat-service--bind-session harness session-id))))
 
 (defun e-chat-service-activity-events (harness session-id)
   "Return SESSION-ID's bounded board-derived activity projection."
-  (let ((binding (e-chat-service--bind-session harness session-id))
-        events)
-    (dolist (event (e-chat-service--projection-events binding)
-                   (nreverse events))
-      (unless (memq (plist-get event :type) '(message-added board-fact))
-        (push (append (list :event-type (plist-get event :type)
-                            :created-at (plist-get event :created-at))
-                      (copy-tree event))
-              events)))))
+  (e-chat-service--events-activity-events
+   (e-chat-service--projection-events
+    (e-chat-service--bind-session harness session-id))))
 
 (defun e-chat-service-state (harness session-id)
   "Return SESSION-ID's bounded board-derived presentation state."

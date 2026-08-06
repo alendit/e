@@ -276,7 +276,10 @@ messages so the transcript reads as one clean answer."
         (let* ((good (e-chat-service-subscribe
                       harness "main" (lambda (event) (push event good-events))))
                (bad (e-chat-service-subscribe
-                     harness "main" (lambda (_event) (error "subscriber failed")))))
+                     harness "main" (lambda (_event) (error "subscriber failed"))))
+               (bad-start-seq
+                (e-board-observer-next-seq
+                 (e-chat-service-subscription-observer bad))))
           (should-not (equal
                        (e-board-registry-client-id
                         (e-chat-service-subscription-client good))
@@ -291,7 +294,7 @@ messages so the transcript reads as one clean answer."
           (should (eq (car (e-chat-service-subscription-state bad)) 'faulted))
           (should (= (e-board-observer-next-seq
                       (e-chat-service-subscription-observer bad))
-                     0))
+                     bad-start-seq))
           (let ((event (car good-events)))
             (should (equal (plist-get event :board-id)
                            (e-board-registry-board-id board)))
@@ -384,6 +387,40 @@ messages so the transcript reads as one clean answer."
       (should (= (length messages) e-chat-service-projection-capacity))
       (should (equal (plist-get (car messages) :id) "out-005"))
       (should (equal (plist-get (car (last messages)) :id) "out-260")))))
+
+(ert-deftest e-chat-service-test-view-snapshot-continues-after-one-cursor ()
+  "A view receives bounded history once and only later messages live."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session :harness harness :id "view"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding)))
+         live-events)
+    (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+      (dotimes (index (+ e-chat-service-projection-capacity 5))
+        (e-board-post-output
+         board :id (format "view-%03d" index) :author "test" :tags '(main)
+         :content (format "answer %d" index)
+         :source-output-key (list 'test "view" index)))
+      (let* ((view (e-chat-service-subscribe-view
+                    harness "view" (lambda (event) (push event live-events))))
+             (subscription (e-chat-service-view-subscription view))
+             (messages (e-chat-service-view-messages view)))
+        (should (= (length messages) e-chat-service-projection-capacity))
+        (should (equal (plist-get (car messages) :id) "view-005"))
+        (should (= (e-board-observer-next-seq
+                    (e-chat-service-subscription-observer subscription))
+                   (e-chat-service-view-cursor view)))
+        (e-chat-service--drain-subscription subscription)
+        (should-not live-events)
+        (e-board-post-output
+         board :id "view-live" :author "test" :tags '(main)
+         :content "live" :source-output-key '(test "view" 261))
+        (e-chat-service--drain-subscription subscription)
+        (should (equal (mapcar (lambda (event)
+                                (plist-get event :message-id))
+                              live-events)
+                       '("view-live")))))))
 
 (ert-deftest e-chat-service-test-persistent-board-log-reopens-without-redelivery ()
   "A restarted service restores board history as board messages, not transcript."

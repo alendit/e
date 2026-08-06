@@ -46,8 +46,49 @@
         "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
       }
     },
+    "chat.ui-work-lifecycle": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 },
+        "ui-work.pending.after-settle": { "baseline": 0.0, "direction": "lower-is-better", "fail_ratio": 1.0, "fail_delta": 0.0, "warn_ratio": 1.0, "warn_delta": 0.0, "variance_ratio": 0.0, "samples": 5 }
+      }
+    },
+    "chat.board-continuation": {
+      "owner": "e-chat-service",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 },
+        "continuation.history-delivery.count": { "baseline": 0.0, "direction": "lower-is-better", "fail_ratio": 1.0, "fail_delta": 0.0, "warn_ratio": 1.0, "warn_delta": 0.0, "variance_ratio": 0.0, "samples": 5 },
+        "continuation.live-delivery.count": { "baseline": 1.0, "direction": "higher-is-better", "fail_ratio": 1.01, "fail_delta": 0.0, "warn_ratio": 1.01, "warn_delta": 0.0, "variance_ratio": 0.0, "samples": 5 }
+      }
+    },
+    "chat.unread-event-cost": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 },
+        "unread.catalog-scan.count": { "baseline": 0.0, "direction": "lower-is-better", "fail_ratio": 1.0, "fail_delta": 0.0, "warn_ratio": 1.0, "warn_delta": 0.0, "variance_ratio": 0.0, "samples": 5 }
+      }
+    },
+    "chat.status-context-cost": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 },
+        "status.synchronous-context-build.count": { "baseline": 0.0, "direction": "lower-is-better", "fail_ratio": 1.0, "fail_delta": 0.0, "warn_ratio": 1.0, "warn_delta": 0.0, "variance_ratio": 0.0, "samples": 5 }
+      }
+    },
     "tool.lifecycle-dispatch": {
       "owner": "e-tools",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "work.lifecycle-cheap": {
+      "owner": "e-work",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "work.tool-render-dispatch": {
+      "owner": "e-work",
       "metrics": {
         "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
       }

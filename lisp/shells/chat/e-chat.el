@@ -1927,9 +1927,11 @@ PROMPT forces completion even when only one/default instance exists."
         e-chat-session-replay-message-limit
         'e-chat-session-replay-message-limit)))
 
-(defun e-chat--render-session-replay (messages)
+(cl-defun e-chat--render-session-replay
+    (messages &optional (activity-events nil activity-events-supplied-p))
   "Render the bounded recent replay of loaded transcript MESSAGES.
-The caller owns composer removal and restoration."
+The caller owns composer removal and restoration.  When ACTIVITY-EVENTS is
+supplied, use the same service snapshot as MESSAGES."
   (let* ((total-count (length messages))
          (rendered-count (e-chat--session-replay-message-count messages))
          (omitted (max 0 (- total-count rendered-count)))
@@ -1944,7 +1946,9 @@ The caller owns composer removal and restoration."
                (if (= omitted 1) "" "s"))
        'e-chat-activity-face))
     (when tail
-      (e-chat--render-session tail))))
+      (if activity-events-supplied-p
+          (e-chat--render-session tail activity-events)
+        (e-chat--render-session tail)))))
 
 (defun e-chat--rerender-transcript ()
   "Rebuild the attached session transcript in place, preserving the composer.
@@ -2118,38 +2122,49 @@ context insertions from the chat buffer the user is looking at."
       e-chat-session-id)
      t)))
 
+(defun e-chat--event-consumer (harness buffer)
+  "Return the live board event consumer for HARNESS chat BUFFER."
+  (lambda (event)
+    (when (buffer-live-p buffer)
+      (e-ui-work-schedule
+       (e-ui-work-spec-create
+        :id (format "chat_board_event_%s"
+                    (or (plist-get event :turn-id) "board"))
+        :description "Render one board-observed chat event."
+        :owner 'board-observer
+        :target-buffer buffer
+        :key (list (plist-get event :turn-id)
+                   (plist-get event :type)
+                   (plist-get event :created-at))
+        :generation 0
+        :delay 0
+        :coalesce nil
+        :focus-policy 'preserve
+        :reentrancy-policy 'defer
+        :apply
+        (lambda (_job _handle)
+          (when (and (buffer-live-p buffer)
+                     (eq e-chat-harness harness))
+            (with-current-buffer buffer
+              (unless (and
+                       (eq (plist-get event :type) 'assistant-delta)
+                       e-chat--assistant-streaming-p
+                       (equal e-chat--status "streaming"))
+                (e-chat--render-event event))))))))))
+
 (defun e-chat--subscribe (harness buffer session-id)
-  "Subscribe BUFFER to board-observed chat events for SESSION-ID."
+  "Subscribe BUFFER to future board-observed events for SESSION-ID."
   (setq e-chat--event-subscription
         (e-chat-service-subscribe
-         harness session-id
-         (lambda (event)
-           (when (buffer-live-p buffer)
-             (e-ui-work-schedule
-              (e-ui-work-spec-create
-               :id (format "chat_board_event_%s"
-                           (or (plist-get event :turn-id) "board"))
-               :description "Render one board-observed chat event."
-               :owner 'board-observer
-               :target-buffer buffer
-               :key (list (plist-get event :turn-id)
-                          (plist-get event :type)
-                          (plist-get event :created-at))
-               :generation 0
-               :delay 0
-               :coalesce nil
-               :focus-policy 'preserve
-               :reentrancy-policy 'defer
-               :apply
-               (lambda (_job _handle)
-                 (when (and (buffer-live-p buffer)
-                            (eq e-chat-harness harness))
-                   (with-current-buffer buffer
-                     (unless (and
-                              (eq (plist-get event :type) 'assistant-delta)
-                              e-chat--assistant-streaming-p
-                              (equal e-chat--status "streaming"))
-                       (e-chat--render-event event))))))))))))
+         harness session-id (e-chat--event-consumer harness buffer))))
+
+(defun e-chat--subscribe-view (harness buffer session-id)
+  "Subscribe BUFFER and return SESSION-ID's matching bounded snapshot."
+  (let ((view (e-chat-service-subscribe-view
+               harness session-id (e-chat--event-consumer harness buffer))))
+    (setq e-chat--event-subscription
+          (e-chat-service-view-subscription view))
+    view))
 
 (defun e-chat--unsubscribe ()
   "Remove this buffer's board observer subscription."
@@ -8162,20 +8177,27 @@ separate dimmed representation instead."
           (cl-pushnew turn-id turn-ids :test #'equal))))
     turn-ids))
 
-(defun e-chat--session-replay-activity-events (messages)
-  "Return bounded activity events relevant to replayed MESSAGES."
+(cl-defun e-chat--session-replay-activity-events
+    (messages &optional (activity-events nil activity-events-supplied-p))
+  "Return bounded activity events relevant to replayed MESSAGES.
+When ACTIVITY-EVENTS is supplied, filter that snapshot rather than reading the
+service projection again."
   (let* ((limit
           (e-chat--validated-replay-limit
            e-chat-session-replay-activity-event-limit
            'e-chat-session-replay-activity-event-limit))
          (turn-ids (e-chat--session-replay-turn-ids messages))
+         (source-events
+          (if activity-events-supplied-p
+              activity-events
+            (e-chat-service-activity-events
+             e-chat-harness e-chat-session-id)))
          (events
           (and turn-ids
                (cl-remove-if-not
                 (lambda (event)
                   (member (plist-get event :turn-id) turn-ids))
-                (e-chat-service-activity-events
-                 e-chat-harness e-chat-session-id)))))
+                source-events))))
     (e-chat--tail-messages events limit)))
 
 (defun e-chat--terminal-activity-event (turn-id activity-events)
@@ -8236,10 +8258,13 @@ separate dimmed representation instead."
                  (not (e-chat--stale-progress-turn-p turn-id)))
         (e-chat--render-turn-activity-events turn-id activity-events)))))
 
-(cl-defun e-chat--render-session (&optional (messages nil messages-supplied-p))
+(cl-defun e-chat--render-session
+    (&optional (messages nil messages-supplied-p)
+               (replay-activity-events nil replay-activity-events-supplied-p))
   "Render the attached session transcript in the current buffer.
 When MESSAGES is supplied, render that message list instead of the
-attached session's full transcript."
+attached session's full transcript.  REPLAY-ACTIVITY-EVENTS is the matching
+service snapshot when supplied."
   (let* ((messages (if messages-supplied-p
                        messages
                      (e-chat-service-messages
@@ -8247,7 +8272,10 @@ attached session's full transcript."
          (turn-index 0)
          (activity-events
           (if messages-supplied-p
-              (e-chat--session-replay-activity-events messages)
+              (if replay-activity-events-supplied-p
+                  (e-chat--session-replay-activity-events
+                   messages replay-activity-events)
+                (e-chat--session-replay-activity-events messages))
             (ignore-errors
               (e-chat-service-activity-events
                e-chat-harness e-chat-session-id))))
@@ -8526,7 +8554,8 @@ When SESSION-ID is nil, create a private execution session for the participant."
 (defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
   "Attach BUFFER to HARNESS and SESSION-ID."
   (let ((unloaded-session (e-chat--unloaded-index-session harness session-id))
-        binding)
+        binding
+        view)
     (unless unloaded-session
       (e-chat--ensure-session harness session-id instance-id)
       (setq binding (e-chat-service-ensure-binding harness session-id)))
@@ -8586,6 +8615,11 @@ When SESSION-ID is nil, create a private execution session for the participant."
              (e-workspace-current))))
       (e-chat--workspace-unread-cache-update-buffer buffer)
       (e-chat--rename-buffer-for-session)
+      (unless unloaded-session
+        ;; Establish one cursor before rendering.  The returned bounded
+        ;; snapshot covers everything before it; only later events can reach
+        ;; the live consumer.
+        (setq view (e-chat--subscribe-view harness buffer session-id)))
       (if unloaded-session
           (progn
             (let ((inhibit-read-only t))
@@ -8603,7 +8637,8 @@ When SESSION-ID is nil, create a private execution session for the participant."
         (let ((inhibit-read-only t))
           (e-chat--clear t)
           (e-chat--render-session-replay
-           (e-chat-service-messages harness session-id)))
+           (e-chat-service-view-messages view)
+           (e-chat-service-view-activity-events view)))
         (e-chat--mark-buffer-session-read-if-selected buffer))
       (e-chat--restore-composer-state composer-state)
       (e-chat--set-status
@@ -8614,8 +8649,6 @@ When SESSION-ID is nil, create a private execution session for the participant."
       ;; arbitrary text part of the rendered conversation.
       (when (e-chat--surface-transcript-p)
         (setq-local buffer-read-only t))
-      (unless unloaded-session
-        (e-chat--subscribe harness buffer session-id))
       (e-chat--restore-output-tail-windows
        output-tail-windows)))
     buffer))

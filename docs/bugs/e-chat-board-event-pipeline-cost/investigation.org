@@ -1,0 +1,76 @@
+#+title: e-chat Board Event Pipeline Cost Investigation
+#+startup: overview
+
+* Runtime evidence
+
+The profile under =/private/tmp/e-profile/20260806-120327-000001*= recorded
+442 =chat.render-event= spans.  Those spans consumed 10472 ms in total.  Nine
+idle =chat.status= calls consumed 1833 ms, and context status construction
+reached about 597 ms for one call.
+
+A bounded live-state probe found 825 messages on the selected board, a
+256-event retained presentation projection, and 935 harness sessions.  The
+shell subscriber nevertheless began at sequence zero.  That explains both the
+duplicate board delivery and the repeated full-catalog session lookup seen in
+the CPU and allocation profiles.
+
+The running Emacs was only read through bounded scalar probes.  It was not
+reloaded or changed.
+
+* Source findings
+
+1. =e-chat-service--install-participant-binding= installs its presentation
+   observer at sequence zero, then progressively scans the whole retained
+   board even though its ring holds only 256 events.
+2. =e-chat-service-subscribe= also installs every shell observer at sequence
+   zero.  =e-chat--attach-buffer= first renders the bounded service projection
+   and then receives the same history again through that subscriber.
+3. =e-chat--render-event= unconditionally refreshes workspace unread state.
+   Resolving one buffer's session calls =e-harness-session-list= and therefore
+   lists and sorts the complete catalog.
+4. =e-chat--set-status= can call =e-chat--refresh-mode-line-status= inline.
+   When caches are cold this reaches =e-harness-context= in the event-rendering
+   call stack.
+
+* Performance regression baseline
+
+The performance registry now includes the three production-shaped structural
+scenarios and all previously registered default scenarios have baseline
+entries.  Zero-work budgets are enforced instead of silently comparing as a
+ratio of one.
+
+Before implementation, run =20260806-122854-000001= measured:
+
+- =chat.board-continuation=: 512 historical deliveries and 1 live delivery;
+- =chat.unread-event-cost=: 32 full session-catalog scans for 32 non-message
+  events;
+- =chat.status-context-cost=: 8 synchronous context builds for 8 forced cold
+  status updates.
+
+The JSON and Org artifacts are under =.e/perf-runs/= and are intentionally
+ignored local evidence.
+
+* Planned ownership
+
+- The chat service owns snapshot/cursor consistency and bounded board history.
+- The chat shell owns incremental unread presentation state.
+- The chat shell owns immediate status presentation; full context estimation
+  is deferred through its existing coalesced UI-work lane.
+
+* Slice 1: bounded snapshot continuation
+
+The service now opens a view through one explicit snapshot/cursor contract.
+Its observer reads at most the newest 256 matching board messages in reverse
+history, while its live cursor starts at the captured board high watermark.
+The chat shell renders the returned messages and activities, then keeps the
+paired subscription.  It no longer renders one projection and independently
+subscribes from sequence zero.
+
+Participant projections use the same bounded reverse-history seed and then
+observe only live messages.  The old progressive scan from sequence zero was
+removed.
+
+After implementation, run =20260806-123245-000001= measured zero historical
+continuation deliveries, one live delivery, a 256-message snapshot, and a
+1.021 ms median.  The corresponding before median was 12.735 ms with 512
+duplicate historical deliveries.

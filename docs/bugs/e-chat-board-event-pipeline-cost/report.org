@@ -1,0 +1,14 @@
+#+title: e-chat Board Event Pipeline Repeats Expensive Work
+#+startup: overview
+
+* Report
+
+Stopping a development profile took long enough to appear to freeze Emacs.
+The captured profile showed that normal board-backed chat presentation had
+also repeated avoidable work: a newly attached shell replayed board history
+that it had just rendered, every observed event could rescan the full session
+catalog for unread state, and status updates could synchronously reconstruct
+model context.
+
+Fix the three costs as separate architectural slices, with before/after
+performance scenarios and focused behavior tests for each contract.

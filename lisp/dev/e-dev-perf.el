@@ -29,6 +29,15 @@
 
 (declare-function e-chat-open "e-chat")
 (declare-function e-chat--render-event "e-chat")
+(declare-function e-chat--invalidate-mode-line-context-estimate "e-chat")
+(declare-function e-chat--set-status "e-chat")
+(declare-function e-chat-service-binding-board "e-chat-service")
+(declare-function e-chat-service-binding-observer "e-chat-service")
+(declare-function e-chat-service-create-session "e-chat-service")
+(declare-function e-chat-service-messages "e-chat-service")
+(declare-function e-chat-service-subscribe "e-chat-service")
+(declare-function e-chat-service-subscription-observer "e-chat-service")
+(declare-function e-chat-service-unsubscribe "e-chat-service")
 
 (defgroup e-dev-perf nil
   "Performance regression tests for e."
@@ -163,11 +172,16 @@
 
 (defun e-dev-perf--ratio (current baseline direction)
   "Return comparison ratio for CURRENT and BASELINE under DIRECTION."
-  (if (or (not (numberp baseline)) (zerop baseline))
-      1.0
+  (cond
+   ((not (numberp baseline)) 1.0)
+   ((zerop baseline)
     (pcase direction
-      ('higher-is-better (/ (float baseline) current))
-      (_ (/ (float current) baseline)))))
+      ('higher-is-better (if (> current 0) 0.0 1.0))
+      (_ (if (> current 0) most-positive-fixnum 1.0))))
+   ((and (eq direction 'higher-is-better) (zerop current))
+    most-positive-fixnum)
+   ((eq direction 'higher-is-better) (/ (float baseline) current))
+   (t (/ (float current) baseline))))
 
 (defun e-dev-perf--worse-delta (current baseline direction)
   "Return positive worse delta for CURRENT against BASELINE under DIRECTION."
@@ -843,7 +857,8 @@ artifacts under `e-dev-perf-run-directory'."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store)))
-    (e-harness-create-session harness :id "chat-perf")
+    (require 'e-chat-service)
+    (e-chat-service-create-session :harness harness :id "chat-perf")
     (let ((buffer (e-chat-open :harness harness
                                :session-id "chat-perf"
                                :new-session nil)))
@@ -863,6 +878,125 @@ artifacts under `e-dev-perf-run-directory'."
 (defun e-dev-perf--chat-pending-ui-work-count (buffer &rest args)
   "Return count of pending UI work in BUFFER narrowed by ARGS."
   (length (apply #'e-ui-work-pending buffer args)))
+
+(defconst e-dev-perf--chat-board-history-size 512
+  "Board history size used by the chat continuation performance fixture.")
+
+(defun e-dev-perf--chat-board-continuation-fixture ()
+  "Return one populated board fixture for continuation measurements."
+  (require 'e-chat-service)
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session-id (format "perf-board-%s" (gensym)))
+         (session (e-chat-service-create-session
+                   :harness harness :id session-id))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (dotimes (index e-dev-perf--chat-board-history-size)
+      (e-board-post-output
+       board :id (format "%s-output-%03d" session-id index)
+       :author "perf" :tags '(main) :content (format "answer %d" index)
+       :source-output-key (list 'perf session-id index)))
+    ;; Keep setup cost out of the measured continuation.  This models a live
+    ;; binding whose bounded presentation projection has already caught up.
+    (while (< (e-board-observer-next-index
+               (e-chat-service-binding-observer binding))
+              (e-board-message-count board))
+      (e-chat-service--drain-observer binding))
+    (list :harness harness :session-id session-id :binding binding :board board)))
+
+(defun e-dev-perf--chat-board-continuation-setup (scenario)
+  "Prepare independent board fixtures for every run of SCENARIO."
+  (let ((count (+ (or (e-dev-perf-scenario-warmups scenario) 0)
+                  (or (e-dev-perf-scenario-samples scenario) 1)))
+        fixtures)
+    ;; Prevent board notification timers from racing deterministic setup.
+    (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+      (dotimes (_ count)
+        (push (e-dev-perf--chat-board-continuation-fixture) fixtures)))
+    (list :fixtures (nreverse fixtures))))
+
+(defun e-dev-perf--scenario-chat-board-continuation-run (state)
+  "Measure replay deliveries made by one new chat continuation subscriber."
+  (let* ((fixture (pop (plist-get state :fixtures)))
+         (harness (plist-get fixture :harness))
+         (session-id (plist-get fixture :session-id))
+         (board (plist-get fixture :board))
+         (history-deliveries 0)
+         (live-deliveries 0)
+         subscription)
+    (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+      (setq subscription
+            (e-chat-service-subscribe
+             harness session-id
+             (lambda (_event)
+               (setq history-deliveries (1+ history-deliveries)))))
+      (while (< (e-board-observer-next-index
+                 (e-chat-service-subscription-observer subscription))
+                (e-board-message-count board))
+        (e-chat-service--drain-subscription subscription))
+      (let ((history-end history-deliveries))
+        (e-board-post-output
+         board :id (format "%s-live" session-id) :author "perf" :tags '(main)
+         :content "live answer"
+         :source-output-key
+         (list 'perf session-id e-dev-perf--chat-board-history-size))
+        (e-chat-service--drain-subscription subscription)
+        (setq live-deliveries (- history-deliveries history-end)
+              history-deliveries history-end)))
+    (e-chat-service-unsubscribe subscription)
+    (list :continuation.history-delivery.count history-deliveries
+          :continuation.live-delivery.count live-deliveries
+          :snapshot.message.count
+          (length (e-chat-service-messages harness session-id)))))
+
+(defun e-dev-perf--chat-unread-setup (_scenario)
+  "Return a chat buffer backed by a large session catalog."
+  (let* ((state (e-dev-perf--chat-buffer-state))
+         (store (e-harness-sessions (plist-get state :harness))))
+    (dotimes (index 511)
+      (e-session-create store :id (format "unread-catalog-%03d" index)))
+    state))
+
+(defun e-dev-perf--scenario-chat-unread-event-run (state)
+  "Measure session-catalog work caused by non-message chat events."
+  (let ((buffer (plist-get state :buffer))
+        (catalog-scans 0)
+        (original (symbol-function 'e-harness-session-list)))
+    (with-current-buffer buffer
+      (let ((e-chat--workspace-unread-cache-valid-p t)
+            (e-chat--workspace-unread-counts (make-hash-table :test 'equal))
+            (e-chat--workspace-unread-buffer-state (make-hash-table :test 'eq)))
+        (cl-letf (((symbol-function 'e-harness-session-list)
+                   (lambda (&rest args)
+                     (setq catalog-scans (1+ catalog-scans))
+                     (apply original args))))
+          (dotimes (index 32)
+            (e-chat--render-event
+             (list :type 'tool-started :session-id e-chat-session-id
+                   :turn-id "unread-perf-turn" :created-at (float-time)
+                   :payload (list :id (format "unread-tool-%d" index)
+                                  :name "fake")))))))
+    (list :unread.catalog-scan.count catalog-scans
+          :unread.event.count 32)))
+
+(defun e-dev-perf--scenario-chat-status-run (state)
+  "Measure synchronous context construction during chat status updates."
+  (let ((buffer (plist-get state :buffer))
+        (context-builds 0)
+        (original (symbol-function 'e-harness-context)))
+    (with-current-buffer buffer
+      (cl-letf (((symbol-function 'e-harness-context)
+                 (lambda (&rest args)
+                   (setq context-builds (1+ context-builds))
+                   (apply original args))))
+        (dotimes (index 8)
+          (e-chat--invalidate-mode-line-context-estimate)
+          (e-chat--set-status (format "perf-status-%d" index) t)))
+      (list :status.synchronous-context-build.count context-builds
+            :status.pending-refresh.count
+            (e-dev-perf--chat-pending-ui-work-count
+             buffer :owner 'chat-mode-line-status)))))
 
 (defun e-dev-perf--scenario-chat-activity-run (state)
   "Run chat activity burst scenario."
@@ -1149,6 +1283,38 @@ artifacts under `e-dev-perf-run-directory'."
       :samples 5
       :warmups 1
       :tags '(chat ui-work render)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "chat.board-continuation"
+      :title "Chat board snapshot continuation"
+      :owner 'e-chat-service
+      :setup #'e-dev-perf--chat-board-continuation-setup
+      :run #'e-dev-perf--scenario-chat-board-continuation-run
+      :samples 5
+      :warmups 1
+      :tags '(chat board replay)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "chat.unread-event-cost"
+      :title "Chat unread event update cost"
+      :owner 'e-chat
+      :setup #'e-dev-perf--chat-unread-setup
+      :run #'e-dev-perf--scenario-chat-unread-event-run
+      :teardown #'e-dev-perf--chat-teardown
+      :samples 5
+      :warmups 1
+      :tags '(chat unread session)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "chat.status-context-cost"
+      :title "Chat status context construction"
+      :owner 'e-chat
+      :setup (lambda (_scenario) (e-dev-perf--chat-buffer-state))
+      :run #'e-dev-perf--scenario-chat-status-run
+      :teardown #'e-dev-perf--chat-teardown
+      :samples 5
+      :warmups 1
+      :tags '(chat status context)))
     (e-dev-perf-register-scenario
      (e-dev-perf-scenario-create
       :id "tool.lifecycle-dispatch"

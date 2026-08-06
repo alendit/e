@@ -71,6 +71,19 @@
                            :verdict)
                 'noisy))))
 
+(ert-deftest e-dev-perf-test-zero-baseline-enforces-zero-cost-budget ()
+  "A zero lower-is-better baseline rejects any positive structural work."
+  (let ((baseline (e-dev-perf-test--baseline-metric 'baseline 0.0
+                                                     'fail_delta 0.0)))
+    (should (eq (plist-get (e-dev-perf-compare-metric
+                            baseline '(:median 0.0 :variance-ratio 0.0))
+                           :verdict)
+                'pass))
+    (should (eq (plist-get (e-dev-perf-compare-metric
+                            baseline '(:median 1.0 :variance-ratio 0.0))
+                           :verdict)
+                'regression))))
+
 (ert-deftest e-dev-perf-test-summarize-samples-deterministically ()
   "Sample summaries are deterministic and independent of wall-clock timing."
   (let ((summary (e-dev-perf-summarize-samples '(9 1 5 3 7))))
@@ -163,6 +176,10 @@
       (should (member "session.metadata-state" ids))
       (should (member "chat.activity-burst" ids))
       (should (member "chat.final-assistant-render" ids))
+      (should (member "chat.ui-work-lifecycle" ids))
+      (should (member "chat.board-continuation" ids))
+      (should (member "chat.unread-event-cost" ids))
+      (should (member "chat.status-context-cost" ids))
       (should (member "tool.lifecycle-dispatch" ids))
       (should (member "work.lifecycle-cheap" ids))
       (should (member "work.tool-render-dispatch" ids)))))
