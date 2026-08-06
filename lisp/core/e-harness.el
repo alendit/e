@@ -3067,6 +3067,16 @@ cancellation.  SESSION-ID identifies the session."
                                (plist-get entry :context))))
 	                 (plist-put entry :result hooked-result)
 	                 (plist-put entry :status 'done)
+	                 ;; `e-loop' reports its own loop-level completion before
+	                 ;; this callback.  Do not expose that provisional edge as
+	                 ;; the harness/session terminal event: capability hooks
+	                 ;; still own settlement work at this point.  The public
+	                 ;; terminal edge is emitted here, after every hook has
+	                 ;; observed the final assistant message and recorded any
+	                 ;; durable audit metadata.
+	                 (e-harness--emit-turn-event
+	                  harness session-id turn-id 'turn-finished
+	                  (list :reason (plist-get hooked-result :reason)))
 	                 (e-work-finish turn-work hooked-result)
 	                 (e-harness--drain-pending-steering-input harness entry)
 	                 (e-harness--schedule-queue-drain
@@ -3114,8 +3124,12 @@ cancellation.  SESSION-ID identifies the session."
 	                              (plist-get
 	                               entry
 	                               :provider-anchor-candidates)))))
-	                    (e-harness--emit-turn-event
-	                     harness session-id turn-id type payload)))
+	                    ;; `turn-finished' here is the loop's private terminal
+	                    ;; edge.  The harness emits its public terminal event
+	                    ;; after `:turn-finished' hooks settle in `finish-done'.
+	                    (unless (eq type 'turn-finished)
+	                      (e-harness--emit-turn-event
+	                       harness session-id turn-id type payload))))
 	                :append-message
 	                (lambda (message)
 	                  (when (and (active-entry-p)
