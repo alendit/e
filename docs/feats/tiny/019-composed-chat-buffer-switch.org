@@ -7,6 +7,11 @@ Switching to a composed chat through a generic buffer command now restores the
 full chat surface.  The transcript remains visible, its composer is recreated
 below it when needed, and focus moves to the editable composer.
 
+The activation check is based on surface completeness: it restores only when
+the selected transcript lacks a paired composer window.  Selecting the
+transcript of an already-complete surface for response navigation leaves
+transcript focus intact.
+
 * Why tiny
 
 This completes one presentation-shell activation path.  It does not alter chat
@@ -15,3 +20,5 @@ state, rendering, provider behavior, or window policy outside a composed chat.
 * Validation
 
 - =eldev test -f test/e-chat-test.el=.
+- Real-Evil chat surface E2E coverage verifies one-Escape transcript focus and
+  subsequent =d= and Enter dispatch.

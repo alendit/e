@@ -30,6 +30,31 @@
 (declare-function e-board-e2e-drain-session "e-board-e2e-support")
 (declare-function e-board-e2e-wait-batch "e-board-e2e-support")
 (declare-function e-board-e2e-wait-until "e-board-e2e-support")
+(declare-function evil-mode "evil-core")
+(declare-function evil-insert-state "evil-states")
+(declare-function evil-local-mode "evil-core")
+(defvar evil-state)
+
+(defun e-chat-surface-e2e--load-evil ()
+  "Load the real Evil package for command-loop integration coverage."
+  (or (featurep 'evil)
+      (let* ((emacs-dir
+              (or (getenv "EMACS_DIR")
+                  (expand-file-name "~/.config/emacs/")))
+             (configured (getenv "E_EVIL_DIR"))
+             (build
+              (expand-file-name
+               (format ".local/straight/build-%s.%s/evil/"
+                       emacs-major-version emacs-minor-version)
+               emacs-dir))
+             (repository
+              (expand-file-name ".local/straight/repos/evil/" emacs-dir))
+             (directory
+              (seq-find #'file-directory-p
+                        (delq nil (list configured build repository)))))
+        (when directory
+          (add-to-list 'load-path directory))
+        (require 'evil nil t))))
 
 (ert-deftest e-chat-surface-e2e-test-composer-submits-below-transcript ()
   "A displayed chat keeps input in its pane and responses in its transcript."
@@ -74,6 +99,7 @@
               (select-window composer-window)
               (with-current-buffer composer
                 (e-chat-composer-enter-navigation))
+              (should (eq (selected-window) transcript-window))
               (with-current-buffer buffer
                 (should-not e-chat-response-navigation-mode))
               (select-window composer-window)
@@ -102,10 +128,88 @@
               (select-window composer-window)
               (with-current-buffer composer
                 (e-chat-composer-enter-navigation))
+              (should (eq (selected-window) transcript-window))
               (with-current-buffer buffer
                 (let ((last-command-event ?x))
                   (should-error (self-insert-command 1)
                                 :type 'buffer-read-only))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (set-window-configuration window-configuration))))
+
+(ert-deftest e-chat-surface-e2e-test-evil-escape-routes-transcript-commands ()
+  "One real Evil Escape moves input focus to transcript navigation commands."
+  (skip-unless (e-chat-surface-e2e--load-evil))
+  (evil-mode 1)
+  (e-chat--configure-modal-editing-policy)
+  (e-chat--configure-evil-composer-bindings)
+  (e-board-e2e-reset-runtime)
+  (let* ((e-chat--surface-composition-enabled t)
+         (backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "evil answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (session-id "chat-surface-evil-e2e")
+         (buffer (e-chat-open :harness harness :session-id session-id))
+         (window-configuration (current-window-configuration))
+         details-buffer)
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (e-chat--after-display-buffer buffer)
+          (with-current-buffer buffer
+            (let* ((composer e-chat--surface-composer-buffer)
+                   (pair (cl-find-if
+                          (lambda (candidate)
+                            (and (window-live-p (car candidate))
+                                 (window-live-p (cdr candidate))
+                                 (eq (window-buffer (car candidate)) buffer)
+                                 (eq (window-buffer (cdr candidate)) composer)))
+                          e-chat--surface-window-pairs))
+                   (transcript-window (car pair))
+                   (composer-window (cdr pair)))
+              (select-window composer-window)
+              (with-current-buffer composer
+                (evil-local-mode 1)
+                (evil-insert-state)
+                (goto-char (point-max))
+                (insert "evil prompt")
+                (e-chat-submit))
+              (e-board-e2e-drain-session harness session-id)
+              (should (equal (plist-get
+                              (e-board-e2e-wait-batch harness session-id 1.0)
+                              :status)
+                             'done))
+              (should
+               (e-board-e2e-wait-until
+                (lambda ()
+                  (with-current-buffer buffer
+                    (string-match-p "evil answer" (buffer-string))))
+                1.0))
+              (select-window composer-window)
+              (with-current-buffer composer
+                (evil-insert-state)
+                (should (eq evil-state 'insert))
+                (should (eq (key-binding (kbd "<escape>"))
+                            #'e-chat-composer-enter-navigation)))
+              (execute-kbd-macro (kbd "<escape>"))
+              (should (eq (selected-window) transcript-window))
+              (should (eq (current-buffer) buffer))
+              (should e-chat-response-navigation-mode)
+              (should (eq (key-binding (kbd "RET"))
+                          #'e-chat-response-navigation-activate))
+              (should (eq (key-binding (kbd "d"))
+                          #'e-chat-response-navigation-details))
+              (execute-kbd-macro (kbd "d"))
+              (setq details-buffer (get-buffer e-chat-details-buffer-name))
+              (should (buffer-live-p details-buffer))
+              (with-current-buffer details-buffer
+                (should (string-match-p "Turn:" (buffer-string))))
+              (execute-kbd-macro (kbd "RET"))
+              (should e-chat-block-view-mode)
+              (should-not e-chat-response-navigation-mode))))
+      (when (buffer-live-p details-buffer)
+        (kill-buffer details-buffer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))

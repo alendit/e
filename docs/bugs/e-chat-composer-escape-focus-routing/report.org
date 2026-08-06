@@ -1,0 +1,11 @@
+#+title: e-chat Escape Leaves Keystrokes in the Composer
+#+startup: overview
+
+* Report
+
+In a composed chat, pressing Escape appears to focus the transcript, but Enter
+and =d= are still handled by the composer.  Enter does not activate the focused
+turn and =d= invokes composer editing instead of opening turn details.
+
+One Escape should transfer keyboard ownership from the composer pane to
+response navigation in the transcript pane.

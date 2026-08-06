@@ -746,18 +746,22 @@ configuration change."
   "Non-nil while a selected composed chat surface is being restored.")
 
 (defun e-chat--activate-selected-surface-after-buffer-switch ()
-  "Restore the selected composed chat surface after a generic buffer switch.
-Ordinary `switch-to-buffer' calls replace only the selected window's buffer.
-A composed chat owns a transcript and a paired composer, so make that generic
-buffer-level transition enter its presentation shell just as chat-specific
-display commands do."
+  "Complete a selected composed chat after a generic buffer switch.
+Ordinary `switch-to-buffer' can expose a transcript without its composer.
+Restore only that incomplete surface.  If the selected transcript already has
+its paired composer window, it is a deliberate transcript focus transition and
+must remain selected for response navigation."
   (unless e-chat--surface-activation-in-progress
-    (let ((buffer (window-buffer (selected-window))))
+    (let* ((window (selected-window))
+           (buffer (window-buffer window)))
       (when (and (buffer-live-p buffer)
                  (with-current-buffer buffer
                    (e-chat--surface-transcript-p)))
         (let ((e-chat--surface-activation-in-progress t))
-          (e-chat--after-display-buffer buffer))))))
+          (unless (with-current-buffer buffer
+                    (window-live-p
+                     (e-chat--surface-composer-window window)))
+            (e-chat--after-display-buffer buffer)))))))
 
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
@@ -1338,26 +1342,6 @@ This leaves the global minor mode enabled for every other buffer."
           (kbd "s-I")
           #'e-chat-add-context-to-session))))))
 
-(defun e-chat--configure-evil-composer-bindings ()
-  "Configure the composer bindings that Evil would otherwise shadow.
-Evil binds `C-w' as the window-command prefix in its insert and emacs
-states, shadowing the composer's own binding.  In normal state it also owns
-Escape before the local composer keymap sees it.  Define those bindings in
-the relevant Evil state maps so they win locally without disturbing global
-Evil behavior elsewhere.  A no-op when Evil is absent."
-  (when (fboundp 'evil-define-key*)
-    (dolist (state '(insert emacs))
-      (funcall #'evil-define-key*
-               state
-               e-chat-mode-map
-               (kbd "C-w")
-               #'e-chat-kill-region-or-backward-word))
-    (funcall #'evil-define-key*
-             'normal
-             e-chat-mode-map
-             (kbd "<escape>")
-             #'e-chat-composer-enter-navigation)))
-
 (defun e-chat--make-composer-mode-map (&optional map)
   "Return MAP configured as the local keymap for composed chat input."
   (let ((map (or map (make-sparse-keymap))))
@@ -1368,6 +1352,28 @@ Evil behavior elsewhere.  A no-op when Evil is absent."
 (defvar e-chat-composer-mode-map
   (e-chat--make-composer-mode-map)
   "Keymap for the editable pane of a composed e chat surface.")
+
+(defun e-chat--configure-evil-composer-bindings ()
+  "Configure the composer bindings that Evil would otherwise shadow.
+Evil binds `C-w' as the window-command prefix in its insert and emacs
+states, shadowing the composer's own binding.  Evil also consumes the first
+Escape in insert state merely to enter normal state.  Define both commands on
+the dedicated composer map in every relevant Evil state so one Escape crosses
+the pane boundary and subsequent keys come from transcript navigation.
+A no-op when Evil is absent."
+  (when (fboundp 'evil-define-key*)
+    (dolist (state '(insert emacs))
+      (funcall #'evil-define-key*
+               state
+               e-chat-composer-mode-map
+               (kbd "C-w")
+               #'e-chat-kill-region-or-backward-word))
+    (dolist (state '(insert normal emacs))
+      (funcall #'evil-define-key*
+               state
+               e-chat-composer-mode-map
+               (kbd "<escape>")
+               #'e-chat-composer-enter-navigation))))
 
 (defun e-chat--refresh-keymaps ()
   "Refresh chat keymaps after live reload."

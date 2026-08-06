@@ -46,6 +46,10 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
   after composer edits or window-layout changes.
 - Durable transcript rendering does not write to the composer buffer.  Queue
   changes are the explicit exception because they update composer chrome.
+- Escape transfers input ownership from the composer to transcript response
+  navigation in one command, including from Evil insert state.  A complete
+  transcript/composer window pair is not reactivated merely because its
+  transcript window becomes selected.
 - Batch tests retain the old monolithic layout until their focused rendering
   fixtures are migrated.  Interactive users cannot select that path.
 

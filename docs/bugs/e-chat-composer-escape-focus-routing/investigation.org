@@ -1,0 +1,110 @@
+#+title: e-chat Composer Escape Focus Routing Investigation
+#+startup: overview
+
+* Reproduction and evidence
+
+A bounded read-only probe of the running Emacs found the visible daily-chat
+composer in Evil normal state with these effective bindings:
+
+#+begin_example
+:escape e-chat-composer-enter-navigation
+:ret evil-ret
+:d evil-delete
+#+end_example
+
+Other composer buffers still in Evil insert state reported Escape as
+=evil-normal-state=.  This proves the first Escape only changed Evil state and
+left the composer window selected.  The navigation binding was available only
+for a second Escape.
+
+Two regressions then reproduced both boundaries outside the running Emacs:
+
+1. A real composed-window integration called the navigation command and found
+   that the generic surface-restoration hook immediately selected the composer
+   again.
+2. An isolated E2E loaded the real Evil package, enabled Evil locally in the
+   composer, and executed actual Escape input.  Escape resolved to
+   =evil-normal-state= instead of =e-chat-composer-enter-navigation=.
+
+Both tests failed before the implementation.
+
+* Root cause
+
+Two presentation policies independently kept keyboard ownership in the
+composer:
+
+- The Evil override installed composer Escape only in normal state and on the
+  inherited transcript map.  Insert-state Escape therefore retained Evil's
+  normal-state transition.
+- =buffer-list-update-hook= treated every selected composed transcript as an
+  incomplete generic buffer switch.  Selecting the already-visible transcript
+  during explicit navigation caused the hook to call the normal display path,
+  which selected the paired composer again.
+
+The earlier generic-buffer-switch fix modeled its trigger too broadly.  The
+surface controller should repair an incomplete pair, not enforce composer focus
+on every complete surface.
+
+* Design
+
+The surface controller now bases restoration on the owned window-pair
+invariant:
+
+- if a selected transcript has no paired composer window, complete the surface
+  and focus its composer, preserving generic =switch-to-buffer= behavior;
+- if the selected transcript already has its paired composer window, perform
+  no restoration because explicit transcript navigation owns focus.
+
+This adds no focus flag, command exception, timer, or persistent state.  The
+existing transcript/composer window pair is sufficient to distinguish an
+incomplete generic switch from an explicit focus transition.
+
+The Evil adapter now installs Escape directly on
+=e-chat-composer-mode-map= in insert, normal, and emacs states.  =C-w= is also
+scoped to that consumer map.  One Escape therefore invokes the shell command
+without first passing through an Evil-only state transition.
+
+* Validation
+
+- Focused composed-window, activation, response-navigation, viewport, duplicate
+  reconciliation, and Evil-binding suite: 12 passed, 0 unexpected.
+- Full chat-surface E2E suite with the real Evil package: 3 passed, 0
+  unexpected.  The regression executed Escape, =d=, and Enter through
+  =execute-kbd-macro= after a real fake-backend turn completed.
+- Broad chat suite excluding the pre-existing fixed-timeout async index-load
+  test: 327 passed, 0 unexpected, 1 optional Markdown-rendering skip.
+- Focused byte compilation of the implementation and E2E test plus
+  =git diff --check=: passed.
+- The running Emacs was inspected only with bounded read-only probes and was
+  not reloaded or changed.
+
+* Architecture self-check
+
+1. The slice restores usable transcript navigation independently: one Escape
+   hands Enter and =d= to the focused turn.
+2. It moves toward the completed chat-surface contract where each pane owns its
+   input and the surface controller owns only pairing and activation.
+3. Host focus events are unstable; the stable window-pair invariant is modeled
+   directly.  No speculative focus state is added.
+4. =e-chat= owns the behavior because it owns the composer, transcript, keymaps,
+   and their window pair.
+5. Coupling is reduced: Evil bindings target the composer consumer map, and
+   restoration depends only on surface completeness.
+6. No harness, board, capability, provider, or persistence dependency points
+   toward presentation code.
+7. Window selection and keymap effects remain at the shell adapter edge.
+8. No state is added.  Existing window pairs remain ephemeral, frame-local,
+   rebuildable presentation state.
+9. The restoration hook adds one bounded pair reconciliation only when the
+   selected buffer is a composed transcript; navigation no longer triggers a
+   second display cycle.
+10. A paired composer window is a real invariant and substitutes across direct
+    display, generic switching, workspace restoration, and explicit navigation.
+11. Generic =switch-to-buffer= restoration remains compatible.  The obsolete
+    assumption that every transcript selection requires composer focus is
+    removed.
+12. No command-specific suppression or extra focus override was introduced.
+13. Missing transcript and missing-block navigation errors remain explicit;
+    unexpected window errors still surface.
+14. Unit integration proves selected-window and effective-keymap ownership;
+    E2E executes real Evil Escape, =d=, and Enter through the command loop.

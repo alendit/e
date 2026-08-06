@@ -168,6 +168,40 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-navigation-routes-keys-to-transcript ()
+  "Composer navigation selects the transcript and activates its keymap."
+  (let* ((e-chat--surface-composition-enabled t)
+         (buffer (e-chat-test--buffer nil "chat-composer-navigation"))
+         transcript-window composer-window details-buffer)
+    (unwind-protect
+        (save-window-excursion
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn
+             "turn-1" 10 11 "question" "answer")
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t)))
+          (with-current-buffer (window-buffer composer-window)
+            (call-interactively #'e-chat-composer-enter-navigation))
+          (should (eq (selected-window) transcript-window))
+          (should (eq (window-buffer transcript-window) buffer))
+          (with-current-buffer buffer
+            (should e-chat-response-navigation-mode)
+            (should (eq (key-binding (kbd "RET"))
+                        #'e-chat-response-navigation-activate))
+            (should (eq (key-binding (kbd "d"))
+                        #'e-chat-response-navigation-details))
+            (setq details-buffer
+                  (call-interactively (key-binding (kbd "d"))))
+            (should (buffer-live-p details-buffer))
+            (call-interactively (key-binding (kbd "RET")))
+            (should e-chat-block-view-mode)
+            (should-not e-chat-response-navigation-mode)))
+      (when (buffer-live-p details-buffer)
+        (kill-buffer details-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (defun e-chat-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
   (dolist (buffer (buffer-list))
@@ -9519,7 +9553,7 @@ The context-window denominator comes from the live provider lookup
     (should (string= (buffer-string) " world"))))
 
 (ert-deftest e-chat-test-evil-composer-bindings-reclaim-shadowed-keys ()
-  "Evil-local composer bindings retain word kill and normal Escape behavior."
+  "Evil-local composer bindings route Escape from every editing state."
   (let (calls)
     (cl-letf (((symbol-function 'evil-define-key*)
                (lambda (&rest args)
@@ -9527,15 +9561,16 @@ The context-window denominator comes from the live provider lookup
       (e-chat--configure-evil-composer-bindings))
     (dolist (state '(insert emacs))
       (should (member (list state
-                            e-chat-mode-map
+                            e-chat-composer-mode-map
                             (kbd "C-w")
                             #'e-chat-kill-region-or-backward-word)
                       calls)))
-    (should (member (list 'normal
-                          e-chat-mode-map
-                          (kbd "<escape>")
-                          #'e-chat-composer-enter-navigation)
-                    calls))))
+    (dolist (state '(insert normal emacs))
+      (should (member (list state
+                            e-chat-composer-mode-map
+                            (kbd "<escape>")
+                            #'e-chat-composer-enter-navigation)
+                      calls)))))
 
 (ert-deftest e-chat-test-evil-composer-bindings-noop-without-evil ()
   "Composer Evil rebinding is a no-op when Evil is unavailable."
@@ -10479,9 +10514,11 @@ The context-window denominator comes from the live provider lookup
   "Chat activation follows selection/workspaces, not arbitrary layout changes."
   (cl-progv '(window-selection-change-functions
               window-configuration-change-hook
+              buffer-list-update-hook
               persp-activated-functions)
       '((e-chat--tail-selected-active-turn)
         (e-chat--tail-selected-active-turn)
+        nil
         (e-chat--tail-selected-active-turn))
     (e-chat--ensure-window-selection-hook)
     (should-not (memq 'e-chat--tail-selected-active-turn
@@ -10498,6 +10535,8 @@ The context-window denominator comes from the live provider lookup
                       window-configuration-change-hook))
     (should-not (memq #'e-chat--activate-selected-surface-after-workspace-switch
                       window-configuration-change-hook))
+    (should (memq #'e-chat--activate-selected-surface-after-buffer-switch
+                  buffer-list-update-hook))
     (should (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions))
     (should (memq #'e-chat--activate-selected-surface-after-workspace-switch
