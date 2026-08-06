@@ -7897,6 +7897,15 @@ separate dimmed representation instead."
      (and hidden (not e-chat--reveal-hidden)))
     entry))
 
+(defun e-chat--event-may-change-unread-p (event)
+  "Return non-nil when board EVENT can change this buffer's unread state."
+  (pcase (plist-get event :type)
+    ((or 'message-added 'message-updated)
+     (eq (plist-get (plist-get (plist-get event :payload) :message) :role)
+         'assistant))
+    ('session-reset t)
+    (_ nil)))
+
 (defun e-chat--render-event (event)
   "Render harness EVENT into the current chat buffer."
   (e-chat--profile-call
@@ -8152,7 +8161,8 @@ separate dimmed representation instead."
                 (or attempt 1) (or backoff 0)))))
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t)))
-     (e-chat--workspace-unread-cache-update-buffer))))
+     (when (e-chat--event-may-change-unread-p event)
+       (e-chat--workspace-unread-cache-update-buffer)))))
 
 (defun e-chat--tail-messages (messages limit)
   "Return at most LIMIT trailing MESSAGES."
@@ -9778,10 +9788,9 @@ face properties so the preview still reflects chat rendering."
 
 (defun e-chat-overview--session-for-id (harness session-id)
   "Return HARNESS session metadata for SESSION-ID."
-  (cl-find session-id
-           (e-harness-session-list harness)
-           :key (lambda (session) (plist-get session :id))
-           :test #'equal))
+  (condition-case nil
+      (e-chat-service-session harness session-id)
+    (e-session-missing nil)))
 
 (defun e-chat-overview--harness-for-instance-id (instance-id)
   "Return live harness for INSTANCE-ID, or the overview/default harness."

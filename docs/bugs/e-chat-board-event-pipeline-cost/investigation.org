@@ -74,3 +74,15 @@ After implementation, run =20260806-123245-000001= measured zero historical
 continuation deliveries, one live delivery, a 256-message snapshot, and a
 1.021 ms median.  The corresponding before median was 12.735 ms with 512
 duplicate historical deliveries.
+
+* Slice 2: incremental unread updates
+
+Session-id lookup now uses the chat service's direct single-session read.  It
+no longer lists and sorts every session to locate one id.  The render path also
+updates unread state only for assistant message additions or updates and for a
+session reset; tool, reasoning, provider, action, hook, and progress events
+cannot change the latest assistant marker and now do no unread work.
+
+After implementation, run =20260806-123513-000001= measured zero catalog scans
+for 32 non-message events and a 3.125 ms median.  The corresponding before run
+performed 32 catalog scans and had a 75.714 ms median with 512 sessions.

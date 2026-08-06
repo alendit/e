@@ -10394,6 +10394,39 @@ The context-window denominator comes from the live provider lookup
                  harness
                  (plist-get candidate :session)))))
 
+(ert-deftest e-chat-test-session-id-lookup-does-not-list-session-catalog ()
+  "Unread lookup resolves one session without listing and sorting its catalog."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :sessions store :enabled-layer-ids nil)))
+    (dotimes (index 512)
+      (e-session-create store :id (format "catalog-%03d" index)))
+    (cl-letf (((symbol-function 'e-harness-session-list)
+               (lambda (&rest _args) (error "catalog scan"))))
+      (should (equal (plist-get
+                      (e-chat-overview--session-for-id harness "catalog-511")
+                      :id)
+                     "catalog-511")))))
+
+(ert-deftest e-chat-test-only-unread-relevant-events-refresh-unread-cache ()
+  "Tool activity skips unread work while assistant output refreshes it once."
+  (with-temp-buffer
+    (e-chat-mode)
+    (setq-local e-chat-session-id "unread-events")
+    (let ((updates 0)
+          (inhibit-read-only t))
+      (cl-letf (((symbol-function 'e-chat--workspace-unread-cache-update-buffer)
+                 (lambda (&rest _args) (setq updates (1+ updates)))))
+        (e-chat--render-event
+         '(:type tool-started :session-id "unread-events" :turn-id "turn-1"
+           :created-at 1.0 :payload (:id "tool-1" :name "fake")))
+        (should (= updates 0))
+        (e-chat--render-event
+         '(:type message-added :session-id "unread-events" :turn-id "turn-1"
+           :created-at 2.0
+           :payload (:message (:id "answer" :role assistant
+                               :content "done" :turn-id "turn-1"))))
+        (should (= updates 1))))))
+
 (ert-deftest e-chat-test-workspace-unread-indicator-follows-chat-affinity ()
   "Workspace unread markers follow chat buffer workspace affinity."
   (let* ((store (e-session-store-create))
