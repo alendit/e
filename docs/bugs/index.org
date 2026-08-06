@@ -73,3 +73,4 @@ State values for coding agents:
 | Closed | session-root-not-project-root/ | Session Root Uses Feature Directory Instead of Project Root |
 | Closed | org-canvas-stale-workspace-affinity/ | Org Canvas stale workspace affinity |
 | Closed | e-chat-read-marker-json-plist-listp/ | e-chat read-marker JSON plist causes listp after restart |
+| Closed | e-chat-mode-line-status-missing/ | e-chat no longer shows model and context status |

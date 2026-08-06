@@ -1,0 +1,7 @@
+#+title: e-chat no longer shows model and context status
+#+startup: overview
+
+* Report
+
+An opened =e-chat= buffer shows only the default =e-chat= mode-line label.
+The model, reasoning effort, and context usage information are missing.

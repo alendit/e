@@ -8794,6 +8794,31 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-open-loaded-session-refreshes-mode-line-status ()
+  "Opening a loaded session schedules its model/context mode-line status."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (generate-new-buffer " *e-chat-mode-line-open*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--model-context-window)
+                     (lambda (model)
+                       (and (equal model "gpt-5.5") 100)))
+                    ((symbol-function 'e-chat--redraw-visible-p)
+                     (lambda () t)))
+            (e-chat--attach-buffer buffer harness "chat-mode-line-open")
+            (should (equal mode-name "e-chat"))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch
+               :buffer buffer
+               :owner 'chat-mode-line-status))
+            (should (string-match-p "gpt-5.5/high" mode-name))
+            (should (string-match-p "/100 tok" mode-name))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-mode-line-status-unknown-window-shows-question-mark ()
   "When the provider lookup returns nil, the mode line shows `?', no fallback."
   (let* ((store (e-session-store-create))

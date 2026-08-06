@@ -1,0 +1,38 @@
+#+title: Investigation: e-chat no longer shows model and context status
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =e-chat--refresh-mode-line-status= stores the context-aware status in
+  =mode-name=.
+- The deferred refresh is scheduled only when =e-chat--set-status= receives a
+  non-nil =refresh-mode-line= argument.
+- The loaded-session attach path passed =(not unloaded-session)= to
+  =e-chat--set-status=. For an already-loaded session this was nil, so the
+  buffer kept the major mode's default =e-chat= label and never requested the
+  model/context refresh.
+
+** Test inspection
+
+The existing mode-line tests covered explicit status refreshes and the status
+formatter, but did not cover opening an already-loaded session.
+
+** Conclusion
+
+The initial status update on attach is also a context-status boundary. It must
+request the deferred mode-line refresh for both loaded and unloaded sessions.
+
+** Fix
+
+The attach path now passes =t= to =e-chat--set-status= for both session states.
+Added =e-chat-test-open-loaded-session-refreshes-mode-line-status= to verify
+that opening a loaded session eventually displays the model, effort, and
+context-window denominator.
+
+** Verification
+
+- Focused ERT tests passed: 3 expected, 0 unexpected.
+- =git diff --check= passed.
+- The running Emacs was not reloaded; repository-side validation passed.

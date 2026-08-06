@@ -8706,7 +8706,7 @@ When SESSION-ID is nil, create a private execution session for the participant."
       (e-chat--restore-composer-state composer-state)
       (e-chat--set-status
        (if unloaded-session "loading session" "idle")
-       (not unloaded-session))
+       t)
       ;; The transcript no longer has an editable composer tail.  Protect it
       ;; as a whole so an early Escape or any unbound editing key cannot make
       ;; arbitrary text part of the rendered conversation.
