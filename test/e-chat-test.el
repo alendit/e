@@ -8719,6 +8719,7 @@ The context-window denominator comes from the live provider lookup
         (cl-letf (((symbol-function 'e-chat--model-context-window)
                    (lambda (model) (and (equal model "gpt-5.5") 100))))
           (with-current-buffer buffer
+            (setq-local e-chat--assume-redraw-visible t)
             (e-session-append-message
              store
              e-chat-session-id
@@ -8726,6 +8727,9 @@ The context-window denominator comes from the live provider lookup
             (e-chat-test--seed-board-log-from-private-fixture
              harness e-chat-session-id)
             (e-chat--set-status "idle" t)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)
+                                     :owner 'chat-mode-line-status))
             (should (string-match-p "gpt-5.5/high" mode-name))
             (should (string-match-p "~[0-9]+%" mode-name))
             (should (string-match-p "/100 tok" mode-name))))
@@ -8746,9 +8750,13 @@ The context-window denominator comes from the live provider lookup
         (cl-letf (((symbol-function 'e-chat--model-context-window)
                    (lambda (_model) nil)))
           (with-current-buffer buffer
+            (setq-local e-chat--assume-redraw-visible t)
             (e-session-append-message
              store e-chat-session-id '(:role user :content "q"))
             (e-chat--set-status "idle" t)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)
+                                     :owner 'chat-mode-line-status))
             (should (string-match-p "gpt-5.5/high" mode-name))
             (should (string-match-p "/? tok" mode-name))))
       (when (buffer-live-p buffer)
@@ -8778,6 +8786,9 @@ The context-window denominator comes from the live provider lookup
              :reasoning-output-tokens 139
              :total-tokens 203017))
           (e-chat--set-status "idle" t)
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'chat-mode-line-status))
           (should (equal mode-name
                          "e-chat gpt-5.5/high 78% (203k/258k tok)")))
       (when (buffer-live-p buffer)
@@ -8803,6 +8814,7 @@ The context-window denominator comes from the live provider lookup
       (setq-local e-current-harness harness)
       (setq-local e-chat-harness harness)
       (setq-local e-chat-session-id "chat-compacted-usage")
+      (setq-local e-chat--assume-redraw-visible t)
       (cl-letf (((symbol-function 'e-session--timestamp)
                  (lambda (&optional _time)
                    (prog1 (car timestamps)
@@ -8834,6 +8846,9 @@ The context-window denominator comes from the live provider lookup
          "summary"
          :first-kept-entry-id "kept"))
       (e-chat--set-status "idle" t)
+      (e-ui-work-with-batch-drain
+        (e-ui-work-drain-batch :buffer (current-buffer)
+                               :owner 'chat-mode-line-status))
       (should (string-match-p "~[0-9]+%" mode-name))
       (should-not (string-match-p "203k/258k tok" mode-name)))))
 
@@ -9009,8 +9024,8 @@ The context-window denominator comes from the live provider lookup
         (kill-buffer buffer))
       (delete-directory profile-directory t))))
 
-(ert-deftest e-chat-test-set-status-can-explicitly-refresh-mode-line ()
-  "Explicit status refresh still updates the context-aware mode line."
+(ert-deftest e-chat-test-set-status-schedules-explicit-mode-line-refresh ()
+  "Explicit status refresh leaves the status stack before context work."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
@@ -9023,12 +9038,21 @@ The context-window denominator comes from the live provider lookup
          (refresh-calls 0))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (e-chat--invalidate-mode-line-context-estimate)
           (cl-letf (((symbol-function 'e-chat--refresh-mode-line-status)
                      (lambda (&rest _args)
                        (setq refresh-calls (1+ refresh-calls))
                        (setq-local mode-name "refreshed mode line"))))
-            (e-chat--set-status "idle" t))
+            (e-chat--set-status "idle" t)
+            (should (= refresh-calls 0))
+            (should (= (length (e-ui-work-pending
+                                (current-buffer)
+                                :owner 'chat-mode-line-status))
+                       1))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)
+                                     :owner 'chat-mode-line-status)))
           (should (= refresh-calls 1))
           (should (equal mode-name "refreshed mode line")))
       (when (buffer-live-p buffer)
@@ -9048,6 +9072,7 @@ The context-window denominator comes from the live provider lookup
          (context-calls 0))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (cl-letf (((symbol-function 'e-harness-context)
                      (lambda (&rest _args)
                        (setq context-calls (1+ context-calls))
@@ -9073,6 +9098,7 @@ The context-window denominator comes from the live provider lookup
          (context-calls 0))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (setq-local e-chat--mode-line-context-estimate-cache
                       (cons (list :tokens 123
                                   :time (float-time)
@@ -9087,7 +9113,10 @@ The context-window denominator comes from the live provider lookup
                      (lambda (&rest _args)
                        (setq context-calls (1+ context-calls))
                        (error "fresh estimate cache should skip context"))))
-            (e-chat--set-status "idle" t))
+            (e-chat--set-status "idle" t)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)
+                                     :owner 'chat-mode-line-status)))
           (should (= context-calls 0))
           (should (equal mode-name
                          "e-chat gpt-5.5/high ~13% (~123/1k tok)")))
@@ -9109,6 +9138,7 @@ The context-window denominator comes from the live provider lookup
          (window-calls 0))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
           (setq-local e-chat--mode-line-context-status-cache (cons nil nil))
           (e-session-append-message
@@ -9124,7 +9154,10 @@ The context-window denominator comes from the live provider lookup
                          (apply original-context args))))
               (let ((e-chat-mode-line-context-estimate-cache-seconds 100))
                 (e-chat--set-status "idle" t)
-                (e-chat--set-status "ready" t))))
+                (e-chat--set-status "ready" t)
+                (e-ui-work-with-batch-drain
+                  (e-ui-work-drain-batch :buffer (current-buffer)
+                                         :owner 'chat-mode-line-status)))))
           (should (= context-calls 1))
           (should (= window-calls 1))
           (should (equal mode-name
@@ -9254,6 +9287,7 @@ The context-window denominator comes from the live provider lookup
                               :session-id "chat-compaction-refresh")))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (cl-letf (((symbol-function 'e-session--timestamp)
                      (lambda (&optional _time)
                        (prog1 (car timestamps)
@@ -9269,6 +9303,9 @@ The context-window denominator comes from the live provider lookup
              e-chat-session-id
              '(:id "kept" :role user :content "kept suffix"))
             (e-chat--set-status "idle" t)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)
+                                     :owner 'chat-mode-line-status))
             (should (string-match-p "~[0-9]+%" mode-name))
             (let ((before mode-name))
               (e-session-append-compaction
@@ -9282,6 +9319,9 @@ The context-window denominator comes from the live provider lookup
                               :turn-id "turn-compact"
                               :payload '(:compaction-id "compaction-1"
                                          :first-kept-entry-id "kept")))
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer (current-buffer)
+                                       :owner 'chat-mode-line-status))
               (should (string-match-p "~[0-9]+%" mode-name))
               (should-not (equal mode-name before)))))
       (when (buffer-live-p buffer)

@@ -986,6 +986,7 @@ artifacts under `e-dev-perf-run-directory'."
         (context-builds 0)
         (original (symbol-function 'e-harness-context)))
     (with-current-buffer buffer
+      (setq-local e-chat--assume-redraw-visible t)
       (cl-letf (((symbol-function 'e-harness-context)
                  (lambda (&rest args)
                    (setq context-builds (1+ context-builds))

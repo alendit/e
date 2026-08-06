@@ -86,3 +86,73 @@ cannot change the latest assistant marker and now do no unread work.
 After implementation, run =20260806-123513-000001= measured zero catalog scans
 for 32 non-message events and a 3.125 ms median.  The corresponding before run
 performed 32 catalog scans and had a 75.714 ms median with 512 sessions.
+
+* Slice 3: deferred context status
+
+=e-chat--set-status= now updates the header immediately and only marks the
+mode-line status dirty.  A visible chat schedules one coalesced immediate
+=chat-mode-line-status= UI job; a hidden chat defers that job until it becomes
+visible.  The previous inline call to full context construction was removed.
+The existing mode line remains the last completed context snapshot until the
+job settles.
+
+After implementation, run =20260806-123835-000001= measured zero synchronous
+context builds for eight cold status updates and exactly one pending coalesced
+refresh.  The before run built context eight times in the status stack.  The
+wall-clock medians were 1.347 ms before and 1.091 ms after, but the decisive
+metric is removal of all context construction from the render call stack.
+
+The final combined run =20260806-124027-000001= passed all five enforced
+structural budgets with no regressions: zero history redelivery, one live
+delivery, zero catalog scans, zero synchronous context builds, and one
+coalesced visible refresh.  Final medians were 0.804 ms for continuation,
+2.919 ms for unread events, and 0.905 ms for status updates.
+
+* Validation
+
+- The chat, chat-service, modernchat, and perf files passed 354 tests with no
+  unexpected results; one optional Markdown-rendering test skipped.
+- The known fixed two-second timeout
+  =e-chat-test-open-session-renders-after-async-index-load= was excluded from
+  that broad run.  It advances only 720 of 2298 bytes with the test's 16-byte
+  artificial chunk size before its fixed deadline and is unrelated to these
+  changes.
+- Warning-enabled compilation of =e-chat-service.el=, =e-chat.el=, and
+  =e-dev-perf.el= passed, as did =git diff --check=.
+- Repository-side validation only was used.  The running Emacs was left
+  unchanged.
+
+* Design self-check
+
+1. Each slice removes measured repeated work and remains useful independently.
+2. The result moves chat toward a bounded board view with incremental shell
+   state and deferred derived context presentation.
+3. Replay and UI limits may change and remain local.  Snapshot/cursor ordering,
+   direct identity lookup, and status side-effect placement are stable rules.
+4. The service owns board snapshot consistency; the shell owns unread and
+   status presentation.
+5. Coupling is reduced: the shell consumes one view contract, and unread lookup
+   no longer depends on the catalog collection API.
+6. Stable board and harness policy do not depend on chat UI code.
+7. Rendering and deferred mode-line mutation remain in the shell; board reads
+   remain behind the chat service.
+8. Snapshot cursors live only for a view subscription.  Unread cache state is
+   buffer/workspace-local and rebuildable.  Status dirtiness is buffer-local
+   and coalesced.
+9. Initial board inspection is capped at 256 messages.  Ordinary continuation
+   delivers no retained history, non-message events perform no unread lookup,
+   and status calls perform no context construction.
+10. The view contract is real: one bounded snapshot and one continuation cursor
+    are always created together.
+11. Existing durable board/session formats remain compatible.  Implicit
+    sequence-zero shell replay and progressive projection scans were removed.
+12. Removed legacy work is the second history replay, the unbounded binding
+    history scan, full-catalog id resolution, unconditional unread refresh, and
+    inline mode-line context refresh.
+13. Subscriber callback failures remain isolated and visible in subscription
+    state.  Missing direct sessions return nil only at the overview lookup
+    boundary; unexpected errors still surface.
+14. Service tests prove snapshot/live separation and persistence restore;
+    shell tests prove bounded replay, direct unread lookup, event gating,
+    coalescing, cache reuse, and compaction refresh; perf tests enforce the
+    three structural work budgets.

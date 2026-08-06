@@ -7782,7 +7782,8 @@ is reserved for terminal context boundaries."
 
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
-When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
+When REFRESH-MODE-LINE is non-nil, mark the context-aware mode line dirty and
+schedule its coalesced refresh outside this status-rendering call."
   (if (e-chat--surface-composer-p)
       (with-current-buffer e-chat--surface-transcript-buffer
         (e-chat--set-status status refresh-mode-line))
@@ -7799,7 +7800,7 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
          (setq e-chat--status status)
          (setq header-line-format (e-chat--header-line-text status))
          (when refresh-mode-line
-           (e-chat--refresh-mode-line-status)))))))
+           (e-chat--request-mode-line-status-refresh nil t)))))))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."
@@ -9690,7 +9691,8 @@ face properties so the preview still reflects chat rendering."
           (e-chat--render-session
            (e-chat--tail-messages
             messages
-            e-chat-resume-preview-message-limit)))
+            e-chat-resume-preview-message-limit)
+           nil))
          ((plist-get session :summary)
           (e-chat--insert-entry "You" (plist-get session :summary) nil))
          (t
