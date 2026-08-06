@@ -971,6 +971,24 @@ values delivered by `e-chat-service-subscribe'."
   "Return SESSION-ID's private structured-block registry projection."
   (e-harness-structured-blocks harness session-id))
 
+(defun e-chat-service-message-presentation (harness session-id message)
+  "Return generic display content and details for durable MESSAGE.
+The service applies the active structured-block registry once, then gives the
+parsed blocks to capability-owned detail providers.  Presentation shells never
+need to know a block kind or capability policy."
+  (let ((content (plist-get message :content)))
+    (if (not (and (eq (plist-get message :role) 'assistant)
+                  (stringp content)))
+        (list :content content :details nil)
+      (let* ((registry (e-harness-structured-blocks
+                        harness session-id (plist-get message :turn-id)))
+             (rendered (e-structured-blocks-render content registry)))
+        (list :content (plist-get rendered :text)
+              :details
+              (e-harness-message-details
+               harness session-id message
+               :structured-blocks (plist-get rendered :blocks)))))))
+
 (defun e-chat-service-session-name (harness session-id)
   "Return SESSION-ID's private configured name."
   (e-harness-session-name harness session-id))

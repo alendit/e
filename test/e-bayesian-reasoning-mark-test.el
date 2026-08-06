@@ -118,6 +118,16 @@ evidence:
                                    e-bayesian-reasoning-mark-test--org-block
                                    "\nMore visible text.")))))
 
+(ert-deftest e-bayesian-reasoning-mark-test-inline-fence-name-is-visible-prose ()
+  "An inline literal naming the fence cannot become a block opener."
+  (let* ((registry (e-bayesian-reasoning-mark-test--registry))
+         (prose "Yes. It used the Bayesian `#+begin_reasoning` structure.")
+         (content (concat prose "\n\n"
+                          e-bayesian-reasoning-mark-test--org-block))
+         (result (e-structured-blocks-render content registry)))
+    (should (equal (plist-get result :text) (concat prose "\n\n")))
+    (should (= (length (plist-get result :blocks)) 1))))
+
 (ert-deftest e-bayesian-reasoning-mark-test-hidden-via-registry-markdown-mode ()
   "The markdown-fence block is hidden by the generic registry transform."
   (let* ((registry (e-bayesian-reasoning-mark-test--registry))
@@ -145,6 +155,27 @@ evidence:
                   #'e-bayesian-reasoning--reasoning-matcher))
       (should (eq (e-structured-block-parser spec)
                   #'e-bayesian-reasoning-parse-reasoning-block)))))
+
+(ert-deftest e-bayesian-reasoning-mark-test-capability-contributes-claim-details ()
+  "Parsed reasoning metadata becomes generic message details."
+  (let* ((capability (e-bayesian-reasoning-capability-create))
+         (registry (e-bayesian-reasoning-mark-test--registry))
+         (rendered (e-structured-blocks-render
+                    e-bayesian-reasoning-mark-test--org-block registry))
+         (details
+          (e-capabilities-message-details
+           capability
+           '(:role assistant)
+           (list :structured-blocks (plist-get rendered :blocks))))
+         (detail (car details)))
+    (should (= (length details) 1))
+    (should (equal (e-message-detail-summary detail) "1 claim"))
+    (should (string-match-p
+             (regexp-quote
+              "Claims\n- the outage was caused by a config rollback")
+                            (e-message-detail-body detail)))
+    (should (string-match-p "Confidence: medium"
+                            (e-message-detail-body detail)))))
 
 (provide 'e-bayesian-reasoning-mark-test)
 

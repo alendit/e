@@ -33,6 +33,7 @@
           :hooks (list #'ignore)
           :config-options '(:option-specs)
           :config '(:option "value")
+          :message-details (list #'ignore)
           :prompts (list (e-prompt-spec-create
                           :name "explain"
                           :description "Explain."
@@ -48,6 +49,7 @@
     (should (equal (e-capability-config-options capability) '(:option-specs)))
     (should (equal (e-capability-config capability) '(:option "value")))
     (should (= (length (e-capability-prompts capability)) 1))
+    (should (= (length (e-capability-message-details capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -115,6 +117,7 @@
     (should-not (e-capability-config-options legacy))
     (should-not (e-capability-config legacy))
     (should-not (e-capability-prompts legacy))
+    (should-not (e-capability-message-details legacy))
     (should (equal (e-capability-actions legacy)
                    '(:legacy ignore)))))
 

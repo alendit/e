@@ -1,0 +1,65 @@
+#+title: Capability-Owned Message Details
+#+startup: overview
+
+* Status
+
+Done.
+
+* Goal
+
+Let an active capability describe semantic details attached to a durable
+assistant message without teaching presentation shells that capability's
+syntax or policy.
+
+For Bayesian reasoning, a final reply with a parsed reasoning block contributes
+a compact =N claim(s)= summary and an expandable claim list.  =RET= on the
+focused final reply toggles that detail body.
+
+* Design
+
+** Core contribution
+
+Add =e-message-detail= with a stable id, optional compact summary, and required
+detail body.  A capability's new =:message-details= providers receive the raw
+message plus generic presentation context and return validated detail records.
+
+** Application service
+
+=e-chat-service-message-presentation= owns the combined projection.  It runs
+the active structured-block transform once, then supplies the already parsed
+blocks to active message-detail providers.  It returns display content and
+generic detail records.  This avoids repeated parsing and keeps shells behind
+the application-service boundary.
+
+** Presentation
+
+Classic chat stores detail contributions with the rendered durable message,
+adds their compact summaries to the settled turn footer, and gives the final
+block their expandable bodies.  Modernchat serializes the same service result
+as generic DTO fields.
+
+** Settlement
+
+The harness suppresses the loop's provisional terminal edge and emits the
+public =turn-finished= event after =:turn-finished= hooks settle.  The loop's
+standalone event contract remains compatible.
+
+* Performance
+
+Message presentation performs one structured-block transform per displayed
+assistant message.  Detail providers consume its parsed blocks instead of
+rescanning content.  Existing bounded replay limits remain unchanged.
+
+* Verification
+
+- focused matcher regression for an inline delimiter name followed by a real
+  fence;
+- capability-contract validation tests;
+- classic chat test covering full final rendering, summary text, focus, and
+  =RET= expansion;
+- board-backed modernchat projection test covering hidden metadata and generic
+  details;
+- end-to-end board Bayesian follow-up test;
+- relevant full ERT suites, byte compilation, and whitespace checks.
+
+The completed verification record is in =review.org=.

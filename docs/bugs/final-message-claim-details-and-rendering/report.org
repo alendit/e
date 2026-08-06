@@ -1,0 +1,16 @@
+#+title: Final Claim Messages Truncate and Hide Claim Details
+#+startup: overview
+
+* Report
+
+On 2026-08-06 the user reported two related final-turn failures in the classic
+chat shell:
+
+- a final assistant reply that named the Bayesian =#+begin_reasoning= syntax
+  inline rendered only its first 27 characters;
+- a claim-bearing final reply did not advertise its claim in the settled turn
+  summary, and pressing =RET= on that reply did not expand its claim list.
+
+The requested dependency direction is capability -> generic message-details
+contract <- chat service/shell.  The chat shell must not parse Bayesian syntax
+or interpret claim audit payloads.

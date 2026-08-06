@@ -1,0 +1,67 @@
+#+title: Investigation: Final Claim Messages Truncate and Hide Claim Details
+#+startup: overview
+
+* Live reproduction
+
+The selected chat was =20260806T064955-249a82cf1d33=.  A bounded live probe
+compared its latest private assistant message and board projection:
+
+- both copies contained the same 449-character final reply;
+- =e-bayesian-reasoning--reasoning-matcher= returned the range =(27 449)=;
+- =e-structured-blocks-render= therefore returned only
+  =Yes. It used the Bayesian `=, exactly matching the visible truncation.
+
+The false opener was the inline literal =`#+begin_reasoning`=.  The matcher
+searched for delimiter substrings anywhere in prose instead of recognizing
+whole delimiter lines.
+
+The same live turn's durable activity ended with =turn-finished= and contained
+no claim audit row, even though the Bayesian capability and its
+=:turn-finished= hook were active.  Source inspection found the ordering bug:
+=e-loop= emitted =turn-finished= before invoking its completion callback;
+=e-harness= forwarded that event to the board, and only then ran capability
+hooks in the callback.  The board had already published the output and terminal
+summary before hook-owned metadata could settle.
+
+* Structural conclusion
+
+Three concerns had been conflated:
+
+1. structured-block matching decides what part of raw assistant content is
+   visible;
+2. a capability hook validates a completed turn and may record audit effects;
+3. message presentation describes semantic details a user can inspect.
+
+The chat shell's old claim-count special case read =:claim-count= out of a hook
+audit payload.  That coupled presentation to hook timing and to one capability's
+opaque detail shape.  It also offered no claim body for =RET= expansion.
+
+The fix is to anchor reasoning fences to whole lines, publish the harness
+terminal event only after hooks settle, and add a generic capability-owned
+message-details contract.  The chat application service applies the structured
+block transform once and passes its parsed blocks to message-detail providers.
+Shells receive only generic summary/body records.
+
+* Running Emacs
+
+Only bounded read-only probes were performed.  The running Emacs was not
+reloaded or mutated during the investigation.
+
+* Resolution
+
+- Reasoning delimiters now match only complete delimiter lines, so an inline
+  literal such as =`#+begin_reasoning`= remains ordinary visible prose.
+- The harness publishes =turn-finished= after capability hooks settle instead
+  of forwarding the loop's provisional terminal edge first.
+- Capabilities can contribute validated generic message-detail records.  The
+  Bayesian capability contributes its parsed claim list; chat shells only
+  render generic summaries and bodies.
+- Classic chat renders the durable answer before its settled footer, so the
+  footer includes the message's detail summary.  =RET= on the final answer
+  toggles the contributed detail body.
+
+Repository-side ERT covered the exact truncated message, the board-backed
+terminal ordering, the footer, keyboard expansion, modernchat serialization,
+and bounded replay.  Full compilation and whitespace validation passed.  The
+running Emacs remains unchanged and needs an explicit reload before it uses the
+new behavior.

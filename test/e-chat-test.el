@@ -15,6 +15,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-bayesian-reasoning)
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-context-inspection)
@@ -3389,14 +3390,71 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-settled-summary-includes-audited-claim-count ()
-  "A capability-declared claim count appears only in the settled summary."
+(ert-deftest e-chat-test-settled-summary-includes-generic-message-detail ()
+  "A capability-declared message summary appears in the settled summary."
   (let ((record '(:started-at 10 :ended-at 772 :has-provider-activity t
                   :action-count 9)))
-    (e-chat--record-hook-audit
-     record '(:details (:claim-count 2)) 'activity)
+    (plist-put
+     record :message-details
+     (list
+      (cons "message-1"
+            (list (e-message-detail-create
+                   :id 'claims :summary "2 claims"
+                   :body "Claims\n- one\n- two")))))
     (should (equal (e-chat--activity-summary-text record)
                    "Turn took 12min 42sec, 9 actions (2 claims)."))))
+
+(ert-deftest e-chat-test-final-claim-message-renders-and-expands-details ()
+  "A final claim stays intact, advertises details, and expands with RET."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-claim-details"))
+        (content
+         (concat
+          "Yes. It used the Bayesian `#+begin_reasoning` structure.\n\n"
+          "#+begin_reasoning\n"
+          "claim: The daily was populated\n"
+          "confidence: high\n"
+          "alternatives: stale note state\n"
+          "evidence: src:ABCDEF12\n"
+          "#+end_reasoning\n")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-harness-activate-capability
+           e-chat-harness (e-bayesian-reasoning-capability-create))
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1" :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1" :created-at 10
+                          :payload nil))
+          (e-chat--render-event
+           (e-events-make
+            :type 'message-added :session-id e-chat-session-id
+            :turn-id "turn-1" :created-at 22
+            :payload (list :message
+                           (list :id "message-1" :role 'assistant
+                                 :turn-id "turn-1" :content content))))
+          (let ((rendered (buffer-string)))
+            (should (string-match-p
+                     (regexp-quote
+                      "Yes. It used the Bayesian `#+begin_reasoning` structure.")
+                     rendered))
+            (should-not (string-match-p
+                         (regexp-quote "\n#+begin_reasoning\n") rendered))
+            (should (string-match-p
+                     (regexp-quote "Turn took 0min 12sec (1 claim).")
+                     rendered)))
+          (e-chat-test--focus-block-containing "Yes. It used the Bayesian")
+          (let ((block (e-chat--focused-block)))
+            (should (eq (plist-get block :kind) 'final))
+            (e-chat-response-navigation-activate)
+            (should (e-chat--block-details-visible-p block))
+            (should (string-match-p "Claims\n- The daily was populated"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-pending-hook-summary-keeps-validation-visible ()
   "A queued hook follow-up retains its capability-provided activity label."
@@ -4564,9 +4622,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (string-match-p
                      "Turn took 3min 25sec, 2 tool calls\\." content))
             (should (string-match-p
-                     (concat "Turn took 3min 25sec, 2 tool calls\\.\n\n"
-                             (regexp-quote e-chat--assistant-glyph)
-                             " Final answer\\.")
+                     (concat (regexp-quote e-chat--assistant-glyph)
+                             " Final answer\\.\n\n"
+                             "Turn took 3min 25sec, 2 tool calls\\.")
                      content))
             (should-not (string-match-p "Thought for 1min 3sec" content)))
           (e-chat-test--focus-block-containing "Turn took 3min 25sec")
@@ -10231,7 +10289,9 @@ The context-window denominator comes from the live provider lookup
   "Opening an unloaded indexed session renders transcript after async replay."
   (let* ((directory (make-temp-file "e-chat-open-index-" t))
          (store (e-session-persistent-store-create directory))
-         (e-session-load-chunk-bytes 16)
+         ;; Keep this cooperatively multi-step without relying on hundreds of
+         ;; zero-delay timers completing inside a two-second test deadline.
+         (e-session-load-chunk-bytes 128)
          buffer)
     (unwind-protect
         (progn
@@ -10452,6 +10512,8 @@ The context-window denominator comes from the live provider lookup
   (with-temp-buffer
     (e-chat-mode)
     (setq-local e-chat-session-id "unread-events")
+    (setq-local e-chat-harness
+                (e-harness-create :enabled-layer-ids nil))
     (let ((updates 0)
           (inhibit-read-only t))
       (cl-letf (((symbol-function 'e-chat--workspace-unread-cache-update-buffer)

@@ -22,6 +22,7 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-hooks)
+(require 'e-message-details)
 (require 'e-store)
 (require 'e-structured-blocks)
 (require 'subr-x)
@@ -66,16 +67,19 @@ outcome for a non-fence string.")
   "Return match plists for one OPEN...CLOSE fenced form in CONTENT.
 Each match is `(:start START :end END)', 0-based offsets spanning the whole
 fence including its delimiters."
-  (let (matches (start 0))
+  (let ((open-regexp (concat "^" (regexp-quote open) "[ \t]*$"))
+        (close-regexp (concat "^" (regexp-quote close) "[ \t]*$"))
+        matches
+        (start 0))
     (while (and (< start (length content))
-               (string-match (regexp-quote open) content start))
+                (string-match open-regexp content start))
       (let* ((match-start (match-beginning 0))
-             (close-pos (string-match (regexp-quote close) content (match-end 0))))
-        (if close-pos
+             (body-start (match-end 0)))
+        (if (string-match close-regexp content body-start)
             (progn
-              (push (list :start match-start :end (+ close-pos (length close)))
+              (push (list :start match-start :end (match-end 0))
                     matches)
-              (setq start (+ close-pos (length close))))
+              (setq start (match-end 0)))
           (setq start (length content)))))
     (nreverse matches)))
 
@@ -535,6 +539,45 @@ for one matched fence."
                               (plist-get match :end))))
                 (e-bayesian-reasoning--reasoning-matcher content))))
 
+(defun e-bayesian-reasoning--message-details (_message context)
+  "Return generic claim details from CONTEXT's parsed structured blocks.
+The chat service owns block extraction and passes the parsed result here.  This
+capability owns only the meaning and wording of its claim presentation."
+  (let ((marks
+         (delq nil
+               (mapcar
+                (lambda (block)
+                  (and (eq (plist-get block :kind) 'reasoning)
+                       (plist-get block :parsed)))
+                (plist-get context :structured-blocks)))))
+    (when marks
+      (let ((count (length marks)))
+        (list
+         (e-message-detail-create
+          :id 'bayesian-claims
+          :summary (format "%d claim%s" count (if (= count 1) "" "s"))
+          :body
+          (concat
+           "Claims\n"
+           (string-join
+            (mapcar
+             (lambda (mark)
+               (string-join
+                (delq nil
+                      (list
+                       (format "- %s" (or (plist-get mark :claim)
+                                           "Unspecified claim"))
+                       (when-let ((confidence (plist-get mark :confidence)))
+                         (format "  Confidence: %s" confidence))
+                       (when-let ((alternatives (plist-get mark :alternatives)))
+                         (format "  Alternatives: %s" alternatives))
+                       (when-let ((evidence (plist-get mark :evidence)))
+                         (unless (string-empty-p evidence)
+                           (format "  Evidence: %s" evidence)))))
+                "\n"))
+             marks)
+            "\n"))))))))
+
 (defun e-bayesian-reasoning--mark-gap (mark)
   "Return the first failing completeness check for reasoning MARK, or nil.
 This is a deterministic field-completeness test over the parsed mark, never a
@@ -795,6 +838,7 @@ Every performed check writes a durable hook-audit record."
           :matcher #'e-bayesian-reasoning--reasoning-matcher
           :display 'hidden
           :parser #'e-bayesian-reasoning-parse-reasoning-block))
+   :message-details (list #'e-bayesian-reasoning--message-details)
    :hooks
    (list (e-hook-create
           :id "60-bayesian-reasoning-turn-finished"

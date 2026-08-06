@@ -1,0 +1,184 @@
+#+title: Review: Capability-Owned Message Details
+#+author: e implementation
+#+date: 2026-08-06
+#+startup: overview
+
+* Status
+
+Done.  All findings found in this review were resolved.
+
+* Review loop
+
+** Resolved: inline delimiter text truncated the final answer
+
+*** Problem
+
+The Bayesian matcher treated a delimiter substring anywhere in prose as a
+fence.  A live probe reproduced the reported 449-character message becoming
+the 27-character string =Yes. It used the Bayesian `=.
+
+*** Change
+
+Opening and closing delimiters must now occupy complete lines.  Inline code or
+prose naming the syntax remains visible.
+
+*** Evidence
+
+The matcher regression and both shell projections preserve the inline literal,
+hide the real reasoning block, and expose one parsed claim detail.
+
+** Resolved: chat interpreted Bayesian hook payloads
+
+*** Problem
+
+Classic chat extracted =:claim-count= from one capability's hook-audit payload.
+That coupled the shell to Bayesian policy, exposed no detail body, and made the
+footer depend on hook timing.
+
+*** Change
+
+Core now defines a narrow =e-message-detail= summary/body value and lets active
+capabilities contribute providers.  =e-chat-service-message-presentation=
+applies structured-block presentation once and passes the already parsed blocks
+to providers.  Classic chat and modernchat consume only the generic result.
+
+*** Evidence
+
+Classic chat's end-to-end ERT verifies full answer rendering, =(1 claim)= in the
+settled footer, final-block focus, =RET= expansion, and the claim-list body.
+Modernchat's board-backed test verifies equivalent generic DTO fields.  No
+claim-count parsing remains in either shell.
+
+** Resolved: public turn settlement preceded capability hooks
+
+*** Problem
+
+The loop emitted =turn-finished= before its completion callback, while the
+harness ran =:turn-finished= hooks from that callback.  Board observers could
+therefore settle a turn before capability-owned terminal effects completed.
+
+*** Change
+
+The harness suppresses the loop's provisional terminal event and publishes its
+public =turn-finished= only after hooks complete.  The loop's standalone
+contract is unchanged.
+
+*** Evidence
+
+=e-harness-test-turn-finished-is-published-after-hook-audit= verifies event
+ordering at the harness boundary.  The board-backed Bayesian follow-up ERT also
+passes.
+
+** Resolved: full-suite test assumptions obscured the result
+
+*** Problem
+
+One test still expected the settled footer before the answer, one rendered a
+durable message without a harness, and one scheduled roughly 144 cooperative
+chunks under a two-second deadline.
+
+*** Change
+
+The tests now assert the answer-then-footer layout, supply the required harness,
+and retain a multi-step async replay with a stable number of chunks.
+
+*** Evidence
+
+The complete classic chat file passes all 331 runnable tests; its one existing
+Markdown-property test remains skipped.
+
+* Verification
+
+#+begin_src sh
+eldev test -f test/e-message-details-test.el \
+  -f test/e-capabilities-test.el \
+  -f test/e-structured-blocks-test.el \
+  -f test/e-bayesian-reasoning-test.el \
+  -f test/e-bayesian-reasoning-mark-test.el \
+  -f test/e-bayesian-reasoning-hook-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-modernchat-test.el
+#+end_src
+
+#+begin_example
+Ran 212 tests, 212 results as expected, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-chat-test.el
+#+end_src
+
+#+begin_example
+Ran 332 tests, 331 results as expected, 0 unexpected, 1 skipped.
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-cutover-structure-test.el -f test/e-dev-perf-test.el
+eldev compile
+git diff --check
+#+end_src
+
+#+begin_example
+15/15 cutover and performance-harness tests passed.
+All project Elisp compiled successfully.
+Whitespace validation passed.
+#+end_example
+
+The focused message-details/UI selection passed 9/9 tests, and the board-backed
+Bayesian follow-up selection passed 1/1.
+
+* UX and performance playthrough
+
+- The pre-fix running chat reproduced the exact truncation from the user's
+  screenshot and proved that stored and board-projected content were intact.
+- A repository-side end-to-end chat buffer playthrough rendered the complete
+  answer, its footer claim summary, focused the final block, invoked the same
+  activation command bound to =RET=, and observed the expanded claim list.
+- Message details are derived presentation state.  They live only in the
+  bounded shell projection and are rebuilt from durable messages.
+- Each displayed assistant message receives one structured-block transform.
+  Providers reuse its parsed blocks, and the existing replay bound is
+  unchanged.  No additional transcript scan or durable state was introduced.
+
+The user's running Emacs was deliberately not reloaded.  This follows the
+external-development rule; =M-x e-dev-reload= is needed to exercise the new
+behavior there.
+
+* Design self-check
+
+1. The package is useful alone: final answers no longer truncate, and generic
+   details work in both shells.
+2. It moves toward capability-owned semantics behind shell-neutral application
+   services.
+3. Detail rendering policy can change inside a capability; the stable decision
+   is the small summary/body contract.
+4. Capabilities own semantic interpretation, the chat service owns projection,
+   and shells own interaction and rendering.
+5. Coupling is reduced because shells no longer know Bayesian payload fields.
+6. Stable core does not depend on either shell; both shells depend on the
+   application service.
+7. UI mutation remains in shells.  Core/provider functions are pure over a
+   message and presentation context.
+8. Added state is bounded, derived message-detail state owned by each shell
+   buffer; it is not persisted.
+9. The transform runs once per displayed assistant message, providers reuse
+   parsed blocks, and replay bounds are unchanged.
+10. The provider contract is real and substitutable: nil, one detail, or a list
+    of validated details.
+11. Stale capability records remain readable; obsolete shell claim parsing was
+    removed.
+12. The claim-count shell special case and a duplicate modernchat require were
+    removed.
+13. Invalid provider results surface at the core contract boundary; shells do
+    not swallow them.
+14. Core contract, capability parsing, harness ordering, service projection,
+    both shells, keyboard activation, and bounded replay have independent tests.
+
+* Final review
+
+A final dependency, state-lifetime, compatibility, and hot-path pass found no
+unresolved notes.
+
+* Unresolved
+
+None.

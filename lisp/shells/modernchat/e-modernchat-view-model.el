@@ -15,7 +15,7 @@
 (require 'cl-lib)
 (require 'e-chat-service)
 (require 'e-harness)
-(require 'e-chat-service)
+(require 'e-message-details)
 (require 'e-session)
 (require 'e-structured-blocks)
 (require 'subr-x)
@@ -72,17 +72,21 @@ CONTENT is returned unchanged."
     content))
 
 (defun e-modernchat-view-model-message
-    (message &optional active-turn-id content-mode registry)
+    (message &optional active-turn-id content-mode registry presentation)
   "Return JSON DTO for session MESSAGE.
 REGISTRY, when non-nil, is a structured-block registry consulted to strip
-hidden blocks (e.g. a reasoning mark) from the displayed content."
+hidden blocks (e.g. a reasoning mark) from the displayed content.
+PRESENTATION, when non-nil, is the chat service's already combined content and
+capability-owned message details."
   (let ((id (or (plist-get message :id)
                 (plist-get message :message-id)
                 (plist-get message :turn-id)))
         (turn-id (plist-get message :turn-id))
         (role (or (plist-get message :role) 'unknown))
-        (content (e-modernchat-view-model--display-content
-                  (or (plist-get message :content) "") registry)))
+        (content (or (plist-get presentation :content)
+                     (e-modernchat-view-model--display-content
+                      (or (plist-get message :content) "") registry)))
+        (details (plist-get presentation :details)))
     `((id . ,(e-modernchat-view-model--string id))
       (turnId . ,(e-modernchat-view-model--string turn-id))
       (role . ,(e-modernchat-view-model--string role))
@@ -91,6 +95,18 @@ hidden blocks (e.g. a reasoning mark) from the displayed content."
       (createdAt . ,(e-modernchat-view-model--string
                      (plist-get message :created-at)))
       (content . ,(e-modernchat-view-model--string content))
+      (detailSummary . ,(e-modernchat-view-model--string
+                         (string-join
+                          (delq nil (mapcar #'e-message-detail-summary details))
+                          ", ")))
+      (details . ,(vconcat
+                   (mapcar
+                    (lambda (detail)
+                      `((id . ,(e-modernchat-view-model--string
+                                (e-message-detail-id detail)))
+                        (summary . ,(e-message-detail-summary detail))
+                        (body . ,(e-message-detail-body detail))))
+                    details)))
       (contentMode . ,(e-modernchat-view-model--string
                        (or content-mode 'plain))))))
 
@@ -222,7 +238,9 @@ hidden blocks (e.g. a reasoning mark) from the displayed content."
       (messages . ,(vconcat
                     (mapcar (lambda (message)
                               (e-modernchat-view-model-message
-                               message active-turn-id output-mode registry))
+                               message active-turn-id output-mode registry
+                               (e-chat-service-message-presentation
+                                harness session-id message)))
                             messages)))
       (activities . ,(vconcat
                       (mapcar #'e-modernchat-view-model-activity

@@ -26,6 +26,7 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-message-details)
 (require 'e-prompts)
 (require 'e-request)
 (require 'e-store)
@@ -4065,8 +4066,24 @@ fall back to its existing full projection path."
          (record (and block-id (hash-table-p e-chat--block-registry)
                       (gethash block-id e-chat--block-registry))))
     (when (and record (not e-chat--reveal-hidden))
-      (e-chat--set-block-layout-hidden
-       record (e-harness-message-hidden-p message))
+      (let ((hidden (e-harness-message-hidden-p message)))
+        (e-chat--set-block-layout-hidden record hidden)
+        (when (eq (plist-get message :role) 'assistant)
+          (let* ((presentation
+                  (and (not hidden)
+                       (e-chat-service-message-presentation
+                        e-chat-harness e-chat-session-id message)))
+                 (details (plist-get presentation :details)))
+            (e-chat--record-message-details
+             (plist-get record :turn-id) message-id details)
+            (plist-put record :details-text
+                       (e-chat--message-details-text details))
+            (when-let ((turn-record
+                        (e-chat--existing-turn-record
+                         (plist-get record :turn-id))))
+              (when (plist-get turn-record :final-rendered)
+                (e-chat--render-turn-transient
+                 (plist-get record :turn-id) turn-record))))))
       (e-chat--refresh-last-rendered-entry)
       (e-chat--refresh-latest-final-block)
       t)))
@@ -4795,16 +4812,34 @@ Count tool invocations after the reasoning chunk they followed."
          (equal (plist-get entry :title) "Action call"))
        (plist-get record :intermittent-entries))))
 
-(defun e-chat--claim-count-summary-text (record)
-  "Return the optional audited claim-count suffix for RECORD.
+(defun e-chat--record-message-details (turn-id message-id details)
+  "Record generic DETAILS for durable MESSAGE-ID in TURN-ID."
+  (when-let ((record (e-chat--turn-record turn-id)))
+    (let* ((key (or message-id (list 'turn-message turn-id)))
+           (current (assoc-delete-all
+                     key (plist-get record :message-details))))
+      (plist-put record :message-details
+                 (if details
+                     (append current (list (cons key details)))
+                   current)))))
 
-The count comes from a capability-owned hook-audit payload.  The shell does
-not parse claim syntax or infer claims from prose."
-  (or (when-let ((claim-count (plist-get record :claim-count)))
-        (when (and (integerp claim-count) (>= claim-count 0))
-          (format " (%d claim%s)" claim-count
-                  (if (= claim-count 1) "" "s"))))
-      ""))
+(defun e-chat--message-detail-summary-text (record)
+  "Return the generic message-detail suffix for RECORD."
+  (let (summaries)
+    (dolist (entry (plist-get record :message-details))
+      (dolist (detail (cdr entry))
+        (when-let ((summary (e-message-detail-summary detail)))
+          (unless (member summary summaries)
+            (setq summaries (append summaries (list summary)))))))
+    (if summaries
+        (format " (%s)" (string-join summaries ", "))
+      "")))
+
+(defun e-chat--message-details-text (details)
+  "Return expandable presentation text for generic message DETAILS."
+  (when details
+    (concat (string-join (mapcar #'e-message-detail-body details) "\n\n")
+            "\n")))
 
 (defun e-chat--activity-summary-text (record)
   "Return settled turn summary text for RECORD."
@@ -4824,8 +4859,8 @@ not parse claim syntax or infer claims from prose."
                          ((= action-count 0) "")
                          ((= action-count 1) ", 1 action")
                          (t (format ", %d actions" action-count))))
-           (claim-text (e-chat--claim-count-summary-text record)))
-      (format "Turn took %s%s%s%s." duration tool-text action-text claim-text))))
+           (detail-text (e-chat--message-detail-summary-text record)))
+      (format "Turn took %s%s%s%s." duration tool-text action-text detail-text))))
 
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
@@ -6112,9 +6147,9 @@ SOURCE identifies where the entry came from for duplicate suppression."
 (defun e-chat--record-hook-audit (record payload &optional source)
   "Record a generic hook audit PAYLOAD in RECORD.
 
-SOURCE identifies replayed durable activity or a live event.  The optional
-claim count is a capability-declared summary metric; its opaque audit details
-remain available only through answer details and capability resources."
+SOURCE identifies replayed durable activity or a live event.  Capability-owned
+message semantics come through the separate message-details contract; this
+function records only lifecycle audit text."
   (when-let ((summary (plist-get payload :summary)))
     (e-chat--add-intermittent-entry record "Hook audit" summary nil source))
   (when (plist-member payload :pending-summary)
@@ -6123,10 +6158,7 @@ remain available only through answer details and capability resources."
                  :pending-hook-summary
                  (and (stringp pending-summary)
                       (not (string-empty-p pending-summary))
-                      pending-summary))))
-  (when-let ((claim-count (plist-get (plist-get payload :details) :claim-count)))
-    (when (and (integerp claim-count) (>= claim-count 0))
-      (plist-put record :claim-count claim-count))))
+                      pending-summary)))))
 
 (defun e-chat--record-activity-event (turn-id activity-event)
   "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
@@ -6887,7 +6919,8 @@ Preserve Markdown faces already present in the range."
                             t)))
 
 (defun e-chat--insert-entry
-    (title content &optional ensure-composer turn-id details-text message-id hidden)
+    (title content &optional ensure-composer turn-id details-text message-id hidden
+           assistant-presented)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
 TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
@@ -6895,7 +6928,9 @@ non-nil, is used by focused block activation.  MESSAGE-ID associates a durable
 session message with its rendered block.  When HIDDEN is non-nil, the entry is
 kept in the projection but invisible until its display disposition changes.
 Assistant CONTENT is passed through the structured-block registry before
-display; a shell with no registered kinds shows CONTENT unchanged."
+display unless ASSISTANT-PRESENTED is non-nil, meaning the chat application
+service already applied that transform.  A shell with no registered kinds
+shows CONTENT unchanged."
   (e-chat--profile-call
    'chat.insert-entry
    (list :session-id e-chat-session-id
@@ -6914,7 +6949,8 @@ display; a shell with no registered kinds shows CONTENT unchanged."
             (had-composer nil)
             (side (e-chat--entry-side title))
             (block-id (and turn-id (e-chat--next-block-id)))
-            (content (if (equal title "Assistant")
+            (content (if (and (equal title "Assistant")
+                              (not assistant-presented))
                         (e-chat--assistant-display-text content)
                       content)))
        (when active-turn-id
@@ -7005,7 +7041,9 @@ display; a shell with no registered kinds shows CONTENT unchanged."
            (e-chat--toggle-block-details-text block details-text)
          (e-chat--enter-block-view block)))
       (_
-       (e-chat--enter-block-view block)))))
+       (if-let ((details-text (plist-get block :details-text)))
+           (e-chat--toggle-block-details-text block details-text)
+         (e-chat--enter-block-view block))))))
 
 (defun e-chat-response-navigation-insert ()
   "Leave response navigation and focus the composer."
@@ -7889,13 +7927,27 @@ Hidden messages remain in the buffer-local message projection but are made
 invisible in the normal reading view.  Audit reveal mode deliberately uses its
 separate dimmed representation instead."
   (let* ((hidden (e-harness-message-hidden-p message))
+         (assistant-p (eq (plist-get message :role) 'assistant))
+         (presentation
+          (and assistant-p
+               (not hidden)
+               (e-chat-service-message-presentation
+                e-chat-harness e-chat-session-id message)))
+         (details (plist-get presentation :details))
          (entry (if (and hidden e-chat--reveal-hidden)
                     (e-chat--hidden-message-entry message)
-                  (e-chat--message-entry message))))
+                  (if presentation
+                      (cons "Assistant" (plist-get presentation :content))
+                    (e-chat--message-entry message)))))
+    (when assistant-p
+      (e-chat--record-message-details
+       turn-id (plist-get message :id) details))
     (e-chat--insert-entry
-     (car entry) (cdr entry) ensure-composer turn-id nil
+     (car entry) (cdr entry) ensure-composer turn-id
+     (e-chat--message-details-text details)
      (plist-get message :id)
-     (and hidden (not e-chat--reveal-hidden)))
+     (and hidden (not e-chat--reveal-hidden))
+     (and presentation t))
     entry))
 
 (defun e-chat--event-may-change-unread-p (event)
@@ -8033,9 +8085,9 @@ separate dimmed representation instead."
              (e-chat--stop-progress-indicator turn-id)
              (when-let ((record (e-chat--existing-turn-record turn-id)))
                (e-chat--delete-turn-transient record)))
+           (e-chat--render-durable-message message turn-id)
            (when assistant-p
              (e-chat--finalize-turn-display turn-id))
-           (e-chat--render-durable-message message turn-id)
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)

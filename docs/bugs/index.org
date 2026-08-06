@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | final-message-claim-details-and-rendering/ | Final claim messages truncate and hide claim details |
 | Closed | e-chat-board-event-pipeline-cost/ | e-chat board event pipeline repeats expensive work |
 | Closed | e-chat-composer-escape-focus-routing/ | e-chat Escape leaves keystrokes in the composer |
 | Closed | e-chat-unbounded-session-replay/ | e-chat reconstructs too much session history |

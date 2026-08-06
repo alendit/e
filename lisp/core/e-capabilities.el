@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'e-context)
 (require 'e-hooks)
+(require 'e-message-details)
 (require 'e-resources)
 (require 'e-store)
 (require 'e-structured-blocks)
@@ -29,7 +30,7 @@
                                    resource-methods resources
                                    context-providers actions hooks
                                    instruction-priority config-options config
-                                   prompts structured-blocks))
+                                   prompts structured-blocks message-details))
                (:conc-name e-capability--))
   id
   name
@@ -44,7 +45,8 @@
   config-options
   config
   prompts
-  structured-blocks)
+  structured-blocks
+  message-details)
 
 (cl-defstruct (e-action
                (:constructor e-action--create
@@ -209,6 +211,14 @@ This accessor tolerates stale capability records compiled before the
       (e-capability--structured-blocks capability)
     nil))
 
+(defun e-capability-message-details (capability)
+  "Return CAPABILITY message-detail providers.
+This accessor tolerates stale capability records compiled before the
+`message-details' slot existed."
+  (if (>= (length capability) 16)
+      (e-capability--message-details capability)
+    nil))
+
 (defconst e-capabilities-system-guidance-default-capability-index 100000
   "Synthetic capability index for system-guidance hook fragments.
 Hook fragments sort by cache placement and priority first.  This large fallback
@@ -259,7 +269,8 @@ before backend serialization."
                   e-capability-config-options
                   e-capability-config
                   e-capability-prompts
-                  e-capability-structured-blocks))
+                  e-capability-structured-blocks
+                  e-capability-message-details))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
@@ -322,6 +333,11 @@ CAPABILITY."
   "Register CAPABILITY structured-block specs in REGISTRY."
   (dolist (spec (e-capability-structured-blocks capability))
     (e-structured-blocks-register registry spec)))
+
+(defun e-capabilities-message-details (capability message context)
+  "Return CAPABILITY's generic presentation details for MESSAGE and CONTEXT."
+  (e-message-details-collect
+   (e-capability-message-details capability) message context))
 
 (cl-defun e-capabilities--provider-messages
     (provider &key harness session-id turn-id context-purpose)

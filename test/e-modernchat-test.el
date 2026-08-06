@@ -76,7 +76,8 @@ client."
      "session-1"
      (list :id "m-0"
            :role 'assistant
-           :content (concat "The answer is 42.\n\n"
+           :content (concat "The answer uses `#+begin_reasoning` metadata.\n"
+                            "The answer is 42.\n\n"
                             "#+begin_reasoning\n"
                             "claim: the answer is 42\n"
                             "confidence: high\n"
@@ -85,7 +86,8 @@ client."
                             "#+end_reasoning\n")))
     (e-modernchat-test--post-board-output
      harness "session-1" "m-0"
-     (concat "The answer is 42.\n\n"
+     (concat "The answer uses `#+begin_reasoning` metadata.\n"
+             "The answer is 42.\n\n"
              "#+begin_reasoning\n"
              "claim: the answer is 42\n"
              "confidence: high\n"
@@ -95,9 +97,19 @@ client."
     (let* ((snapshot (e-modernchat-view-model-snapshot
                       harness "session-1" :activity-limit 0))
            (messages (cdr (assq 'messages snapshot)))
-           (content (cdr (assq 'content (aref messages 0)))))
+           (message (aref messages 0))
+           (content (cdr (assq 'content message)))
+           (details (cdr (assq 'details message))))
+      (should (string-match-p
+               (regexp-quote "uses `#+begin_reasoning` metadata") content))
       (should (string-match-p "The answer is 42\\." content))
-      (should-not (string-match-p "begin_reasoning" content))
+      (should-not (string-match-p
+                   (regexp-quote "\n#+begin_reasoning\n") content))
+      ;; The inline literal remains; only the actual fence is hidden.
+      (should (= (length details) 1))
+      (should (equal (cdr (assq 'summary (aref details 0))) "1 claim"))
+      (should (string-match-p "The answer is 42"
+                              (cdr (assq 'body (aref details 0)))))
       (should-not (string-match-p "confidence:" content)))))
 
 (ert-deftest e-modernchat-view-model-test-omits-hidden-messages ()

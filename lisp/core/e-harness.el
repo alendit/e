@@ -21,6 +21,7 @@
 (require 'e-events)
 (require 'e-hooks)
 (require 'e-layers)
+(require 'e-message-details)
 (require 'e-loop)
 (require 'e-operations)
 (require 'e-prompts)
@@ -403,6 +404,25 @@ SESSION-ID and TURN-ID scope the effective capability/layer set."
              (e-harness-effective-capabilities harness session-id turn-id))
       (e-capabilities-register-structured-blocks capability registry))
     registry))
+
+(cl-defun e-harness-message-details
+    (harness session-id message &key structured-blocks)
+  "Return capability-owned presentation details for MESSAGE.
+STRUCTURED-BLOCKS is the already parsed block list from the presentation
+transform.  Passing it keeps semantic providers from reparsing message text."
+  (let* ((turn-id (plist-get message :turn-id))
+         (context (list :harness harness
+                        :session-id session-id
+                        :turn-id turn-id
+                        :structured-blocks structured-blocks))
+         details)
+    (dolist (capability
+             (e-harness-effective-capabilities harness session-id turn-id))
+      (setq details
+            (append details
+                    (e-capabilities-message-details
+                     capability message context))))
+    details))
 
 (defun e-harness-store (harness &optional session-id turn-id)
   "Return a fresh e:// store view over HARNESS effective capabilities.
