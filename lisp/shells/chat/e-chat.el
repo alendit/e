@@ -738,13 +738,24 @@ configuration change."
       (e-chat--show-surface-latest-output surface)
       (e-chat--schedule-surface-activation surface))))
 
+(defvar e-chat--surface-activation-in-progress nil
+  "Non-nil while a selected composed chat surface is being restored.")
+
 (defun e-chat--activate-selected-surface-after-workspace-switch (&rest _)
   "Activate selected chat output after a workspace switch."
   (when-let ((surface (e-chat--selected-chat-surface)))
-    (e-chat--activate-surface surface)))
-
-(defvar e-chat--surface-activation-in-progress nil
-  "Non-nil while a selected composed chat surface is being restored.")
+    (e-chat--activate-surface surface)
+    ;; `persp-mode' can run its activation hooks while the restored window
+    ;; tree is still being assembled.  Complete an incomplete surface only
+    ;; once its transcript window can actually be split.
+    (let ((window (cdr surface)))
+      (when (and (window-live-p window)
+                 (eq (window-buffer window) (car surface))
+                 (e-chat--surface-window-can-split-p window))
+        (with-current-buffer (car surface)
+          (unless (window-live-p (e-chat--surface-composer-window window))
+            (let ((e-chat--surface-activation-in-progress t))
+              (e-chat--after-display-buffer (car surface)))))))))
 
 (defun e-chat--activate-selected-surface-after-buffer-switch ()
   "Complete a selected composed chat after a generic buffer switch.
@@ -762,7 +773,12 @@ must remain selected for response navigation."
           (unless (with-current-buffer buffer
                     (window-live-p
                      (e-chat--surface-composer-window window)))
-            (e-chat--after-display-buffer buffer)))))))
+            ;; Buffer-list notifications also occur during perspective/window
+            ;; restoration.  The selected transcript may be temporarily too
+            ;; small for the composer split; leave it for the workspace hook
+            ;; instead of aborting the host's restoration.
+            (when (e-chat--surface-window-can-split-p window)
+              (e-chat--after-display-buffer buffer))))))))
 
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
@@ -831,6 +847,18 @@ Window heights include Emacs's mode line, so the default leaves four editable
 text rows in the composer."
   :type 'integer
   :group 'e-chat)
+
+(defun e-chat--surface-window-can-split-p (window)
+  "Return non-nil when WINDOW has room for the configured composer split.
+This checks the explicit split size used by the surface instead of
+`window-splittable-p', whose answer also depends on the user's general
+`split-height-threshold' and can be nil for a window that an explicit
+`split-window' call can still split."
+  (and (window-live-p window)
+       (not (window-size-fixed-p window 'height))
+       (>= (window-total-height window)
+           (+ e-chat-composer-window-min-height
+              (window-min-size window)))))
 
 (defcustom e-chat-composer-window-max-height 10
   "Maximum height of an e chat composer window."

@@ -203,6 +203,28 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-buffer-switch-defers-composer-split-in-small-window ()
+  "Perspective restoration does not split a transiently small transcript."
+  (let* ((e-chat--surface-composition-enabled t)
+         (buffer (e-chat-test--buffer nil "chat-small-restored-window"))
+         (transcript-window (display-buffer buffer)))
+    (unwind-protect
+        (progn
+          ;; `buffer-list-update-hook' can run before persp-mode has restored
+          ;; the final window sizes.  This models that intermediate state and
+          ;; proves the hook leaves the split to the workspace callback.
+          (cl-letf (((symbol-function 'e-chat--surface-window-can-split-p)
+                     (lambda (&rest _arguments) nil))
+                    ((symbol-function 'e-chat--after-display-buffer)
+                     (lambda (&rest _arguments)
+                       (error "composer split attempted too early"))))
+            (should-not (e-chat--activate-selected-surface-after-buffer-switch)))
+          (should-not (e-chat--surface-composer-window transcript-window)))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (defun e-chat-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
   (dolist (buffer (buffer-list))

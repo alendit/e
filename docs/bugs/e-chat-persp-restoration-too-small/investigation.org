@@ -1,0 +1,52 @@
+#+title: e-chat Perspective Restoration in a Small Window Investigation
+#+startup: overview
+
+* Root cause
+
+The composed-chat repair installed on =buffer-list-update-hook= can run while
+=persp-mode= is still rebuilding the selected workspace's window tree.  When
+the selected transcript is temporarily too short, the repair calls
+=e-chat--surface-display-composer=, whose vertical =split-window= signals
+="too small for splitting"=.  That exception escapes the perspective
+activation path.
+
+* Fix
+
+The generic buffer-switch repair now checks =window-splittable-p= before
+recreating a missing composer.  The perspective activation hook performs the
+same check and completes the pair once the restored window is ready.  No
+workspace-package state or persistent chat state is added.
+
+* Validation
+
+- Added =e-chat-test-buffer-switch-defers-composer-split-in-small-window=,
+  which models the transient unsplittable window and proves the buffer hook
+  does not attempt the split.
+- Focused hook and regression tests passed: 3 tests, 0 unexpected.
+- The full chat suite passed: 334 tests, 0 unexpected, 1 optional Markdown
+  rendering skip.
+- Focused byte compilation and =git diff --check= passed.
+
+* Architecture self-check
+
+1. The slice leaves perspective restoration usable even when a workspace is
+   observed between window-tree updates.
+2. It moves toward chat-surface repair being subordinate to host workspace
+   restoration.
+3. Window splitability is the stable local prerequisite; no speculative
+   retry state is introduced.
+4. e-chat owns the composer/window-pair invariant; persp-mode owns workspace
+   restoration.
+5. Coupling is reduced because the chat hook no longer interrupts the host
+   while its layout is transient.
+6. No dependency direction changes.
+7. The side effect remains in the presentation shell and is gated at its
+   window boundary.
+8. No persistent state is added.
+9. The added predicate is constant-time and avoids a failed split.
+10. The existing window-pair contract remains the only surface state.
+11. No compatibility path is added; the unsafe unconditional split is removed.
+12. No legacy code is retained for the old behavior.
+13. Expected transient unsplittability is deferred; unexpected errors still
+   surface.
+14. The focused ERT regression proves the hook boundary independently.

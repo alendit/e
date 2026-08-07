@@ -11,6 +11,7 @@ State values for coding agents:
 | Closed | final-message-claim-details-and-rendering/ | Final claim messages truncate and hide claim details |
 | Closed | e-chat-board-event-pipeline-cost/ | e-chat board event pipeline repeats expensive work |
 | Closed | e-chat-composer-escape-focus-routing/ | e-chat Escape leaves keystrokes in the composer |
+| Closed | e-chat-persp-restoration-too-small/ | e-chat breaks perspective restoration in a small window |
 | Closed | e-chat-unbounded-session-replay/ | e-chat reconstructs too much session history |
 | Closed | duplicated-composed-chat-composer/ | Duplicated Composed Chat Composer |
 | Closed | e-chat-settled-surface-opens-stale-scrollback/ | e-chat settled surface opens at stale scrollback |

@@ -1,0 +1,8 @@
+#+title: e-chat Breaks Perspective Restoration in a Small Window
+#+startup: overview
+
+* Report
+
+Switching a =persp-mode= workspace containing a composed e-chat can signal
+="Window ... too small for splitting"=.  The error interrupts workspace
+restoration and leaves the workspace layout or selected surface incomplete.
