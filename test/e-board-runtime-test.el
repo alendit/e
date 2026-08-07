@@ -1921,9 +1921,46 @@ Tests that explicitly provide `:requester' retain that exact requester."
                        (e-board-registry-board-source-board board)))))
             (should (eq (e-board-message-activity-kind message)
                         'reasoning-delta))
+            (should (equal (e-board-message-tags message) '(main)))
             (should (string-match-p "latest" (e-board-message-content message)))
             (should-not (string-match-p "first"
                                         (e-board-message-content message)))))))))
+
+(ert-deftest e-board-runtime-test-reasoning-follows-durable-lifecycle-watermark ()
+  "Reasoning activity remains publishable after durable lifecycle edges."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (let ((attachment
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant")))
+        (dolist (event
+                 (list
+                  (e-events-make
+                   :type 'turn-started :session-id "session" :turn-id "turn"
+                   :board-activity-sequence 1)
+                  (e-events-make
+                   :type 'provider-request-started
+                   :session-id "session" :turn-id "turn"
+                   :board-activity-sequence 2)
+                  (e-events-make
+                   :type 'reasoning-delta :session-id "session" :turn-id "turn"
+                   :payload '(:content "visible progress")
+                   :board-activity-sequence 3)))
+          (e-board-runtime--handle-harness-event attachment event))
+        (e-board-runtime--drain-activity-mailboxes)
+        (let* ((source (e-board-registry-board-source-board board))
+               (messages (e-board-messages source)))
+          (should (equal (mapcar #'e-board-message-activity-kind messages)
+                         '(turn-started provider-request-started
+                           reasoning-delta)))
+          (should (equal (mapcar #'e-board-message-source-activity-key messages)
+                         '(("participant" 1 2)
+                           ("participant" 1 4)
+                           ("participant" 1 6))))
+          (should (equal (e-board-message-content (car (last messages)))
+                         "(:content \"visible progress\")")))))))
 
 (ert-deftest e-board-runtime-test-authorized-exact-input-checks-requester-before-post ()
   "An explicit requester cannot create an unauthorized exact board input."

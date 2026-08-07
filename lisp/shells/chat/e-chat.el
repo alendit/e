@@ -2227,7 +2227,11 @@ context insertions from the chat buffer the user is looking at."
         :generation 0
         :delay 0
         :coalesce nil
-        :focus-policy 'preserve
+        ;; Chat rendering owns the composed transcript/composer viewport as a
+        ;; unit.  Its render path preserves scrollback or follows output from
+        ;; the window-local follow state; a generic one-buffer snapshot would
+        ;; restore the old transcript point afterward and undo that decision.
+        :focus-policy 'explicit
         :reentrancy-policy 'defer
         :apply
         (lambda (_job _handle)
@@ -5643,13 +5647,14 @@ live output, and a user reading older output must retain that scrollback."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
     (e-chat--clear-output-bottom-spacer window)
-    (let* ((target-motion (- 2 (window-body-height window)))
+    (let* ((target-motion (- 6 (window-body-height window)))
            (motion-and-start
             (save-excursion
               (goto-char position)
               ;; `vertical-motion' accounts for visual wrapping.  Keeping a
-              ;; small margin makes the current activity legible without a
-              ;; selection-changing `recenter' call.
+              ;; A small margin keeps point-max and display-only rows inside
+              ;; the matrix even when the short transcript ends on an empty
+              ;; line, while keeping current activity close to the bottom.
               (let ((motion (vertical-motion target-motion window)))
                 (cons motion (point)))))
            (motion (car motion-and-start))
@@ -5977,6 +5982,13 @@ the composer."
           (e-chat--capture-running-status-navigation-state))
          (display-state
           (e-chat--capture-running-status-display-state))
+         ;; Before the first running-status block exists there are no bounds
+         ;; from which to capture offsets.  Preserve the simpler physical-tail
+         ;; contract so inserting that first block does not strand a pinned
+         ;; composed transcript at its old end.
+         (initial-tail-windows
+          (unless display-state
+            (e-chat--capture-output-tail-windows)))
          (composer-state (e-chat--capture-composer-state)))
     (when (and turn-id
                (not (plist-get data :final-rendered))
@@ -5997,7 +6009,9 @@ the composer."
         (e-chat--restore-composer-state composer-state)))
     (e-chat--restore-running-status-navigation-state navigation-state)
     (unless navigation-state
-      (e-chat--restore-running-status-display-state display-state))
+      (if display-state
+          (e-chat--restore-running-status-display-state display-state)
+        (e-chat--restore-output-tail-windows initial-tail-windows)))
     (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id)))
 
 (defun e-chat--render-turn-transient (turn-id record)

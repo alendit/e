@@ -985,19 +985,19 @@ will consume the mailbox under its own bounded drain."
           (list 'turn-progress participant-id
                 (e-board-runtime-attachment-generation attachment)
                 turn-id activity-kind))
-         (sequence
-          (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
+         (source-key
+          (e-board-runtime--event-activity-source-key
+           attachment event activity-kind)))
     (puthash mailbox-id
              (list :attachment attachment :turn-id turn-id
                    :activity-kind activity-kind
-                   :tags (copy-tree
-                          (gethash turn-id
-                                   (e-board-runtime-attachment-turn-tags attachment)))
+                   :tags (or (copy-tree
+                              (gethash
+                               turn-id
+                               (e-board-runtime-attachment-turn-tags attachment)))
+                             '(main))
                    :payload (plist-get event :payload)
-                   :source-key
-                   (list participant-id
-                         (e-board-runtime-attachment-generation attachment)
-                         sequence))
+                   :source-key source-key)
              e-board-runtime--work-activity-mailboxes)
     (e-board-runtime--enqueue-activity-flush mailbox-id)))
 
@@ -1189,9 +1189,20 @@ row, so its numeric key reserves an adjacent slot for the terminal summary."
          (durable-sequence (plist-get event :board-activity-sequence))
          (sequence
           (if durable-sequence
-              (+ (* 2 durable-sequence)
-                 (if (eq publication-kind 'turn-summary) 1 0))
-            (cl-incf (e-board-runtime-attachment-activity-sequence attachment)))))
+              (let ((durable-key
+                     (+ (* 2 durable-sequence)
+                        (if (eq publication-kind 'turn-summary) 1 0))))
+                ;; Durable and locally allocated activity share one producer
+                ;; watermark.  Keep the fallback allocator above every
+                ;; durable key so later work progress cannot look like expired
+                ;; history merely because it used the local path.
+                (setf (e-board-runtime-attachment-activity-sequence attachment)
+                      (max durable-key
+                           (e-board-runtime-attachment-activity-sequence
+                            attachment)))
+                durable-key)
+            (cl-incf
+             (e-board-runtime-attachment-activity-sequence attachment)))))
     (list participant-id
           (e-board-runtime-attachment-generation attachment)
           sequence)))

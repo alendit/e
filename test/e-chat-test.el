@@ -5934,6 +5934,28 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-board-event-consumer-defers-focus-to-chat-policy ()
+  "The board adapter does not undo composed chat viewport decisions."
+  (let* ((buffer (e-chat-test--buffer nil "chat-board-event-focus"))
+         (harness (buffer-local-value 'e-chat-harness buffer))
+         spec)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-ui-work-schedule)
+                   (lambda (candidate &rest _arguments)
+                     (setq spec candidate)
+                     nil)))
+          (funcall
+           (e-chat--event-consumer harness buffer)
+           (e-events-make
+            :type 'reasoning-delta
+            :session-id "chat-board-event-focus"
+            :turn-id "turn-1"
+            :payload '(:content "progress")))
+          (should (e-ui-work-spec-p spec))
+          (should (eq (e-ui-work-spec-focus-policy spec) 'explicit)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-hidden-buffer-defers-activity-redraw ()
   "A chat buffer shown in no window withholds its activity redraw."
   (let ((buffer (e-chat-test--buffer nil "chat-hidden-redraw"))
