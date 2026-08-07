@@ -1,0 +1,9 @@
+#+title: e-chat Composed Surface Resists Native Window Deletion
+#+startup: overview
+
+* Report
+
+The separate e-chat composer window behaves unlike a normal Emacs window.
+Running =C-x 0= in it does not close the chat surface: the composer is recreated
+below the transcript.  The hand-maintained pair also interacts poorly with
+=persp-mode= restoration and makes ordinary split/window commands surprising.

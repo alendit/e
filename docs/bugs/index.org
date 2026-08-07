@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-composed-surface-window-semantics/ | e-chat composed surface resists native window deletion |
 | Closed | final-message-claim-details-and-rendering/ | Final claim messages truncate and hide claim details |
 | Closed | e-chat-board-event-pipeline-cost/ | e-chat board event pipeline repeats expensive work |
 | Closed | e-chat-composer-escape-focus-routing/ | e-chat Escape leaves keystrokes in the composer |

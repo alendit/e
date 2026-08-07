@@ -849,11 +849,11 @@ text rows in the composer."
   :group 'e-chat)
 
 (defun e-chat--surface-window-can-split-p (window)
-  "Return non-nil when WINDOW has room for the configured composer split.
-This checks the explicit split size used by the surface instead of
+  "Return non-nil when WINDOW has room for the configured composer child.
+This checks the explicit size used by `display-buffer-in-atom-window' instead of
 `window-splittable-p', whose answer also depends on the user's general
 `split-height-threshold' and can be nil for a window that an explicit
-`split-window' call can still split."
+window operation can still split."
   (and (window-live-p window)
        (not (window-size-fixed-p window 'height))
        (>= (window-total-height window)
@@ -1599,6 +1599,43 @@ composer buffer; transcript rendering never calls it."
          (= (nth 2 transcript-edges) (nth 2 composer-edges))
          (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
 
+(defun e-chat--surface-exact-pair-parent
+    (transcript-window composer-window)
+  "Return the internal parent containing only the two surface windows.
+Return nil unless TRANSCRIPT-WINDOW and COMPOSER-WINDOW are direct siblings
+and the parent's complete child list consists of exactly those two windows."
+  (let ((parent (and (window-live-p transcript-window)
+                     (window-parent transcript-window))))
+    (when (and parent
+               (window-live-p composer-window)
+               (eq parent (window-parent composer-window)))
+      (let ((child (window-child parent))
+            children)
+        (while child
+          (push child children)
+          (setq child (window-next-sibling child)))
+        (when (and (= (length children) 2)
+                   (memq transcript-window children)
+                   (memq composer-window children))
+          parent)))))
+
+(defun e-chat--surface-ensure-atomic-window-pair
+    (transcript-window composer-window)
+  "Make the exact transcript/composer pair one atomic Emacs window.
+Generic window-state restoration does not preserve `window-atom' parameters.
+Only re-atomize an exact two-child vertical pair so unrelated restored windows
+can never be absorbed into the chat surface."
+  (or (and (window-atom-root transcript-window)
+           (eq (window-atom-root transcript-window)
+               (window-atom-root composer-window)))
+      (when (e-chat--surface-window-directly-below-p
+             transcript-window composer-window)
+        (when-let ((parent
+                    (e-chat--surface-exact-pair-parent
+                     transcript-window composer-window)))
+          (window-make-atom parent)
+          t))))
+
 (defun e-chat--surface-reconcile-window-pairs (transcript-window)
   "Rebuild and reconcile the surface containing TRANSCRIPT-WINDOW.
 The composer buffer owns its transcript identity.  Pair caches and window
@@ -1615,8 +1652,9 @@ may discard."
           (e-chat--surface-composer-windows frame))
          (paired-composer-windows
           (mapcar #'cdr e-chat--surface-window-pairs)))
-    (dolist (window paired-composer-windows)
-      (set-window-parameter window 'e-chat-composer transcript))
+    (dolist (pair e-chat--surface-window-pairs)
+      (set-window-parameter (cdr pair) 'e-chat-composer transcript)
+      (e-chat--surface-ensure-atomic-window-pair (car pair) (cdr pair)))
     (dolist (window transcript-windows)
       (unless (assoc window e-chat--surface-window-pairs)
         (when-let ((composer-window
@@ -1628,7 +1666,9 @@ may discard."
                      composer-windows)))
           (push (cons window composer-window) e-chat--surface-window-pairs)
           (push composer-window paired-composer-windows)
-          (set-window-parameter composer-window 'e-chat-composer transcript))))
+          (set-window-parameter composer-window 'e-chat-composer transcript)
+          (e-chat--surface-ensure-atomic-window-pair
+           window composer-window))))
     ;; A composer buffer is an internal part of its transcript surface, never
     ;; an independently displayable shell.  Window/workspace restoration may
     ;; recreate it without custom parameters; remove every unpaired view.
@@ -1691,10 +1731,21 @@ When SELECT is non-nil, select the composer window."
     (when (window-live-p transcript-window)
       (setq composer-window
             (or (e-chat--surface-composer-window transcript-window)
-                (let ((window (split-window transcript-window
-                                            (- e-chat-composer-window-min-height)
-                                            'below)))
-                  (set-window-buffer window composer)
+                (let* ((e-chat--surface-activation-in-progress t)
+                       (window
+                        (display-buffer
+                         composer
+                         `((display-buffer-in-atom-window)
+                           (window . ,transcript-window)
+                           (side . below)
+                           (window-height
+                            . ,e-chat-composer-window-min-height)))))
+                  (unless (and (window-live-p window)
+                               (eq (window-buffer window) composer)
+                               (window-atom-root transcript-window)
+                               (eq (window-atom-root transcript-window)
+                                   (window-atom-root window)))
+                    (error "Could not create atomic e-chat composer window"))
                   (set-window-parameter window 'e-chat-composer transcript)
                   (push (cons transcript-window window)
                         e-chat--surface-window-pairs)

@@ -169,6 +169,82 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-delete-composer-window-closes-atomic-surface ()
+  "C-x 0 in the composer closes the composed chat as one native unit."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-atomic-delete"))
+         (external-buffer (generate-new-buffer " *e-chat atomic external*"))
+         transcript-window composer-window external-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (setq external-window (split-window transcript-window nil 'right))
+          (set-window-buffer external-window external-buffer)
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer transcript-window buffer)
+            (with-current-buffer buffer
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window t))))
+          (should (window-atom-root transcript-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
+          (with-selected-window composer-window
+            (call-interactively (key-binding (kbd "C-x 0"))))
+          ;; Exercise the generic switch repair that previously recreated the
+          ;; composer after `C-x 0'.  Selection is now outside the closed atom.
+          (e-chat--activate-selected-surface-after-buffer-switch)
+          (should-not (window-live-p transcript-window))
+          (should-not (window-live-p composer-window))
+          (should (window-live-p external-window))
+          (should (eq (selected-window) external-window))
+          (should-not (get-buffer-window buffer t)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-window-state-restoration-reatomizes-surface ()
+  "Restored transcript/composer siblings recover their atomic contract."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-atomic-restoration"))
+         (external-buffer (generate-new-buffer " *e-chat restore external*"))
+         transcript-window composer-window external-window state composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (setq external-window (split-window transcript-window nil 'right))
+          (set-window-buffer external-window external-buffer)
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer transcript-window buffer)
+            (with-current-buffer buffer
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window))))
+          (setq composer (window-buffer composer-window))
+          (setq state (window-state-get (frame-root-window) t))
+          (delete-window composer-window)
+          (window-state-put state (frame-root-window) 'safe)
+          (setq transcript-window (get-buffer-window buffer t))
+          (setq composer-window (get-buffer-window composer t))
+          (should (window-live-p transcript-window))
+          (should (window-live-p composer-window))
+          (with-current-buffer buffer
+            (should (eq (e-chat--surface-reconcile-window-pairs
+                         transcript-window)
+                        composer-window)))
+          (should (window-atom-root transcript-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-navigation-routes-keys-to-transcript ()
   "Composer navigation selects the transcript and activates its keymap."
   (let* ((e-chat--surface-composition-enabled t)
@@ -1592,7 +1668,10 @@ must drop any revealed hidden blocks."
                 (buffer-local-value 'e-chat--surface-composer-buffer buffer))
           (should (buffer-live-p composer))
           (should (eq (window-buffer (selected-window)) composer))
-          (should (eq (get-buffer-window buffer t) window)))
+          (should (eq (get-buffer-window buffer t) window))
+          (should (window-atom-root window))
+          (should (eq (window-atom-root window)
+                      (window-atom-root (selected-window)))))
       (when (buffer-live-p origin)
         (kill-buffer origin))
       (when (buffer-live-p buffer)

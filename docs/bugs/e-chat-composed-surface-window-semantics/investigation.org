@@ -1,0 +1,65 @@
+#+title: e-chat Composed Surface Window Semantics Investigation
+#+startup: overview
+
+* Root cause
+
+The transcript and composer were two ordinary windows managed as a logical
+pair by e-chat.  After =delete-window= removed the composer, Emacs selected the
+transcript.  The global generic-buffer-switch repair then observed a composed
+transcript without a composer and recreated the split, undoing =C-x 0=.
+
+This was a mismatch between the UI's structural claim and Emacs's window
+model: e-chat treated the pair as one surface, but Emacs still treated each
+constituent as independently deletable.
+
+* Fix
+
+Composer creation now uses =display-buffer-in-atom-window=.  Emacs therefore
+applies structural operations such as =delete-window= and =split-window= to the
+atomic root: =C-x 0= closes both chat constituents and a new split is placed
+outside the pair.
+
+Emacs 30 does not retain =window-atom= parameters through generic
+=window-state-get=/=window-state-put= restoration.  Pair reconciliation repairs
+that derived presentation state only when the restored transcript and composer
+are direct vertical siblings whose parent contains exactly those two windows.
+It never atomizes an internal node containing unrelated windows.
+
+No harness, session, capability, backend, or durable workspace state changed.
+
+* Validation
+
+- Added a focused =C-x 0= regression proving both chat windows close, the
+  external window remains selected, and generic buffer-switch repair does not
+  resurrect the composer.
+- Added a window-state restoration regression proving the restored exact pair
+  regains one shared atom root.
+- Focused surface tests passed: 5 tests, 0 unexpected.
+- The full chat suite passed: 337 tests, 0 unexpected, 1 optional Markdown
+  rendering skip.
+
+* Architecture self-check
+
+1. The slice is useful alone: normal Emacs deletion now closes the chat surface.
+2. It moves toward a presentation-owned surface built from native Emacs window
+   semantics while preserving separate transcript and draft ownership.
+3. Workspace restoration behavior is uncertain and local; guarded
+   re-atomization is reversible and does not alter stable session contracts.
+4. The e-chat surface controller owns the relationship because it alone owns
+   the transcript/composer presentation.
+5. Coupling is reduced by replacing deletion repair policy with Emacs's atomic
+   structural contract.
+6. No stable harness or capability code depends on concrete window behavior.
+7. Window creation and atom repair remain at the presentation shell boundary.
+8. Atom and pair-cache state are ephemeral and rebuilt from visible buffers;
+   no durable state was added.
+9. Creation and reconciliation add only constant-size window-tree checks.
+10. =display-buffer-in-atom-window= is a real substitutable Emacs contract; no
+    speculative project abstraction was introduced.
+11. Generic reopening and perspective restoration remain supported; the
+    independently deletable ordinary-pair behavior is intentionally removed.
+12. The ordinary =split-window= composer creation path is removed.
+13. Transient lack of space still defers creation; unexpected atom creation
+    failures surface as errors.
+14. Focused ERT tests prove deletion and restoration without a provider,
+    capability, live Emacs reload, or full system.
