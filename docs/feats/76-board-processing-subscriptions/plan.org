@@ -1,0 +1,300 @@
+#+title: Board Processing Subscriptions
+#+startup: overview
+
+* Status
+
+In-progress.  The operator approved implementation in the same request as this
+plan and asked a plan-implementer subagent to implement it, followed by review.
+
+* Problem
+
+The current board model has ordinary participants that publish messages and
+subscribe with selectors.  Some subscribers need to inspect a matching message
+before later subscribers receive it, then pass it unchanged, replace it,
+consume it, or publish related work.  Bayesian claim validation currently
+achieves this through a harness =:turn-finished= hook and delays public turn
+settlement for every hook.  That couples one reusable validation behavior to a
+session lifecycle and makes all turn-finished hooks settlement-critical.
+
+The board must preserve one actor model: there are participants, not separate
+processor and observer actor types.  Processing is a subscription delivery
+semantic owned by a normal participant.  Chat is also a participant; its
+current mostly-observing behavior does not define its type.
+
+* Goal
+
+Add an optional processing mode to ordinary participant subscriptions:
+
+- processing subscriptions match with the same selector grammar as other
+  subscriptions;
+- matching processors run before normal delivery in deterministic priority
+  order;
+- each processor settles one input as exactly one of =pass=, =replace=,
+  =consume=, or =fail=;
+- with no matching processor, delivery is the identity path;
+- processed output proceeds through the remaining processing chain and then
+  through ordinary subscription delivery;
+- actors do not receive their own publications by default;
+- bounded causal processor history prevents direct and indirect cycles;
+- the board records enough immutable state to replay and inspect processing;
+- existing subscriptions retain their current behavior unless processing mode
+  is requested.
+
+Migrate Bayesian turn validation onto this model so it no longer depends on a
+session-bound =:turn-finished= hook or on delaying all public turn settlement.
+
+* Terminology
+
+- Participant :: the only board actor.  It may publish and subscribe.
+- Normal subscription :: an ordinary selector subscription whose existing
+  effect runs after processing settles.
+- Processing subscription :: an ordinary participant subscription with
+  =:delivery process=.  It receives one immutable candidate and returns one
+  declared processing result.
+- Processor :: ergonomic shorthand for the participant that owns a processing
+  subscription.  It is not a distinct participant record or permission model.
+- Candidate :: the current message version entering one processing step.
+- Root message :: the first publication that began the chain.
+
+* Semantics
+
+** Subscription declaration
+
+Extend =e-board-subscribe= with optional delivery policy:
+
+#+begin_src elisp
+(e-board-subscribe
+ board participant-id selector
+ :delivery 'process
+ :priority 100
+ :effect 'create-pickup)
+#+end_src
+
+=:delivery= defaults to =normal=.  =:priority= is accepted only for =process=
+and is a bounded integer.  Processing order is descending priority, then stable
+subscription id.  Equal-priority behavior must be deterministic across replay.
+
+A processing subscription still uses a pickup and the ordinary participant
+delivery adapter.  The participant settles that pickup through a new board API;
+the board never calls capability or shell code from selector/classification
+stacks.
+
+** Result grammar
+
+A processor settles one accepted processing pickup with exactly one result:
+
+- =pass= :: retain the candidate unchanged and continue the chain.
+- =replace= :: continue with one replacement message.  Preserve root identity,
+  cause, and bounded history; assign a new immutable message id.
+- =consume= :: terminate the chain without normal delivery.
+- =fail= :: record visible processor failure and apply the subscription's
+  declared failure policy.
+
+Initial failure policies are =pass= and =consume=.  The default is =pass= so a
+validator failure cannot silently erase a user-visible answer.  Additional
+fan-out belongs to ordinary publication after settlement and is not part of the
+one-in/one-out processing result.
+
+** Delivery and ordering
+
+For each newly published message:
+
+1. Freeze matching processing subscriptions under the existing bounded routing
+   high-watermark rules.
+2. Exclude subscriptions owned by the message author unless self-delivery is
+   explicitly enabled.
+3. Deliver only the first eligible processor pickup.
+4. On settlement, record the result and either schedule the next processor,
+   terminate, or enter ordinary classification/delivery with the settled
+   candidate.
+5. With no matching processors, enter ordinary delivery immediately.
+
+Normal subscriptions never observe intermediate candidates.  Priority orders
+processors only; it does not define actor importance or normal subscriber
+order.
+
+** Identity, provenance, and cycle prevention
+
+Every processed version records:
+
+- root message id;
+- immediate =caused-by= message id;
+- processing subscription id;
+- processing participant id;
+- bounded ordered processor history;
+- processing depth.
+
+A processing subscription is ineligible when its participant or subscription
+identity already appears in the candidate history.  The board also enforces a
+small maximum processing depth.  Self-delivery is disabled by default for all
+participant subscriptions and may be enabled explicitly where acknowledgement
+or metrics require it.
+
+History is a safety fence and audit record.  Phase-specific selectors and
+normal authorization checks still apply at every delayed boundary.
+
+** State and persistence
+
+The board owns processing-chain records because they govern routing and replay.
+The runtime owns only physical participant delivery attempts.  Session state
+remains private execution state and is not the processing ledger.
+
+Persist immutable processing messages and terminal processing-result events in
+the existing board journal.  Rebuild the same settled normal projection after
+restart without re-running already committed processors.  Pending accepted
+processor pickups use the existing delivery-attempt and reconciliation rules.
+
+** Authorization
+
+A processing subscription may inspect a message only when its participant
+retains current board access at selector, pickup creation, delivery, and result
+commit.  Replacement publication uses the processing participant as actor and
+must retain bounded root provenance.  A processor cannot broaden visibility or
+bypass target grants.
+
+* Bayesian migration
+
+Extract the reasoning-block parser, evidence resolver, and claim-check decision
+into a pure service over an immutable candidate plus explicit evidence/source
+ports.
+
+Register a Bayesian processing subscription for the relevant output selector.
+It returns:
+
+- =pass= for complete or abstaining claims while publishing a bounded audit
+  fact/activity;
+- =replace= only when a synchronous deterministic repair already exists;
+- =pass= plus a separately published validation request when another model turn
+  is needed.  The later validation publication carries normal causal history
+  and cannot re-enter the same processor chain;
+- failure according to =pass= policy when validation is unavailable.
+
+Remove the Bayesian =:turn-finished= hook adapter after equivalent behavior and
+presentation tests pass.  Restore =turn-finished= as a true terminal harness
+event; ordinary lifecycle hooks no longer delay board publication.
+
+Reasoning blocks remain raw durable content.  Presentation services continue to
+strip them during rendering and derive generic message details.
+
+* Non-goals
+
+- A new processor participant type, registry, role, or permission class.
+- Arbitrary graphs or named processing pipelines.
+- One-to-many transformation inside the processing result.
+- Unbounded callback execution in board classification code.
+- Replacing exact invocation, aggregation, or ordinary post-input continuations.
+- Applying claim validation to all output or all documents.
+
+* Implementation slices
+
+** Slice 1: processing records and subscription contract
+
+- Add delivery mode, priority, self-delivery, and failure policy to ordinary
+  subscriptions.
+- Add immutable processing-chain and processing-result records.
+- Validate bounds and compatibility at subscription creation/replacement.
+- Preserve byte-for-byte behavior for normal subscriptions.
+
+Exit: contract tests prove defaults, ordering, invalid combinations, and
+persistence/replay of records.
+
+** Slice 2: bounded routing and settlement
+
+- Freeze processing candidates through the existing classifier high watermark.
+- Deliver one processor pickup at a time through the runtime adapter.
+- Add pass, replace, consume, and fail settlement APIs.
+- Enforce authorization, self-exclusion, processor-history exclusion, depth,
+  generation fences, and idempotent result commit.
+- Continue into ordinary delivery only after processing settles.
+
+Exit: pure board and runtime tests prove identity behavior, deterministic chains,
+replacement, consumption, both failure policies, retries, cancellation,
+rebind/restart, and direct/indirect loop prevention.
+
+** Slice 3: application and shell compatibility
+
+- Ensure chat and other existing participant subscriptions receive only settled
+  normal delivery.
+- Keep reasoning/progress and nonprocessed messages on their existing paths.
+- Add board-backed tests with zero, one, and several processors.
+- Measure the no-processor hot path and justify any added constant work.
+
+Exit: existing shell suites pass unchanged, and the zero-processor path adds no
+asynchronous turn or additional publication.
+
+** Slice 4: Bayesian migration
+
+- Extract the pure claim-validation service.
+- Register Bayesian processing behavior through an ordinary participant
+  subscription.
+- Preserve bounded audit summaries, hidden validation interactions, evidence
+  handles, and structured-block presentation.
+- Remove the settlement-delaying Bayesian hook path and its private continuation
+  special case when unused.
+
+Exit: Bayesian tests run through board subscription delivery; no Bayesian
+=:turn-finished= hook remains; public terminal settlement no longer waits for
+ordinary hooks.
+
+** Slice 5: review and cleanup
+
+- Remove obsolete hook scheduling, compatibility comments, and dead tests.
+- Update runtime concepts and feature 65/66 cross-references.
+- Run focused and broad ERT, compile, whitespace, persistence restart, and
+  bounded performance checks.
+- Create =review.org= and resolve every finding before marking Done.
+
+Exit: review has no unresolved findings and the running Emacs remains unchanged
+unless the operator explicitly requests reload.
+
+* Verification
+
+- Unit tests for result grammar and invalid subscription combinations.
+- Pure board tests for stable priority, identity path, replacement provenance,
+  consume, fail-open/fail-closed, self-exclusion, history cycles, and depth.
+- Runtime tests for one-at-a-time pickup delivery, retries, cancellation,
+  rebind, authorization revocation, and idempotent receipts.
+- Persistence tests for pending and settled chains across restart.
+- Existing board, registry, harness, chat service, classic chat, Modernchat,
+  Org Canvas, Bayesian, cutover structure, and E2E suites.
+- =eldev compile= and =git diff --check=.
+- Compare no-processor classification and delivery work against the current
+  baseline; any regression needs a first-principles justification.
+
+* Compatibility
+
+Normal subscriptions default to their current semantics.  Existing board logs
+without processing records replay unchanged.  This is not a compatibility path
+for the Bayesian hook: once migration passes, remove the old adapter rather than
+maintaining two enforcement routes.
+
+* Architecture self-check
+
+1. Slice 1 is independently useful as a narrow declarative contract; Slice 2
+   supplies the first working chain.
+2. The final direction is one board actor model with processing expressed as a
+   subscription behavior.
+3. Named chains and fan-out are uncertain and deferred.  Stable one-in/one-out
+   settlement and bounded provenance are modeled directly.
+4. The board owns routing and chain state; the runtime owns physical delivery;
+   participants own processing policy; shells own presentation.
+5. This reduces coupling by removing validation policy from session lifecycle
+   and keeping interfaces consumer-shaped.
+6. Policy depends on board contracts; board core never depends on Bayesian,
+   chat, Canvas, or Grimoire code.
+7. Participant callbacks and model work remain outside board classification and
+   commit stacks.
+8. Added state is durable only where replay needs it; runtime attempts retain
+   their existing process lifetime.
+9. The no-processor path performs one bounded eligibility check and proceeds
+   directly.  Processor work is proportional to the bounded matching chain.
+10. Processing is a real subscription semantic with one result grammar shared
+    by all participants.
+11. Existing normal subscriptions and logs are compatible.  The obsolete
+    Bayesian hook route is removed after migration.
+12. The delayed-all-hooks settlement code and Bayesian private continuation are
+    cleanup candidates.
+13. Declared processor failure policy handles expected failures.  Unexpected
+    core and adapter errors remain visible and terminal.
+14. Pure board tests prove policy independently; adapter, persistence, and shell
+    tests cover boundaries without relying on full-system mocks.

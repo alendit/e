@@ -86,3 +86,4 @@ Status values for coding agents:
 | 73 | Done | 73-persistence-preflight/ | Persistence Command Preflight |
 | 74 | Done | 74-capability-message-details/ | Capability-Owned Message Details |
 | 75 | Done | 75-graphical-ui-e2e/ | Graphical UI Behavioral E2E |
+| 76 | In-progress | 76-board-processing-subscriptions/ | Board Processing Subscriptions |
