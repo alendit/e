@@ -1,0 +1,24 @@
+#+title: Focused Composer Context Status
+#+startup: overview
+
+* Change
+
+The focused composer now displays the transcript-owned model and context-fill
+status in its own mode line.  It updates to settled provider usage when the
+assistant output arrives through the board-native chat path, and literal
+percent signs render correctly.
+
+The composer evaluates the existing transcript status instead of copying its
+context caches or calculating an independent value.
+
+* Why tiny
+
+This restores one derived presentation projection in the existing composed
+chat shell.  It does not change session, provider, board, or persistence data.
+
+* Validation
+
+- Hidden graphical regression covers the selected composer before and after an
+  asynchronous provider-usage event.
+- Full graphical suite: five passed, zero unexpected.
+- Focused chat batch suite and compilation pass.

@@ -68,8 +68,8 @@ geometry, or host extension behavior.
 
 * Completion
 
-The graphical runner, asynchronous fake stream, four chat behavior scenarios,
+The graphical runner, asynchronous fake stream, five chat behavior scenarios,
 default deterministic integration classification, and Linux Xvfb CI job are
 implemented.  The graphical suite exposed and drove fixes for durable
 reasoning activity ordering, shell-owned focus policy, first-status tail
-following, and short-output bottom placement.
+following, short-output bottom placement, and focused composer context status.

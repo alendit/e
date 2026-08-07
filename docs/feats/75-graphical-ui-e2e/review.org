@@ -254,3 +254,13 @@ and no test-only state enters the runtime package.
 * Unresolved
 
 None for this feature.
+
+* Follow-up: focused composer context status
+
+On 2026-08-07 the graphical matrix gained a fifth scenario for the rendered
+mode line of the focused composer.  It verifies the initial model/context
+projection and the settled provider-usage update after an asynchronous turn.
+The scenario exposed and resolved the missing composer projection, the absent
+board-native final-output refresh, and literal percent escaping in mode-line
+data.  The full hidden graphical suite passes five tests with zero unexpected
+results.

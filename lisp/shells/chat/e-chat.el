@@ -1469,9 +1469,19 @@ and / expands available prompts."
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (e-chat--ensure-window-selection-hook))
 
+(defun e-chat--surface-composer-mode-name ()
+  "Return the transcript-owned mode-line status for this composer.
+The composer is the focused half of a composed chat surface, but model and
+context-fill state belongs to the transcript.  Project that existing value at
+display time so the two buffers cannot drift or maintain duplicate caches."
+  (if (buffer-live-p e-chat--surface-transcript-buffer)
+      (buffer-local-value 'mode-name e-chat--surface-transcript-buffer)
+    "e-chat-input"))
+
 (define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
   "Editable input pane owned by an e chat transcript surface."
   (use-local-map e-chat-composer-mode-map)
+  (setq-local mode-name '(:eval (e-chat--surface-composer-mode-name)))
   (e-chat--setup-line-wrapping)
   (e-chat--disable-modal-editing)
   (e-chat--disable-completion)
@@ -7903,6 +7913,10 @@ expensive context-token estimate path."
      :token-limit-function #'e-chat--model-context-window
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
+(defun e-chat--mode-line-display-text (status)
+  "Escape literal percent signs in STATUS for Emacs mode-line display."
+  (replace-regexp-in-string "%" "%%" status t t))
+
 (defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)
   "Refresh this buffer's e chat mode-line text.
 When PREFER-TOKEN-USAGE is non-nil, prefer fresh provider usage over recomputing
@@ -7910,8 +7924,12 @@ an approximate full-context estimate."
   (let ((status (e-chat--mode-line-status-text prefer-token-usage)))
     (unless (equal status e-chat--mode-line-status)
       (setq-local e-chat--mode-line-status status)
-      (setq-local mode-name status)
-      (force-mode-line-update))))
+      ;; Strings inside mode-line constructs interpret `%'.  Keep the cached
+      ;; semantic status literal and escape only its display projection.
+      (setq-local mode-name (e-chat--mode-line-display-text status))
+      (force-mode-line-update)
+      (when (buffer-live-p e-chat--surface-composer-buffer)
+        (force-window-update e-chat--surface-composer-buffer)))))
 
 (defun e-chat--request-mode-line-status-refresh (&optional prefer-token-usage immediate)
   "Schedule a coalesced refresh of this chat buffer's mode-line status.
@@ -8284,7 +8302,12 @@ separate dimmed representation instead."
                (e-chat--delete-turn-transient record)))
            (e-chat--render-durable-message message turn-id)
            (when assistant-p
-             (e-chat--finalize-turn-display turn-id))
+             (e-chat--finalize-turn-display turn-id)
+             ;; Provider usage remains private durable session state rather
+             ;; than board transcript activity.  The projected assistant
+             ;; output is the successful-turn boundary where live board-native
+             ;; chats can refresh that settled context fill.
+             (e-chat--refresh-mode-line-status t))
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)

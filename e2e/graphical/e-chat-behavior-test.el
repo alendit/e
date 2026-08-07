@@ -45,6 +45,14 @@
          (window-live-p composer-window)
          (cons transcript-window composer-window))))
 
+(defun e-chat-behavior-test--window-mode-line-text (window)
+  "Return WINDOW's rendered mode-line text after graphical redisplay."
+  (redisplay t)
+  (let ((buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (substring-no-properties
+       (format-mode-line mode-line-format nil window buffer)))))
+
 (defun e-chat-behavior-test--open-surface (&optional external-window)
   "Open a public chat surface, optionally beside EXTERNAL-WINDOW.
 Return a plist containing its stream, harness, transcript, and visible windows."
@@ -55,7 +63,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
   (let* ((stream (e-graphical-test-stream-create))
          (harness
           (e-harness-create
-           :backend (e-graphical-test-stream-backend stream)))
+           :backend (e-graphical-test-stream-backend stream)
+           :default-options
+           '(:model "gpt-5.6-sol" :reasoning-effort "high")))
          (session-id
           (e-board-e2e-create-session harness :id "graphical-chat"))
          (transcript (e-chat-open-session harness session-id t)))
@@ -186,7 +196,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
      (and (not (e-graphical-test-stream-active-p
                 (plist-get fixture :stream)))
           (with-current-buffer (plist-get fixture :transcript)
-            (string-match-p (regexp-quote answer) (buffer-string)))))
+            (and (string-match-p (regexp-quote answer) (buffer-string))
+                 (equal e-chat--status "done")
+                 (null (e-ui-work-pending (current-buffer)))))))
    3.0 "settled assistant answer"))
 
 (defun e-chat-behavior-test--assert-tail-near-bottom (fixture)
@@ -278,6 +290,74 @@ Return a plist containing its stream, harness, transcript, and visible windows."
           (e-chat-behavior-test--finish fixture "short graphical answer"))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-focused-composer-shows-model-context-fill ()
+  "The focused composer's visible mode line includes model and context fill."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--model-context-window)
+                   (lambda (model)
+                     (and (equal model "gpt-5.6-sol") 353400))))
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let ((composer-window (plist-get fixture :composer-window)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (let ((text
+                      (e-chat-behavior-test--window-mode-line-text
+                       composer-window)))
+                 (and (string-match-p "gpt-5\\.6-sol/high" text)
+                      (string-match-p "/353k tok" text))))
+             2.0 "focused composer model and context-fill mode line")
+            (should (eq (selected-window) composer-window))
+            (e-chat-behavior-test--submit fixture "context status prompt")
+            (e-graphical-test-stream-emit
+             (plist-get fixture :stream)
+             '(:type token-usage
+               :usage (:input-tokens 64000
+                       :cached-input-tokens 0
+                       :output-tokens 100
+                       :reasoning-output-tokens 0
+                       :total-tokens 64100)))
+            (e-chat-behavior-test--finish fixture "context status answer")
+            (condition-case err
+                (e-graphical-test-wait-until
+                 (lambda ()
+                   (let ((text
+                          (e-chat-behavior-test--window-mode-line-text
+                           composer-window)))
+                     (and (string-match-p "18%" text)
+                          (string-match-p "64k/353k tok" text))))
+                 2.0 "focused composer provider context-fill update")
+              (error
+               (ert-fail
+                (format
+                 "%s\ncomposer mode line: %S\ntranscript mode name: %S\ncomputed status: %S\nlatest usage: %S\npending UI: %S\nactivity: %S"
+                 (error-message-string err)
+                 (e-chat-behavior-test--window-mode-line-text composer-window)
+                 (buffer-local-value
+                  'mode-name (plist-get fixture :transcript))
+                 (with-current-buffer (plist-get fixture :transcript)
+                   (e-chat--mode-line-status-text t))
+                 (e-session-latest-token-usage-event
+                  (e-harness-sessions (plist-get fixture :harness))
+                  (plist-get fixture :session-id))
+                 (with-current-buffer (plist-get fixture :transcript)
+                   (mapcar
+                    (lambda (job)
+                      (list (plist-get job :id) (plist-get job :owner)))
+                    (e-ui-work-pending (current-buffer))))
+                 (mapcar
+                  (lambda (event)
+                    (list (plist-get event :event-type)
+                          (plist-get event :payload)))
+                  (e-harness-session-activity-events
+                   (plist-get fixture :harness)
+                   (plist-get fixture :session-id)))))))
+            (should (eq (selected-window) composer-window))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll ()
   "User scrolling unpins streamed output; reaching the tail repins it."
   (skip-unless (display-graphic-p))
@@ -354,7 +434,13 @@ Return a plist containing its stream, harness, transcript, and visible windows."
         (persp-mode -1))
       (when-let ((away (get-buffer "*e graphical away*")))
         (kill-buffer away))
-      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size)
+      ;; `persp-mode' finishes disabling through the interactive event loop.
+      ;; Let those callbacks settle, then make the captured pre-test window
+      ;; configuration the final state so later graphical cases are isolated.
+      (sit-for 0.05)
+      (set-window-configuration configuration)
+      (redisplay t))))
 
 (provide 'e-chat-behavior-test)
 

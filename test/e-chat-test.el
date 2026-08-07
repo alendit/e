@@ -9141,7 +9141,7 @@ The context-window denominator comes from the live provider lookup
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'chat-mode-line-status))
-          (should (equal mode-name
+          (should (equal e-chat--mode-line-status
                          "e-chat gpt-5.5/high 78% (203k/258k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -9470,7 +9470,7 @@ The context-window denominator comes from the live provider lookup
               (e-ui-work-drain-batch :buffer (current-buffer)
                                      :owner 'chat-mode-line-status)))
           (should (= context-calls 0))
-          (should (equal mode-name
+          (should (equal e-chat--mode-line-status
                          "e-chat gpt-5.5/high ~13% (~123/1k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -9512,7 +9512,7 @@ The context-window denominator comes from the live provider lookup
                                          :owner 'chat-mode-line-status)))))
           (should (= context-calls 1))
           (should (= window-calls 1))
-          (should (equal mode-name
+          (should (equal e-chat--mode-line-status
                          "e-chat gpt-5.5/high ~2% (~16/1k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -9786,7 +9786,7 @@ The context-window denominator comes from the live provider lookup
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'chat-mode-line-status))
-          (should (equal mode-name
+          (should (equal e-chat--mode-line-status
                          "e-chat gpt-5.5/high 21% (55k/258k tok)"))
           (should-not (string-match-p "token-usage" (buffer-string)))
           (should-not (string-match-p "Event:" (buffer-string))))
