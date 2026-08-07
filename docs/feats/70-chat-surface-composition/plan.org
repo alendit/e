@@ -63,6 +63,13 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 - Generic window-state restoration does not preserve atom parameters.  The
   surface controller re-atomizes only an exact two-child transcript/composer
   sibling pair, so unrelated restored windows cannot join the chat atom.
+- Each transcript window owns ephemeral pinned-output state.  New turn output
+  stays near the bottom while pinned, scrolling the transcript from either
+  constituent unpins it, and returning the viewport to the output tail repins
+  it.  Later activity redraws preserve an unpinned scrollback position.
+- A short pinned transcript is bottom-aligned with a window-scoped presentation
+  overlay above its output.  Unpinning removes the overlay; no spacer text is
+  written to the transcript or durable session state.
 - Batch tests retain the old monolithic layout until their focused rendering
   fixtures are migrated.  Interactive users cannot select that path.
 

@@ -1,0 +1,109 @@
+#+title: e-chat Output Follow Pin and Unpin Investigation
+#+startup: overview
+
+* Evidence
+
+A bounded read-only probe of the reported live surface found:
+
+- The composer was the selected window.
+- Its paired transcript still recorded =:follow t=.
+- The transcript window started at buffer position 1 and its point was at the
+  output tail.
+- The transcript occupied 41 display lines in a 76-row window, leaving the
+  short output at the top with 35 unused rows below it.
+
+The running Emacs was not reloaded or mutated during this investigation.
+
+* Root cause
+
+=e-chat--refresh-selected-output-follow-state= was the existing post-command
+owner of pin/unpin intent.  It only ran its viewport check when the selected
+window itself displayed an =e-chat-mode= transcript.  In a composed surface,
+=scroll-other-window= and mouse-wheel navigation can move the paired transcript
+while the composer remains selected.  The post-command hook therefore left the
+transcript window's old =:follow t= state untouched, and the next activity
+redraw treated the viewport as pinned and moved it back to the tail.
+
+The existing composed-progress regression test hid this path by setting the
+window's follow state to nil directly after simulating a scroll.  It proved
+redraw preservation after unpinning, but did not prove that real shell
+navigation caused the unpin.
+
+The tail-follow helper used visual-line motion to choose a window start, but a
+buffer shorter than the window cannot move its start before =point-min=.  It
+therefore had no presentation mechanism for placing short pinned output near
+the bottom.
+
+* Fix
+
+Implemented in the existing transcript-owned follow machinery.
+
+- The shared post-command boundary now resolves either constituent of the
+  selected chat surface and observes the paired transcript viewport.
+- Follow state records the transcript window start.  Composer typing does no
+  viewport work while that start is unchanged.
+- A changed window start is validated against the physical output tail.  A
+  viewport away from the tail becomes unpinned; a viewport returned to the
+  tail becomes pinned again.
+- Activity redraw also validates a changed start before honoring stored follow
+  intent, so a physical scroll cannot be lost merely because a post-command
+  boundary was skipped.
+- A pinned, short composed transcript receives an ephemeral window-scoped
+  overlay above its output.  The overlay supplies only the missing display
+  rows, is removed on unpin, and cannot affect another window showing the same
+  transcript.  No spacer text enters the transcript or session store.
+- Stale spacers are removed when their owning window dies or stops displaying
+  the transcript.
+
+Regression coverage:
+
+- =e-chat-test-composed-progress-follows-tail-viewports-only= now exercises the
+  composer-selected post-command path and proves that later progress preserves
+  scrollback.
+- =e-chat-test-pinned-short-transcript-aligns-output-bottom= proves that short
+  output gets a window-local bottom spacer and that unpinning removes it.
+
+* Validation
+
+- Focused output-follow tests: 5 passed.
+- =eldev test -f test/e-chat-test.el=: 339 tests completed, 338 expected passes,
+  0 unexpected results, and 1 optional Markdown skip.
+- Real chat-surface E2E tests: 3 passed, including Evil Escape routing.
+- =eldev compile lisp/shells/chat/e-chat.el=: passed.
+- =git diff --check=: passed before documentation was added and is rerun at
+  handoff.
+
+* Architecture self-check
+
+1. This slice is independently useful: it restores deliberate scrollback and
+   makes short active output legible without changing the session model.
+2. It moves toward a presentation-owned composed chat surface with familiar
+   pinned-output behavior.
+3. Window display geometry is likely to vary and remains local to the shell.
+   The stable rule---follow at the tail, unpin away from it---is represented
+   directly rather than hidden behind a new abstraction.
+4. The transcript presentation owns follow state because it owns rendering and
+   its visible output tail.  The composer only supplies the existing
+   post-command observation boundary.
+5. Coupling does not increase outside the shell.  State remains per transcript
+   window and the helper interfaces accept only a window and output position.
+6. No harness, capability, backend, or session-store dependency points toward
+   this presentation detail.
+7. Redisplay and overlay side effects remain at the chat shell boundary.
+8. The only added state is a saved window start and an overlay scoped to one
+   live window.  Both are ephemeral, cheap to rebuild, and die with the
+   presentation rather than being persisted.
+9. Ordinary composer commands compare two positions.  Physical viewport
+   validation is performed only after the window start changes, and bottom
+   alignment scans at most one window height with =vertical-motion=.
+10. The existing window follow record is the semantic contract.  No speculative
+    interface or substitutability claim was introduced.
+11. Existing monolithic chat behavior remains compatible; bottom spacing is
+    limited to composed transcripts.
+12. The test-only direct follow-state assignment that masked navigation was
+    removed.  No additional legacy path is needed.
+13. Dead-window cleanup is expected and handled locally.  Unexpected rendering
+    errors continue to surface.
+14. Focused ERT tests prove navigation-driven unpinning, redraw preservation,
+    and window-scoped short-output alignment independently of a provider or
+    live session.

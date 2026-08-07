@@ -5450,12 +5450,27 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (should (= (window-point transcript-window)
                          (cdr (e-chat--running-status-bounds))))
               (should (eq (selected-window) composer-window))
-              (set-window-point transcript-window (point-min))
-              (set-window-start transcript-window (point-min))
-              ;; A real transcript navigation command records this state from
-              ;; its viewport.  Batch windows do not keep an independent
-              ;; display matrix, so state it directly here.
-              (e-chat--set-window-output-follow-state transcript-window nil)
+              (with-selected-window transcript-window
+                (goto-char (point-min))
+                (set-window-point transcript-window (point))
+                (set-window-start transcript-window (point)))
+              (redisplay t)
+              (should (eq (selected-window) composer-window))
+              ;; `scroll-other-window' and mouse-wheel commands can move the
+              ;; paired transcript while the composer remains selected.  Its
+              ;; normal post-command boundary must observe that viewport.
+              ;; Batch Emacs does not maintain an independent display matrix
+              ;; for the unselected transcript, so model the scrolled viewport
+              ;; at the existing physical-tail predicate boundary.
+              (cl-letf (((symbol-function 'e-chat--window-reaches-output-p)
+                         (lambda (window _tail)
+                           (not (eq window transcript-window)))))
+                (with-current-buffer composer
+                  (e-chat--post-command)))
+              (should-not
+               (plist-get
+                (e-chat--window-output-follow-state transcript-window)
+                :follow))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
                               :session-id e-chat-session-id
@@ -5466,6 +5481,30 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                "turn-1" (e-chat--existing-turn-record "turn-1"))
               (should (= (window-start transcript-window) (point-min)))
               (should (= (window-point transcript-window) (point-min)))
+              (should (eq (selected-window) composer-window))
+              ;; Returning the paired transcript to its output tail repins it,
+              ;; even though the composer remains the selected constituent.
+              (set-window-start
+               transcript-window (car (e-chat--running-status-bounds)))
+              (cl-letf (((symbol-function 'e-chat--window-reaches-output-p)
+                         (lambda (window _tail)
+                           (eq window transcript-window))))
+                (with-current-buffer composer
+                  (e-chat--post-command)))
+              (should
+               (plist-get
+                (e-chat--window-output-follow-state transcript-window)
+                :follow))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nfourth progress")))
+              (e-chat--cancel-pending-activity-redraw)
+              (e-chat--render-turn-transient
+               "turn-1" (e-chat--existing-turn-record "turn-1"))
+              (should (= (window-point transcript-window)
+                         (cdr (e-chat--running-status-bounds))))
               (should (eq (selected-window) composer-window))))
       (when (window-live-p composer-window)
         (delete-window composer-window))
@@ -5473,6 +5512,43 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (delete-window transcript-window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))))
+
+(ert-deftest e-chat-test-pinned-short-transcript-aligns-output-bottom ()
+  "A short composed transcript uses window-local space above pinned output."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-short-output-bottom"))
+         transcript-window composer-window spacer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer transcript-window buffer)
+            (with-current-buffer buffer
+              (e-chat-test--render-turn "turn-1" 10 11 "question" "answer")
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window t))
+              (set-buffer buffer)
+              (e-chat--show-latest-output transcript-window)
+              (setq spacer
+                    (cl-find-if
+                     (lambda (overlay)
+                       (eq (overlay-get
+                            overlay e-chat--output-bottom-spacer-property)
+                           transcript-window))
+                     (overlays-at (point-min))))
+              (should (overlayp spacer))
+              (should (eq (overlay-get spacer 'window) transcript-window))
+              (should (> (length (overlay-get spacer 'before-string)) 0))
+              (should (plist-get
+                       (e-chat--window-output-follow-state transcript-window)
+                       :follow))
+              (e-chat--set-window-output-follow-state transcript-window nil)
+              (should-not (overlay-buffer spacer)))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-surface-activation-survives-late-window-restore ()
   "One deferred surface activation wins a host restoring stale scrollback."

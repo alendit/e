@@ -2737,14 +2737,22 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
 
 (defun e-chat--refresh-selected-output-follow-state ()
   "Refresh the selected transcript viewport's follow intent after navigation."
-  (when (and (derived-mode-p 'e-chat-mode)
-             (not (e-chat--surface-composer-p))
-             (eq (window-buffer (selected-window)) (current-buffer)))
-    (when-let ((bounds (e-chat--running-status-bounds)))
-      (e-chat--set-window-output-follow-state
-       (selected-window)
-       (e-chat--window-reaches-output-p (selected-window)
-                                         (e-chat--output-follow-position))))))
+  (when-let* ((surface (e-chat--selected-chat-surface))
+              (transcript (car surface))
+              (window (cdr surface)))
+    (with-current-buffer transcript
+      (when (e-chat--running-status-bounds)
+        (let ((state (e-chat--window-output-follow-state window)))
+          ;; Composer typing is also a post-command boundary.  Recompute only
+          ;; when the paired transcript actually moved, so ordinary input does
+          ;; not force a redisplay check on every keystroke.
+          (when (or (null state)
+                    (not (equal (plist-get state :window-start)
+                                (window-start window))))
+            (e-chat--set-window-output-follow-state
+             window
+             (e-chat--window-reaches-output-p
+              window (e-chat--output-follow-position)))))))))
 
 (defun e-chat--post-command ()
   "Maintain composer and transcript viewport invariants after commands."
@@ -5529,6 +5537,51 @@ When RECORD is nil, clear only buffer-local status markers."
 (defconst e-chat--output-follow-window-parameter 'e-chat-output-follow-state
   "Window parameter holding transient follow state for an e chat transcript.")
 
+(defconst e-chat--output-bottom-spacer-property
+  'e-chat-output-bottom-spacer-window
+  "Overlay property identifying a transcript's window-scoped top spacer.")
+
+(defun e-chat--output-bottom-spacer-overlays ()
+  "Return output-bottom spacers anchored at the current buffer's beginning."
+  (let* ((start (point-min))
+         (candidates
+          (append (overlays-at start)
+                  (when (< start (point-max))
+                    (overlays-in start (1+ start))))))
+    (cl-remove-if-not
+     (lambda (overlay)
+       (overlay-get overlay e-chat--output-bottom-spacer-property))
+     (delete-dups candidates))))
+
+(defun e-chat--prune-output-bottom-spacers ()
+  "Delete output-bottom spacers whose owning window is no longer usable."
+  (dolist (overlay (e-chat--output-bottom-spacer-overlays))
+    (let ((window
+           (overlay-get overlay e-chat--output-bottom-spacer-property)))
+      (unless (and (window-live-p window)
+                   (eq (window-buffer window) (current-buffer)))
+        (delete-overlay overlay)))))
+
+(defun e-chat--clear-output-bottom-spacer (window)
+  "Remove WINDOW's output-bottom alignment spacer from this transcript."
+  (dolist (overlay (e-chat--output-bottom-spacer-overlays))
+    (when (eq (overlay-get overlay e-chat--output-bottom-spacer-property)
+              window)
+      (delete-overlay overlay))))
+
+(defun e-chat--set-output-bottom-spacer (window lines)
+  "Give pinned transcript WINDOW a top spacer of LINES display rows."
+  (e-chat--prune-output-bottom-spacers)
+  (e-chat--clear-output-bottom-spacer window)
+  (when (and (e-chat--surface-transcript-p) (> lines 0))
+    (let ((overlay
+           (make-overlay (point-min)
+                         (min (point-max) (1+ (point-min)))
+                         (current-buffer) nil t)))
+      (overlay-put overlay 'window window)
+      (overlay-put overlay e-chat--output-bottom-spacer-property window)
+      (overlay-put overlay 'before-string (make-string lines ?\n)))))
+
 (defun e-chat--window-output-follow-state (window)
   "Return WINDOW's follow state for the current transcript, or nil.
 The state belongs to the window because one chat may be visible in several
@@ -5539,9 +5592,13 @@ window configuration rather than being persisted as session state."
 
 (defun e-chat--set-window-output-follow-state (window follow)
   "Record whether WINDOW should FOLLOW the current transcript's live output."
+  (unless follow
+    (e-chat--clear-output-bottom-spacer window))
   (set-window-parameter
    window e-chat--output-follow-window-parameter
-   (list :buffer (current-buffer) :follow follow)))
+   (list :buffer (current-buffer)
+         :follow follow
+         :window-start (window-start window))))
 
 (defun e-chat--window-reaches-output-p (window tail)
   "Return non-nil when WINDOW's current viewport visibly reaches TAIL."
@@ -5568,7 +5625,10 @@ live output, and a user reading older output must retain that scrollback."
   (and (window-live-p window)
        (eq (window-buffer window) (current-buffer))
        (if-let ((state (e-chat--window-output-follow-state window)))
-           (plist-get state :follow)
+           (and (plist-get state :follow)
+                (or (equal (plist-get state :window-start)
+                           (window-start window))
+                    (e-chat--window-reaches-output-p window tail)))
          (e-chat--window-reaches-output-p window tail))
        ;; A selected transcript whose point is inside the changing status is
        ;; an explicit reading position, even when a tall window happens to
@@ -5582,14 +5642,21 @@ live output, and a user reading older output must retain that scrollback."
   "Place POSITION near the bottom of transcript WINDOW without selecting it."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
-    (let ((start
-           (save-excursion
-             (goto-char position)
-             ;; `vertical-motion' accounts for visual wrapping.  Keeping a
-             ;; small margin makes the current activity legible without a
-             ;; selection-changing `recenter' call.
-             (vertical-motion (- 2 (window-body-height window)) window)
-             (point))))
+    (e-chat--clear-output-bottom-spacer window)
+    (let* ((target-motion (- 2 (window-body-height window)))
+           (motion-and-start
+            (save-excursion
+              (goto-char position)
+              ;; `vertical-motion' accounts for visual wrapping.  Keeping a
+              ;; small margin makes the current activity legible without a
+              ;; selection-changing `recenter' call.
+              (let ((motion (vertical-motion target-motion window)))
+                (cons motion (point)))))
+           (motion (car motion-and-start))
+           (start (cdr motion-and-start))
+           (spacer-lines
+            (max 0 (- (abs target-motion) (abs motion)))))
+      (e-chat--set-output-bottom-spacer window spacer-lines)
       (set-window-point window position)
       (set-window-start window start)
       (e-chat--set-window-output-follow-state window t))))

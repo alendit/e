@@ -1,0 +1,14 @@
+#+title: e-chat Output Follow Ignores Composer-side Scrollback
+#+startup: overview
+
+* Report
+
+During an active composed chat turn, each progress update scrolls the transcript
+back to the latest output even after the user has scrolled upward while the
+composer remains focused.
+
+After the turn settles, a short transcript is also left at the top of a tall
+window with a large empty area below it.  The expected interaction is the
+standard pinned-output model: keep new output at the bottom while the viewport
+is pinned, unpin as soon as the user scrolls away, preserve that scrollback
+through later updates, and repin after the user returns to the output tail.
