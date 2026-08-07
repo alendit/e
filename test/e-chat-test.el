@@ -3218,6 +3218,37 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-resource-link-opens-read-only-buffer ()
+  "Clicking a session resource link opens its content read-only."
+  (let ((buffer (e-chat-test--buffer nil "chat-resource-link"))
+        opened-uri
+        opened-buffer)
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-output-mode-session-set
+           e-chat-harness e-chat-session-id 'org)
+          (e-chat--insert-entry
+           "Assistant"
+           "See [[session://e/sessions/session-1/messages][discussion]].")
+          (goto-char (point-min))
+          (search-forward "discussion")
+          (cl-letf (((symbol-function 'e-resources-read)
+                     (lambda (_registry uri &optional _range)
+                       (setq opened-uri uri)
+                       "resource body")))
+            (setq opened-buffer (e-chat-open-link)))
+          (should (equal opened-uri
+                         "session://e/sessions/session-1/messages"))
+          (should (buffer-live-p opened-buffer))
+          (with-current-buffer opened-buffer
+            (should (derived-mode-p 'special-mode))
+            (should buffer-read-only)
+            (should (equal (buffer-string) "resource body"))))
+      (when (buffer-live-p opened-buffer)
+        (kill-buffer opened-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-set-output-mode-rerenders-visible-blocks ()
   "Toggling output mode re-renders visible final assistant blocks."
   (let ((buffer (e-chat-test--buffer nil "chat-output-toggle")))

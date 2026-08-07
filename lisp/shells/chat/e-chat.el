@@ -1247,6 +1247,7 @@ for audit, then clears it when the user returns to the composer.")
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
+    (define-key map [mouse-2] #'e-chat-open-link)
     (define-key map (kbd "C-w") #'e-chat-kill-region-or-backward-word)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "!") #'e-chat-composer-bang)
@@ -4266,6 +4267,35 @@ DETAILS-TEXT describe block actions."
       (goto-char (point-min)))
     (pop-to-buffer buffer)
     buffer))
+
+(defun e-chat--resource-link-p (uri)
+  "Return non-nil when URI is an e resource link handled by chat."
+  (and (stringp uri)
+       (or (string-prefix-p "session://" uri)
+           (string-prefix-p "e://" uri))))
+
+;;;###autoload
+(defun e-chat-open-link (&optional event)
+  "Open the resource link at point or mouse EVENT in a read-only buffer.
+Only resources exposed by the current chat harness are opened here."
+  (interactive "e")
+  (when event
+    (mouse-set-point event))
+  (let ((uri (or (get-text-property (point) 'e-chat-link-url)
+                 (and (> (point) (point-min))
+                      (get-text-property (1- (point)) 'e-chat-link-url)))))
+    (unless (e-chat--resource-link-p uri)
+      (user-error "No supported e-chat resource link at point"))
+    (unless (and e-chat-harness e-chat-session-id)
+      (user-error "Resource link needs an attached e-chat session"))
+    (let ((content
+           (e-resources-read
+            (e-harness-resources e-chat-harness e-chat-session-id)
+            uri)))
+      (e-chat--buffer-with-text
+       (format "*e-chat-resource: %s*" uri)
+       (if (stringp content) content (format "%s" content))
+       t))))
 
 (defun e-chat--format-time-value (value)
   "Return VALUE as a compact display string."
