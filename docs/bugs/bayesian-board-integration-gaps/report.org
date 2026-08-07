@@ -1,0 +1,7 @@
+#+title: Bayesian Board Integration Gaps
+
+* Report
+
+Recheck the Bayesian claim-validation integration after the board cutover.
+Close any remaining gaps in board-routed correction, board-visible audit
+status, and evidence handles for user prompts delivered through the board.

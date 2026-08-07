@@ -160,6 +160,18 @@ Messages written before origin tracking are human input for compatibility."
                     'human)))
     (if (stringp origin) (intern origin) origin)))
 
+(defun e-bayesian-reasoning--user-provided-input-p (message)
+  "Return non-nil when user-role MESSAGE came from an external input client.
+A board delivery records its transport origin as `board'.  Its frozen requester
+actor distinguishes an external client post from a capability continuation,
+whose requester is the attached participant."
+  (let* ((origin (e-bayesian-reasoning--message-input-origin message))
+         (requester (plist-get (plist-get message :metadata)
+                               :board-requester-actor)))
+    (or (eq origin 'human)
+        (and (eq origin 'board)
+             (eq (car-safe requester) 'client)))))
+
 (defun e-bayesian-reasoning--message-index (messages message)
   "Return MESSAGE's position in MESSAGES, or nil when it is absent."
   (cl-position message messages :test #'eq))
@@ -250,8 +262,7 @@ claim about the truth of the response."
                   resolved))
            ((and (eq kind 'in)
                  (eq (plist-get message :role) 'user)
-                 (eq (e-bayesian-reasoning--message-input-origin message)
-                     'human))
+                 (e-bayesian-reasoning--user-provided-input-p message))
             (push (list :reference reference
                         :message-id (plist-get message :id)
                         :turn-id (plist-get message :turn-id)
@@ -275,9 +286,8 @@ from this turn, keeping the prompt cost bounded."
         (when (equal (plist-get message :turn-id) turn-id)
           (pcase (plist-get message :role)
             ('user
-             (when (eq (e-bayesian-reasoning--message-input-origin message)
-                       'human)
-               (push (format "in:%s — current human statement"
+             (when (e-bayesian-reasoning--user-provided-input-p message)
+               (push (format "in:%s — current provided statement"
                              (plist-get message :id)) lines)))
             ('tool
              (let ((content (plist-get message :content)))
@@ -308,8 +318,7 @@ from this turn, keeping the prompt cost bounded."
         (when (equal (plist-get message :turn-id) turn-id)
           (pcase (plist-get message :role)
             ('user
-             (when (eq (e-bayesian-reasoning--message-input-origin message)
-                       'human)
+             (when (e-bayesian-reasoning--user-provided-input-p message)
                (push (concat "in:" (plist-get message :id)) handles)))
             ('tool
              (when (equal (plist-get (plist-get message :content) :status) 'ok)

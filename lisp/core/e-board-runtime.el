@@ -193,7 +193,8 @@ Operations accepted before this commit may continue to completion."
 (defconst e-board-runtime--visible-harness-activity-types
   '(turn-started provider-request-started provider-request-finished
     tool-started tool-finished action-started action-finished action-failed
-    turn-steered compaction-started compaction-finished compaction-failed)
+    hook-audit turn-steered compaction-started compaction-finished
+    compaction-failed)
   "Harness lifecycle edges that are safe to expose as board activity.
 Raw event payloads and high-frequency reasoning or progress edges stay outside
 the board transcript.  Terminal events use their dedicated publisher below.")
@@ -1227,6 +1228,17 @@ these terminal states have no output to close the board-owned open projection."
        :source-activity-key
        (e-board-runtime--event-activity-source-key attachment event activity-kind)))))
 
+(defun e-board-runtime--visible-harness-activity-attributes (kind payload)
+  "Return bounded board attributes for visible harness activity KIND.
+Capability hook details remain in the private durable audit.  The board carries
+only the generic status fields presentation consumers need."
+  (if (eq kind 'hook-audit)
+      (cl-loop for key in '(:owner :hook-id :outcome :truth-status
+                            :summary :pending-summary)
+               when (plist-member payload key)
+               append (list key (copy-tree (plist-get payload key))))
+    (copy-tree (e-harness--durable-activity-payload kind payload))))
+
 (defun e-board-runtime--publish-harness-activity (attachment event)
   "Publish EVENT's bounded lifecycle edge without exposing its raw payload."
   (let ((activity-kind (e-events-type event))
@@ -1248,9 +1260,8 @@ these terminal states have no output to close the board-owned open projection."
          :activity-kind activity-kind
          :attributes
          (append
-          (copy-tree
-           (e-harness--durable-activity-payload
-            activity-kind (plist-get event :payload)))
+          (e-board-runtime--visible-harness-activity-attributes
+           activity-kind (plist-get event :payload))
           (when-let ((source-event-id
                       (plist-get event :activity-entry-id)))
             (list :source-event-id source-event-id)))

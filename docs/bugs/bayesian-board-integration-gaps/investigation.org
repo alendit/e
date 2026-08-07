@@ -1,0 +1,48 @@
+#+title: Investigation: Bayesian Board Integration Gaps
+
+* Result
+
+The correction route and standard-view presentation gaps were already closed.
+Commit =35be3543= routes corrective validation through an exact-addressed board
+input tagged =bayesian-reasoning-validation=, so the main projection retains one
+assistant answer.  Commit =53ee05fb= publishes terminal settlement only after
+capability hooks finish.  Feature 74 derives generic claim details from hidden
+structured blocks without exposing the reasoning fence in normal views.
+
+Two gaps remained.
+
+** Board audit summaries were private
+
+=e-harness-record-hook-audit= persisted generic status, but =e-board-runtime=
+did not publish =hook-audit= among its visible bounded lifecycle events.  A
+board-backed shell therefore could not receive the existing generic summary.
+
+The runtime now publishes hook audits with only =owner=, =hook-id=, =outcome=,
+=truth-status=, =summary=, and =pending-summary=.  Capability-owned =details=
+remain in private durable activity and do not enter the board transcript.
+
+** Client-origin board prompts were excluded from evidence
+
+All delivered board inputs have transport origin =board=.  Bayesian evidence
+logic accepted =in:= handles only from messages whose origin was =human=, so an
+ordinary chat prompt submitted by a board client did not appear in evidence
+context and could not resolve as =user-provided=.
+
+The checker now distinguishes requester authority.  A board input whose frozen
+requester actor is =client= is user-provided evidence.  Participant-originated
+board continuations remain excluded, preventing a corrective capability prompt
+from citing itself as user evidence.
+
+* Validation
+
+- Board integration proves the private validation route stays outside =main=,
+  publishes one bounded generic audit summary to the main projection, and omits
+  capability detail payloads.
+- Bayesian hook tests prove client-origin board prompts receive and resolve
+  =in:= handles while participant continuations do not.
+- Focused board runtime, harness, Modernchat, and Bayesian suites pass.
+
+* Live state
+
+No live Emacs reload was performed.  Repository-side validation is the proof;
+=M-x e-dev-reload= can load the change when Emacs is idle.

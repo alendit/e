@@ -155,6 +155,78 @@ normal answer would draw a correction."
              "evidence: tool:dashboard-1\n"
              "```\n")))))
 
+(ert-deftest e-bayesian-reasoning-hook-test-board-client-input-is-user-evidence ()
+  "A board-delivered external client prompt remains valid `in:' evidence."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-1")
+         user assistant)
+    (e-harness-create-session harness :id session-id)
+    (setq user
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           '(:role user :turn-id "turn-1" :origin board
+             :content "The rollout finished before errors rose."
+             :metadata (:input-origin board
+                        :board-requester-actor (client "client-1" 0)))))
+    (setq assistant
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           (list :role 'assistant :turn-id turn-id
+                 :content
+                 (concat "The sequence is user-provided.\n\n```reasoning\n"
+                         "claim: the rollout preceded the error rise\n"
+                         "confidence: medium\nalternatives: timestamps may differ\n"
+                         "evidence: in:" (plist-get user :id) "\n```\n"))))
+    (let* ((context (list :harness harness :session-id session-id
+                          :turn-id turn-id :assistant-message assistant))
+           (check (e-bayesian-reasoning--turn-check context))
+           (evidence-context
+            (e-bayesian-reasoning--current-turn-evidence-context
+             :harness harness :session-id session-id :turn-id turn-id)))
+      (should (eq (plist-get check :outcome) 'references-resolved))
+      (should (equal (plist-get (car (plist-get (plist-get check :details)
+                                                 :resolved))
+                                :source-kind)
+                     'user-provided))
+      (should (string-match-p
+               (regexp-quote (concat "in:" (plist-get user :id)))
+               (plist-get (car evidence-context) :content))))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-board-participant-input-is-not-user-evidence ()
+  "A capability continuation delivered by the board cannot become `in:' evidence."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-1")
+         user assistant)
+    (e-harness-create-session harness :id session-id)
+    (setq user
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           '(:role user :turn-id "turn-1" :origin board
+             :content "Repair the claim."
+             :metadata (:input-origin board
+                        :board-requester-actor (participant "participant-1")))))
+    (setq assistant
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           (list :role 'assistant :turn-id turn-id
+                 :content
+                 (concat "Repaired.\n\n```reasoning\nclaim: repaired\n"
+                         "confidence: medium\nalternatives: unrepaired\n"
+                         "evidence: in:" (plist-get user :id) "\n```\n"))))
+    (let ((check (e-bayesian-reasoning--turn-check
+                  (list :harness harness :session-id session-id
+                        :turn-id turn-id :assistant-message assistant))))
+      (should (eq (plist-get check :outcome) 'evidence-gap))
+      (should (eq (plist-get (car (plist-get (plist-get check :details)
+                                              :rejected))
+                             :reason)
+                  'wrong-source))
+      (should-not
+       (e-bayesian-reasoning--current-turn-evidence-context
+        :harness harness :session-id session-id :turn-id turn-id)))))
+
 (ert-deftest e-bayesian-reasoning-hook-test-resolves-earlier-successful-tool-handle ()
   "A v2 `ev:' handle resolves only to an earlier successful tool result."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))

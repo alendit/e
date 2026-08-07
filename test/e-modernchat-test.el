@@ -681,6 +681,19 @@ messages so the transcript reads as one clean answer."
         (should (equal (mapcar #'e-board-message-tags outputs)
                        '((main) (bayesian-reasoning-validation))))
         (should (= (length visible-assistants) 1))
+        (let* ((audit-events
+                (cl-remove-if-not
+                 (lambda (event) (eq (plist-get event :type) 'hook-audit))
+                 events))
+               (summaries
+                (mapcar (lambda (event)
+                          (plist-get (plist-get event :payload) :summary))
+                        audit-events)))
+          (should (equal summaries '("Claim check needs revision")))
+          (should-not
+           (seq-some (lambda (event)
+                       (plist-member (plist-get event :payload) :details))
+                     audit-events)))
         (let ((visible-content
                (plist-get
                 (plist-get (plist-get (car visible-assistants) :payload)
