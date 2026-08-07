@@ -1,0 +1,12 @@
+#+title: e-chat Atomic Surface Entry Focuses Transcript Instead of Composer
+#+startup: overview
+
+* Report
+
+After the transcript/composer pair became an atomic Emacs window, focusing the
+chat surface leaves the read-only transcript selected instead of placing input
+focus in the composer.
+
+The fix should restore the previous composer-focus behavior through the code
+that already owns surface activation and input-state transitions, without an
+additional hook or focus-repair layer.

@@ -1,0 +1,82 @@
+#+title: e-chat Atomic Surface Entry Focus Investigation
+#+startup: overview
+
+* Reproduction
+
+A focused window-level ERT regression created an atomic transcript/composer
+surface beside an external window, entered the atom through its =main=
+transcript constituent, and ran the existing window-selection activation
+callback.  Before the fix, the transcript remained selected.  The same test
+also models an internal composer-to-transcript transition so the earlier
+Escape navigation behavior cannot regress.
+
+* Root cause
+
+=display-buffer-in-atom-window= marks the existing transcript window as the
+atom's =main= constituent.  Emacs therefore selects the transcript when window
+navigation enters the atom from outside.
+
+The pre-existing activation design already had both required pieces:
+
+- =e-chat--activate-selected-surface-on-selection= compares the selected
+  surface with the frame's previous surface, distinguishing external entry
+  from movement inside one composed surface.
+- =e-chat--enter-composer-input-state= owns the transition into editable input,
+  including navigation-mode cleanup and composer selection.
+
+But =e-chat--activate-surface= only moved the transcript viewport to latest
+output.  Before atomic composition this omission was hidden because normal
+display paths had already selected the separate composer window.  Entering an
+atom through its main constituent exposed the missing call.
+
+* Fix
+
+The existing =e-chat--activate-surface= function now invokes
+=e-chat--enter-composer-input-state= when the activated surface is selected
+through its transcript.  The existing selection callback delegates to that
+activation function instead of duplicating its latest-output scheduling.
+
+No hook, timer, focus flag, command override, persistent state, or compatibility
+path was added.  Surface identity still suppresses reactivation when focus
+moves from composer to transcript inside the same surface, preserving explicit
+Escape-driven response navigation.
+
+* Validation
+
+- The new atomic-entry regression failed before the implementation and passed
+  afterward.
+- Focused entry, internal navigation, generic switching, and late workspace
+  restoration tests passed: 5 tests, 0 unexpected.
+- The full chat suite passed: 338 tests, 0 unexpected, 1 optional Markdown
+  rendering skip.
+- The real chat-surface E2E suite passed: 3 tests, 0 unexpected, including
+  Evil Escape routing into transcript navigation.
+- Focused byte compilation and =git diff --check= passed.
+
+* Architecture self-check
+
+1. The slice independently restores keyboard input when entering a chat atom.
+2. It moves toward one presentation-owned activation contract for the whole
+   composed surface.
+3. Emacs atom-entry selection is stable; host event timing remains local to the
+   existing activation boundary.
+4. The e-chat surface controller owns activation because it owns both panes and
+   their input/navigation modes.
+5. Coupling is reduced by making the selection callback delegate to the
+   existing activation function.
+6. No harness, session, capability, board, provider, or persistence dependency
+   points toward window focus behavior.
+7. Composer selection remains an outward presentation-shell side effect.
+8. No state was added; the existing frame-local selected-surface identity is
+   sufficient.
+9. Activation adds one buffer/window identity check and reuses the existing
+   input transition.
+10. Surface identity is the real contract distinguishing external entry from
+    internal transcript navigation.
+11. Generic switching, perspective activation, and Escape navigation remain
+    compatible.
+12. The selection callback's duplicate output activation calls were removed.
+13. Missing or dead surfaces remain ignored by existing checks; unexpected
+    input-transition errors still surface.
+14. Focused ERT proves both external atom entry and the internal navigation
+    counterexample without a provider or live Emacs reload.

@@ -56,6 +56,10 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 - =C-x 0= in either constituent now closes the entire composed chat surface.
   Splits requested from the surface are created outside the atomic pair by
   Emacs's normal window machinery.
+- Entering the atomic surface through Emacs's =main= transcript constituent
+  activates the existing composer input state.  Moving from the composer to
+  the transcript inside the already-selected surface remains explicit response
+  navigation and is not redirected.
 - Generic window-state restoration does not preserve atom parameters.  The
   surface controller re-atomizes only an exact two-child transcript/composer
   sibling pair, so unrelated restored windows cannot join the chat atom.

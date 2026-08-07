@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-atomic-surface-entry-focuses-transcript/ | e-chat atomic surface entry focuses transcript instead of composer |
 | Closed | e-chat-composed-surface-window-semantics/ | e-chat composed surface resists native window deletion |
 | Closed | final-message-claim-details-and-rendering/ | Final claim messages truncate and hide claim details |
 | Closed | e-chat-board-event-pipeline-cost/ | e-chat board event pipeline repeats expensive work |

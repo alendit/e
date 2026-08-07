@@ -709,18 +709,26 @@ TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
                              (e-chat--refresh-ui-work-diagnostics)))))))))
 
 (defun e-chat--activate-surface (surface)
-  "Explicitly activate SURFACE at its latest output.
+  "Explicitly activate SURFACE at its latest output and input pane.
 The immediate update is the presentation contract.  A single coalesced retry
 wins host window-restoration races without observing every unrelated window
 configuration change."
   (when surface
-    (let ((frame (window-frame (cdr surface))))
+    (let* ((frame (window-frame (cdr surface)))
+           (selected (frame-selected-window frame)))
       (when (equal surface
                    (e-chat--selected-chat-surface
-                    (frame-selected-window frame)))
+                    selected))
         (set-frame-parameter frame
                              e-chat--selected-surface-frame-parameter
-                             surface)))
+                             surface)
+        ;; Entering an atomic window selects its `main' constituent, which is
+        ;; the transcript.  Reuse the shell's existing input-state transition
+        ;; at this activation boundary.  Internal composer-to-transcript
+        ;; navigation does not activate the surface again and remains focused.
+        (when (eq (window-buffer selected) (car surface))
+          (with-current-buffer (car surface)
+            (e-chat--enter-composer-input-state)))))
     (e-chat--show-surface-latest-output surface)
     (e-chat--schedule-surface-activation surface)))
 
@@ -735,8 +743,7 @@ configuration change."
                     frame e-chat--selected-surface-frame-parameter)))
     (set-frame-parameter frame e-chat--selected-surface-frame-parameter surface)
     (when (and surface (not (equal surface previous)))
-      (e-chat--show-surface-latest-output surface)
-      (e-chat--schedule-surface-activation surface))))
+      (e-chat--activate-surface surface))))
 
 (defvar e-chat--surface-activation-in-progress nil
   "Non-nil while a selected composed chat surface is being restored.")

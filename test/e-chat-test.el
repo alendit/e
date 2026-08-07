@@ -5568,6 +5568,45 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-entering-atomic-surface-focuses-composer ()
+  "Entering a chat atom focuses input without breaking transcript navigation."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-atomic-entry-focus"))
+         (external-buffer (generate-new-buffer " *e-chat focus external*"))
+         transcript-window composer-window external-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (setq external-window (split-window transcript-window nil 'right))
+          (set-window-buffer external-window external-buffer)
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer transcript-window buffer)
+            (with-current-buffer buffer
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window))))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
+          ;; Emacs enters an atom through its `main' constituent, which is the
+          ;; transcript.  Surface activation must route input to the composer.
+          (select-window external-window)
+          (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+          (select-window transcript-window)
+          (e-chat--activate-selected-surface-on-selection)
+          (should (eq (selected-window) composer-window))
+          ;; Once inside the surface, selecting the transcript is explicit
+          ;; response navigation and must not be redirected back to input.
+          (select-window transcript-window)
+          (e-chat--activate-selected-surface-on-selection)
+          (should (eq (selected-window) transcript-window)))
+      (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+      (set-window-configuration configuration)
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-activity-rerender-does-not-delete-whole-status ()
   "Streamed activity redraws update changed status text without full deletion."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-status-minimal-delete")))
