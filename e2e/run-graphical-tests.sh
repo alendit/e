@@ -8,6 +8,20 @@ runner_file=$e2e_dir/graphical/e-graphical-test-runner.el
 
 cd "$project_dir"
 
+convert_graphical_screenshots() {
+  local directory=${E_GRAPHICAL_E2E_SCREENSHOT_DIR:-}
+  [[ -n $directory ]] || return 0
+  command -v rsvg-convert >/dev/null 2>&1 || return 0
+
+  local svg png
+  shopt -s nullglob
+  for svg in "$directory"/*.svg; do
+    png=${svg%.svg}.png
+    rsvg-convert --output "$png" "$svg"
+  done
+  shopt -u nullglob
+}
+
 emacs_command=(
   eldev emacs
   --load "$test_file"
@@ -51,6 +65,7 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
         (load \"$runner_file\" nil nil t)
         (e-graphical-test-runner-run-to-file \"$report_file\")))")
   cat "$report_file"
+  convert_graphical_screenshots
   [[ $result == 0 ]]
   exit
 fi
@@ -60,8 +75,20 @@ if [[ -z ${DISPLAY:-} && $system_name == Linux ]]; then
     echo "Graphical E2E requires xvfb-run when DISPLAY is unset." >&2
     exit 2
   fi
-  exec xvfb-run -a -s "-screen 0 1440x1000x24" "${emacs_command[@]}"
+  if xvfb-run -a -s "-screen 0 1440x1000x24" "${emacs_command[@]}"; then
+    test_status=0
+  else
+    test_status=$?
+  fi
+  convert_graphical_screenshots
+  exit "$test_status"
 fi
 
 export E_GRAPHICAL_E2E_AUTORUN=1
-exec "${emacs_command[@]}"
+if "${emacs_command[@]}"; then
+  test_status=0
+else
+  test_status=$?
+fi
+convert_graphical_screenshots
+exit "$test_status"

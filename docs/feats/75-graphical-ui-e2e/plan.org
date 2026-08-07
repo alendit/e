@@ -45,6 +45,9 @@ observable UI behavior.  Keep live-provider validation separate and opt-in.
 - Graphical scenarios use a controllable asynchronous backend adapter so a
   test can place real command-loop actions between provider updates without
   sleeping on timing guesses.
+- Agent debugging can opt into ordered state and transition screenshots from
+  the same isolated frame.  Captures include visual SVG/PNG artifacts and exact
+  window-state sidecars without requiring desktop capture permission.
 
 * Implementation slices
 
@@ -58,6 +61,9 @@ observable UI behavior.  Keep live-provider validation separate and opt-in.
 4. Add an Xvfb-backed graphical CI job and document the test tiers and commands.
 5. Run focused graphical tests, the complete default suite, compilation, and a
    review pass.  Record limitations rather than masking unavailable behavior.
+6. Add opt-in agent screenshot tools for arbitrary states, before/after
+   transitions, asynchronous helper actions, settled waits, and timeout
+   failures.  Keep capture and rendering in the graphical test-support layer.
 
 * Expected follow-ups
 
@@ -69,7 +75,8 @@ geometry, or host extension behavior.
 * Completion
 
 The graphical runner, asynchronous fake stream, five chat behavior scenarios,
-default deterministic integration classification, and Linux Xvfb CI job are
-implemented.  The graphical suite exposed and drove fixes for durable
+one screenshot-tool self-test, default deterministic integration
+classification, Linux Xvfb CI job, and agent screenshot/transition trace tools
+are implemented.  The graphical suite exposed and drove fixes for durable
 reasoning activity ordering, shell-owned focus policy, first-status tail
 following, short-output bottom placement, and focused composer context status.

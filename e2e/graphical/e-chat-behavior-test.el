@@ -25,12 +25,17 @@
       persp-auto-resume-time -1
       persp-save-dir
       (expand-file-name "persp-confs/" user-emacs-directory))
-(load (expand-file-name
-       "../e-board-e2e-support.el"
-       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
-(load (expand-file-name
-       "e-graphical-test-support.el"
-       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(eval-and-compile
+  (let ((directory
+         (file-name-directory
+          (or load-file-name
+              (and (boundp 'byte-compile-current-file)
+                   byte-compile-current-file)
+              buffer-file-name))))
+    (add-to-list 'load-path directory)
+    (add-to-list 'load-path (expand-file-name ".." directory))))
+(require 'e-board-e2e-support)
+(require 'e-graphical-test-support)
 
 (defun e-chat-behavior-test--surface-windows (transcript)
   "Return visible (TRANSCRIPT-WINDOW . COMPOSER-WINDOW) for TRANSCRIPT."
@@ -75,8 +80,11 @@ Return a plist containing its stream, harness, transcript, and visible windows."
       (let ((outside (get-buffer-create "*e graphical outside*")))
         (set-window-buffer (split-window-right) outside)))
     (e-graphical-test-wait-until
-     (lambda () (e-chat-behavior-test--surface-windows transcript))
-     2.0 "composed chat surface")
+     (lambda ()
+       (and (e-chat-behavior-test--surface-windows transcript)
+            (with-current-buffer transcript
+              (null (e-ui-work-pending (current-buffer))))))
+     2.0 "settled composed chat surface")
     (let ((windows (e-chat-behavior-test--surface-windows transcript)))
       (list :stream stream
             :harness harness
@@ -235,6 +243,58 @@ Return a plist containing its stream, harness, transcript, and visible windows."
           (should (pos-visible-in-window-p tail window t))
           (should (integerp tail-y))
           (should (>= tail-y (- body-pixels (* 8 line-pixels)))))))))
+
+(ert-deftest e-chat-behavior-test-zz-debug-screenshots-capture-state-and-transition ()
+  "Debug snapshots expose a visual state and a before/after transition pair."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (directory (make-temp-file "e-graphical-screenshots-" t))
+        (before-buffer (get-buffer-create "*e screenshot before*"))
+        (after-buffer (get-buffer-create "*e screenshot after*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer before-buffer)
+          (insert "visible state before the transition")
+          (let* ((state
+                  (e-graphical-test-capture-state "initial-state" directory))
+                 (transition
+                  (e-graphical-test-capture-transition
+                   "split-and-select"
+                   (lambda ()
+                     (let ((window (split-window-right)))
+                       (set-window-buffer window after-buffer)
+                       (select-window window)
+                       (with-current-buffer after-buffer
+                         (insert "visible state after the transition"))
+                       'transition-complete))
+                   directory))
+                 (artifacts
+                  (list state
+                        (plist-get transition :before)
+                        (plist-get transition :after))))
+            (should (eq (plist-get transition :value) 'transition-complete))
+            (e-graphical-test-render-pending-screenshots)
+            (dolist (artifact artifacts)
+              (should (file-exists-p (plist-get artifact :svg)))
+              (should (file-exists-p (plist-get artifact :state)))
+              (should (create-image (plist-get artifact :svg) 'svg nil)))
+            (with-temp-buffer
+              (insert-file-contents
+               (plist-get (plist-get transition :after) :svg))
+              (should (search-forward "visible state after the transition"
+                                      nil t)))
+            (with-temp-buffer
+              (insert-file-contents
+               (plist-get (plist-get transition :after) :state))
+              (should (search-forward "*e screenshot after*" nil t)))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p before-buffer)
+        (kill-buffer before-buffer))
+      (when (buffer-live-p after-buffer)
+        (kill-buffer after-buffer))
+      (delete-directory directory t)
+      (redisplay t))))
 
 (ert-deftest e-chat-behavior-test-focus-and-atomic-delete ()
   "Opening focuses the composer; C-x 0 closes the complete chat atom."

@@ -22,6 +22,15 @@
 - Compilation is useful but optional. Run byte/native compilation as an explicit batch validation or background job, not as part of the ordinary live-update path.
 - Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
 
+## Graphical UI Testing and Debugging
+
+- Use `bash e2e/run-graphical-tests.sh` for behavior that depends on graphical redisplay, window geometry, focus, viewport scrolling, timers, or workspace restoration. On macOS this uses a private transparent off-screen frame; on headless Linux it uses Xvfb. It does not connect to or reload the user's running Emacs.
+- To capture an inspectable transition trace, set `E_GRAPHICAL_E2E_SCREENSHOT_DIR` and narrow the run with `E_GRAPHICAL_E2E_SELECTOR`, for example: `E_GRAPHICAL_E2E_SCREENSHOT_DIR=/tmp/e-chat-shots E_GRAPHICAL_E2E_SELECTOR=focused-composer bash e2e/run-graphical-tests.sh`.
+- With screenshot capture enabled, the graphical helpers automatically record before/after pairs around keyboard input and asynchronous provider events, settled states after waits, and the state immediately before a wait timeout fails. Artifacts are ordered SVG screenshots plus `.state.el` sidecars; PNG copies are also written when `rsvg-convert` is installed.
+- A graphical test can capture an arbitrary state with `(e-graphical-test-capture-state "after-open")`, or an arbitrary transition with `(e-graphical-test-capture-transition "workspace-switch" (lambda () ...))`. Pass a directory as the optional final argument when the environment variable is not set.
+- Inspect the PNG or SVG visually and use the matching `.state.el` file for exact selected-buffer, window-edge, mode-line, point, and viewport values. Keep temporary captures outside the repository unless they are intentional test fixtures.
+- Prefer these isolated artifacts over taking desktop screenshots of the user's live Emacs. Use the visible native test frame only when explicitly needed by setting `E_GRAPHICAL_E2E_NATIVE_VISIBLE=1`.
+
 
 ## How To
 

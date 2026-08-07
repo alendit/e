@@ -264,3 +264,60 @@ The scenario exposed and resolved the missing composer projection, the absent
 board-native final-output refresh, and literal percent escaping in mode-line
 data.  The full hidden graphical suite passes five tests with zero unexpected
 results.
+
+* Follow-up: agent screenshot and transition traces
+
+On 2026-08-07 the graphical support layer gained opt-in visual and structural
+debug artifacts.  =E_GRAPHICAL_E2E_SCREENSHOT_DIR= records ordered state
+checkpoints, before/after key and provider transitions, settled waits, and the
+last state before timeout cleanup.  Each checkpoint contains an SVG rendering
+of the actual test frame and a =.state.el= sidecar with exact geometry,
+selection, mode lines, visible text, point, and viewport values.  The shell
+runner converts SVG files to PNG after Emacs finishes when =rsvg-convert= is
+available.
+
+Rendering and PNG conversion are deliberately outside behavior timing.  An
+initial implementation converted PNGs inside provider callbacks; the traced
+focused-composer scenario timed out and exposed callback reentrancy.  Captures
+now retain a cheap immutable frame model during the transition, render SVGs
+after ERT completes, and convert PNGs in the outer launcher.  The same traced
+scenario passes and produced fifteen ordered artifacts ending at the verified
+=18% (64k/353k tok)= composer state.
+
+The new graphical self-test proves arbitrary state capture, before/after
+transition capture, SVG readability, and sidecar contents.  Fixture creation
+also waits for deferred surface UI work before retaining window identities;
+this removed the prior timing-sensitive leakage after the real persp-mode
+case.  The full hidden graphical suite passes six tests with zero unexpected
+results.
+
+** Design self-check
+
+1. Yes.  Agents can now debug graphical regressions without touching the live
+   Emacs or opening a desktop window.
+2. It moves toward observable, artifact-backed presentation testing in the
+   isolated graphical tier.
+3. The SVG renderer is a local replaceable adapter.  The stable contract is
+   the captured frame model and ordered artifact names.
+4. Graphical support owns capture; the runner owns deferred rendering and
+   artifact finalization.  Runtime and chat production code are unchanged.
+5. Coupling is limited to existing graphical helper actions and ordinary Emacs
+   window APIs; agents receive a narrow capture API.
+6. No production policy depends on the test renderer or shell converter.
+7. File writes, SVG rendering, and PNG conversion remain at test and launcher
+   boundaries.
+8. Capture models live only until the current test run renders them; artifacts
+   live only in the agent-selected directory.
+9. Normal runs pay only the screenshot self-test.  Debug runs capture bounded
+   visible state; expensive rendering and conversion happen after behavior
+   timing.
+10. State and transition helpers share one real capture contract and do not
+    weaken behavior when screenshots are disabled.
+11. SVG and sidecars are always available; PNG is an explicit optional
+    compatibility output when =rsvg-convert= exists.
+12. No legacy screenshot path existed.  The failed native desktop-capture
+    probe was not retained.
+13. Missing output directories and conversion failures surface directly;
+    action errors get an error-state capture and are then re-signaled.
+14. The graphical self-test proves the capture core, while a traced existing
+    async chat scenario proves integration without changing its result.

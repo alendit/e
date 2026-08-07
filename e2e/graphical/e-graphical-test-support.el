@@ -15,6 +15,15 @@
 
 (require 'cl-lib)
 (require 'e-backend)
+(require 'ert)
+(eval-and-compile
+  (add-to-list 'load-path
+               (file-name-directory
+                (or load-file-name
+                    (and (boundp 'byte-compile-current-file)
+                         byte-compile-current-file)
+                    buffer-file-name))))
+(require 'e-graphical-test-screenshot)
 
 (cl-defstruct (e-graphical-test-stream
                (:constructor e-graphical-test-stream-create))
@@ -89,16 +98,24 @@
   "Deliver backend ITEM through STREAM after DELAY seconds."
   (unless (e-graphical-test-stream-active-p stream)
     (error "Graphical test backend has no active request"))
+  (when (e-graphical-test-screenshot-enabled-p)
+    (e-graphical-test-capture-state
+     (format "provider-%s-before" (or (plist-get item :type) "item"))))
   (e-graphical-test-stream--schedule
    stream
    (lambda ()
-     (funcall (e-graphical-test-stream-on-item stream) item))
+     (funcall (e-graphical-test-stream-on-item stream) item)
+     (when (e-graphical-test-screenshot-enabled-p)
+       (e-graphical-test-capture-state
+        (format "provider-%s-after" (or (plist-get item :type) "item")))))
    delay))
 
 (defun e-graphical-test-stream-finish (stream &optional delay)
   "Finish STREAM successfully after DELAY seconds."
   (unless (e-graphical-test-stream-active-p stream)
     (error "Graphical test backend has no active request"))
+  (when (e-graphical-test-screenshot-enabled-p)
+    (e-graphical-test-capture-state "provider-finish-before"))
   (e-graphical-test-stream--schedule
    stream
    (lambda ()
@@ -110,7 +127,9 @@
        (setf (e-graphical-test-stream-on-item stream) nil
              (e-graphical-test-stream-on-done stream) nil
              (e-graphical-test-stream-on-error stream) nil
-             (e-graphical-test-stream-request stream) nil)))
+             (e-graphical-test-stream-request stream) nil)
+       (when (e-graphical-test-screenshot-enabled-p)
+         (e-graphical-test-capture-state "provider-finish-after"))))
    delay))
 
 (defun e-graphical-test-wait-until (predicate &optional timeout description)
@@ -123,21 +142,33 @@ DESCRIPTION names the expected state in failure output."
       (sit-for 0.01)
       (redisplay t))
     (unless value
+      (when (e-graphical-test-screenshot-enabled-p)
+        (e-graphical-test-capture-state
+         (format "timeout-%s" (or description "graphical-ui-state"))))
       (ert-fail (format "Timed out waiting for %s"
                         (or description "graphical UI state"))))
+    (when (e-graphical-test-screenshot-enabled-p)
+      (e-graphical-test-capture-state
+       (format "settled-%s" (or description "graphical-ui-state"))))
     value))
 
 (defun e-graphical-test-send-keys (keys)
   "Execute KEYS as one user keyboard macro and complete redisplay."
-  (execute-kbd-macro (if (stringp keys) (kbd keys) keys))
-  (sit-for 0.01)
-  (redisplay t))
+  (e-graphical-test-capture-automatic-transition
+   (format "keys-%s" (if (stringp keys) keys "macro"))
+   (lambda ()
+     (execute-kbd-macro (if (stringp keys) (kbd keys) keys))
+     (sit-for 0.01)
+     (redisplay t))))
 
 (defun e-graphical-test-type-text (text)
   "Type TEXT through the selected window's command loop."
-  (execute-kbd-macro text)
-  (sit-for 0.01)
-  (redisplay t))
+  (e-graphical-test-capture-automatic-transition
+   "type-text"
+   (lambda ()
+     (execute-kbd-macro text)
+     (sit-for 0.01)
+     (redisplay t))))
 
 (defun e-graphical-test-tail-y (window position)
   "Return POSITION's graphical Y coordinate in WINDOW, or nil."

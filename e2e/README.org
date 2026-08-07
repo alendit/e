@@ -43,6 +43,30 @@ Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
 5. the focused composer shows model/context fill and updates from settled
    provider usage after a turn.
 
+** Screenshot traces
+
+Set =E_GRAPHICAL_E2E_SCREENSHOT_DIR= to retain ordered screenshots and exact
+window-state sidecars while a selected graphical scenario runs:
+
+#+begin_src sh
+E_GRAPHICAL_E2E_SCREENSHOT_DIR=/tmp/e-chat-shots \
+E_GRAPHICAL_E2E_SELECTOR=focused-composer \
+bash e2e/run-graphical-tests.sh
+#+end_src
+
+The standard key-input, provider-event, and provider-finish helpers capture
+before/after pairs.  Successful waits capture their settled state; timeouts
+capture the failing state before test cleanup.  Each capture always writes an
+=.svg= and matching =.state.el= file.  When =rsvg-convert= is available it also
+writes a =.png= suitable for image inspection after Emacs finishes, so image
+conversion cannot change UI timing.
+
+Tests can add a named checkpoint with
+=(e-graphical-test-capture-state "after-open")= or wrap an arbitrary action
+with =e-graphical-test-capture-transition=.  These helpers render the actual
+test frame's window geometry, visible text, mode lines, selected window, and
+viewport positions without using or focusing the desktop.
+
 * Live provider E2E
 
 The credentialed suite exercises the runtime against a real provider API and

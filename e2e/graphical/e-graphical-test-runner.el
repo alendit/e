@@ -51,6 +51,13 @@
           (e-graphical-test-runner--print
            "Graphical E2E: Emacs %s, window system %S, selector %S\n"
            emacs-version window-system selector)
+          (when-let ((directory
+                      (getenv "E_GRAPHICAL_E2E_SCREENSHOT_DIR")))
+            (when (fboundp 'e-graphical-test-reset-screenshots)
+              (e-graphical-test-reset-screenshots))
+            (e-graphical-test-runner--print
+             "Graphical E2E screenshots: %s\n"
+             (expand-file-name directory)))
           (condition-case err
               (let ((original-message (symbol-function 'message)))
                 ;; Graphical ERT reports through the echo area.  Retain those
@@ -65,17 +72,23 @@
                              (apply original-message
                                     format-string arguments))))
                   (let* ((standard-output e-graphical-test-runner--output)
-                         (stats (ert-run-tests-batch selector))
-                         (unexpected (ert-stats-completed-unexpected stats))
-                         (exit (if (zerop unexpected) 0 1)))
-                    (e-graphical-test-runner--print
-                     "Graphical E2E complete: %d tests, %d unexpected.\n"
-                     (ert-stats-total stats) unexpected)
-                    (list :exit exit
-                          :output
-                          (with-current-buffer
-                              e-graphical-test-runner--output
-                            (buffer-string))))))
+                         (stats (ert-run-tests-batch selector)))
+                    ;; Snapshot rendering is intentionally outside test timing.
+                    ;; Captures retain the real frame model immediately, then
+                    ;; pay SVG serialization cost only after behavior settles.
+                    (when (fboundp 'e-graphical-test-render-pending-screenshots)
+                      (e-graphical-test-render-pending-screenshots))
+                    (let* ((unexpected
+                            (ert-stats-completed-unexpected stats))
+                           (exit (if (zerop unexpected) 0 1)))
+                      (e-graphical-test-runner--print
+                       "Graphical E2E complete: %d tests, %d unexpected.\n"
+                       (ert-stats-total stats) unexpected)
+                      (list :exit exit
+                            :output
+                            (with-current-buffer
+                                e-graphical-test-runner--output
+                              (buffer-string)))))))
             (error
              (e-graphical-test-runner--print
               "Graphical E2E runner failed: %S\n" err)
