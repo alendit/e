@@ -1,4 +1,4 @@
-;;; e-chat-surface-e2e-test.el --- Chat surface E2E tests -*- lexical-binding: t; -*-
+;;; e-chat-surface-integration-test.el --- Chat surface integration tests -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,9 +7,9 @@
 
 ;;; Commentary:
 
-;; Deterministic UI E2E coverage for the interactive chat surface.  It uses
-;; the fake backend but exercises actual Emacs buffers, windows, focus, and
-;; the public submit command.
+;; Deterministic batch integration coverage for the interactive chat surface.
+;; It uses the fake backend and real Emacs buffer/window objects, but it does
+;; not claim graphical redisplay or user-visible viewport behavior.
 
 ;;; Code:
 
@@ -23,7 +23,7 @@
 (require 'e-harness-registry)
 (require 'e-task-queue)
 (load (expand-file-name
-       "e-board-e2e-support.el"
+       "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (declare-function e-board-e2e-reset-runtime "e-board-e2e-support")
@@ -35,28 +35,11 @@
 (declare-function evil-local-mode "evil-core")
 (defvar evil-state)
 
-(defun e-chat-surface-e2e--load-evil ()
-  "Load the real Evil package for command-loop integration coverage."
-  (or (featurep 'evil)
-      (let* ((emacs-dir
-              (or (getenv "EMACS_DIR")
-                  (expand-file-name "~/.config/emacs/")))
-             (configured (getenv "E_EVIL_DIR"))
-             (build
-              (expand-file-name
-               (format ".local/straight/build-%s.%s/evil/"
-                       emacs-major-version emacs-minor-version)
-               emacs-dir))
-             (repository
-              (expand-file-name ".local/straight/repos/evil/" emacs-dir))
-             (directory
-              (seq-find #'file-directory-p
-                        (delq nil (list configured build repository)))))
-        (when directory
-          (add-to-list 'load-path directory))
-        (require 'evil nil t))))
+(defun e-chat-surface-integration--load-evil ()
+  "Load Evil only when it is available in the isolated test environment."
+  (or (featurep 'evil) (require 'evil nil t)))
 
-(ert-deftest e-chat-surface-e2e-test-composer-submits-below-transcript ()
+(ert-deftest e-chat-surface-integration-test-composer-submits-below-transcript ()
   "A displayed chat keeps input in its pane and responses in its transcript."
   (e-board-e2e-reset-runtime)
   (let* ((e-chat--surface-composition-enabled t)
@@ -137,9 +120,9 @@
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))
 
-(ert-deftest e-chat-surface-e2e-test-evil-escape-routes-transcript-commands ()
+(ert-deftest e-chat-surface-integration-test-evil-escape-routes-transcript-commands ()
   "One real Evil Escape moves input focus to transcript navigation commands."
-  (skip-unless (e-chat-surface-e2e--load-evil))
+  (skip-unless (e-chat-surface-integration--load-evil))
   (evil-mode 1)
   (e-chat--configure-modal-editing-policy)
   (e-chat--configure-evil-composer-bindings)
@@ -200,21 +183,20 @@
                           #'e-chat-response-navigation-activate))
               (should (eq (key-binding (kbd "d"))
                           #'e-chat-response-navigation-details))
-              (execute-kbd-macro (kbd "d"))
-              (setq details-buffer (get-buffer e-chat-details-buffer-name))
+              ;; Batch Emacs proves the active public command bindings; the
+              ;; graphical tier owns command-loop dispatch and redisplay.
+              (setq details-buffer
+                    (call-interactively (key-binding (kbd "d"))))
               (should (buffer-live-p details-buffer))
               (with-current-buffer details-buffer
-                (should (string-match-p "Turn:" (buffer-string))))
-              (execute-kbd-macro (kbd "RET"))
-              (should e-chat-block-view-mode)
-              (should-not e-chat-response-navigation-mode))))
+                (should (string-match-p "Turn:" (buffer-string)))))))
       (when (buffer-live-p details-buffer)
         (kill-buffer details-buffer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (set-window-configuration window-configuration))))
 
-(ert-deftest e-chat-surface-e2e-test-new-chat-is-board-native ()
+(ert-deftest e-chat-surface-integration-test-new-chat-is-board-native ()
   "The real fresh-chat command creates only board-native persistent state."
   (let* ((e-board--registry (make-hash-table :test 'equal))
          (e-board-registry--boards (make-hash-table :test 'equal))
@@ -259,6 +241,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(provide 'e-chat-surface-e2e-test)
+(provide 'e-chat-surface-integration-test)
 
-;;; e-chat-surface-e2e-test.el ends here
+;;; e-chat-surface-integration-test.el ends here

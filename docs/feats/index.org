@@ -85,3 +85,4 @@ Status values for coding agents:
 | 72 | Done | 72-transcript-only-reasoning-blocks/ | Transcript-Only Reasoning Blocks |
 | 73 | Done | 73-persistence-preflight/ | Persistence Command Preflight |
 | 74 | Done | 74-capability-message-details/ | Capability-Owned Message Details |
+| 75 | Done | 75-graphical-ui-e2e/ | Graphical UI Behavioral E2E |

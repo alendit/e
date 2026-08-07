@@ -1,0 +1,361 @@
+;;; e-chat-behavior-test.el --- Graphical chat behavior tests -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; User-visible chat contracts that require a real graphical display, command
+;; loop, redisplay, timers, or host workspace integration.  These tests must be
+;; run through `e2e/run-graphical-tests.sh', never batch Emacs.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'ert)
+(require 'e-board-runtime)
+(require 'e-chat)
+(require 'e-chat-session)
+(require 'e-harness)
+(require 'evil)
+(require 'persp-mode)
+(setq persp-auto-save-opt 0
+      persp-auto-resume-time -1
+      persp-save-dir
+      (expand-file-name "persp-confs/" user-emacs-directory))
+(load (expand-file-name
+       "../e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(load (expand-file-name
+       "e-graphical-test-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+
+(defun e-chat-behavior-test--surface-windows (transcript)
+  "Return visible (TRANSCRIPT-WINDOW . COMPOSER-WINDOW) for TRANSCRIPT."
+  (let ((transcript-window (get-buffer-window transcript nil))
+        (composer-window
+         (cl-find-if
+          (lambda (window)
+            (with-current-buffer (window-buffer window)
+              (derived-mode-p 'e-chat-composer-mode)))
+          (window-list nil 'nomini))))
+    (and (window-live-p transcript-window)
+         (window-live-p composer-window)
+         (cons transcript-window composer-window))))
+
+(defun e-chat-behavior-test--open-surface (&optional external-window)
+  "Open a public chat surface, optionally beside EXTERNAL-WINDOW.
+Return a plist containing its stream, harness, transcript, and visible windows."
+  (e-board-e2e-reset-runtime)
+  (delete-other-windows)
+  (set-frame-size (selected-frame) 140 48)
+  (redisplay t)
+  (let* ((stream (e-graphical-test-stream-create))
+         (harness
+          (e-harness-create
+           :backend (e-graphical-test-stream-backend stream)))
+         (session-id
+          (e-board-e2e-create-session harness :id "graphical-chat"))
+         (transcript (e-chat-open-session harness session-id t)))
+    ;; Split the already-composed native atom.  Creating this control window
+    ;; before the public open path lets `display-buffer' legitimately reuse it.
+    (when external-window
+      (let ((outside (get-buffer-create "*e graphical outside*")))
+        (set-window-buffer (split-window-right) outside)))
+    (e-graphical-test-wait-until
+     (lambda () (e-chat-behavior-test--surface-windows transcript))
+     2.0 "composed chat surface")
+    (let ((windows (e-chat-behavior-test--surface-windows transcript)))
+      (list :stream stream
+            :harness harness
+            :session-id session-id
+            :transcript transcript
+            :transcript-window (car windows)
+            :composer-window (cdr windows)))))
+
+(defun e-chat-behavior-test--cleanup (fixture configuration frame-size)
+  "Clean FIXTURE and restore CONFIGURATION and FRAME-SIZE."
+  (when-let ((stream (plist-get fixture :stream)))
+    (e-graphical-test-stream-cancel stream))
+  (when-let ((transcript (plist-get fixture :transcript)))
+    (when (buffer-live-p transcript)
+      (kill-buffer transcript)))
+  (when-let ((outside (get-buffer "*e graphical outside*")))
+    (kill-buffer outside))
+  (when (window-configuration-p configuration)
+    (set-window-configuration configuration))
+  (set-frame-size (selected-frame) (car frame-size) (cdr frame-size))
+  (redisplay t))
+
+(defun e-chat-behavior-test--submit (fixture prompt)
+  "Type and submit PROMPT through FIXTURE's composer command loop."
+  (select-window (plist-get fixture :composer-window))
+  (e-graphical-test-type-text prompt)
+  (e-graphical-test-send-keys "C-c C-c")
+  (e-graphical-test-wait-until
+   (lambda ()
+     (e-graphical-test-stream-active-p (plist-get fixture :stream)))
+   2.0 "backend request after composer submit"))
+
+(defun e-chat-behavior-test--emit (fixture item needle)
+  "Emit ITEM through FIXTURE and wait until transcript contains NEEDLE."
+  (let ((stream (plist-get fixture :stream))
+        (transcript (plist-get fixture :transcript)))
+    (e-graphical-test-stream-emit stream item)
+    (condition-case err
+        (e-graphical-test-wait-until
+         (lambda ()
+           (with-current-buffer transcript
+             (string-match-p (regexp-quote needle) (buffer-string))))
+         2.0 (format "transcript text %S" needle))
+      (error
+       (ert-fail
+        (with-current-buffer transcript
+          (format "%s\nbackend failure: %S\nchat status: %S\nactive turn: %S\nharness events: %S\nboard messages: %S\nattachment current: %S\nsubscription: %S\nruntime activity queue: %S\nruntime deferred hooks: %S\npending UI jobs: %S\ntranscript:\n%s"
+                  (error-message-string err)
+                  (e-graphical-test-stream-failure stream)
+                  e-chat--status
+                  (let ((turn
+                         (gethash
+                          (plist-get fixture :session-id)
+                          (e-harness-active-turns
+                           (plist-get fixture :harness)))))
+                    (list :status (plist-get turn :status)
+                          :error (plist-get turn :error)
+                          :condition (plist-get turn :condition)))
+                  (mapcar
+                   (lambda (event) (plist-get event :event-type))
+                   (e-harness-session-activity-events
+                    (plist-get fixture :harness)
+                    (plist-get fixture :session-id)))
+                  (let* ((binding
+                          (e-chat-service-binding
+                           (plist-get fixture :harness)
+                           (plist-get fixture :session-id)))
+                         (board
+                          (e-board-registry-board-source-board
+                           (e-chat-service-binding-board binding))))
+                    (mapcar
+                     (lambda (message)
+                       (list (e-board-message-kind message)
+                             (e-board-message-activity-kind message)
+                             (e-board-message-tags message)
+                             (e-board-message-content message)
+                             (e-board-message-source-activity-key message)))
+                     (e-board-messages board)))
+                  (let ((binding
+                         (e-chat-service-binding
+                          (plist-get fixture :harness)
+                          (plist-get fixture :session-id))))
+                    (e-board-runtime--current-attachment-p
+                     (e-chat-service-binding-attachment binding)))
+                  (let ((subscription e-chat--event-subscription))
+                    (and subscription
+                         (list
+                          :active
+                          (e-chat-service-subscription-active-p subscription)
+                          :state
+                          (e-chat-service-subscription-state subscription)
+                          :drain-scheduled
+                          (e-chat-service-subscription-drain-scheduled
+                           subscription))))
+                  (and (boundp 'e-board-runtime--pending-activity-head)
+                       e-board-runtime--pending-activity-head)
+                  (and (boundp 'e-board-runtime--deferred-hook-head)
+                       e-board-runtime--deferred-hook-head)
+                  (and (boundp 'e-ui-work--pending-jobs)
+                       (mapcar
+                        (lambda (job)
+                          (e-ui-work-spec-id (e-ui-work-job-spec job)))
+                        e-ui-work--pending-jobs))
+                  (buffer-substring-no-properties
+                   (max (point-min) (- (point-max) 2000))
+                   (point-max)))))))))
+
+(defun e-chat-behavior-test--finish (fixture answer)
+  "Finish FIXTURE's active turn with ANSWER and wait for settlement."
+  (e-graphical-test-stream-emit
+   (plist-get fixture :stream)
+   (list :type 'assistant-message :content answer)
+   0.01)
+  (e-graphical-test-stream-finish (plist-get fixture :stream) 0.03)
+  (e-graphical-test-wait-until
+   (lambda ()
+     (and (not (e-graphical-test-stream-active-p
+                (plist-get fixture :stream)))
+          (with-current-buffer (plist-get fixture :transcript)
+            (string-match-p (regexp-quote answer) (buffer-string)))))
+   3.0 "settled assistant answer"))
+
+(defun e-chat-behavior-test--assert-tail-near-bottom (fixture)
+  "Assert that FIXTURE's visible transcript tail is near its window bottom."
+  (let ((transcript (plist-get fixture :transcript))
+        (window (plist-get fixture :transcript-window)))
+    (with-current-buffer transcript
+      (redisplay t)
+      (let* ((tail (point-max))
+             (tail-y (e-graphical-test-tail-y window tail))
+             (body-pixels (window-body-height window t))
+             (line-pixels (frame-char-height))
+             (spacer
+              (cl-find-if
+               (lambda (overlay)
+                 (eq (overlay-get
+                      overlay e-chat--output-bottom-spacer-property)
+                     window))
+               (e-chat--output-bottom-spacer-overlays)))
+             (spacer-lines
+              (and spacer
+                   (length (overlay-get spacer 'before-string)))))
+        (ert-info ((format
+                    "tail-y=%S body-pixels=%S line-pixels=%S body-lines=%S screen-lines=%S spacer-lines=%S start=%S end=%S point=%S follow=%S output=%S bounds=%S"
+                    tail-y body-pixels line-pixels
+                    (window-body-height window)
+                    (count-screen-lines (point-min) tail nil window)
+                    spacer-lines
+                    (window-start window) (window-end window t)
+                    (window-point window)
+                    (e-chat--window-output-follow-state window)
+                    (e-chat--output-follow-position)
+                    (e-chat--running-status-bounds)))
+          (should (pos-visible-in-window-p tail window t))
+          (should (integerp tail-y))
+          (should (>= tail-y (- body-pixels (* 8 line-pixels)))))))))
+
+(ert-deftest e-chat-behavior-test-focus-and-atomic-delete ()
+  "Opening focuses the composer; C-x 0 closes the complete chat atom."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface t))
+          (let ((transcript-window (plist-get fixture :transcript-window))
+                (composer-window (plist-get fixture :composer-window))
+                (outside-window
+                 (get-buffer-window "*e graphical outside*" nil)))
+            (should (eq (selected-window) composer-window))
+            (with-current-buffer (window-buffer composer-window)
+              (should (derived-mode-p 'e-chat-composer-mode)))
+            (should (window-live-p outside-window))
+            (e-graphical-test-send-keys "C-x 0")
+            (should-not (window-live-p transcript-window))
+            (should-not (window-live-p composer-window))
+            (should (window-live-p outside-window))
+            (should (eq (selected-window) outside-window))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-short-output-stays-bottom-and-keeps-draft ()
+  "Short streaming output stays low without stealing composer focus or draft."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "short prompt")
+          (e-chat-behavior-test--emit
+           fixture '(:type reasoning-delta :content "first graphical progress")
+           "first graphical progress")
+          (e-chat-behavior-test--assert-tail-near-bottom fixture)
+          (should (eq (selected-window) (plist-get fixture :composer-window)))
+          (e-graphical-test-type-text "draft survives")
+          (e-chat-behavior-test--emit
+           fixture '(:type reasoning-delta :content " second graphical progress")
+           "second graphical progress")
+          (should (eq (selected-window) (plist-get fixture :composer-window)))
+          (with-current-buffer
+              (window-buffer (plist-get fixture :composer-window))
+            (should (string-suffix-p
+                     "draft survives"
+                     (buffer-substring-no-properties
+                      (point-min) (point-max)))))
+          (e-chat-behavior-test--assert-tail-near-bottom fixture)
+          (e-chat-behavior-test--finish fixture "short graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll ()
+  "User scrolling unpins streamed output; reaching the tail repins it."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "history prompt")
+          (e-chat-behavior-test--finish
+           fixture
+           (mapconcat (lambda (number) (format "history row %03d" number))
+                      (number-sequence 1 240) "\n"))
+          (e-chat-behavior-test--submit fixture "stream prompt")
+          (e-chat-behavior-test--emit
+           fixture '(:type reasoning-delta :content "stream update one")
+           "stream update one")
+          (e-chat-behavior-test--assert-tail-near-bottom fixture)
+          (let* ((transcript (plist-get fixture :transcript))
+                 (window (plist-get fixture :transcript-window)))
+            (select-window (plist-get fixture :composer-window))
+            (e-graphical-test-send-keys "C-M-S-v")
+            (let ((scrolled-start (window-start window)))
+              (with-current-buffer transcript
+                (should (< (window-end window t) (point-max))))
+              (e-chat-behavior-test--emit
+               fixture '(:type reasoning-delta :content " stream update two")
+               "stream update two")
+              (should (= (window-start window) scrolled-start))
+              (should (eq (selected-window)
+                          (plist-get fixture :composer-window))))
+            (let ((remaining 80))
+              (while (and (> remaining 0)
+                          (with-current-buffer transcript
+                            (< (window-end window t) (point-max))))
+                (setq remaining (1- remaining))
+                (e-graphical-test-send-keys "C-M-v"))
+              (should (> remaining 0)))
+            (e-chat-behavior-test--emit
+             fixture '(:type reasoning-delta :content " stream update three")
+             "stream update three")
+            (with-current-buffer transcript
+              (should (= (window-point window) (point-max))))
+            (e-chat-behavior-test--assert-tail-near-bottom fixture)
+            (should (eq (selected-window)
+                        (plist-get fixture :composer-window))))
+          (e-chat-behavior-test--finish fixture "stream graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
+  "A real persp-mode round trip restores the chat atom and composer focus."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (persp-mode 1)
+          (persp-switch "e-graphical-chat")
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let ((transcript (plist-get fixture :transcript)))
+            (persp-switch "e-graphical-away")
+            (switch-to-buffer (get-buffer-create "*e graphical away*"))
+            (persp-switch "e-graphical-chat")
+            (e-graphical-test-wait-until
+             (lambda ()
+               (let ((windows
+                      (e-chat-behavior-test--surface-windows transcript)))
+                 (and windows
+                      (eq (selected-window) (cdr windows)))))
+             3.0 "persp-restored chat surface with focused composer")))
+      (when (bound-and-true-p persp-mode)
+        (persp-mode -1))
+      (when-let ((away (get-buffer "*e graphical away*")))
+        (kill-buffer away))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(provide 'e-chat-behavior-test)
+
+;;; e-chat-behavior-test.el ends here

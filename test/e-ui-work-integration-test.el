@@ -1,4 +1,4 @@
-;;; e-ui-work-e2e-test.el --- UI work e2e tests -*- lexical-binding: t; -*-
+;;; e-ui-work-integration-test.el --- UI work integration tests -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; Deterministic end-to-end tests for async presentation work.  These tests
+;; Deterministic integration tests for async presentation work.  These tests
 ;; avoid live providers and assert lifecycle shape rather than elapsed-time
 ;; thresholds.
 
@@ -21,15 +21,15 @@
 (require 'e-harness)
 (require 'e-ui-work)
 (load (expand-file-name
-       "e-board-e2e-support.el"
+       "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(defun e-ui-work-e2e--drain (buffer &rest args)
+(defun e-ui-work-integration--drain (buffer &rest args)
   "Drain finite UI work in BUFFER with ARGS."
   (e-ui-work-with-batch-drain
-    (apply #'e-ui-work-drain-batch :buffer buffer args)))
+    (apply #'e-ui-work-drain-batch :buffer buffer :timeout 5.0 args)))
 
-(ert-deftest e-ui-work-e2e-test-chat-settled-turn-leaves-no-pending-ui-work ()
+(ert-deftest e-ui-work-integration-test-chat-settled-turn-leaves-no-pending-ui-work ()
   "A settled chat turn cancels intervals and drains finite UI work."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
@@ -74,9 +74,9 @@
             (should (e-ui-work-pending buffer
                                        :owner 'activity-redraw
                                        :key turn-id))
-            (e-ui-work-e2e--drain buffer
-                                   :owner 'activity-redraw
-                                   :key turn-id)
+            (e-ui-work-integration--drain buffer
+                                           :owner 'activity-redraw
+                                           :key turn-id)
             (should-not (e-ui-work-pending buffer
                                            :owner 'activity-redraw
                                            :key turn-id))
@@ -96,7 +96,7 @@
                                            :owner 'progress-indicator
                                            :key turn-id))
             (should (e-ui-work-pending buffer :owner 'markdown-presentation))
-            (e-ui-work-e2e--drain buffer :owner 'markdown-presentation)
+            (e-ui-work-integration--drain buffer :owner 'markdown-presentation)
             (should-not (e-ui-work-pending buffer :owner 'markdown-presentation))
             (e-chat--render-event
              (list :type 'turn-finished
@@ -104,12 +104,12 @@
                    :turn-id turn-id
                    :created-at (float-time)
                    :payload nil))
-              (e-ui-work-e2e--drain buffer)
+              (e-ui-work-integration--drain buffer)
               (should-not (e-ui-work-pending buffer)))))
       (set-window-configuration window-configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(provide 'e-ui-work-e2e-test)
+(provide 'e-ui-work-integration-test)
 
-;;; e-ui-work-e2e-test.el ends here
+;;; e-ui-work-integration-test.el ends here

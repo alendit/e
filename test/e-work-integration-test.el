@@ -1,4 +1,4 @@
-;;; e-work-e2e-test.el --- Work API e2e tests -*- lexical-binding: t; -*-
+;;; e-work-integration-test.el --- Work API integration tests -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; Deterministic end-to-end tests for work-backed tool execution through the
+;; Deterministic integration tests for work-backed tool execution through the
 ;; async loop.  These tests avoid live providers and assert API shape rather
 ;; than elapsed-time thresholds.
 
@@ -21,7 +21,7 @@
 (require 'e-tools)
 (require 'e-work)
 
-(defun e-work-e2e--wait-until (predicate &optional timeout)
+(defun e-work-integration--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
   (let ((deadline (+ (float-time) (or timeout 1.0)))
         value)
@@ -30,7 +30,7 @@
       (accept-process-output nil 0.01))
     value))
 
-(ert-deftest e-work-e2e-test-work-backed-tool-round-trip-is-async ()
+(ert-deftest e-work-integration-test-work-backed-tool-round-trip-is-async ()
   "A work-backed tool returns a handle, settles later, and feeds follow-up."
   (let* ((calls 0)
          (backend
@@ -84,10 +84,10 @@
      :description "Echo state through work."
      :work (e-work-spec-create
             :id "work_echo"
-            :description "E2E work echo."
+            :description "Integration work echo."
             :execution 'render
             :interactive-policy 'async
-            :owner 'e-work-e2e
+            :owner 'e-work-integration
             :runner (lambda (arguments context)
                       (format "fresh %s/%s"
                               (plist-get arguments :text)
@@ -113,7 +113,7 @@
                  (setq error err)))
     (should (null settled))
     (should (null error))
-    (should (e-work-e2e--wait-until
+    (should (e-work-integration--wait-until
              (lambda ()
                (cl-find-if
                 (lambda (request)
@@ -135,7 +135,7 @@
       (should (e-work-handle-p handle))
       (should (equal (plist-get (e-work-status handle) :state) 'started)))
     (should (null settled))
-    (should (e-work-e2e--wait-until (lambda () settled) 2.0))
+    (should (e-work-integration--wait-until (lambda () settled) 2.0))
     (should (null error))
     (should (equal calls 2))
     (should (equal (plist-get settled :status) 'done))
@@ -148,6 +148,6 @@
                            (nreverse events))
                    '(turn-started tool-started tool-finished turn-finished)))))
 
-(provide 'e-work-e2e-test)
+(provide 'e-work-integration-test)
 
-;;; e-work-e2e-test.el ends here
+;;; e-work-integration-test.el ends here

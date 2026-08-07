@@ -29,3 +29,24 @@ jobs:
 
       - name: Run tests
         run: eldev -p -dtT test
+
+  graphical-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Emacs
+        uses: jcs090218/setup-emacs@master
+        with:
+          version: 30.2
+
+      - name: Install Eldev
+        uses: emacs-eldev/setup-eldev@v1
+
+      - name: Install virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth
+
+      - name: Run graphical behavioral tests
+        run: bash e2e/run-graphical-tests.sh

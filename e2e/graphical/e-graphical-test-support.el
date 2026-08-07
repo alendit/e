@@ -1,0 +1,149 @@
+;;; e-graphical-test-support.el --- Graphical E2E helpers -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Small helpers for deterministic tests running in a real graphical Emacs.
+;; The controllable backend crosses the production asynchronous backend
+;; contract, while test code decides when each provider item becomes visible.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'e-backend)
+
+(cl-defstruct (e-graphical-test-stream
+               (:constructor e-graphical-test-stream-create))
+  on-item
+  on-done
+  on-error
+  request
+  timers
+  failure)
+
+(defun e-graphical-test-stream-cancel (stream)
+  "Cancel pending timers and clear callbacks owned by STREAM."
+  (dolist (timer (e-graphical-test-stream-timers stream))
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setf (e-graphical-test-stream-timers stream) nil
+        (e-graphical-test-stream-on-item stream) nil
+        (e-graphical-test-stream-on-done stream) nil
+        (e-graphical-test-stream-on-error stream) nil
+        (e-graphical-test-stream-request stream) nil))
+
+(defun e-graphical-test-stream-backend (stream)
+  "Return an asynchronous backend controlled by STREAM."
+  (e-backend-create
+   :name "graphical-test-stream"
+   :start
+   (cl-function
+    (lambda (&key messages options on-item on-done on-error on-request-start)
+      (ignore messages options)
+      (when (e-graphical-test-stream-request stream)
+        (error "Graphical test backend already has an active request"))
+      (let ((request
+             (e-backend-request-create
+              :cancel (lambda ()
+                        (e-graphical-test-stream-cancel stream)
+                        t)
+              :metadata '(:transport graphical-test :cancellable t))))
+        (setf (e-graphical-test-stream-on-item stream) on-item
+              (e-graphical-test-stream-on-done stream) on-done
+              (e-graphical-test-stream-on-error stream) on-error
+              (e-graphical-test-stream-request stream) request
+              (e-graphical-test-stream-failure stream) nil)
+        (when on-request-start
+          (funcall on-request-start request))
+        request)))))
+
+(defun e-graphical-test-stream-active-p (stream)
+  "Return non-nil when STREAM owns a live backend request."
+  (and (e-graphical-test-stream-request stream)
+       (e-graphical-test-stream-on-item stream)))
+
+(defun e-graphical-test-stream--schedule (stream function &optional delay)
+  "Run FUNCTION from STREAM after DELAY seconds through the real timer loop."
+  (let (timer)
+    (setq timer
+          (run-at-time
+           (or delay 0.01) nil
+           (lambda ()
+             (setf (e-graphical-test-stream-timers stream)
+                   (delq timer (e-graphical-test-stream-timers stream)))
+             (condition-case err
+                 (funcall function)
+               (error
+                (setf (e-graphical-test-stream-failure stream) err)
+                (when-let ((on-error
+                            (e-graphical-test-stream-on-error stream)))
+                  (funcall on-error err)))))))
+    (push timer (e-graphical-test-stream-timers stream))
+    timer))
+
+(defun e-graphical-test-stream-emit (stream item &optional delay)
+  "Deliver backend ITEM through STREAM after DELAY seconds."
+  (unless (e-graphical-test-stream-active-p stream)
+    (error "Graphical test backend has no active request"))
+  (e-graphical-test-stream--schedule
+   stream
+   (lambda ()
+     (funcall (e-graphical-test-stream-on-item stream) item))
+   delay))
+
+(defun e-graphical-test-stream-finish (stream &optional delay)
+  "Finish STREAM successfully after DELAY seconds."
+  (unless (e-graphical-test-stream-active-p stream)
+    (error "Graphical test backend has no active request"))
+  (e-graphical-test-stream--schedule
+   stream
+   (lambda ()
+     (let ((on-item (e-graphical-test-stream-on-item stream))
+           (on-done (e-graphical-test-stream-on-done stream)))
+       (funcall on-item '(:type done :reason stop))
+       (when on-done
+         (funcall on-done '(:status done)))
+       (setf (e-graphical-test-stream-on-item stream) nil
+             (e-graphical-test-stream-on-done stream) nil
+             (e-graphical-test-stream-on-error stream) nil
+             (e-graphical-test-stream-request stream) nil)))
+   delay))
+
+(defun e-graphical-test-wait-until (predicate &optional timeout description)
+  "Wait for PREDICATE through graphical redisplay or fail after TIMEOUT.
+DESCRIPTION names the expected state in failure output."
+  (let ((deadline (+ (float-time) (or timeout 2.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (sit-for 0.01)
+      (redisplay t))
+    (unless value
+      (ert-fail (format "Timed out waiting for %s"
+                        (or description "graphical UI state"))))
+    value))
+
+(defun e-graphical-test-send-keys (keys)
+  "Execute KEYS as one user keyboard macro and complete redisplay."
+  (execute-kbd-macro (if (stringp keys) (kbd keys) keys))
+  (sit-for 0.01)
+  (redisplay t))
+
+(defun e-graphical-test-type-text (text)
+  "Type TEXT through the selected window's command loop."
+  (execute-kbd-macro text)
+  (sit-for 0.01)
+  (redisplay t))
+
+(defun e-graphical-test-tail-y (window position)
+  "Return POSITION's graphical Y coordinate in WINDOW, or nil."
+  (when-let ((posn (posn-at-point (max (point-min) (1- position)) window)))
+    (cdr (posn-x-y posn))))
+
+(provide 'e-graphical-test-support)
+
+;;; e-graphical-test-support.el ends here

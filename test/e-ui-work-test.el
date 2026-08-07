@@ -416,7 +416,7 @@
                    "test/e-ui-work-test.el"
                    "test/e-tools-test.el"
                    "test/e-await-tool-test.el"
-                   "e2e/e-work-e2e-test.el"
+                   "test/e-work-integration-test.el"
                    "lisp/dev/e-dev-perf.el"))
         violations)
     (dolist (file (append (directory-files-recursively "lisp" "\\.el\\'")

@@ -1,4 +1,4 @@
-;;; e-provider-continuation-e2e-test.el --- Provider continuation e2e tests -*- lexical-binding: t; -*-
+;;; e-provider-continuation-integration-test.el --- Provider continuation integration tests -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; Deterministic end-to-end tests for provider continuation across the harness,
+;; Deterministic integration tests for provider continuation across the harness,
 ;; OpenAI adapter, tool execution, and follow-up request construction.
 
 ;;; Code:
@@ -20,10 +20,10 @@
 (require 'e-openai)
 (require 'e-tools)
 (load (expand-file-name
-       "e-board-e2e-support.el"
+       "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(defun e-provider-continuation-e2e--sse (&rest events)
+(defun e-provider-continuation-integration--sse (&rest events)
   "Return an SSE stream containing JSON EVENTS."
   (mapconcat
    (lambda (event)
@@ -31,18 +31,18 @@
    events
    ""))
 
-(defun e-provider-continuation-e2e--input-types (body)
+(defun e-provider-continuation-integration--input-types (body)
   "Return the Responses input item types from JSON BODY."
   (mapcar (lambda (item) (alist-get 'type item))
           (alist-get 'input body)))
 
-(defun e-provider-continuation-e2e--first-input-text (body)
+(defun e-provider-continuation-integration--first-input-text (body)
   "Return the first input message text from JSON BODY."
   (alist-get
    'text
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
 
-(ert-deftest e-provider-continuation-e2e-test-tool-followup-sends-in-turn-output ()
+(ert-deftest e-provider-continuation-integration-test-tool-followup-sends-in-turn-output ()
   "A full anchored tool turn sends function call and output on follow-up."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
@@ -71,14 +71,14 @@
               (push (json-read-from-string body) requests)
               (pcase call-count
                 (1
-                 (e-provider-continuation-e2e--sse
+                 (e-provider-continuation-integration--sse
                   '((type . "response.output_text.done")
                     (text . "seed answer"))
                   '((type . "response.completed")
                     (response . ((id . "resp-seed")
                                  (status . "completed"))))))
                 (2
-                 (e-provider-continuation-e2e--sse
+                 (e-provider-continuation-integration--sse
                   '((type . "response.output_item.done")
                     (item . ((type . "function_call")
                              (call_id . "call-1")
@@ -88,7 +88,7 @@
                     (response . ((id . "resp-tool")
                                  (status . "completed"))))))
                 (_
-                 (e-provider-continuation-e2e--sse
+                 (e-provider-continuation-integration--sse
                   '((type . "response.output_text.done")
                     (text . "final answer"))
                   '((type . "response.completed")
@@ -120,15 +120,15 @@
       (should (= call-count 3))
       (should (equal (alist-get 'previous_response_id anchored-tool-request)
                      "resp-seed"))
-      (should (equal (e-provider-continuation-e2e--input-types
+      (should (equal (e-provider-continuation-integration--input-types
                       anchored-tool-request)
                      '("message")))
-      (should (equal (e-provider-continuation-e2e--first-input-text
+      (should (equal (e-provider-continuation-integration--first-input-text
                       anchored-tool-request)
                      "inspect now"))
       (should (equal (alist-get 'previous_response_id followup-request)
                      "resp-seed"))
-      (should (equal (e-provider-continuation-e2e--input-types
+      (should (equal (e-provider-continuation-integration--input-types
                       followup-request)
                      '("message" "function_call" "function_call_output")))
       (let* ((input (alist-get 'input followup-request))
@@ -139,6 +139,6 @@
         (should (equal (alist-get 'output function-output)
                        "fresh state"))))))
 
-(provide 'e-provider-continuation-e2e-test)
+(provide 'e-provider-continuation-integration-test)
 
-;;; e-provider-continuation-e2e-test.el ends here
+;;; e-provider-continuation-integration-test.el ends here

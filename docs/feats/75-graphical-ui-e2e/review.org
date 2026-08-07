@@ -1,0 +1,256 @@
+#+title: Review: Graphical UI Behavioral E2E
+#+author: e implementation
+#+date: 2026-08-07
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+The implementation satisfies the plan contract.  Graphical behavior runs in a
+fresh Emacs with a real frame and command loop, while the default macOS path
+keeps that frame transparent, off-screen, non-focusable, and outside the task
+switcher.  Linux CI uses Xvfb.  The graphical scenarios exposed four production
+regressions, all fixed and covered below.  No unresolved feature finding remains.
+
+* Scope reviewed
+
+- The graphical runner, isolated daemon bootstrap, fake asynchronous backend,
+  chat behavior scenarios, Eldev filesets, and Linux CI job.
+- The deterministic tests moved from optional E2E into the default integration
+  suite.
+- Chat rendering and board-runtime changes driven by the graphical scenarios.
+- The feature plan, test-tier documentation, focused tests, compilation, and
+  whitespace/shell checks.
+
+* Resolved findings
+
+** Resolved: durable activity could expire later reasoning output
+
+*** Problem
+
+Durable lifecycle events advanced the board source watermark, but locally
+allocated reasoning activity did not share that watermark.  A later reasoning
+delta could therefore look older than an already published lifecycle event.
+
+*** Change
+
+Reasoning now uses the event's durable source key when present.  The local
+allocator advances to every durable key, and untagged reasoning gets the
+default =main= tag.
+
+*** Evidence
+
+=e-board-runtime-test-reasoning-follows-durable-lifecycle-watermark= passes,
+and the hidden graphical streaming scenarios display reasoning updates.
+
+** Resolved: generic focus preservation overrode chat viewport policy
+
+*** Problem
+
+The board-event UI job used generic one-buffer focus preservation after chat
+rendering.  That restoration could undo the composed chat shell's explicit
+follow-or-preserve decision.
+
+*** Change
+
+The event consumer now declares explicit focus handling and leaves focus and
+viewport ownership with the chat shell.
+
+*** Evidence
+
+=e-chat-test-board-event-consumer-defers-focus-to-chat-policy= and the
+graphical focus, draft, and scroll scenarios pass.
+
+** Resolved: first running status stranded a pinned window
+
+*** Problem
+
+Before a running-status block existed, status insertion had no status-relative
+display state to restore.  A transcript pinned at its physical tail could stay
+at the old tail after the first status appeared.
+
+*** Change
+
+The first status render captures and restores physical-tail windows.  Later
+status updates retain their status-relative restoration path.
+
+*** Evidence
+
+Both short-output and long-stream graphical scenarios keep the output tail
+visible while pinned.
+
+** Resolved: point-max could sit outside the short-output display matrix
+
+*** Problem
+
+The two-row follow margin was too small for an empty final line plus
+display-only status rows in a graphical frame.
+
+*** Change
+
+The follow placement now reserves six rows.  This keeps the actual transcript
+tail visible near the bottom without selecting the transcript window.
+
+*** Evidence
+
+The graphical suite checks pixel geometry with =posn-at-point= and
+=pos-visible-in-window-p= while composer focus and draft text remain intact.
+
+** Resolved: deterministic integration tests were incorrectly optional
+
+*** Problem
+
+Five deterministic tests lived behind the live-provider E2E switch despite
+requiring no credentials or graphical display.
+
+*** Change
+
+They now live under =test/= as integration tests and run in the default suite.
+Only live-provider and development bytecode diagnostics remain opt-in.
+
+*** Evidence
+
+The focused integration run completed seven tests with six expected passes and
+one Evil-dependent skip in the isolated batch environment.
+
+** Resolved: native graphical tests interrupted the desktop
+
+*** Problem
+
+A normal native frame appeared on macOS and could steal focus while the tests
+ran.
+
+*** Change
+
+The default macOS launcher now uses a private daemon and creates a transparent
+off-screen NS frame with =no-accept-focus=, =no-focus-on-map=,
+=skip-taskbar=, and =undecorated=.  It uses a temporary Emacs directory and
+shuts the daemon down after the report.  =E_GRAPHICAL_E2E_NATIVE_VISIBLE=1=
+keeps the visible path for diagnosis.
+
+*** Evidence
+
+The hidden native run completed four graphical tests with zero unexpected
+results and did not connect to the user's Emacs server.
+
+* Verification
+
+#+begin_src sh
+bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 4 tests, 4 results as expected, 0 unexpected
+Graphical E2E complete: 4 tests, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+eldev -p -dtT test \
+  -f test/e-chat-surface-integration-test.el \
+  -f test/e-provider-continuation-integration-test.el \
+  -f test/e-session-restart-integration-test.el \
+  -f test/e-ui-work-integration-test.el \
+  -f test/e-work-integration-test.el
+#+end_src
+
+#+begin_example
+Ran 7 tests, 6 results as expected, 0 unexpected, 1 skipped
+#+end_example
+
+#+begin_src sh
+eldev -p -dtT test \
+  -f test/e-board-runtime-test.el \
+  -f test/e-chat-test.el \
+  -f test/e-chat-output-mode-test.el \
+  -f test/e-chat-session-test.el \
+  -f test/e-picker-test.el \
+  -f test/e-org-canvas-test.el
+eldev -p -dtT compile
+git diff --check
+bash -n e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 518 tests, 517 results as expected, 0 unexpected, 1 skipped
+Compilation finished successfully.
+Whitespace and shell syntax checks passed.
+#+end_example
+
+The complete default suite was also attempted outside the sandbox: 1,999 of
+2,005 tests were expected, two were skipped, and four existing
+=e-session-persistence-test= writer-callback tests timed out.  Running that
+file alone reproduced the same four failures.  They are independent of this
+UI and test-tier slice and remain visible rather than being hidden here.
+
+* UX and performance playthrough
+
+The isolated graphical frame exercised keyboard-only open and =C-x 0=,
+composer focus and draft preservation during updates, a 240-line transcript
+with user scroll unpin and tail repin, and a real persp-mode switch away and
+back.  All four completed in about two seconds.  The hidden runner adds no
+production work; the production changes add only bounded comparisons and
+window placement during existing renders.
+
+The user's running Emacs was not reloaded or modified.
+
+* Plan coverage
+
+All five implementation slices are complete.  The framework, default
+integration reclassification, four chat scenarios, Xvfb CI job, documentation,
+focused verification, compilation, and review artifact are present.  The
+independent full-suite writer failures are recorded instead of weakening the
+feature's checks.
+
+* Architecture review
+
+The test launcher owns process, frame, and temporary-directory side effects.
+The fake backend implements the existing asynchronous backend contract.  The
+chat shell owns composed focus and viewport policy.  The board runtime owns
+durable source ordering.  No production component depends on the test harness,
+and no test-only state enters the runtime package.
+
+* Design self-check
+
+1. Yes.  This is a useful stopping point: recent chat regressions have real
+   graphical coverage and the tests no longer interrupt desktop work.
+2. It moves toward a harness/presentation split where presentation behavior is
+   verified through public shell interactions and observable redisplay.
+3. The OS launcher is local and reversible.  The stable contracts are backend
+   callbacks, public commands, selected windows, viewport geometry, and
+   workspace restoration; no speculative extension API was added.
+4. The shell owns focus and viewport behavior, the board runtime owns activity
+   identity, and the runner owns test-process orchestration.  Each has one
+   reason to change.
+5. Coupling is reduced: deterministic tests use normal integration discovery,
+   and graphical tests consume narrow public behavior plus the backend
+   contract.
+6. No stable policy depends on a UI or test adapter.  Dependencies continue
+   from presentation and tests toward runtime-owned contracts.
+7. Frame creation, daemon lifecycle, temporary storage, and virtual-display
+   setup remain at the shell/CI boundary.
+8. Test state lives for one private process.  Stream callbacks live for one
+   request.  The runtime sequence floor lives on its owning attachment and is
+   rebuildable with that attachment.
+9. There is no steady-state test cost in production.  Runtime overhead is a
+   constant-time maximum/comparison and existing window placement; graphical
+   CI is a separate short job.
+10. The backend and focus-policy contracts are real and substitutable; no
+    unsupported operation or weakened precondition was introduced.
+11. The visible native runner remains an explicit diagnostic compatibility
+    path.  Obsolete optional classification for deterministic tests was
+    removed.
+12. The old =*-e2e-test.el= deterministic paths, names, and environment-gated
+    discovery were removed.
+13. Missing graphical display and daemon failures surface at the runner.
+    Asynchronous backend errors surface in ERT diagnostics; unexpected runtime
+    errors are not swallowed.
+14. Focused unit tests prove ordering and focus policy, batch integration tests
+    prove cross-module flows, and graphical tests independently prove command
+    loop, redisplay, geometry, scrolling, and workspace behavior.
+
+* Unresolved
+
+None for this feature.

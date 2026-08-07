@@ -1,0 +1,75 @@
+#+title: Graphical UI Behavioral E2E
+#+startup: overview
+
+* Status
+
+Done.
+
+* Problem
+
+The former chat-surface E2E file ran in batch Emacs.  It exercised real
+buffer and window objects, but batch Emacs has no live graphical redisplay
+loop or independent display matrix for unselected windows.  It can prove
+structural integration and command routing, but not viewport scrolling,
+pixel/display placement, update interleavings, or host workspace restoration.
+
+The deterministic E2E files were also gated behind =E_E2E=1= and absent from
+normal CI even though they need no provider credentials.
+
+* Goal
+
+Add a deterministic graphical behavior tier that launches a fresh isolated
+Emacs process with a real frame, drives public commands through the command
+loop, interleaves fake backend updates with user actions, and asserts only
+observable UI behavior.  Keep live-provider validation separate and opt-in.
+
+* Contract
+
+- The runner uses =eldev emacs= without =--batch= on Linux and a private Emacs
+  daemon on macOS.  It inherits the prepared project dependency environment
+  but does not connect to or reload the user's running Emacs.
+- The macOS daemon creates a transparent, off-screen, non-focusable NS frame.
+  It exercises graphical redisplay without showing a test window or taking
+  desktop focus.  =E_GRAPHICAL_E2E_NATIVE_VISIBLE=1= retains an explicit
+  visible diagnostic path.
+- Linux CI supplies a graphical display through Xvfb.  The runner fails early
+  when no graphical frame is available; it never silently degrades to batch.
+- Scenarios drive key sequences or public interactive commands.  They do not
+  call shell-private follow, activation, rendering, or repair helpers to create
+  the behavior under test.
+- Assertions observe selected windows and buffers, viewport positions,
+  display/pixel geometry, window-tree structure, drafts, and transcript text.
+  Private state may be printed for diagnostics but is not acceptance evidence.
+- Deterministic batch surface tests are classified as integration tests and run
+  in the default suite.  Only provider-backed tests remain behind =E_E2E=1=.
+- Graphical scenarios use a controllable asynchronous backend adapter so a
+  test can place real command-loop actions between provider updates without
+  sleeping on timing guesses.
+
+* Implementation slices
+
+1. Add a graphical ERT runner and shell entry point with explicit graphical
+   preflight, CI-visible reporting, and exit status.
+2. Move the current deterministic chat-surface file into the normal =test/=
+   suite and rename it as batch integration coverage.
+3. Add graphical chat scenarios for composer focus, atomic =C-x 0= deletion,
+   short-output bottom placement, streaming pin/unpin/repin behavior, draft and
+   focus preservation, and real persp-mode switch/restoration.
+4. Add an Xvfb-backed graphical CI job and document the test tiers and commands.
+5. Run focused graphical tests, the complete default suite, compilation, and a
+   review pass.  Record limitations rather than masking unavailable behavior.
+
+* Expected follow-ups
+
+The first graphical matrix establishes the framework and covers the recent
+chat-surface regression family.  Future UI bugs should add scenarios at this
+tier when their contract depends on redisplay, command-loop ordering, frame
+geometry, or host extension behavior.
+
+* Completion
+
+The graphical runner, asynchronous fake stream, four chat behavior scenarios,
+default deterministic integration classification, and Linux Xvfb CI job are
+implemented.  The graphical suite exposed and drove fixes for durable
+reasoning activity ordering, shell-owned focus policy, first-status tail
+following, and short-output bottom placement.

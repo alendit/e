@@ -1,51 +1,60 @@
-#+title: Live E2E Validation
+#+title: Test Tiers
 
-This directory contains end-to-end harness/backend/tool/session validation.
+The repository keeps deterministic tests in the normal suite and reserves
+explicit opt-in for tests that call a real provider.
 
-Deterministic chat-surface and fresh-board tests run without live credentials:
+* Default batch tests
+
+Run unit and deterministic integration coverage with:
 
 #+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-chat-surface-e2e-test.el
+eldev test
 #+end_src
 
-Deterministic provider-flow e2e tests run without live credentials:
+The integration files under =test/= cross real harness, adapter, persistence,
+tool, work, and chat-surface boundaries.  They use fake providers and require
+no credentials.  Batch chat tests prove buffer/window structure and command
+routing, but do not claim graphical redisplay or viewport behavior.
+
+* Graphical behavioral tests
+
+Run the graphical chat contracts with:
 
 #+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
+bash e2e/run-graphical-tests.sh
 #+end_src
 
-Deterministic restart e2e tests run without live credentials:
+On macOS the command starts a private Emacs daemon and uses a transparent,
+off-screen, non-focusable NS frame.  It does not connect to or reload the
+running Emacs and should not show a window or take focus.  To debug in a visible
+native frame, set =E_GRAPHICAL_E2E_NATIVE_VISIBLE=1=.
+
+On Linux, the runner uses the current display or automatically starts
+=xvfb-run= when =DISPLAY= is unset.  A graphical frame is mandatory; the suite
+never falls back to batch mode.
+
+Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
+
+1. opening the chat atom focuses its composer and =C-x 0= deletes the atom;
+2. short output stays near the bottom while preserving composer focus/drafts;
+3. streamed output follows while pinned, stops following after user scroll,
+   and follows again after the user reaches the tail;
+4. a real =persp-mode= switch round trip restores the atom and composer focus.
+
+* Live provider E2E
+
+The credentialed suite exercises the runtime against a real provider API and
+is not part of normal tests or CI:
 
 #+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-session-restart-e2e-test.el
-#+end_src
-
-Deterministic Work API e2e tests run without live credentials:
-
-#+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-work-e2e-test.el
-#+end_src
-
-Deterministic UI Work e2e tests run without live credentials:
-
-#+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-ui-work-e2e-test.el
-#+end_src
-
-The live suite exercises the same runtime path against a real provider API.  It
-is not part of the default unit-test run.
-
-Run it only when live validation is explicitly desired:
-
-#+begin_src sh
-E_E2E=1 rtk eldev test -f e2e/e-live-e2e-test.el
+E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
 The default provider is the ChatGPT-backed Codex profile using the normal Codex
 auth file.  To use a token-auth OpenAI Responses profile instead:
 
 #+begin_src sh
-E_E2E=1 E_E2E_PROVIDER=openai E_E2E_OPENAI_API_KEY="$OPENAI_API_KEY" rtk eldev test -f e2e/e-live-e2e-test.el
+E_E2E=1 E_E2E_PROVIDER=openai E_E2E_OPENAI_API_KEY="$OPENAI_API_KEY" eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
 Useful environment variables:
@@ -53,27 +62,14 @@ Useful environment variables:
 - =E_E2E_PROVIDER=: =codex= or =openai=; defaults to =codex=.
 - =E_E2E_MODEL=: model override for live requests.
 - =E_E2E_OPENAI_API_KEY=: bearer token for =E_E2E_PROVIDER=openai=.
-- =E_E2E_OPENAI_BASE_URL=: OpenAI-compatible base URL; defaults to =https://api.openai.com/v1=.
+- =E_E2E_OPENAI_BASE_URL=: OpenAI-compatible base URL.
 - =E_E2E_TIMEOUT_SECONDS=: provider timeout override; defaults to =240=.
 
-* Scenarios
+* Development bytecode smoke test
 
-1. A first user prompt returns a non-empty assistant message containing a
-   requested nonce.
-2. A follow-up prompt can use prior session context from the same live
-   transcript.
-3. The model can call a registered e tool, the harness executes it, and the
-   final answer uses the tool result.
-4. Provider lifecycle events are emitted and persisted around a live request.
-5. Token usage is surfaced as durable activity when the provider reports it.
-6. Live session messages survive persistence and reload from the session store.
-7. Manual compaction summarizes older transcript entries with the live backend
-   and records a durable compaction.
-8. Provider anchor candidates are recorded when the active provider supports
-   continuation anchors.
-9. An active live request can be cancelled through the harness and settles as a
-   cancellation.
-10. Live provider errors are surfaced as harness failures instead of empty
-    assistant output.
-11. A restarted harness reconstructs a newly persisted board session with the
-    same board id and completes a prompt through board delivery.
+The stale source-adjacent bytecode check is an explicit checkout diagnostic,
+not a normal package test:
+
+#+begin_src sh
+E_DEV_E2E=1 eldev test -f e2e/e-dev-bytecode-e2e-test.el
+#+end_src

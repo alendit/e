@@ -1,11 +1,11 @@
-;;; e-session-restart-e2e-test.el --- Restart E2E tests for board sessions -*- lexical-binding: t; -*-
+;;; e-session-restart-integration-test.el --- Restart integration tests for board sessions -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; Deterministic end-to-end coverage for creating a board-backed session,
+;; Deterministic integration coverage for creating a board-backed session,
 ;; rebuilding the process-local runtime, and resuming the same persisted board.
 
 ;;; Code:
@@ -16,10 +16,10 @@
 (require 'e-harness)
 (require 'e-session)
 (load (expand-file-name
-       "e-board-e2e-support.el"
+       "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(ert-deftest e-session-restart-e2e-test-resumes-persisted-board-session ()
+(ert-deftest e-session-restart-integration-test-resumes-persisted-board-session ()
   "A newly created board session keeps its board identity across restart."
   (let* ((directory (make-temp-file "e-session-board-restart-" t))
          (root (file-name-as-directory directory))
@@ -70,6 +70,6 @@
                              "after restart")))))
       (delete-directory directory t))))
 
-(provide 'e-session-restart-e2e-test)
+(provide 'e-session-restart-integration-test)
 
-;;; e-session-restart-e2e-test.el ends here
+;;; e-session-restart-integration-test.el ends here

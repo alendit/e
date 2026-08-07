@@ -38,6 +38,11 @@
 
 (setf eldev-test-framework 'ert)
 
+;; Repository test harnesses are loaded explicitly by their owning test tier;
+;; they are neither runtime package files nor ordinary batch tests.
+(setf eldev-main-fileset
+      `(:and ,eldev-main-fileset (:not "./e2e/")))
+
 ;; Node helpers ship beside their owning Lisp modules and are resolved relative
 ;; to those files at runtime.  Eldev's
 ;; default `eldev-files-to-package' bundles only `*.el', so the packaged install
@@ -52,16 +57,24 @@
             "./lisp/core/e-mcp-helper.mjs"
             "./lisp/core/e-task-queue-writer.mjs"))
 
-;; Live e2e tests intentionally sit outside the default test fileset because
-;; they call real provider APIs.  Opt in with E_E2E=1 and load e2e files
-;; explicitly, for example:
+;; Live E2E tests intentionally sit outside the default test fileset because
+;; they call real provider APIs.  Deterministic integration tests live under
+;; test/ and remain part of every normal run.  Opt into the live suite with
+;; E_E2E=1, for example:
 ;;   E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
 (when (getenv "E_E2E")
   (setf eldev-test-fileset
-        (list :or eldev-test-fileset "./e2e/*-test.el")))
+        (list :or eldev-test-fileset "./e2e/e-live-e2e-test.el")))
+
+;; The bytecode smoke test inspects checkout-local source-adjacent artifacts,
+;; so it is useful only when requested as a development diagnostic.
+(when (getenv "E_DEV_E2E")
+  (setf eldev-test-fileset
+        (list :or eldev-test-fileset "./e2e/e-dev-bytecode-e2e-test.el")))
 
 (eldev-use-package-archive 'melpa)
 (eldev-add-extra-dependencies 'test '(simply-annotate (2 3 0)))
+(eldev-add-extra-dependencies 'emacs 'evil 'persp-mode)
 
 ;; org-annotate is not published to a package archive.  When a local checkout is
 ;; present (for example the straight.el clone in the user's Emacs), add it to
