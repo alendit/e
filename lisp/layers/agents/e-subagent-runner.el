@@ -107,12 +107,19 @@ the parent applies is never clobbered."
       (puthash harness t e-subagent--configured-harnesses))
     harness))
 
-(defun e-subagent--child-metadata (instance parent-session-id lineage-id label)
-  "Return durable child session metadata for INSTANCE under a parent lineage."
-  (let ((role (e-harness-instance-kind instance)))
+(defun e-subagent--child-metadata
+    (instance parent-harness parent-session-id lineage-id label)
+  "Return durable child metadata for INSTANCE under a parent lineage.
+Inherit the parent's project root so repository AGENTS.md files and
+=.agents/skills= are available to the child from its first turn."
+  (let ((role (e-harness-instance-kind instance))
+        (project-root
+         (and parent-session-id
+              (e-harness-project-root parent-harness parent-session-id))))
     (append
      (list :tmp-lineage-id lineage-id)
      (when parent-session-id (list :parent-session-id parent-session-id))
+     (when project-root (list :project-root project-root))
      (when role (list :subagent-role (symbol-name role)))
      (when (and (stringp label) (not (string-empty-p label)))
        (list :subagent-label label)))))
@@ -274,7 +281,7 @@ returns a handle plist carrying `:cancel'."
          (parent-board (e-chat-service-binding-board parent-binding))
          (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
          (metadata (e-subagent--child-metadata
-                    instance parent-session-id lineage-id label))
+                    instance parent-harness parent-session-id lineage-id label))
          (child-session
           (e-chat-service-create-participant
            parent-board child-harness :metadata metadata

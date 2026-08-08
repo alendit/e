@@ -563,6 +563,57 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
+(ert-deftest e-agents-std-context-test-config-can-exclude-global-skills-only ()
+  "Global skills can be hidden while project skills and AGENTS remain active."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (make-temp-file "e-agents-project-" t))
+         (global-skill
+          (expand-file-name ".agents/skills/research/SKILL.md" home))
+         (project-skill
+          (expand-file-name ".agents/skills/implement/SKILL.md" project))
+         (agents-file (expand-file-name "AGENTS.md" project)))
+    (unwind-protect
+        (progn
+          (e-agents-std-context-test--write-file
+           agents-file "# Project\n\nRepository guidance.")
+          (e-agents-std-context-test--write-file
+           global-skill
+           "---\nname: research\ndescription: Global research.\n---\n\nGlobal body.")
+          (e-agents-std-context-test--write-file
+           project-skill
+           "---\nname: implement\ndescription: Repo implementation.\n---\n\nProject body.")
+          (let* ((e-agents-std-context-global-agents-files nil)
+                 (e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (e-capability-config
+                  '((agents-std-context :include-global-skills nil)))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (e-layer-capabilities
+                    (e-agents-std-context-layer-create project))))
+                 (_session (e-harness-create-session harness :id "session-1"))
+                 (content
+                  (e-agents-std-context-test--context-content
+                   harness "session-1"))
+                 (store (e-harness-store harness)))
+            (should (string-match-p "Repository guidance" content))
+            (should-not (string-match-p "Global research" content))
+            (should (string-match-p
+                     "implement: Repo implementation. Read e://agents-std-context/skills/project/implement"
+                     content))
+            (should-error
+             (e-store-read store
+                           "e://agents-std-context/skills/global/research" nil))
+            (should (string-match-p
+                     "Project body"
+                     (e-store-read
+                      store
+                      "e://agents-std-context/skills/project/implement" nil)))))
+      (delete-directory home t)
+      (delete-directory project t))))
+
 (ert-deftest e-agents-std-context-test-config-filters-advertised-and-readable-skills ()
   "Include and exclude config filters skill catalog and resources."
   (let* ((home (make-temp-file "e-agents-home-" t))
@@ -745,7 +796,9 @@
            e-agents-std-context-config-options))
       (should
        (equal (e-capability-config capability)
-              '(:skills-include ("skills/global/research") :skills-exclude nil))))))
+              '(:include-global-skills t
+                :skills-include ("skills/global/research")
+                :skills-exclude nil))))))
 
 (provide 'e-agents-std-context-test)
 

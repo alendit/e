@@ -48,6 +48,13 @@
 (defconst e-agents-std-context-config-options
   (list
    (e-capability-config-option-create
+    :key :include-global-skills
+    :type 'boolean
+    :default t
+    :documentation
+    "When non-nil, discover skills from the global skills directory."
+    :validator #'booleanp)
+   (e-capability-config-option-create
     :key :skills-include
     :type '(repeat string)
     :default nil
@@ -234,11 +241,17 @@ slugs across those scopes intentionally remain distinct resources."
 
 (defun e-agents-std-context--skill-selected-p (skill config)
   "Return non-nil when SKILL is selected by CONFIG.
-`:skills-include' is an allowlist and `:skills-exclude' a denylist; they are
-mutually exclusive, and include wins if both are somehow set."
-  (let ((include (plist-get config :skills-include))
-        (exclude (plist-get config :skills-exclude)))
+`:include-global-skills' controls the global scope.  `:skills-include' is an
+allowlist and `:skills-exclude' a denylist; they are mutually exclusive, and
+include wins if both are somehow set."
+  (let ((include-global (plist-get config :include-global-skills))
+        (include (plist-get config :skills-include))
+        (exclude (plist-get config :skills-exclude))
+        (path (e-skill-spec-path skill)))
     (cond
+     ((and (string-prefix-p "skills/global/" path)
+           (not include-global))
+      nil)
      (include
       (cl-some
        (lambda (selector)

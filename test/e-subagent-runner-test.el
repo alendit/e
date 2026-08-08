@@ -92,7 +92,8 @@
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
-                    :backend (e-backend-fake-create :items nil)))
+                    :backend (e-backend-fake-create :items nil)
+                    :project-root "/tmp/example-project/"))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
       (let* ((record
@@ -121,6 +122,8 @@
                                    :metadata)))
           (should (equal (plist-get metadata :parent-session-id) "parent-1"))
           (should (equal (plist-get metadata :tmp-lineage-id) "parent-1"))
+          (should (equal (plist-get metadata :project-root)
+                         "/tmp/example-project/"))
           (should (equal (plist-get metadata :subagent-label) "review plan.org")))
         ;; The explicit seed landed in the child's own store before the task.
         (should (equal (mapcar (lambda (m) (plist-get m :content))
