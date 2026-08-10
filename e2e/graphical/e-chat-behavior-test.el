@@ -133,6 +133,43 @@ Return a plist containing its stream, harness, transcript, and visible windows."
      (e-graphical-test-stream-active-p (plist-get fixture :stream)))
    2.0 "backend request after composer submit"))
 
+(defun e-chat-behavior-test--insert-property-rich-history (transcript lines)
+  "Insert LINES of protected synthetic history into TRANSCRIPT."
+  (with-current-buffer transcript
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (dotimes (index lines)
+        (e-chat--insert-protected
+         (format "history %04d: rendered transcript property boundary\n" index)
+         (if (cl-evenp index)
+             'e-chat-assistant-face
+           'e-chat-system-face)
+         (list 'e-chat-block-id (format "history-%04d" index)
+               'e-chat-turn-id (format "history-turn-%04d" (/ index 4)))))
+      (e-chat--note-transcript-layout-change))))
+
+(defun e-chat-behavior-test--read-minibuffer-for (seconds before-exit)
+  "Enter a real minibuffer for SECONDS, then call BEFORE-EXIT and leave it."
+  (let (exit-timer)
+    (unwind-protect
+        (progn
+          (setq exit-timer
+                (run-at-time
+                 seconds nil
+                 (lambda ()
+                   (funcall before-exit)
+                   (when-let ((window (active-minibuffer-window)))
+                     (with-selected-window window
+                       (exit-minibuffer))))))
+          (minibuffer-with-setup-hook
+              (lambda ()
+                (when (e-graphical-test-screenshot-enabled-p)
+                  (e-graphical-test-capture-state "active-chat-minibuffer"))
+                (redisplay t))
+            (read-from-minibuffer "Graphical chat line: ")))
+      (when (timerp exit-timer)
+        (cancel-timer exit-timer)))))
+
 (defun e-chat-behavior-test--emit (fixture item needle)
   "Emit ITEM through FIXTURE and wait until transcript contains NEEDLE."
   (let ((stream (plist-get fixture :stream))
@@ -579,6 +616,78 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (should (eq (selected-window)
                         (plist-get fixture :composer-window))))
           (e-chat-behavior-test--finish fixture "stream graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-large-transcript-minibuffer-keeps-provider-responsive ()
+  "A large active chat does not repaint-loop while a minibuffer owns input."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-progress-interval 0.05)
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let* ((transcript (plist-get fixture :transcript))
+                 (stream (plist-get fixture :stream))
+                 (window (car (e-chat-behavior-test--fixture-windows fixture)))
+                 tick-before
+                 tick-before-exit
+                 deferred-before-exit
+                 provider-settled-before-exit)
+            (e-chat-behavior-test--insert-property-rich-history transcript 500)
+            (e-chat-behavior-test--submit fixture "large transcript prompt")
+            (select-window window)
+            (with-current-buffer transcript
+              (goto-char (point-min))
+              (forward-line 300)
+              (set-window-point window (point))
+              (set-window-start window (line-beginning-position) t)
+              ;; The submitted turn's first frame is already visible.  Isolate
+              ;; the repeating interval from any one-shot redraw queued before
+              ;; the recursive minibuffer starts.
+              (e-chat--cancel-pending-activity-redraw)
+              (setq tick-before (buffer-chars-modified-tick)))
+            (e-chat-behavior-test--read-minibuffer-for
+             0.25
+             (lambda ()
+               (setq tick-before-exit
+                     (with-current-buffer transcript
+                       (buffer-chars-modified-tick))
+                     deferred-before-exit
+                     (with-current-buffer transcript
+                       (copy-tree e-chat--deferred-activity-redraw)))
+               (when (e-graphical-test-screenshot-enabled-p)
+                 (e-graphical-test-capture-state
+                  "large-chat-before-minibuffer-exit"))))
+            (should (= tick-before-exit tick-before))
+            (should (equal (cdr deferred-before-exit) 'progress))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (null e-chat--deferred-activity-redraw)))
+             1.0 "deferred activity redraw after minibuffer exit")
+            ;; Provider events still cross the production async boundary while
+            ;; the next recursive minibuffer owns input.  Only their cosmetic
+            ;; repaint is allowed to wait.
+            (e-graphical-test-stream-emit
+             stream '(:type assistant-message :content "responsive answer") 0.03)
+            (e-graphical-test-stream-finish stream 0.06)
+            (e-chat-behavior-test--read-minibuffer-for
+             0.25
+             (lambda ()
+               (setq provider-settled-before-exit
+                     (and (not (e-graphical-test-stream-active-p stream))
+                          (with-current-buffer transcript
+                            (string-match-p "responsive answer"
+                                            (buffer-string)))))))
+            (should provider-settled-before-exit)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (and (equal e-chat--status "done")
+                      (null (e-ui-work-pending (current-buffer))))))
+             3.0 "large chat settled after minibuffer provider completion")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()

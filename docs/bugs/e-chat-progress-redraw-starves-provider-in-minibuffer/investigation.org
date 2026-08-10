@@ -1,0 +1,113 @@
+#+title: Investigation: chat progress redraw starves provider in minibuffer
+#+startup: overview
+
+* Evidence
+
+The active Bayesian session journal was
+=20260803T201953-0b61394d6d17.jsonl=.  It was 37,851,478 bytes with 15,722
+records, including 7,290 board messages and 5,699 activity events.  Its last
+successful requests completed in 6--26 seconds.  After restart, four requests
+started through =eng-ai-gateway-gpt= and =url-retrieve= but timed out at
+approximately 180 seconds.  The request diagnostics explicitly recorded
+=response-store: false=, continuation disabled, and no provider anchor, so a
+stale continuation id was not involved.
+
+Other new sessions were not uniformly broken: one 142,357-byte request with 38
+tools completed in 4.064 seconds, while another new session timed out.  The
+failure therefore was not caused solely by the Bayesian prompt or journal
+content.
+
+While the failure was active, the graphical Emacs process used approximately
+99 percent CPU.  A native sample captured the main thread inside
+=consult-goto-line -> consult--prompt -> read-from-minibuffer=, with 738 of 954
+samples under one =redisplay_internal= call.  Property and invisibility scans
+plus garbage collection dominated the sample.  Unlike the earlier mode-line
+bug, the stack did not contain recursive =mode-name= evaluation.
+
+The chat shell advanced its cosmetic progress frame every 0.6 seconds.  Each
+tick requested a transcript rewrite even while a recursive minibuffer owned
+input.  On the large property-rich transcript, those recurring rewrites kept
+forcing expensive redisplay.  Emacs processes network callbacks on the same
+main thread, so the repaint loop could delay provider completion until the
+adapter's 180-second timeout.
+
+An isolated copy of the exact journal did not finish loading within a
+96.6-second graphical-test deadline.  That identifies a separate large-session
+replay performance problem; no journal migration or compatibility path was
+added as part of this fix.
+
+The user's Emacs was closed before implementation and was not reloaded or
+mutated afterward.
+
+* Fix
+
+The chat presentation now coalesces activity redraw requests while any
+minibuffer is active, just as it already coalesced redraws for hidden chat
+buffers.  The existing progress timer and provider state continue to advance,
+but repeated cosmetic transcript rewriting waits until the minibuffer exits.
+The shell's minibuffer-exit boundary then schedules one deferred redraw for the
+next event-loop turn, after Emacs has cleared the exiting minibuffer window.
+
+The state remains buffer-local and presentation-owned.  No backend retry,
+fallback, error swallowing, session migration, or compatibility layer was
+introduced.
+
+* Regression evidence
+
+The focused ERT test proves that an active minibuffer schedules no transcript
+work, retains the latest coalesced progress request, and issues one redraw once
+the minibuffer closes.
+
+The graphical regression uses a real recursive minibuffer, a composed chat
+surface, a 500-line property-rich transcript, the production progress timer,
+and asynchronous provider events.  It proves both that recurring progress
+ticks leave the transcript's modification tick unchanged and that the provider
+stream reaches its settled state before the minibuffer exits.  The screenshot
+trace records the active scrollback state and the settled answer.
+
+* Validation
+
+- Focused activity-redraw and hook ERT tests: 4/4 passed.
+- Focused private-frame graphical regression: 1/1 passed with SVG, PNG, and
+  state sidecars under =/tmp/e-chat-large-minibuffer-shots-final=.
+- Complete chat-shell suite: 341 expected passes, zero unexpected, and one
+  optional Markdown-rendering skip across 342 tests.
+- Complete batch suite: 2,017 expected passes, zero unexpected, and two
+  optional skips across 2,019 tests.  The localhost fixture tests were run
+  outside the filesystem/network sandbox so their private listening sockets
+  were permitted.
+- Complete private-frame graphical suite: 12/12 passed.
+- Warning-as-error compilation of =lisp/shells/chat/e-chat.el= and
+  =git diff --check=: passed.
+
+* Architecture self-check
+
+1. This slice is useful independently: it keeps provider callbacks responsive
+   during ordinary minibuffer interaction on large chats.
+2. It moves toward a responsive presentation shell whose cosmetic work cannot
+   monopolize the harness's async progress.
+3. Transcript size and redisplay cost vary; the stable rule---defer cosmetic
+   activity repaint while recursive input owns the UI---is represented
+   directly and can be removed locally if Emacs redisplay behavior changes.
+4. The chat shell owns this behavior because it owns the progress animation and
+   transcript rendering.  The backend and harness remain unaware of UI focus.
+5. Coupling is reduced to one existing shell redraw path.  No new public
+   interface was added.
+6. No stable policy now depends on a backend, transport, persistence, or UI
+   adapter.
+7. Redisplay side effects stay at the presentation boundary.
+8. The only state is the latest deferred redraw per chat buffer.  It is
+   ephemeral, coalesced, cheap to rebuild, and has no cross-restart meaning.
+9. Active progress ticks now perform constant-size state updates during a
+   minibuffer instead of rewriting a potentially large transcript.  One
+   deferred redraw occurs afterward.
+10. The existing activity-redraw operation remains the semantic contract; no
+    speculative abstraction or weakened implementation contract was added.
+11. No compatibility requirement applies to the renamed private state, and no
+    obsolete parallel path remains.
+12. The hidden-only deferred-redraw names were removed because the same state
+    now covers both presentation deferral reasons.
+13. There are no new expected errors.  Unexpected rendering and provider
+    errors continue to surface normally.
+14. Focused ERT proves the policy without a provider, while graphical E2E
+    proves the recursive-edit, timer, redisplay, and async transition together.

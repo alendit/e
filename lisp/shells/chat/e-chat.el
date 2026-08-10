@@ -806,19 +806,19 @@ must remain selected for response navigation."
                 window-selection-change-functions)
     (add-hook 'window-selection-change-functions
               #'e-chat--activate-selected-surface-on-selection))
-  (unless (memq #'e-chat--flush-deferred-hidden-redraws
+  (unless (memq #'e-chat--flush-deferred-activity-redraws
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
-              #'e-chat--flush-deferred-hidden-redraws))
+              #'e-chat--flush-deferred-activity-redraws))
   (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
               #'e-chat--flush-deferred-hidden-mode-line-statuses))
   (when (boundp 'window-buffer-change-functions)
-    (unless (memq #'e-chat--flush-deferred-hidden-redraws
+    (unless (memq #'e-chat--flush-deferred-activity-redraws
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
-                #'e-chat--flush-deferred-hidden-redraws))
+                #'e-chat--flush-deferred-activity-redraws))
     (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
@@ -827,6 +827,10 @@ must remain selected for response navigation."
                 buffer-list-update-hook)
     (add-hook 'buffer-list-update-hook
               #'e-chat--activate-selected-surface-after-buffer-switch))
+  (unless (memq #'e-chat--flush-deferred-activity-redraws-after-minibuffer
+                minibuffer-exit-hook)
+    (add-hook 'minibuffer-exit-hook
+              #'e-chat--flush-deferred-activity-redraws-after-minibuffer))
   (when (boundp 'persp-activated-functions)
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)
@@ -1022,11 +1026,11 @@ single rendered message without replaying the transcript.")
 (defvar-local e-chat--activity-redraw-running nil
   "Non-nil while this buffer is executing an activity redraw.")
 
-(defvar-local e-chat--deferred-hidden-redraw nil
-  "Latest (TURN-ID . KIND) redraw withheld while no window showed this buffer.
-A hidden chat buffer skips the expensive transcript repaint and stores the
-pending turn here so the redraw can be re-issued when the buffer next becomes
-visible.")
+(defvar-local e-chat--deferred-activity-redraw nil
+  "Latest (TURN-ID . KIND) activity redraw withheld from this chat buffer.
+Hidden chat buffers and active minibuffers skip cosmetic transcript repainting.
+The pending turn is re-issued when the buffer becomes visible and ordinary
+top-level interaction resumes.")
 
 (defvar e-chat--recenter-inhibited nil
   "Non-nil when chat display restoration must not call `recenter'.")
@@ -6215,15 +6219,17 @@ small one, since each repaint of a big block costs more."
 (defun e-chat--request-activity-redraw (turn-id &optional kind)
   "Schedule one near-future activity redraw for TURN-ID.
 When this chat buffer is displayed in no window, the repaint is withheld and
-remembered in `e-chat--deferred-hidden-redraw'; it is re-issued the next time
-the buffer becomes visible.  Skipping the transcript rewrite for an unseen
-turn keeps a background session from stalling the main thread."
+remembered in `e-chat--deferred-activity-redraw'; the same applies while a
+minibuffer is active.  The repaint is re-issued once the buffer is visible and
+ordinary top-level interaction resumes.  Skipping cosmetic transcript rewrites
+keeps background sessions and progress animation from starving process output."
   (when turn-id
-    (if (not (e-chat--redraw-visible-p))
-        (setq e-chat--deferred-hidden-redraw
+    (if (or (not (e-chat--redraw-visible-p))
+            (active-minibuffer-window))
+        (setq e-chat--deferred-activity-redraw
               (cons turn-id
                     (e-chat--activity-redraw-kind
-                     (cdr e-chat--deferred-hidden-redraw)
+                     (cdr e-chat--deferred-activity-redraw)
                      (or kind 'activity))))
       (setq e-chat--pending-activity-redraw-turn-id turn-id)
       (setq e-chat--pending-activity-redraw-kind
@@ -6235,23 +6241,30 @@ turn keeps a background session from stalling the main thread."
               (cl-incf e-chat--activity-redraw-generation)))
       (e-chat--ensure-pending-activity-redraw-work))))
 
-(defun e-chat--flush-deferred-hidden-redraw ()
-  "Issue a redraw withheld while this chat buffer had no window."
-  (when (and e-chat--deferred-hidden-redraw
-             (e-chat--redraw-visible-p))
-    (let ((turn-id (car e-chat--deferred-hidden-redraw))
-          (kind (cdr e-chat--deferred-hidden-redraw)))
-      (setq e-chat--deferred-hidden-redraw nil)
+(defun e-chat--flush-deferred-activity-redraw ()
+  "Issue this buffer's activity redraw when presentation is ready."
+  (when (and e-chat--deferred-activity-redraw
+             (e-chat--redraw-visible-p)
+             (not (active-minibuffer-window)))
+    (let ((turn-id (car e-chat--deferred-activity-redraw))
+          (kind (cdr e-chat--deferred-activity-redraw)))
+      (setq e-chat--deferred-activity-redraw nil)
       (e-chat--request-activity-redraw turn-id kind))))
 
-(defun e-chat--flush-deferred-hidden-redraws (&rest _)
-  "Flush withheld redraws for every chat buffer that gained a window."
+(defun e-chat--flush-deferred-activity-redraws (&rest _)
+  "Flush presentation-ready activity redraws for every chat buffer."
   (dolist (buffer (buffer-list))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (and (derived-mode-p 'e-chat-mode)
-                   e-chat--deferred-hidden-redraw)
-          (e-chat--flush-deferred-hidden-redraw))))))
+                   e-chat--deferred-activity-redraw)
+          (e-chat--flush-deferred-activity-redraw))))))
+
+(defun e-chat--flush-deferred-activity-redraws-after-minibuffer (&rest _)
+  "Flush activity redraws after Emacs finishes leaving the minibuffer.
+`minibuffer-exit-hook' runs while `active-minibuffer-window' still identifies
+the exiting minibuffer, so defer the coalesced flush by one event-loop turn."
+  (run-at-time 0 nil #'e-chat--flush-deferred-activity-redraws))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."

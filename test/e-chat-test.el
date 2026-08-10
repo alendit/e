@@ -6042,12 +6042,48 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                         :arguments (:uri "file://x"))))
             ;; Hidden: no work scheduled, redraw remembered for later.
             (should-not e-chat--pending-activity-redraw-handle)
-            (should (equal (car e-chat--deferred-hidden-redraw) "turn-1"))
+            (should (equal (car e-chat--deferred-activity-redraw) "turn-1"))
             (should (= redraws 0))
             ;; Becoming visible flushes the withheld redraw.
             (setq e-chat--assume-redraw-visible t)
-            (e-chat--flush-deferred-hidden-redraws)
-            (should-not e-chat--deferred-hidden-redraw)
+            (e-chat--flush-deferred-activity-redraws)
+            (should-not e-chat--deferred-activity-redraw)
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--pending-activity-redraw-handle))
+            (e-chat--run-pending-activity-redraw)
+            (should (= redraws 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-active-minibuffer-defers-activity-redraw ()
+  "An active minibuffer withholds chat repainting until it exits."
+  (let ((buffer (e-chat-test--buffer nil "chat-minibuffer-redraw"))
+        (minibuffer-active t)
+        (redraws 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq e-chat--assume-redraw-visible t)
+          (cl-letf (((symbol-function 'active-minibuffer-window)
+                     (lambda () (and minibuffer-active (selected-window))))
+                    ((symbol-function 'e-chat--render-progress-indicator)
+                     (lambda (&rest _args)
+                       (setq redraws (1+ redraws)))))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--cancel-pending-activity-redraw)
+            (setq redraws 0)
+            (e-chat--advance-progress-indicator)
+            (should-not e-chat--pending-activity-redraw-handle)
+            (should (equal e-chat--deferred-activity-redraw
+                           '("turn-1" . progress)))
+            (should (= redraws 0))
+            (setq minibuffer-active nil)
+            (e-chat--flush-deferred-activity-redraws)
+            (should-not e-chat--deferred-activity-redraw)
             (should (e-chat-test--live-work-handle-p
                      e-chat--pending-activity-redraw-handle))
             (e-chat--run-pending-activity-redraw)
@@ -11020,9 +11056,11 @@ The context-window denominator comes from the live provider lookup
   (cl-progv '(window-selection-change-functions
               window-configuration-change-hook
               buffer-list-update-hook
+              minibuffer-exit-hook
               persp-activated-functions)
       '((e-chat--tail-selected-active-turn)
         (e-chat--tail-selected-active-turn)
+        nil
         nil
         (e-chat--tail-selected-active-turn))
     (e-chat--ensure-window-selection-hook)
@@ -11042,6 +11080,8 @@ The context-window denominator comes from the live provider lookup
                       window-configuration-change-hook))
     (should (memq #'e-chat--activate-selected-surface-after-buffer-switch
                   buffer-list-update-hook))
+    (should (memq #'e-chat--flush-deferred-activity-redraws-after-minibuffer
+                  minibuffer-exit-hook))
     (should (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions))
     (should (memq #'e-chat--activate-selected-surface-after-workspace-switch

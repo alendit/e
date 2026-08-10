@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-progress-redraw-starves-provider-in-minibuffer/ | Chat progress redraw starves provider in minibuffer |
 | Closed | chat-context-status-starves-provider-after-reload/ | Chat Context Status Starves Provider After Reload |
 | Closed | reload-replaced-harness-keeps-stale-backend/ | Reloaded chat keeps stale backend after harness replacement |
 | Closed | grimoire-daily-restart-replaces-session/ | Restarted Grimoire daily replaces its referenced session |

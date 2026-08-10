@@ -1,0 +1,12 @@
+#+title: Chat Progress Redraw Starves Provider in Minibuffer
+#+startup: overview
+
+* Report
+
+Turns in the long-running =bayesian writing= session still failed after the
+earlier reload and mode-line fixes.  Requests reached the provider adapter but
+timed out after 180 seconds.  The running Emacs consumed approximately one CPU
+core while the failure was active.
+
+The failure was reported independently of the missing model/context mode-line
+status regression.
