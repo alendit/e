@@ -57,14 +57,19 @@
 (declare-function +workspace-exists-p "ext:doom-workspaces")
 (declare-function +workspace-switch "ext:doom-workspaces")
 (declare-function +workspace-buffer-list "ext:doom-workspaces")
+(declare-function get-current-persp "ext:persp-mode")
+(declare-function get-frame-persp "ext:persp-mode")
+(declare-function safe-persp-name "ext:persp-mode")
 (declare-function persp-current "ext:persp-mode")
 (declare-function persp-current-name "ext:persp-mode")
 (declare-function persp-name "ext:persp-mode")
 (declare-function persp-with-name-exists-p "ext:persp-mode")
 (declare-function persp-get-by-name "ext:persp-mode")
+(declare-function persp-frame-switch "ext:persp-mode")
 (declare-function persp-switch "ext:persp-mode")
 (declare-function persp-contain-buffer-p "ext:persp-mode")
 (declare-function persp-buffer-list "ext:persp-mode")
+(defvar persp-mode)
 
 (defun e-workspace--frame (&optional frame)
   "Return FRAME or the currently selected frame."
@@ -90,8 +95,11 @@
   "Return non-nil when BACKEND can answer workspace queries."
   (pcase backend
     ('doom (fboundp '+workspace-current-name))
-    ('persp (or (fboundp 'persp-current-name)
-                (fboundp 'persp-current)))
+    ('persp (and (bound-and-true-p persp-mode)
+                 (or (fboundp 'get-frame-persp)
+                     (fboundp 'get-current-persp)
+                     (fboundp 'persp-current-name)
+                     (fboundp 'persp-current))))
     ('tab-bar (fboundp 'tab-bar--current-tab))
     ('single t)
     (_ nil)))
@@ -113,11 +121,18 @@
 
 (defun e-workspace--persp-current (frame)
   "Return the current persp-mode workspace token for FRAME."
-  (let* ((persp (when (fboundp 'persp-current)
-                  (persp-current)))
+  (let* ((persp (cond
+                 ((fboundp 'get-frame-persp)
+                  (get-frame-persp frame))
+                 ((fboundp 'get-current-persp)
+                  (get-current-persp frame))
+                 ((fboundp 'persp-current)
+                  (persp-current))))
          (name (cond
                 ((fboundp 'persp-current-name)
                  (persp-current-name))
+                ((and persp (fboundp 'safe-persp-name))
+                 (safe-persp-name persp))
                 ((and persp (fboundp 'persp-name))
                  (persp-name persp))
                 (persp
@@ -268,6 +283,12 @@ Return non-nil when the switch was accepted or no switch was required."
      t)
     ('persp
      (cond
+      ((fboundp 'persp-frame-switch)
+       (persp-frame-switch (e-workspace-token-id token)
+                           (e-workspace-token-frame token))
+       t)
+      ;; Keep compatibility with persp-mode versions which predate the
+      ;; explicit frame-switch entrypoint.
       ((fboundp 'persp-switch)
        (persp-switch (e-workspace-token-id token))
        t)
@@ -292,7 +313,11 @@ Return non-nil when the switch was accepted or no switch was required."
            ('persp
             (cond
              ((fboundp 'persp-contain-buffer-p)
-              (persp-contain-buffer-p buffer (e-workspace-token-id token)))
+              (let ((persp
+                     (if (fboundp 'persp-get-by-name)
+                         (persp-get-by-name (e-workspace-token-id token))
+                       (e-workspace-token-id token))))
+                (and persp (persp-contain-buffer-p buffer persp))))
              ((fboundp 'persp-buffer-list)
               (memq buffer (persp-buffer-list)))
              (t t)))
@@ -312,7 +337,10 @@ Return non-nil when the switch was accepted or no switch was required."
            (persp-add-buffer buffer)))
         ('persp
          (when (fboundp 'persp-add-buffer)
-           (persp-add-buffer buffer)))
+           (persp-add-buffer
+            buffer
+            (and (fboundp 'persp-get-by-name)
+                 (persp-get-by-name (e-workspace-token-id token))))))
         (_ nil)))
     buffer))
 

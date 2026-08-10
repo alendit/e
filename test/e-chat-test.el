@@ -206,6 +206,54 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-split-from-composer-keeps-external-window ()
+  "A surface split replaces its transient unpaired composer view."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-atomic-split"))
+         (replacement (generate-new-buffer "*e-chat split replacement*"))
+         (workspace (make-e-workspace-token
+                     :backend 'single :id 'single :name "single"
+                     :frame (selected-frame)))
+         transcript-window composer-window external-window composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (let ((e-chat--surface-activation-in-progress t))
+            (set-window-buffer transcript-window buffer)
+            (with-current-buffer buffer
+              (setq composer-window
+                    (e-chat--surface-display-composer transcript-window t))))
+          (setq composer (window-buffer composer-window))
+          (cl-letf (((symbol-function 'e-workspace-current)
+                     (lambda (&optional _frame) workspace))
+                    ((symbol-function 'e-workspace-buffer-member-p)
+                     (lambda (candidate _workspace)
+                       (eq candidate replacement)))
+                    ((symbol-function 'e-workspace-add-buffer)
+                     (lambda (&rest _arguments)
+                       (ert-fail "split should reuse a workspace buffer"))))
+            (with-selected-window composer-window
+              (should (eq (key-binding (kbd "C-x 3"))
+                          #'e-chat-surface-split-window-right))
+              (setq external-window
+                    (call-interactively (key-binding (kbd "C-x 3"))))))
+          (should (window-live-p external-window))
+          (should (eq (window-buffer external-window) replacement))
+          (with-current-buffer buffer
+            (should (eq (e-chat--surface-reconcile-window-pairs
+                         transcript-window)
+                        composer-window)))
+          (should (window-live-p external-window))
+          (should (= (length (window-list nil 'nomini)) 3))
+          (should-not (eq (window-buffer external-window) composer)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p replacement)
+        (kill-buffer replacement))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-window-state-restoration-reatomizes-surface ()
   "Restored transcript/composer siblings recover their atomic contract."
   (let* ((e-chat--surface-composition-enabled t)

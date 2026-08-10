@@ -15,6 +15,8 @@
 (require 'e)
 (require 'e-workspaces)
 
+(defvar persp-mode)
+
 (ert-deftest e-workspaces-test-single-backend-current-token ()
   "The fallback backend exposes one live workspace."
   (let ((e-workspace-awareness-backend-priority '(single)))
@@ -86,6 +88,77 @@
         (should (e-workspace-buffer-member-p (current-buffer) token))
         (should (e-workspace-switch token))
         (should (equal switches '("docs")))))))
+
+(ert-deftest e-workspaces-test-plain-persp-backend-uses-frame-api ()
+  "Plain persp-mode is detected without Doom compatibility aliases."
+  (let ((e-workspace-awareness-backend-priority '(persp single))
+        (persp-mode t)
+        (frame (selected-frame))
+        (persp (list :fixture 'perspective)))
+    (cl-letf (((symbol-function 'get-frame-persp)
+               (lambda (target-frame)
+                 (should (eq target-frame frame))
+                 persp))
+              ((symbol-function 'safe-persp-name)
+               (lambda (candidate)
+                 (should (eq candidate persp))
+                 "research")))
+      (let ((token (e-workspace-current frame)))
+        (should (eq (e-workspace-token-backend token) 'persp))
+        (should (equal (e-workspace-token-id token) "research"))
+        (should (eq (e-workspace-token-frame token) frame))))))
+
+(ert-deftest e-workspaces-test-loaded-disabled-persp-is-not-a-backend ()
+  "Loading persp-mode does not activate workspace semantics by itself."
+  (let ((e-workspace-awareness-backend-priority '(persp single))
+        (persp-mode nil))
+    (cl-letf (((symbol-function 'get-frame-persp)
+               (lambda (&rest _arguments)
+                 (ert-fail "disabled persp backend was queried"))))
+      (should (eq (e-workspace-token-backend (e-workspace-current))
+                  'single)))))
+
+(ert-deftest e-workspaces-test-persp-switch-targets-the-token-frame ()
+  "Persp switching cannot degrade into a selected-window-local switch."
+  (let* ((frame (selected-frame))
+         (token (make-e-workspace-token
+                 :backend 'persp
+                 :id "owner"
+                 :name "owner"
+                 :frame frame))
+         frame-switch)
+    (cl-letf (((symbol-function 'persp-frame-switch)
+               (lambda (name target-frame)
+                 (setq frame-switch (list name target-frame))))
+              ((symbol-function 'persp-switch)
+               (lambda (&rest _arguments)
+                 (ert-fail "e-workspace-switch used polymorphic persp-switch"))))
+      (should (e-workspace-switch token))
+      (should (equal frame-switch (list "owner" frame))))))
+
+(ert-deftest e-workspaces-test-plain-persp-membership-resolves-name ()
+  "Plain persp-mode membership APIs receive a perspective object."
+  (let* ((buffer (current-buffer))
+         (persp (list :fixture 'perspective))
+         (token (make-e-workspace-token
+                 :backend 'persp :id "owner" :name "owner"
+                 :frame (selected-frame)))
+         added)
+    (cl-letf (((symbol-function 'persp-get-by-name)
+               (lambda (name)
+                 (should (equal name "owner"))
+                 persp))
+              ((symbol-function 'persp-contain-buffer-p)
+               (lambda (candidate target)
+                 (should (eq candidate buffer))
+                 (should (eq target persp))
+                 t))
+              ((symbol-function 'persp-add-buffer)
+               (lambda (candidate target)
+                 (setq added (list candidate target)))))
+      (should (e-workspace-buffer-member-p buffer token))
+      (should (eq (e-workspace-add-buffer buffer token) buffer))
+      (should (equal added (list buffer persp))))))
 
 (ert-deftest e-workspaces-test-visible-window-respects-token-frame ()
   "Visible window lookup is scoped to the token frame."

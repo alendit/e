@@ -1279,6 +1279,10 @@ for audit, then clears it when the user returns to the composer.")
     (define-key map (kbd "C-p") #'e-chat-previous-line)
     (define-key map (kbd "<up>") #'e-chat-previous-line)
     (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
+    (define-key map [remap split-window-below]
+                #'e-chat-surface-split-window-below)
+    (define-key map [remap split-window-right]
+                #'e-chat-surface-split-window-right)
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
@@ -1728,6 +1732,53 @@ read-only transcript.  A monolithic chat keeps `other-window' unchanged."
                         (e-chat--surface-member-window-p
                          (selected-window) transcript composer)))
             (setq remaining (1- remaining))))))))
+
+(defun e-chat--surface-split-replacement-buffer (transcript composer)
+  "Return a current-workspace buffer outside TRANSCRIPT and COMPOSER.
+An atomic split initially duplicates the selected surface constituent.  The
+composer is internal and its reconciliation correctly removes independent
+views, so replace that transient duplicate before the command returns."
+  (let* ((workspace (e-workspace-current))
+         (frame (selected-frame))
+         (buffer
+          (cl-find-if
+           (lambda (candidate)
+             (let ((name (buffer-name candidate)))
+               (and name
+                    (not (memq candidate (list transcript composer)))
+                    (not (string-prefix-p " " name))
+                    (e-workspace-buffer-member-p candidate workspace))))
+           (buffer-list frame))))
+    (or buffer
+        (let ((scratch (get-buffer-create "*scratch*")))
+          (unless (e-workspace-buffer-member-p scratch workspace)
+            (e-workspace-add-buffer scratch workspace))
+          scratch))))
+
+(defun e-chat--surface-split-window (split-function)
+  "Use SPLIT-FUNCTION without leaving an independent composer view."
+  (let* ((transcript (e-chat--surface-transcript-buffer))
+         (composer (and (buffer-live-p transcript)
+                        (buffer-local-value 'e-chat--surface-composer-buffer
+                                            transcript)))
+         (window (funcall split-function)))
+    (when (and (window-live-p window)
+               (buffer-live-p composer)
+               (memq (window-buffer window) (list transcript composer)))
+      (set-window-buffer
+       window
+       (e-chat--surface-split-replacement-buffer transcript composer)))
+    window))
+
+(defun e-chat-surface-split-window-below ()
+  "Split below the complete composed surface."
+  (interactive)
+  (e-chat--surface-split-window #'split-window-below))
+
+(defun e-chat-surface-split-window-right ()
+  "Split right of the complete composed surface."
+  (interactive)
+  (e-chat--surface-split-window #'split-window-right))
 
 (defun e-chat--surface-fit-composer-window (&optional composer-window)
   "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
