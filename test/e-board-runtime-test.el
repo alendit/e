@@ -1913,7 +1913,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
             (e-board-runtime--handle-harness-event
              attachment
              (e-events-make :type 'reasoning-delta :session-id "session"
-                            :turn-id "turn" :payload (list :content content))))
+                            :turn-id "turn"
+                            :payload (list :type 'reasoning-delta
+                                           :stream-kind 'summary
+                                           :content content))))
           (should (= (hash-table-count e-board-runtime--pending-activity-set) 1))
           (e-board-runtime--drain-activity-mailboxes)
           (let ((message
@@ -1922,9 +1925,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
             (should (eq (e-board-message-activity-kind message)
                         'reasoning-delta))
             (should (equal (e-board-message-tags message) '(main)))
-            (should (string-match-p "latest" (e-board-message-content message)))
-            (should-not (string-match-p "first"
-                                        (e-board-message-content message)))))))))
+            (should (equal (e-board-message-content message) "latest"))))))))
 
 (ert-deftest e-board-runtime-test-reasoning-follows-durable-lifecycle-watermark ()
   "Reasoning activity remains publishable after durable lifecycle edges."
@@ -1946,7 +1947,8 @@ Tests that explicitly provide `:requester' retain that exact requester."
                    :board-activity-sequence 2)
                   (e-events-make
                    :type 'reasoning-delta :session-id "session" :turn-id "turn"
-                   :payload '(:content "visible progress")
+                   :payload '(:type reasoning-delta :stream-kind summary
+                              :content "visible progress")
                    :board-activity-sequence 3)))
           (e-board-runtime--handle-harness-event attachment event))
         (e-board-runtime--drain-activity-mailboxes)
@@ -1960,7 +1962,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
                            ("participant" 1 4)
                            ("participant" 1 6))))
           (should (equal (e-board-message-content (car (last messages)))
-                         "(:content \"visible progress\")")))))))
+                         "visible progress")))))))
 
 (ert-deftest e-board-runtime-test-authorized-exact-input-checks-requester-before-post ()
   "An explicit requester cannot create an unauthorized exact board input."

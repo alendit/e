@@ -466,13 +466,17 @@ Return a plist containing its stream, harness, transcript, and visible windows."
           (setq fixture (e-chat-behavior-test--open-surface))
           (e-chat-behavior-test--submit fixture "short prompt")
           (e-chat-behavior-test--emit
-           fixture '(:type reasoning-delta :content "first graphical progress")
+           fixture
+           '(:type reasoning-delta :stream-kind summary
+             :content "first graphical progress")
            "first graphical progress")
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (should (eq (selected-window) (plist-get fixture :composer-window)))
           (e-graphical-test-type-text "draft survives")
           (e-chat-behavior-test--emit
-           fixture '(:type reasoning-delta :content " second graphical progress")
+           fixture
+           '(:type reasoning-delta :stream-kind summary
+             :content " second graphical progress")
            "second graphical progress")
           (should (eq (selected-window) (plist-get fixture :composer-window)))
           (with-current-buffer
@@ -483,6 +487,35 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                       (point-min) (point-max)))))
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (e-chat-behavior-test--finish fixture "short graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-reasoning-renders-content-not-payload ()
+  "Board-backed reasoning renders prose without its protocol payload."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "reasoning prompt")
+          (e-chat-behavior-test--emit
+           fixture
+           '(:type reasoning-delta :stream-kind summary
+             :content "clean graphical reasoning")
+           "clean graphical reasoning")
+          (let ((transcript (plist-get fixture :transcript))
+                (window (plist-get fixture :transcript-window)))
+            (with-current-buffer transcript
+              (goto-char (point-min))
+              (should (search-forward "clean graphical reasoning" nil t))
+              (should (pos-visible-in-window-p (match-beginning 0) window t))
+              (should-not (string-match-p "(:type reasoning-delta"
+                                          (buffer-string)))
+              (should-not (string-match-p ":stream-kind summary"
+                                          (buffer-string)))))
+          (should (eq (selected-window) (plist-get fixture :composer-window)))
+          (e-chat-behavior-test--finish fixture "reasoned graphical answer"))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-focused-composer-shows-model-context-fill ()

@@ -1,0 +1,15 @@
+#+title: Reasoning delta plist rendered in chat
+#+startup: overview
+
+* Report
+
+On 2026-08-11, the user reported that a live chat rendered an entire internal
+=reasoning-delta= payload as transcript text:
+
+#+begin_example
+(:type reasoning-delta :stream-kind summary :content "...")
+#+end_example
+
+Only the reasoning prose should be visible.  Provider event type and stream
+metadata are runtime protocol fields, not chat content.  The regression test
+must cover the graphical board-backed chat path that produced the screenshot.

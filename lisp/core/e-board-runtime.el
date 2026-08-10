@@ -903,9 +903,18 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
     (setq e-board-runtime--activity-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes)))
 
-(defun e-board-runtime--activity-content (payload)
-  "Return a bounded diagnostic rendering of raw activity PAYLOAD."
-  (truncate-string-to-width (e-prin1-safe payload) 512 nil nil "..."))
+(defun e-board-runtime--activity-content (activity-kind payload)
+  "Return bounded board content for ACTIVITY-KIND and PAYLOAD.
+Reasoning events carry presentation text in their `:content' field.  Other
+work activity remains a diagnostic snapshot of its arbitrary payload."
+  (let ((content
+         (if (memq activity-kind '(reasoning-delta reasoning-raw-delta))
+             (let ((value (plist-get payload :content)))
+               (unless (stringp value)
+                 (signal 'wrong-type-argument (list 'stringp value)))
+               value)
+           (e-prin1-safe payload))))
+    (truncate-string-to-width content 512 nil nil "...")))
 
 (defun e-board-runtime--drain-activity-mailboxes ()
   "Publish one bounded page of latest work activity mailbox snapshots."
@@ -940,8 +949,10 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
                                   'work-progress)
                :tags (copy-tree (plist-get mailbox :tags))
                :attributes (list :work-id work-id)
-               :content (e-board-runtime--activity-content
-                         (plist-get mailbox :payload))
+               :content
+               (e-board-runtime--activity-content
+                (or (plist-get mailbox :activity-kind) 'work-progress)
+                (plist-get mailbox :payload))
                :caused-by-delivery-ids
                (copy-tree
                 (gethash (plist-get mailbox :turn-id)

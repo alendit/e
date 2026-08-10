@@ -1,0 +1,82 @@
+#+title: Investigation: reasoning delta plist rendered in chat
+#+startup: overview
+
+* Finding
+
+The provider and durable activity event were correct.  The affected Bayesian
+writing session stored a =reasoning-delta= activity event whose payload had
+separate =type=, =stream-kind=, and =content= fields.
+
+=e-board-runtime--drain-activity-mailboxes= projected that event onto the board
+through =e-board-runtime--activity-content=.  That helper used =e-prin1-safe=
+on every payload, so the board message content became the printed plist.  The
+chat service then correctly treated that board-message content as reasoning
+text.  The bug therefore belonged to board projection, not provider parsing or
+chat styling.
+
+The existing board unit test only searched the projected string for the latest
+reasoning fragment.  The existing graphical test likewise waited for the prose
+as a substring.  Both conditions passed when the prose was embedded inside the
+bad printed plist.
+
+Two current session journals contained one affected board message each.  One
+affected message was also retained by its session checkpoint.  A bounded
+=emacsclient= scalar probe did not return and was terminated without changing
+the running Emacs, so the user store was not rewritten while its session writer
+might still be active.
+
+* Fix
+
+Board runtime now projects =reasoning-delta= content from the payload's
+=:content= field and keeps the old bounded diagnostic rendering for arbitrary
+=work-progress= payloads.  Missing or non-string reasoning content remains an
+unexpected contract error; no shell-side sanitizer or legacy runtime fallback
+was added.
+
+The board tests now require exact prose.  The off-screen graphical test emits a
+real summary reasoning payload through backend, harness, board, chat service,
+and renderer, then rejects both the printed plist prefix and =stream-kind=
+metadata in the visible transcript.
+
+The colocated =repair-reasoning-board-messages.py= script is an offline,
+explicit-session migration for board messages already persisted in the old
+shape.  Both the board session and a distinct producer session must be named
+when the matching activity event belongs to that producer.  The script derives
+the replacement text from the matching durable activity event, validates every
+candidate before writing, defaults to a dry run, and creates timestamped
+backups in apply mode.  It has no runtime call path.
+
+* Validation
+
+- All 2,023 batch ERT tests pass; two environment-gated tests are skipped.
+- All 13 graphical behavior tests pass in the private off-screen macOS frame.
+- Its captured settled screenshot shows only reasoning prose and preserves the
+  selected composer draft.
+- The migration was validated against copied versions of the affected session
+  files.  The live store remains unchanged until Emacs is closed.
+
+* Design self-check
+
+1. This slice immediately restores correct reasoning presentation and leaves
+   independently useful regression coverage.
+2. It moves toward semantic board projections feeding presentation shells.
+3. The stable reasoning payload contract is modeled directly.  Historical
+   repair stays local to a removable one-off script.
+4. Board runtime owns conversion from harness activity to board content; chat
+   continues to own rendering only.
+5. Coupling is reduced because chat no longer receives a provider-shaped plist
+   disguised as content.  No interface grew.
+6. No stable policy gained a dependency on a shell or provider adapter.
+7. Persistence and graphical rendering remain outside the content-selection
+   helper.
+8. No runtime state was added.  The migration mutates only named offline files
+   and creates backups.
+9. Runtime work remains one field lookup and the existing 512-column bound.
+10. No new abstraction or substitutability contract was introduced.
+11. No runtime compatibility path was added; already-written records use the
+    explicit offline migration.
+12. The obsolete generic plist rendering for reasoning was removed.
+13. Malformed reasoning payloads surface as contract errors.  The migration
+    validates all matches before writing.
+14. Exact board assertions prove core behavior, while the graphical test proves
+    the full backend-to-visible-transcript path and composer focus.
