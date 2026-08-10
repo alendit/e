@@ -1,0 +1,107 @@
+#+title: Review: Board Processing Subscriptions — Slice 1
+#+startup: overview
+
+* Status
+
+In-review.  Slice 1 is implemented, but this review found unresolved contract
+and persistence defects.
+
+* Review summary
+
+Commit =0d453e44= establishes the processing subscription fields and immutable
+record types, but Slice 1 does not yet meet its exit criteria.  Invalid
+replacement can cancel a valid subscription, processing records can collide in
+the shared durable journal, the registry replacement API cannot change the new
+policy fields, and deterministic priority ordering is not represented or tested.
+
+* Scope reviewed
+
+- =docs/feats/76-board-processing-subscriptions/plan.org=, Slice 1.
+- Commit =0d453e44= and all six changed files.
+- Current surrounding board, registry, chat-service, and session persistence
+  paths.
+- Focused processing, board, and board-registry tests.
+
+* Verification performed during this review pass
+
+- =eldev test -f test/e-board-processing-subscription-test.el=: 3/3 passed.
+- =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el=: 97/97
+  passed.
+- Independent review reproduced the same source-level findings.
+
+* Findings
+
+** TODO High: Validate replacements before cancelling the active subscription
+
+=e-board-replace-subscription= cancels the old subscription at
+=lisp/core/e-board.el:2190=, then delegates validation and creation to
+=e-board-subscribe= at line 2194.  An invalid replacement contract therefore
+throws after the valid old route has already become terminal.  Slice 1 requires
+validation at replacement without damaging existing behavior.
+
+Validate the complete replacement declaration before transitioning the old
+subscription, or construct the replacement transactionally and publish it only
+after every check passes.  Add a regression test that an invalid replacement
+leaves the old subscription active.
+
+** TODO High: Give processing records collision-safe durable identities
+
+Chains and results reject duplicate IDs only within separate board tables at
+=lisp/core/e-board.el:523= and line 562.  The session journal deduplicates every
+board envelope solely by =:id= at =lisp/core/e-session.el:2432=.  A chain and
+result with the same explicit ID, or a processing record colliding with a
+message ID, silently drops the later durable envelope.  Replay can then lose a
+committed record.
+
+Use a journal identity that includes record kind, or enforce one board-wide ID
+namespace shared with persisted messages.  Add session-backed persistence and
+restart tests for colliding raw IDs.
+
+** TODO Medium: Expose processing policy through registry replacement
+
+=e-board-registry-install-subscription= forwards =:delivery=, =:priority=,
+=:self-delivery=, and =:failure-policy= at
+=lisp/core/e-board-registry.el:1056=.  The matching registry replacement API at
+line 1096 accepts and forwards only =:effect= and =:state=.  Registry clients
+cannot replace a normal subscription with a processing subscription or change a
+processing policy through the registry boundary.
+
+Add supplied-p arguments for all four fields and forward only explicitly
+provided values, matching the core replacement API.
+
+** TODO Medium: Represent and test deterministic processing order
+
+The implementation validates and stores priority at
+=lisp/core/e-board.el:1541= and line 1631, but it defines no ordering helper or
+comparator.  The Slice 1 exit criterion explicitly requires ordering tests,
+including stable subscription-ID ordering for equal priorities.  The three new
+tests cover defaults, invalid declarations, and record envelope replay only.
+
+Add a pure ordering function over processing subscriptions and tests for
+descending priority plus stable subscription-ID tie-breaking.  Slice 2 can then
+consume that contract without redefining it.
+
+* Plan coverage
+
+- Delivery mode, priority, self-delivery, and failure policy fields: partial;
+  core creation works, registry replacement is incomplete.
+- Immutable processing records: partial; in-memory records freeze mutable
+  fields, but durable identity collisions can lose records.
+- Creation/replacement validation: partial; creation validates, replacement is
+  not transactional.
+- Normal compatibility: focused legacy board suites pass.
+- Exit criteria: defaults and invalid combinations pass; ordering and
+  session-backed persistence/restart coverage are incomplete.
+
+* Architecture review
+
+The records live in the board, which matches the plan's ownership rule.  The
+chat service adapts board notifications to session persistence, which keeps
+persistence side effects outside board policy.  The shared journal identity
+contract is the main boundary defect: board-local record tables and the session
+journal currently disagree about uniqueness.
+
+* Completion
+
+Slice 1 remains in review until all four findings are resolved and focused tests
+cover each regression.  Slices 2 through 5 remain out of scope for this review.

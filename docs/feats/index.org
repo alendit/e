@@ -86,6 +86,6 @@ Status values for coding agents:
 | 73 | Done        | 73-persistence-preflight/                 | Persistence Command Preflight                        |
 | 74 | Done        | 74-capability-message-details/            | Capability-Owned Message Details                     |
 | 75 | Done        | 75-graphical-ui-e2e/                      | Graphical UI Behavioral E2E                          |
-| 76 | In-progress | 76-board-processing-subscriptions/        | Board Processing Subscriptions                       |
+| 76 | In-review   | 76-board-processing-subscriptions/        | Board Processing Subscriptions                       |
 | 77 | Done        | 77-persp-workspace-visual-e2e/            | Persp Workspace Visual E2E                           |
 | 78 | Done        | 78-session-resume-checkpoints/             | Session Resume Checkpoints                           |
