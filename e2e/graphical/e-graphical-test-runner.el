@@ -36,7 +36,7 @@
   "Run graphical ERT SELECTOR and return (:exit CODE :output REPORT)."
   (let ((selector (or selector
                       (getenv "E_GRAPHICAL_E2E_SELECTOR")
-                      "^e-chat-behavior-test-"))
+                      "^e-\\(?:chat\\|workspace\\)-behavior-test-"))
         (e-graphical-test-runner--output
          (generate-new-buffer " *e graphical ERT report*")))
     (unwind-protect

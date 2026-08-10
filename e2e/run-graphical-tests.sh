@@ -3,8 +3,9 @@ set -euo pipefail
 
 e2e_dir=$(cd "$(dirname "$0")" && pwd)
 project_dir=$(cd "$e2e_dir/.." && pwd)
-test_file=${E_GRAPHICAL_E2E_TEST_FILE:-$e2e_dir/graphical/e-chat-behavior-test.el}
+test_file=${E_GRAPHICAL_E2E_TEST_FILE:-$e2e_dir/graphical/e-graphical-test-suite.el}
 runner_file=$e2e_dir/graphical/e-graphical-test-runner.el
+source_bootstrap_file=$e2e_dir/graphical/e-graphical-source-bootstrap.el
 
 cd "$project_dir"
 
@@ -24,6 +25,7 @@ convert_graphical_screenshots() {
 
 emacs_command=(
   eldev emacs
+  --load "$source_bootstrap_file"
   --load "$test_file"
   --load "$runner_file"
 )

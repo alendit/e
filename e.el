@@ -21,6 +21,11 @@
 (declare-function e-core-status "e-core")
 (declare-function e-startup-run "e-startup")
 
+(defvar e-load-prefer-newer t
+  "Whether package startup should prefer newer source over bytecode.
+Test processes may bind this to nil while placing source first in
+`load-suffixes' so ignored build artifacts cannot mix checkout revisions.")
+
 (eval-and-compile
   (defconst e--directory
     (file-name-directory
@@ -90,7 +95,7 @@
                            "lisp/dev")))
     (add-to-list 'load-path (expand-file-name subdirectory directory))))
 
-(let ((load-prefer-newer t))
+(let ((load-prefer-newer e-load-prefer-newer))
   (require 'e-core)
   (require 'e-ui-work)
   (require 'e-context-budget)

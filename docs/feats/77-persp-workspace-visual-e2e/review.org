@@ -1,0 +1,234 @@
+#+title: Review: Persp Workspace Visual E2E
+#+author: e implementation
+#+date: 2026-08-10
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+The default graphical suite now includes three real =persp-mode= workspace
+scenarios under a small non-Doom configuration.  They cover agent-owned buffer
+focus, chat-focused split/delete commands and round trips, and deletion of an
+actively updating chat perspective without changing the target perspective.
+
+The scenarios exposed production adapter and chat-shell defects as well as a
+source-isolation defect in the private runner.  All were fixed and have focused
+batch coverage.  The final hidden graphical suite passes all nine scenarios.
+
+* Scope reviewed
+
+- The basic persp fixture, combined graphical suite entrypoint, selector, hidden
+  daemon bootstrap, source-loading policy, and screenshot/state artifacts.
+- Plain persp backend detection, frame switching, named-perspective membership,
+  buffer admission, and capability-owned focus routing.
+- Atomic chat split behavior, workspace round trips, perspective deletion, and
+  asynchronous provider updates after deletion.
+- Focused workspace/chat tests, the complete graphical suite, compilation,
+  shell syntax, and whitespace checks.
+
+* Resolved findings
+
+** Resolved: plain persp-mode silently degraded to the single backend
+
+*** Problem
+
+The workspace adapter detected compatibility names such as
+=persp-current-name= that plain persp-mode 3.0.9 does not provide.  Loading the
+library without enabling the mode was also enough to look available after the
+first correction.  Tokens therefore either became =single= while persp was
+active or tried to query an uninitialized persp registry while it was inactive.
+
+The adapter also passed a perspective name to membership APIs that require a
+perspective object.
+
+*** Change
+
+Detection now requires active =persp-mode= and uses its frame-owned
+=get-frame-persp= / =safe-persp-name= APIs.  Membership and admission resolve
+names through =persp-get-by-name=.  Switching uses =persp-frame-switch= with the
+token's frame, avoiding the polymorphic =persp-switch= path that can become a
+window-local switch.
+
+*** Evidence
+
+Fifteen focused workspace adapter tests cover active plain persp, loaded but
+inactive persp, frame switching, and object-based membership.  The visual focus
+scenario opens the updated buffer only in its owner perspective, then restores
+the unrelated two-pane perspective with the same selected buffer and geometry.
+
+** Resolved: a native split from the composer disappeared
+
+*** Problem
+
+Emacs correctly created a third window outside the atomic transcript/composer
+pair, but that new window initially displayed the composer.  Existing surface
+reconciliation deletes every unpaired composer view, so its next hook removed
+the new window and made =C-x 3= appear to do nothing.
+
+*** Change
+
+The existing surface controller now remaps horizontal and vertical split
+commands.  It performs the native atomic split, then replaces only the transient
+internal composer/transcript duplicate with a non-surface buffer from the
+current workspace before reconciliation can run.  It uses =*scratch*= only when
+the workspace has no such buffer.
+
+*** Evidence
+
+=e-chat-test-split-from-composer-keeps-external-window= proves reconciliation
+retains the third window.  The graphical scenario drives =C-x 3=, =C-x o=,
+buffer replacement, a perspective round trip, and =C-x 0= through the command
+loop.
+
+** Resolved: ignored compiled artifacts could mix struct revisions
+
+*** Problem
+
+The private daemon loaded a current =e-board.el= source file together with a
+newer-by-mtime but structurally stale =e-board-registry.elc=.  A branch switch
+or restored source timestamp can make =load-prefer-newer= insufficient and
+produced an =args-out-of-range= board constructor failure before UI behavior ran.
+
+*** Change
+
+Graphical E2E now disables native artifact loading and puts =.el= first while
+binding package startup not to override that suffix order.  Production startup
+keeps its existing default preference; the override exists only in isolated
+test processes.
+
+*** Evidence
+
+The source bootstrap was checked through load history, and the final graphical
+workspace and complete-suite runs execute against one checkout source revision.
+
+** Resolved: raw character edges made visual layout assertions flaky
+
+*** Problem
+
+The off-screen NS frame can finish a one-column size adjustment after a
+perspective signature is captured.  The screenshots showed the same 50/50
+layout and buffers, but raw character-edge equality could fail.
+
+*** Change
+
+Workspace signatures compare frame-relative percentage geometry, buffer order,
+selection, perspective name, and atom membership.  Screenshot state sidecars
+continue to retain exact pixel and character viewport data for diagnosis.
+
+*** Evidence
+
+The final screenshot-enabled matrix passed all three workspace scenarios, and
+the inspected images showed the owner target, the external chat split, the
+restored split layout, and the unchanged two-pane deletion target.
+
+* Verification
+
+#+begin_src sh
+E_GRAPHICAL_E2E_SCREENSHOT_DIR=/tmp/e-workspace-final-shots.HYoLPg \
+  E_GRAPHICAL_E2E_SELECTOR='^e-workspace-behavior-test-' \
+  bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 3 tests, 3 results as expected, 0 unexpected
+Graphical E2E complete: 3 tests, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 9 tests, 9 results as expected, 0 unexpected
+Graphical E2E complete: 9 tests, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+eldev --source test test/e-chat-test.el test/e-workspaces-test.el
+eldev compile
+git diff --check
+bash -n e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 356 tests, 355 results as expected, 0 unexpected, 1 optional Markdown skip.
+Compilation finished successfully.
+Whitespace and shell syntax checks passed.
+#+end_example
+
+The doc linter reported no warning in =e.el= or =e-workspaces.el= and no new
+warning in the added chat functions.  Repository-wide pre-existing doc warnings
+remain, and the optional package linter could not refresh GNU ELPA because the
+test environment had no network access.
+
+* UX and performance playthrough
+
+The inspected transition images show:
+
+- agent focus displaying only =updated by the agent= in the owner perspective;
+- =C-x 3= retaining the chat atom on the left and a normal workspace buffer on
+  the right;
+- the round trip restoring the atom and ordinary split with composer focus
+  behavior intact;
+- deleting an updating chat perspective restoring the unchanged left/right
+  target buffers and selected right pane.
+
+The final three-scenario workspace run took about three seconds after process
+startup.  Runtime changes add only bounded perspective lookups and one buffer
+choice during a user-requested split.  No polling, persistence, or cross-session
+state was added.
+
+The user's running Emacs was not reloaded or modified.
+
+* Plan coverage
+
+All five plan slices are complete.  The default runner loads the combined chat
+and workspace matrix, while =E_GRAPHICAL_E2E_TEST_FILE= and selector overrides
+still support focused diagnosis.  Temporary screenshots remain outside the
+repository.
+
+* Architecture review
+
+The workspace adapter owns host API translation.  The chat surface controller
+owns its atomic window behavior.  The graphical fixture owns test-only persp
+policy and lifecycle, while the launcher owns process/frame isolation.  No
+harness, backend, capability, or durable session contract depends on the test
+fixture or window implementation.
+
+* Design self-check
+
+1. Yes.  This stopping point adds durable visual coverage and fixes the defects
+   the new scenarios exposed.
+2. It moves toward presentation behavior verified against real host extensions,
+   without importing Doom into the runtime or test harness.
+3. The small persp config and source-loading override are test-local and
+   reversible.  Stable behavior is expressed as frame perspective, buffer
+   membership, native commands, and observable window state.
+4. The workspace adapter owns perspective translation; the chat controller owns
+   atomic surface splits; the runner owns isolated graphical execution.
+5. Coupling is reduced because shells consume the existing narrow workspace
+   contract instead of calling plain persp or Doom APIs directly.
+6. No stable harness policy points toward persp-mode, chat windows, or test code.
+7. Frame, perspective, buffer-display, screenshot, and temporary-directory side
+   effects remain at adapter and test-shell edges.
+8. Window selection and geometry are ephemeral frame state.  Perspective test
+   state and captures live for one private process.  No durable state was added.
+9. Production overhead is constant and occurs only on workspace queries or an
+   explicit split.  The graphical matrix remains outside production.
+10. The workspace token and native atomic-window contracts are real.  Plain
+    persp names are resolved to the object its APIs require.
+11. Doom, older persp compatibility names, tab-bar, and single-workspace paths
+    remain supported.  Loaded-but-disabled persp is intentionally not active.
+12. No duplicate workspace implementation was added; stale direct assumptions
+    and polymorphic switching were replaced at the existing adapter boundary.
+13. Missing targets and invalid window operations still surface.  The fixture
+    disables persistence instead of swallowing host errors.
+14. Unit tests prove adapter and controller policy; graphical tests prove real
+    command-loop, focus, geometry, timer, and perspective transitions.
+
+* Unresolved
+
+None for this feature.

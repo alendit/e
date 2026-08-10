@@ -16,7 +16,11 @@
 
 (when-let ((directory (getenv "E_GRAPHICAL_E2E_EMACS_DIR")))
   (setq user-emacs-directory (file-name-as-directory directory)))
-(setq load-prefer-newer t)
+
+(load (expand-file-name
+       "e-graphical-source-bootstrap.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (require 'package)
 

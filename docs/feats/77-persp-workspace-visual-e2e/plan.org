@@ -1,0 +1,62 @@
+#+title: Persp Workspace Visual E2E
+#+startup: overview
+
+* Status
+
+Done.
+
+* Problem
+
+The graphical suite has one real =persp-mode= round trip, but it proves only
+that an already-open chat surface and composer focus return.  It does not
+protect three broader workspace behaviors reported from the live setup:
+
+- focusing an agent-updated buffer can alter or display it in another
+  workspace;
+- native split and delete commands can behave incorrectly while the chat
+  composer is selected;
+- deleting a chat workspace can mutate the window configuration of the
+  workspace selected afterward.
+
+Batch tests mock the workspace adapter or use window objects without graphical
+redisplay.  They cannot prove the host extension's saved window trees and
+asynchronous switch/delete transitions.
+
+* Goal
+
+Add isolated graphical scenarios using real =persp-mode= and a small non-Doom
+configuration derived from the relevant workspace settings in the user's Doom
+setup.  Preserve named visual transition traces for agent debugging.
+
+* Contract
+
+- Load real =persp-mode= with autosave/resume disabled and a temporary save
+  directory.
+- Emulate the relevant Doom workspace policy only: a named main workspace,
+  hidden nil perspective, per-frame restoration, conservative buffer removal,
+  no switch-to-added-buffer, and delete-window remapping that deletes a
+  workspace only when no other ordinary window exists.
+- Do not load Doom, its popup layer, project integration, modeline, session
+  persistence, or =+workspace= APIs.
+- Exercise workspace-aware agent focus through the real
+  =workspace-awareness :focus-buffer= action.
+- Exercise =C-x 3=, =C-x o=, and =C-x 0= through the graphical command loop
+  while the chat composer is focused.
+- Exercise deletion of a current chat perspective while a provider update is
+  pending, then prove the target perspective retains its selected buffer,
+  visible buffers, and window geometry.
+- Assert both current visible state and a switch round trip, so a transiently
+  correct frame cannot hide a corrupted saved perspective configuration.
+- Emit named screenshot transitions through the existing opt-in SVG/state
+  capture layer.
+
+* Implementation slices
+
+1. DONE: add a reusable basic =persp-mode= graphical fixture and isolated cleanup.
+2. DONE: add a suite entrypoint so chat and workspace graphical cases run together,
+   while preserving the single-test-file override.
+3. DONE: add visual scenarios for capability-owned buffer focus, chat-focused split
+   and deletion, and current-workspace deletion during an asynchronous update.
+4. DONE: capture and inspect screenshot/state traces for each transition.
+5. DONE: run focused graphical scenarios, the complete graphical matrix, compile,
+   and whitespace checks; record review evidence and architecture answers.
