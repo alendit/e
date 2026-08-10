@@ -1059,7 +1059,11 @@
          board (list (e-work-handle-id handle)) 'any
          "timeout" :timeout 0.01)
         (e-work-start-prepared handle)
-        (sleep-for 0.05)
+        ;; Batch Emacs does not dispatch timers while `sleep-for' is blocked.
+        ;; Pump the event loop until the timeout schedules its deferred drain.
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (null deadline-drains) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
         ;; The timer only records the deadline; it cannot settle or reply.
         (should (= (length deadline-drains) 1))
         (should-not effects)

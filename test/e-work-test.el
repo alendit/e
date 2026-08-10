@@ -368,8 +368,10 @@
                             :timeout 0.05
                             :on-settle (lambda (r) (setq report r)))
           (e-work-finish a :a)
-          ;; Let the timeout timer fire.
-          (sleep-for 0.15)
+          ;; Pump the event loop until the timeout timer fires.
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (not report) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
           (should report)
           (should (eq (plist-get report :reason) 'timed-out))
           (should (= (length (plist-get report :done)) 1))
@@ -900,7 +902,11 @@ is caught."
            :wait-for 0.05
            :on-inline (lambda (_c) (setq inline t))
            :on-detach (lambda (_c) (setq detach t)))
-          (sleep-for 0.15)
+          ;; `sleep-for' does not dispatch timers in batch Emacs.  Pump the
+          ;; event loop until the deadline callback has had a chance to run.
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (not detach) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
           (should detach)
           (should-not inline))
       (e-work-cancel child))))
