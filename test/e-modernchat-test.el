@@ -321,6 +321,41 @@ messages so the transcript reads as one clean answer."
           (e-chat-service--drain-subscription good)
           (should (equal (plist-get (car good-events) :message-id) "child")))))))
 
+(ert-deftest e-chat-service-test-detached-subscriber-client-retires-cleanly ()
+  "A drain treats a registry-detached subscriber client as terminal teardown."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((subscription
+                (e-chat-service-subscribe harness "main" #'ignore))
+               (client-id
+                (e-board-registry-client-id
+                 (e-chat-service-subscription-client subscription))))
+          (e-board-registry-detach-client board client-id)
+          (should-not
+           (condition-case nil
+               (progn (e-chat-service--drain-subscription subscription) nil)
+             (e-board-registry-client-missing t)))
+          (should-not (e-chat-service-subscription-active-p subscription))
+          (should-not
+           (memq subscription (e-chat-service-binding-subscribers binding)))
+          (should
+           (eq (car (e-chat-service-subscription-state subscription))
+               'detached)))))))
+
 (ert-deftest e-chat-service-test-replay-is-bounded-board-derived-and-causal ()
   "Replay never reads private transcripts and keeps participant-local turns distinct."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))

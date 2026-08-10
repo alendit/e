@@ -441,37 +441,57 @@
     (setf (e-chat-service-subscription-drain-scheduled subscription) t)
     (run-at-time 0 nil #'e-chat-service--drain-subscription subscription)))
 
+(defun e-chat-service--retire-subscription (subscription &optional state)
+  "Release SUBSCRIPTION's presentation lease and record optional STATE."
+  (setf (e-chat-service-subscription-active-p subscription) nil
+        (e-chat-service-subscription-drain-scheduled subscription) nil)
+  (when state
+    (setf (e-chat-service-subscription-state subscription) state))
+  (let ((binding (e-chat-service-subscription-binding subscription)))
+    (setf (e-chat-service-binding-subscribers binding)
+          (delq subscription
+                (e-chat-service-binding-subscribers binding)))
+    (when-let ((client (e-chat-service-subscription-client subscription)))
+      (ignore-errors
+        (e-board-registry-detach-client
+         (e-chat-service-binding-board binding)
+         (e-board-registry-client-id client))))
+    (unless (cl-some #'e-chat-service-subscription-active-p
+                     (e-chat-service-binding-subscribers binding))
+      (e-chat-service--schedule-idle-close binding))))
+
 (defun e-chat-service--drain-subscription (subscription)
   "Deliver and accept one independent observer page for SUBSCRIPTION."
   (setf (e-chat-service-subscription-drain-scheduled subscription) nil)
   (when (e-chat-service-subscription-active-p subscription)
-    (let* ((binding (e-chat-service-subscription-binding subscription))
-           (board (e-chat-service-binding-board binding))
-           (client (e-chat-service-subscription-client subscription))
-           (observer (e-chat-service-subscription-observer subscription))
-           (page (e-board-registry-prepare-observer-page
-                  board (e-board-registry-client-id client)
-                  (e-board-observer-id observer)
-                  :limit e-chat-service-observer-page-limit))
-           (ok t))
-      (condition-case err
-          (dolist (message (plist-get page :messages))
-            (funcall (e-chat-service-subscription-function subscription)
-                     (e-chat-service--message-event binding message)))
-        (error
-         (setq ok nil)
-         (setf (e-chat-service-subscription-active-p subscription) nil
-               (e-chat-service-subscription-state subscription)
-               (list 'faulted err))))
-      (when ok
-        (when-let ((receipt (plist-get page :receipt)))
-          (e-board-registry-accept-observer-page
-           board (e-board-registry-client-id client)
-           (e-board-observer-id observer) receipt))
-        (when (< (or (plist-get page :through-index) 0)
-                 (e-board-message-count
-                  (e-board-registry-board-source-board board)))
-          (e-chat-service--schedule-subscription-drain subscription))))))
+    (condition-case err
+        (let* ((binding (e-chat-service-subscription-binding subscription))
+               (board (e-chat-service-binding-board binding))
+               (client (e-chat-service-subscription-client subscription))
+               (observer (e-chat-service-subscription-observer subscription))
+               (page (e-board-registry-prepare-observer-page
+                      board (e-board-registry-client-id client)
+                      (e-board-observer-id observer)
+                      :limit e-chat-service-observer-page-limit)))
+          (condition-case callback-error
+              (dolist (message (plist-get page :messages))
+                (funcall (e-chat-service-subscription-function subscription)
+                         (e-chat-service--message-event binding message)))
+            (error
+             (e-chat-service--retire-subscription
+              subscription (list 'faulted callback-error))))
+          (when (e-chat-service-subscription-active-p subscription)
+            (when-let ((receipt (plist-get page :receipt)))
+              (e-board-registry-accept-observer-page
+               board (e-board-registry-client-id client)
+               (e-board-observer-id observer) receipt))
+            (when (< (or (plist-get page :through-index) 0)
+                     (e-board-message-count
+                      (e-board-registry-board-source-board board)))
+              (e-chat-service--schedule-subscription-drain subscription))))
+      (e-board-registry-client-missing
+       (e-chat-service--retire-subscription
+        subscription (list 'detached err))))))
 
 (defun e-chat-service--drain-observer (binding)
   "Accept and translate one bounded live observer page for BINDING."
@@ -792,19 +812,7 @@ FUNCTION."
 (defun e-chat-service-unsubscribe (subscription)
   "Idempotently retire board-observer SUBSCRIPTION."
   (when (e-chat-service-subscription-p subscription)
-    (setf (e-chat-service-subscription-active-p subscription) nil)
-    (let ((binding (e-chat-service-subscription-binding subscription)))
-      (setf (e-chat-service-binding-subscribers binding)
-            (delq subscription
-                  (e-chat-service-binding-subscribers binding)))
-      (when-let ((client (e-chat-service-subscription-client subscription)))
-        (ignore-errors
-          (e-board-registry-detach-client
-           (e-chat-service-binding-board binding)
-           (e-board-registry-client-id client))))
-      (unless (cl-some #'e-chat-service-subscription-active-p
-                       (e-chat-service-binding-subscribers binding))
-        (e-chat-service--schedule-idle-close binding))))
+    (e-chat-service--retire-subscription subscription))
   nil)
 
 (cl-defun e-chat-service-replace-selector

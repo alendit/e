@@ -1,0 +1,16 @@
+#+title: e-chat subscription timer reports missing registry client
+#+startup: overview
+
+* Report
+
+While a chat surface was open, Emacs reported this asynchronous timer error:
+
+#+begin_example
+Error running timer ‘e-chat-service--drain-subscription’:
+(e-board-registry-client-missing "cli_01KZGC6GJ9V746RSHEY60GZH7C")
+#+end_example
+
+The live client may have survived a partial reload or may have been detached by
+normal registry lifecycle cleanup.  In either case, a queued presentation drain
+must treat the missing client lease as terminal teardown instead of leaking an
+error from an Emacs timer.

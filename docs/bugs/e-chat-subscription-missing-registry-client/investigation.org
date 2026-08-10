@@ -1,0 +1,96 @@
+#+title: Investigation: e-chat subscription timer reports missing registry client
+#+startup: overview
+
+* Evidence
+
+The live Emacs screenshot shows =e-chat-service--drain-subscription= escaping
+=e-board-registry-client-missing= from a timer for client
+=cli_01KZGC6GJ9V746RSHEY60GZH7C=.
+
+A bounded =emacsclient --eval= probe was attempted to inspect that exact client
+and its subscription.  This shell could not connect because no default Emacs
+server socket was available, so no live state was changed and no reload was
+performed.
+
+* Root cause
+
+=e-chat-service--drain-subscription= prepared the registry observer page in its
+outer =let*=, before entering the condition handler that retired failed
+subscribers.  A client detached by registry lifecycle cleanup, or retained by a
+partially reloaded presentation object, therefore caused
+=e-board-registry-prepare-observer-page= to signal directly from the timer.
+
+This is not only a stale-code failure.  Stale process-local state can trigger
+it, but the checked-in source had the same unhandled lifecycle transition.
+
+* Fix
+
+The chat service now owns one subscription-retirement operation.  It marks the
+subscription inactive, clears its scheduled-drain flag, removes it from the
+binding, releases the registry client when still present, and schedules normal
+idle cleanup when no presentation subscriber remains.
+
+The drain now handles only =e-board-registry-client-missing= as expected
+terminal teardown and records a =detached= state.  Callback failures use the
+same retirement operation with a =faulted= state.  Other registry failures
+still escape instead of being silently reclassified.  The active-state check
+before receipt acceptance also makes callback-initiated unsubscribe safe.
+
+* Regression coverage
+
+=e-chat-service-test-detached-subscriber-client-retires-cleanly= creates a real
+board-backed chat subscription, detaches its registry client, and invokes the
+drain.  It proves that no missing-client signal escapes, the subscription is
+inactive, it no longer occupies a binding subscriber slot, and its terminal
+state is =detached=.
+
+Before the fix, the focused test failed with the reported
+=e-board-registry-client-missing= signal.  After the fix, the focused four-test
+service selection and all 17 tests in =test/e-modernchat-test.el= passed.
+
+* Verification
+
+- =eldev -q compile=: passed without compiler warnings.
+- =eldev -q test=: 2,007 tests, 2,005 expected results, 0 unexpected,
+  2 existing optional skips.
+- =git diff --check=: passed.
+
+The first sandboxed full-suite attempt had five localhost-fixture failures
+because socket binding was denied.  The same headless suite passed when rerun
+with localhost socket access.  Neither run opened a visible Emacs window.
+
+* Architecture self-check
+
+1. The package is independently useful: detached presentation leases now end
+   cleanly instead of generating timer errors.
+2. It moves toward board-owned lifecycle with shell subscriptions represented
+   as disposable presentation leases.
+3. The stable missing-client meaning is modeled directly; possible trigger
+   details remain local and do not create a speculative recovery layer.
+4. =e-chat-service= owns subscription bookkeeping because it created both the
+   shell callback and registry client.
+5. Coupling is reduced by centralizing the existing retirement sequence behind
+   one private, narrow operation.
+6. Dependency direction is unchanged: the application service consumes the
+   registry lifecycle contract.
+7. Registry mutation remains at the service boundary; no core policy gained a
+   side effect.
+8. No new durable state was added.  Existing process-local subscription state
+   changes from =active= to =detached= or =faulted= at terminal retirement.
+9. Normal drains do one active-state check; terminal drains perform the same
+   cleanup work unsubscribe already required.
+10. The helper represents one real lifecycle operation and has no substitutable
+    implementation hierarchy.
+11. Public unsubscribe behavior remains idempotent; no compatibility path was
+    added.
+12. The duplicate unsubscribe cleanup sequence was removed.
+13. Missing clients and callback failures are handled where their terminal
+    meaning is known; unexpected registry errors still surface.
+14. The focused test proves the service behavior with the real registry while
+    the full suite checks unrelated callers without UI automation.
+
+* Live state
+
+Repository-side validation passed.  The user's running Emacs was left
+unchanged; using the fix immediately requires =M-x e-dev-reload= when Emacs is
+idle, or a later restart.
