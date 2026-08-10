@@ -1,0 +1,8 @@
+#+title: Anthropic Cache and Context Catalog
+#+startup: overview
+
+* Report
+
+Anthropic subagent requests did not enable explicit prompt caching, and
+=claude-sonnet-5= had no context-window value.  The missing window prevented
+auto-compaction threshold checks for Sonnet child sessions.

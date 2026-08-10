@@ -1,0 +1,45 @@
+#+title: Anthropic Cache and Context Catalog Investigation
+#+startup: overview
+
+* Investigation
+
+The Anthropic adapter supports explicit =cache_control= breakpoints when turn
+options enable =:prompt-cache=.  The custom subagent factory only supplied the
+model, maximum output tokens, and effort, so child requests reported
+=:prompt-cache nil= and zero cached input tokens.
+
+The context-window lookup queried =/v1/model/info= because the Anthropic profile
+base URL ends in =/v1=.  The live engineering gateway returned an empty
+={"data":[]}= payload at both =/v1/model/info= and =/model/info=.  Its model
+catalog is exposed at =/v1/models= and =/models=.  Those endpoints return OpenAI
+model-list entries with =id= and top-level =max_input_tokens= fields.  The
+=claude-sonnet-5= entry reports =1000000=.
+
+The adapter therefore used the wrong catalog endpoint and expected the wrong
+payload shape for this gateway.  An empty hash was cached as a successful
+catalog, leaving every model lookup unknown.
+
+* Fix
+
+- Read context windows from the provider's =/models= endpoint.
+- Parse the gateway's =id= and top-level =max_input_tokens= fields.
+- Treat an empty catalog as an error instead of caching it as success.
+- Enable one-hour explicit Anthropic prompt caching in the configured subagent
+  harness factory.
+
+* Validation
+
+- Focused model-catalog tests passed: 4/4.
+- Warning-as-error compilation passed for =e-anthropic.el=.
+- A live gateway lookup resolved =claude-sonnet-5= to =1000000=, but the
+  gateway's effective client limit is =364000=: OpenCode's resolved AISuite
+  model config sets both context and input limits to =364000=.  Claude Code
+  uses a =250000= auto-compaction window, which is a compaction threshold rather
+  than the model limit.  Core context budgeting now overrides Sonnet 5 to
+  =364000= while the live catalog remains available for diagnostics.
+- A live repeated-prefix Sonnet child reported =:prompt-cache t=, explicit
+  stable-prefix caching, a one-hour TTL, and =7783= cached input tokens on its
+  second provider request.
+- The full adapter test file reached 25/52 passing tests before an existing live
+  first-party endpoint test prompted for credentials.  The run was stopped;
+  this was outside the changed deterministic catalog coverage.

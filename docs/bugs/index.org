@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | anthropic-cache-and-context-catalog/ | Anthropic Cache and Context Catalog |
 | Closed | e-chat-subscription-missing-registry-client/ | e-chat subscription timer reports missing registry client |
 | Closed | e-chat-output-follow-pin-unpin/ | e-chat output follow ignores composer-side scrollback |
 | Closed | e-chat-atomic-surface-entry-focuses-transcript/ | e-chat atomic surface entry focuses transcript instead of composer |

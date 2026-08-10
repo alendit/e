@@ -27,7 +27,8 @@
   :group 'e)
 
 (defcustom e-context-budget-model-token-limits
-  '(("gpt-5.6" . 353400)
+  '(("claude-sonnet-5" . 364000)
+    ("gpt-5.6" . 353400)
     ("gpt-5.6-sol" . 353400)
     ("gpt-5.6-terra" . 353400)
     ("gpt-5.6-luna" . 353400)

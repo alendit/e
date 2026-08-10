@@ -86,7 +86,7 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
 (defvar e-anthropic--context-window-cache (make-hash-table :test 'equal)
   "In-memory cache of provider model context windows.
 Keyed by provider symbol; each value is a model-name -> max-input-tokens hash
-populated from the gateway's `/v1/model/info' (LiteLLM) catalog.  Cleared by
+populated from the gateway's `/models' catalog.  Cleared by
 `e-anthropic-reset-context-window-cache'.  There is no static fallback: when
 the gateway is unavailable, context-window lookups return nil.")
 
@@ -103,7 +103,7 @@ gateway cannot block every status render.  Cleared by
 
 (defcustom e-anthropic-context-window-retry-cooldown 300
   "Seconds to wait before re-querying the gateway after a failed catalog fetch.
-A failed `/model/info' query is negative-cached for this many seconds so that
+A failed `/models' query is negative-cached for this many seconds so that
 repeated context-window lookups (for example mode-line status renders on every
 live reload) do not each block on a slow or unavailable gateway.  Set to 0 to
 disable negative caching and retry on every lookup."
@@ -175,12 +175,11 @@ When PROVIDER is nil, use `e-anthropic-default-provider'."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error operation)))
 
-(defun e-anthropic--model-info-url (base-url)
-  "Return the LiteLLM `/model/info' catalog URL for BASE-URL.
-The gateway exposes per-model deployment metadata (including the real context
-window) at `<base>/model/info', sibling to `/messages'."
+(defun e-anthropic--models-url (base-url)
+  "Return the provider model-catalog URL for BASE-URL.
+The Messages endpoint and model catalog are siblings below the same base URL."
   (let ((normalized (string-remove-suffix "/" base-url)))
-    (concat normalized "/model/info")))
+    (concat normalized "/models")))
 
 (defun e-anthropic--http-get (url headers)
   "GET URL with HEADERS and return the response body text, or signal.
@@ -210,27 +209,30 @@ condition list.  Return a cancellable `e-backend-request' handle."
    :on-error on-error))
 
 (defun e-anthropic--context-window-table-from-json (text)
-  "Return a model-name -> max-input-tokens hash parsed from model-info TEXT."
+  "Return a model-name -> max-input-tokens hash parsed from model-list TEXT."
   (let* ((payload (json-parse-string text :object-type 'alist
                                      :array-type 'list :null-object nil))
          (data (alist-get 'data payload))
          (table (make-hash-table :test 'equal)))
     (dolist (entry data)
-      (let ((name (alist-get 'model_name entry))
-            (limit (alist-get 'max_input_tokens (alist-get 'model_info entry))))
+      (let ((name (alist-get 'id entry))
+            (limit (alist-get 'max_input_tokens entry)))
         (when (and (stringp name) (integerp limit))
           (puthash name limit table))))
+    (when (zerop (hash-table-count table))
+      (signal 'e-anthropic-backend-error
+              '("Model catalog contains no context-window metadata")))
     table))
 
 (defun e-anthropic--fetch-context-windows (provider)
   "Fetch a model-name -> max-input-tokens hash for PROVIDER from the gateway.
-Queries `/model/info' and reads each entry's `model_info.max_input_tokens'.
+Queries `/models' and reads each entry's top-level `max_input_tokens'.
 Signals on transport, auth, or parse failure -- callers decide how to degrade."
   (let* ((profile (e-anthropic-provider-profile provider))
          (base-url (e-anthropic--provider-base-url profile))
          (headers (e-anthropic--headers profile))
          (text (e-anthropic--http-get
-                (e-anthropic--model-info-url base-url) headers)))
+                (e-anthropic--models-url base-url) headers)))
     (e-anthropic--context-window-table-from-json text)))
 
 (defun e-anthropic--context-window-failure-fresh-p (key)
@@ -276,7 +278,7 @@ the cache is populated.  ON-ERROR receives an Emacs condition list."
                completed)
           (setq request
                 (e-anthropic--http-get-start
-                 :url (e-anthropic--model-info-url base-url)
+                 :url (e-anthropic--models-url base-url)
                  :headers headers
                  :on-complete
                  (lambda (text)
@@ -306,7 +308,7 @@ the cache is populated.  ON-ERROR receives an Emacs condition list."
 ;;;###autoload
 (defun e-anthropic-context-window (model &optional provider)
   "Return PROVIDER's context window (max input tokens) for MODEL, or nil.
-The value comes from the in-memory `/model/info' catalog cache.  Use
+The value comes from the in-memory `/models' catalog cache.  Use
 `e-anthropic-refresh-context-window-cache' to refresh that cache asynchronously.
 Returns nil when no cached catalog is available or MODEL is not listed."
   (when (stringp model)

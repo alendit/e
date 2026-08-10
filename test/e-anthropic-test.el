@@ -749,17 +749,29 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                          :max-tokens e-anthropic-default-max-tokens
                          :effort e-anthropic-default-effort)))))
 
-(defconst e-anthropic-test--model-info-json
+(defconst e-anthropic-test--model-catalog-json
   (concat
    "{\"data\":["
-   "{\"model_name\":\"claude-opus-4-8\","
-   "\"model_info\":{\"max_input_tokens\":1000000,\"max_output_tokens\":128000}},"
-   "{\"model_name\":\"claude-opus-4-5-20251101\","
-   "\"model_info\":{\"max_input_tokens\":200000,\"max_output_tokens\":64000}},"
-   "{\"model_name\":\"claude-haiku-4-5-20251001\","
-   "\"model_info\":{\"max_input_tokens\":200000}}"
+   "{\"id\":\"claude-sonnet-5\",\"object\":\"model\","
+   "\"max_input_tokens\":1000000,\"max_output_tokens\":64000},"
+   "{\"id\":\"claude-opus-4-8\",\"object\":\"model\","
+   "\"max_input_tokens\":1000000,\"max_output_tokens\":128000},"
+   "{\"id\":\"claude-haiku-4-5-20251001\",\"object\":\"model\","
+   "\"max_input_tokens\":200000}"
    "]}")
-  "A representative LiteLLM `/model/info' payload for tests.")
+  "A representative gateway `/models' payload for tests.")
+
+(ert-deftest e-anthropic-test-models-url-is-sibling-to-messages ()
+  "The model catalog is addressed below the provider's API base URL."
+  (should (equal (e-anthropic--models-url "https://gateway.test/v1")
+                 "https://gateway.test/v1/models"))
+  (should (equal (e-anthropic--models-url "https://gateway.test/v1/")
+                 "https://gateway.test/v1/models")))
+
+(ert-deftest e-anthropic-test-model-catalog-rejects-empty-context-metadata ()
+  "An empty catalog is a failed lookup and must not become a valid cache."
+  (should-error (e-anthropic--context-window-table-from-json "{\"data\":[]}")
+                :type 'e-anthropic-backend-error))
 
 (ert-deftest e-anthropic-test-context-window-cache-only-before-refresh ()
   "Context-window lookup does not fetch the gateway catalog synchronously."
@@ -771,7 +783,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
   (e-anthropic-reset-context-window-cache))
 
 (ert-deftest e-anthropic-test-sync-http-get-rejects-hot-path-before-url-retrieve ()
-  "The synchronous model-info GET wrapper fails before url.el in hot paths."
+  "The synchronous model-catalog GET fails before url.el in hot paths."
   (let (started)
     (cl-letf (((symbol-function 'url-retrieve-synchronously)
                (lambda (&rest _args)
@@ -830,16 +842,14 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                (lambda (&rest args)
                  (cl-incf calls)
                  (funcall (plist-get args :on-complete)
-                          e-anthropic-test--model-info-json)
+                          e-anthropic-test--model-catalog-json)
                  (e-backend-request-create :metadata '(:test immediate)))))
       (should (e-backend-request-p
                (e-anthropic-refresh-context-window-cache
                 :on-done (lambda (_table) (setq done t)))))
       (should done)
+      (should (equal (e-anthropic-context-window "claude-sonnet-5") 1000000))
       (should (equal (e-anthropic-context-window "claude-opus-4-8") 1000000))
-      ;; Gateway truth, not the public-docs number (which lists 4.5 as 1M).
-      (should (equal (e-anthropic-context-window "claude-opus-4-5-20251101")
-                     200000))
       (should (equal (e-anthropic-context-window "claude-haiku-4-5-20251001")
                      200000))
       ;; Unknown model -> nil (no static fallback).
@@ -862,7 +872,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
             (second (e-anthropic-refresh-context-window-cache)))
         (should (eq first second))
         (should (= calls 1))
-        (funcall complete e-anthropic-test--model-info-json)
+        (funcall complete e-anthropic-test--model-catalog-json)
         (should (equal (e-anthropic-context-window "claude-opus-4-8")
                        1000000)))))
   (e-anthropic-reset-context-window-cache))

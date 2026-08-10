@@ -21,6 +21,7 @@
 
 (ert-deftest e-context-budget-test-model-window-uses-table ()
   "Model windows are read from the supplied or default budget table."
+  (should (equal (e-context-budget-model-window "claude-sonnet-5") 364000))
   (dolist (model '("gpt-5.6"
                    "gpt-5.6-sol"
                    "gpt-5.6-terra"
@@ -31,6 +32,22 @@
                   "custom" '(("custom" . 1234)))
                  1234))
   (should-not (e-context-budget-model-window "missing" '())))
+
+(ert-deftest e-context-budget-test-sonnet-5-window-enables-auto-compaction ()
+  "Sonnet 5 usage can cross the manually configured compaction threshold."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :default-options '(:model "claude-sonnet-5")))
+         (store (e-harness-sessions harness))
+         (e-harness-auto-compaction-reserve-tokens 16384))
+    (e-session-create store :id "sonnet-5-budget")
+    (e-session-append-message
+     store "sonnet-5-budget" '(:role user :content "large context"))
+    (e-session-append-activity-event
+     store "sonnet-5-budget" "turn-1" 'token-usage
+     '(:input-tokens 350000 :total-tokens 350100))
+    (should (e-harness--auto-compaction-needed-p
+             harness "sonnet-5-budget"))))
 
 (ert-deftest e-context-budget-test-gpt-56-sol-window-enables-auto-compaction ()
   "GPT-5.6 Sol provider usage can cross the auto-compaction threshold."
