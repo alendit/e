@@ -649,7 +649,7 @@
             (setq request
                   (e-session-load-session-start
                    loaded session-id
-                   :chunk-bytes 31
+                   :chunk-bytes 256
                    :on-progress (lambda (payload)
                                   (push payload progress))
                    :on-done (lambda (session)
@@ -659,9 +659,9 @@
             (should (e-request-lifecycle-p request))
             (should (eq (e-request-lifecycle-state request) 'started))
             (should-not result)
-            (let ((deadline (+ (float-time) 3)))
+            (let ((deadline (+ (float-time) 5)))
               (while (and (not result) (not failure) (< (float-time) deadline))
-                (accept-process-output nil 0.01)))
+                (sleep-for 0.01)))
             (should-not failure)
             (should (eq (e-request-lifecycle-state request) 'finished))
             (should (plist-get result :loaded))

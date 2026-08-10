@@ -55,6 +55,7 @@
 (setf eldev-files-to-package
       `(:or ,eldev-files-to-package
             "./lisp/core/e-mcp-helper.mjs"
+            "./lisp/core/e-session-writer.mjs"
             "./lisp/core/e-task-queue-writer.mjs"))
 
 ;; Live E2E tests intentionally sit outside the default test fileset because

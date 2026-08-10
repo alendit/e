@@ -1,0 +1,20 @@
+#+title: Package Session Writer
+#+startup: overview
+
+* Change
+
+The Eldev package now includes =e-session-writer.mjs= beside
+=e-session-persistence.el=.  Packaged installs and the packaged test runner can
+therefore start the asynchronous persistence writer.
+
+* Why tiny
+
+This corrects one build manifest omission.  Runtime persistence behavior and
+session compatibility are unchanged.
+
+* Validation
+
+- Packaged ERT coverage checks that the resolved writer script is readable.
+- The full batch suite exercises the real writer process.
+- The process-free chunk replay test pumps Emacs timers directly, avoiding a
+  false timeout from waiting for nonexistent process output.

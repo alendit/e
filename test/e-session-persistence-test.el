@@ -9,6 +9,10 @@
 (require 'e-session)
 (require 'e-session-persistence)
 
+(ert-deftest e-session-persistence-test-bundled-writer-script-exists ()
+  "The packaged runtime includes the writer beside its owning Lisp module."
+  (should (file-readable-p (e-session-persistence--writer-script))))
+
 (defun e-session-persistence-test--await-durable (store)
   "Wait in this test process for STORE's asynchronous durability boundary."
   (let ((deadline (+ (float-time) 5.0)) done failure)
