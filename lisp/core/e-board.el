@@ -55,8 +55,21 @@
                (:constructor e-board-subscription--create)
                (:conc-name e-board-subscription-))
   id board-id participant-id selector effect state built-in-p
+  delivery priority self-delivery failure-policy
   readiness accumulator readiness-timer readiness-generation firing-number
   firing-limit lifetime lifetime-timer lifetime-generation)
+
+(cl-defstruct (e-board-processing-chain
+               (:constructor e-board-processing-chain--create)
+               (:conc-name e-board-processing-chain-))
+  id board-id root-message-id candidate-message-id caused-by-message-id
+  processor-history processing-depth created-at)
+
+(cl-defstruct (e-board-processing-result
+               (:constructor e-board-processing-result--create)
+               (:conc-name e-board-processing-result-))
+  id board-id chain-id subscription-id participant-id candidate-message-id
+  outcome replacement-message-id failure-policy failure created-at)
 
 (defconst e-board--ordinary-subscription-states
   '(active muted completed faulted cancelled expired)
@@ -76,6 +89,15 @@
 
 (defconst e-board-max-derived-hops 8
   "Maximum subscription lineage depth for derived board inputs.")
+
+(defconst e-board-processing-priority-min -1000
+  "Lowest accepted priority for a processing subscription.")
+
+(defconst e-board-processing-priority-max 1000
+  "Highest accepted priority for a processing subscription.")
+
+(defconst e-board-processing-history-limit 8
+  "Maximum retained processor entries in one processing chain.")
 
 (defconst e-board-terminal-classification-drain-limit 16
   "Maximum indexed terminal subscription clauses classified per drain.")
@@ -198,6 +220,9 @@
   message-table message-seq-table message-index-table event-message-count
   participants subscriptions subscriptions-tail subscription-count
   subscription-index-table subscription-id-table
+  processing-chains processing-chains-tail processing-chain-table
+  processing-results processing-results-tail processing-result-table
+  processing-record-notification-function
   observers pickups source-high-watermarks source-recent work-table invocations aggregations
   pending-effects pending-effects-tail effects-scheduled
   effect-scheduler invocation-effect-dispatcher invocation-work-index aggregation-work-index
@@ -316,7 +341,7 @@ The board object remains valid for inspection by its holder."
 (cl-defun e-board-create
     (&key id id-function effect-scheduler invocation-effect-dispatcher
           classification-authorizer message-notification-function
-          unsettled-change-function
+          processing-record-notification-function unsettled-change-function
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
           subscription-timer-scheduler
@@ -341,6 +366,10 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
               (functionp message-notification-function))
     (signal 'wrong-type-argument
             (list 'functionp message-notification-function)))
+  (unless (or (null processing-record-notification-function)
+              (functionp processing-record-notification-function))
+    (signal 'wrong-type-argument
+            (list 'functionp processing-record-notification-function)))
   (let* ((board (e-board--create
                   :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
                  :id-function id-function
@@ -363,6 +392,14 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                  :subscription-count 0
                  :subscription-index-table (make-hash-table :test 'eql)
                  :subscription-id-table (make-hash-table :test 'equal)
+                 :processing-chains nil
+                 :processing-chains-tail nil
+                 :processing-chain-table (make-hash-table :test 'equal)
+                 :processing-results nil
+                 :processing-results-tail nil
+                 :processing-result-table (make-hash-table :test 'equal)
+                 :processing-record-notification-function
+                 processing-record-notification-function
                  :observers (make-hash-table :test 'equal)
                   :pickups (make-hash-table :test 'equal)
                   :source-high-watermarks (make-hash-table :test 'equal)
@@ -432,6 +469,173 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   "Return BOARD events whose sequence is strictly greater than SEQ."
   (cl-remove-if (lambda (event) (<= (e-board-event-seq event) seq))
                 (e-board-events board)))
+
+(defvar e-board--processing-replay-p nil
+  "Non-nil while restoring processing records without persistence notification.")
+
+(defun e-board--append-processing-record (board record type)
+  "Append immutable processing RECORD of TYPE to BOARD's durable ledger."
+  (pcase type
+    ('processing-chain
+     (puthash (e-board-processing-chain-id record) record
+              (e-board-processing-chain-table board))
+     (let ((cell (list record)))
+       (if (e-board-processing-chains-tail board)
+           (setcdr (e-board-processing-chains-tail board) cell)
+         (setf (e-board-processing-chains board) cell))
+       (setf (e-board-processing-chains-tail board) cell)))
+    ('processing-result
+     (puthash (e-board-processing-result-id record) record
+              (e-board-processing-result-table board))
+     (let ((cell (list record)))
+       (if (e-board-processing-results-tail board)
+           (setcdr (e-board-processing-results-tail board) cell)
+         (setf (e-board-processing-results board) cell))
+       (setf (e-board-processing-results-tail board) cell))))
+  (e-board--append-event
+   board type
+   (list :id (pcase type
+               ('processing-chain (e-board-processing-chain-id record))
+               ('processing-result (e-board-processing-result-id record)))))
+  (unless e-board--processing-replay-p
+    (when-let ((notify (e-board-processing-record-notification-function board)))
+      (funcall notify board record type)))
+  record)
+
+(cl-defun e-board-record-processing-chain
+    (board &key id root-message-id candidate-message-id caused-by-message-id
+           processor-history processing-depth created-at)
+  "Append one immutable processing-chain record to BOARD's routing ledger."
+  (unless (and root-message-id candidate-message-id)
+    (signal 'wrong-type-argument
+            (list 'processing-message-identities
+                  (list root-message-id candidate-message-id))))
+  (unless (and (integerp processing-depth)
+               (>= processing-depth 0)
+               (<= processing-depth e-board-processing-history-limit))
+    (signal 'wrong-type-argument
+            (list (list 'integer-range 0 e-board-processing-history-limit)
+                  processing-depth)))
+  (unless (and (listp processor-history)
+               (<= (length processor-history) e-board-processing-history-limit))
+    (signal 'wrong-type-argument
+            (list 'bounded-processor-history processor-history)))
+  (let ((id (or id (e-board--next-id board 'processing-chain))))
+    (when (gethash id (e-board-processing-chain-table board))
+      (signal 'e-board-id-conflict (list id)))
+    (e-board--append-processing-record
+     board
+     (e-board-processing-chain--create
+      :id id :board-id (e-board-id board)
+      :root-message-id
+      (e-board--freeze-envelope-value root-message-id 'root-message-id
+                                      e-board-message-metadata-byte-limit)
+      :candidate-message-id
+      (e-board--freeze-envelope-value candidate-message-id 'candidate-message-id
+                                      e-board-message-metadata-byte-limit)
+      :caused-by-message-id
+      (e-board--freeze-envelope-value caused-by-message-id 'caused-by-message-id
+                                      e-board-message-metadata-byte-limit)
+      :processor-history
+      (e-board--freeze-envelope-value processor-history 'processor-history
+                                      e-board-message-metadata-byte-limit)
+      :processing-depth processing-depth :created-at (or created-at (float-time)))
+     'processing-chain)))
+
+(cl-defun e-board-record-processing-result
+    (board &key id chain-id subscription-id participant-id candidate-message-id
+           outcome replacement-message-id failure-policy failure created-at)
+  "Append one immutable terminal processing result to BOARD's routing ledger."
+  (unless (and chain-id subscription-id participant-id candidate-message-id)
+    (signal 'wrong-type-argument
+            (list 'processing-result-identities
+                  (list chain-id subscription-id participant-id candidate-message-id))))
+  (unless (memq outcome '(pass replace consume fail))
+    (signal 'wrong-type-argument (list '(member pass replace consume fail) outcome)))
+  (when (eq outcome 'replace)
+    (unless replacement-message-id
+      (signal 'wrong-type-argument
+              (list 'replacement-message-id replacement-message-id))))
+  (unless (memq failure-policy '(pass consume))
+    (signal 'wrong-type-argument
+            (list '(member pass consume) failure-policy)))
+  (let ((id (or id (e-board--next-id board 'processing-result))))
+    (when (gethash id (e-board-processing-result-table board))
+      (signal 'e-board-id-conflict (list id)))
+    (e-board--append-processing-record
+     board
+     (e-board-processing-result--create
+      :id id :board-id (e-board-id board) :chain-id chain-id
+      :subscription-id subscription-id :participant-id participant-id
+      :candidate-message-id candidate-message-id :outcome outcome
+      :replacement-message-id replacement-message-id :failure-policy failure-policy
+      :failure (e-board--freeze-envelope-value failure 'processing-failure
+                                               e-board-message-metadata-byte-limit)
+      :created-at (or created-at (float-time)))
+     'processing-result)))
+
+(defun e-board-list-processing-chains (board)
+  "Return BOARD's immutable processing-chain ledger in append order."
+  (copy-sequence (e-board-processing-chains board)))
+
+(defun e-board-list-processing-results (board)
+  "Return BOARD's immutable processing-result ledger in append order."
+  (copy-sequence (e-board-processing-results board)))
+
+(defun e-board-processing-record-envelope (record)
+  "Return RECORD as a durable processing journal envelope."
+  (cond
+   ((e-board-processing-chain-p record)
+    (list :record-type 'processing-chain
+          :id (e-board-processing-chain-id record)
+          :root-message-id (e-board-processing-chain-root-message-id record)
+          :candidate-message-id (e-board-processing-chain-candidate-message-id record)
+          :caused-by-message-id (e-board-processing-chain-caused-by-message-id record)
+          :processor-history (copy-tree (e-board-processing-chain-processor-history record))
+          :processing-depth (e-board-processing-chain-processing-depth record)
+          :created-at (e-board-processing-chain-created-at record)))
+   ((e-board-processing-result-p record)
+    (list :record-type 'processing-result
+          :id (e-board-processing-result-id record)
+          :chain-id (e-board-processing-result-chain-id record)
+          :subscription-id (e-board-processing-result-subscription-id record)
+          :participant-id (e-board-processing-result-participant-id record)
+          :candidate-message-id (e-board-processing-result-candidate-message-id record)
+          :outcome (e-board-processing-result-outcome record)
+          :replacement-message-id
+          (e-board-processing-result-replacement-message-id record)
+          :failure-policy (e-board-processing-result-failure-policy record)
+          :failure (copy-tree (e-board-processing-result-failure record))
+          :created-at (e-board-processing-result-created-at record)))
+   (t (signal 'wrong-type-argument (list 'e-board-processing-record-p record)))))
+
+(defun e-board-import-processing-record (board envelope)
+  "Restore one durable processing ENVELOPE into BOARD without re-notifying."
+  (let ((e-board--processing-replay-p t))
+    (pcase (plist-get envelope :record-type)
+      ((or 'processing-chain "processing-chain")
+       (e-board-record-processing-chain
+        board :id (plist-get envelope :id)
+        :root-message-id (plist-get envelope :root-message-id)
+        :candidate-message-id (plist-get envelope :candidate-message-id)
+        :caused-by-message-id (plist-get envelope :caused-by-message-id)
+        :processor-history (plist-get envelope :processor-history)
+        :processing-depth (plist-get envelope :processing-depth)
+        :created-at (plist-get envelope :created-at)))
+      ((or 'processing-result "processing-result")
+       (e-board-record-processing-result
+        board :id (plist-get envelope :id) :chain-id (plist-get envelope :chain-id)
+        :subscription-id (plist-get envelope :subscription-id)
+        :participant-id (plist-get envelope :participant-id)
+        :candidate-message-id (plist-get envelope :candidate-message-id)
+        :outcome (let ((outcome (plist-get envelope :outcome)))
+                   (if (stringp outcome) (intern outcome) outcome))
+        :replacement-message-id (plist-get envelope :replacement-message-id)
+        :failure-policy (let ((policy (plist-get envelope :failure-policy)))
+                          (if (stringp policy) (intern policy) policy))
+        :failure (plist-get envelope :failure)
+        :created-at (plist-get envelope :created-at)))
+      (_ (signal 'e-board-error (list "Unknown processing record" envelope))))))
 
 (defun e-board-advance-retention-floor (board floor)
   "Advance BOARD's logical retained-message floor to FLOOR.
@@ -1305,7 +1509,7 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
         :participant-id id
         :selector (list :to id)
         :effect 'create-pickup
-        :state 'active
+        :state 'active :delivery 'normal :self-delivery t
         :built-in-p t))
       (e-board--append-event board 'participant-added
                              (list :participant-id id
@@ -1334,15 +1538,48 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
   (unless (e-board--valid-continuation-readiness-p readiness)
     (signal 'e-board-error (list "Invalid continuation readiness" readiness))))
 
+(defun e-board--validate-subscription-delivery
+    (effect delivery priority self-delivery failure-policy)
+  "Validate the delivery contract shared by subscription creation and replacement."
+  (unless (memq delivery '(normal process))
+    (signal 'wrong-type-argument (list '(member normal process) delivery)))
+  (unless (memq self-delivery '(nil t))
+    (signal 'wrong-type-argument (list 'booleanp self-delivery)))
+  (pcase delivery
+    ('normal
+     (when priority
+       (signal 'e-board-error (list "Priority requires process delivery" priority)))
+     (when failure-policy
+       (signal 'e-board-error
+               (list "Failure policy requires process delivery" failure-policy))))
+    ('process
+     (unless (eq effect 'create-pickup)
+       (signal 'e-board-error
+               (list "Process delivery requires create-pickup effect" effect)))
+     (unless (and (integerp priority)
+                  (<= e-board-processing-priority-min priority)
+                  (<= priority e-board-processing-priority-max))
+       (signal 'wrong-type-argument
+               (list (list 'integer-range e-board-processing-priority-min
+                           e-board-processing-priority-max)
+                     priority)))
+     (unless (memq failure-policy '(pass consume))
+       (signal 'wrong-type-argument
+               (list '(member pass consume) failure-policy))))))
+
 (cl-defun e-board-subscribe
     (board participant-id selector &key id (state 'active) (effect 'create-pickup)
-           readiness firing-limit lifetime start-seq)
+           (delivery 'normal) priority (self-delivery nil)
+           failure-policy readiness firing-limit lifetime start-seq)
   "Install an ordinary immutable subscription for PARTICIPANT-ID.
 SELECTOR supports kind, activity-kind, identity, attribute, and tag clauses.
 Effects are `create-pickup' and declarative `(:post-input ...)'.  A post-input
 continuation may declare READINESS as `(:policy batch :count N :max-delay
 SECONDS)' or `(:policy latest-after-quiet :quiet-period SECONDS)'; otherwise
-every match fires.  FIRING-LIMIT, when non-nil, is the positive number of
+every match fires.  DELIVERY is `normal' by default.  `process' uses a pickup,
+defaults PRIORITY to zero, and accepts a FAILURE-POLICY of `pass' or `consume'.
+PRIORITY and FAILURE-POLICY are invalid for normal delivery.  SELF-DELIVERY is
+disabled by default.  FIRING-LIMIT, when non-nil, is the positive number of
 post-input activations permitted before the subscription completes.  LIFETIME,
 when non-nil, is a positive number of seconds before the subscription expires.
 START-SEQ is an explicit retained-history replay cursor for a post-input
@@ -1354,6 +1591,12 @@ restricted to input records."
   (unless (or (eq effect 'create-pickup)
               (and (listp effect) (eq (car effect) :post-input)))
     (signal 'e-board-error (list "Unsupported board effect" effect)))
+  (setq priority (if (and (eq delivery 'process) (null priority)) 0 priority)
+        failure-policy (if (and (eq delivery 'process) (null failure-policy))
+                           'pass
+                         failure-policy))
+  (e-board--validate-subscription-delivery
+   effect delivery priority self-delivery failure-policy)
   (e-board--validate-continuation-readiness effect readiness)
   (when firing-limit
     (unless (and (integerp firing-limit) (> firing-limit 0))
@@ -1386,15 +1629,21 @@ restricted to input records."
             ;; The matcher is immutable even if the caller later mutates its plist.
             :selector (copy-tree selector)
             :effect (copy-tree effect) :state state :built-in-p nil
+            :delivery delivery :priority priority :self-delivery self-delivery
+            :failure-policy failure-policy
             :readiness (copy-tree readiness) :accumulator nil
             :readiness-generation 0 :firing-number 0
             :firing-limit firing-limit :lifetime lifetime
             :lifetime-generation 0)))
       (e-board--append-subscription board subscription)
-      (e-board--append-event board 'subscription-added
-                             (list :subscription-id id
-                                   :participant-id participant-id
-                                   :firing-limit firing-limit :lifetime lifetime))
+      (e-board--append-event
+       board 'subscription-added
+       (append (list :subscription-id id :participant-id participant-id
+                     :firing-limit firing-limit :lifetime lifetime)
+               (when (eq delivery 'process)
+                 (list :delivery delivery :priority priority
+                       :self-delivery self-delivery
+                       :failure-policy failure-policy))))
       (when lifetime
         (setf (e-board-subscription-lifetime-timer subscription)
               (e-board--schedule-subscription-timer
@@ -1869,6 +2118,10 @@ lifetime belongs to participant membership."
 
 (cl-defun e-board-replace-subscription
     (board subscription-id selector &key id (effect nil effect-supplied-p)
+           (delivery nil delivery-supplied-p)
+           (priority nil priority-supplied-p)
+           (self-delivery nil self-delivery-supplied-p)
+           (failure-policy nil failure-policy-supplied-p)
            (state 'active) (readiness nil readiness-supplied-p)
            (firing-limit nil firing-limit-supplied-p)
            (lifetime nil lifetime-supplied-p))
@@ -1891,6 +2144,18 @@ subscription records the relationship without rewriting its terminal state."
         (signal 'wrong-type-argument (list '(member active muted) state)))
       (let* ((replacement-effect
               (if effect-supplied-p effect (e-board-subscription-effect subscription)))
+             (replacement-delivery
+              (if delivery-supplied-p delivery
+                (e-board-subscription-delivery subscription)))
+             (replacement-priority
+              (if priority-supplied-p priority
+                (e-board-subscription-priority subscription)))
+             (replacement-self-delivery
+              (if self-delivery-supplied-p self-delivery
+                (e-board-subscription-self-delivery subscription)))
+             (replacement-failure-policy
+              (if failure-policy-supplied-p failure-policy
+                (e-board-subscription-failure-policy subscription)))
              (replacement-readiness
              (if readiness-supplied-p readiness
                 (e-board-subscription-readiness subscription)))
@@ -1929,6 +2194,9 @@ subscription records the relationship without rewriting its terminal state."
                (e-board-subscribe
                 board (e-board-subscription-participant-id subscription) selector
                 :id replacement-id :state state :effect replacement-effect
+                :delivery replacement-delivery :priority replacement-priority
+                :self-delivery replacement-self-delivery
+                :failure-policy replacement-failure-policy
                 :readiness replacement-readiness
                 :firing-limit replacement-firing-limit
                 :lifetime replacement-lifetime)))

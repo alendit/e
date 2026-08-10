@@ -1389,7 +1389,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
 (defun e-session--normalize-board-message (message)
   "Return durable board MESSAGE normalized after JSON replay."
   (dolist (field '(:kind :mode :activity-kind :routing-state
-                   :unrouted-reason))
+                   :unrouted-reason :record-type :outcome :failure-policy))
     (when-let ((value (plist-get message field)))
       (when (stringp value)
         (plist-put message field (intern value)))))

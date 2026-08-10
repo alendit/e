@@ -109,6 +109,13 @@
    (e-chat-service-binding-session-id binding)
    (e-chat-service--board-envelope message)))
 
+(defun e-chat-service--persist-board-processing-record (binding record _type)
+  "Append immutable processing RECORD once to BINDING's durable board log."
+  (e-session-append-board-message
+   (e-harness-sessions (e-chat-service-binding-harness binding))
+   (e-chat-service-binding-session-id binding)
+   (e-board-processing-record-envelope record)))
+
 (defun e-chat-service--harness-bindings (harness)
   "Return the session binding table owned by HARNESS."
   (or (gethash harness e-chat-service--bindings)
@@ -582,6 +589,12 @@
                       (e-chat-service--schedule-subscription-drain
                        subscription))
                     (e-chat-service--schedule-observer-drain current))))
+          (setf (e-board-processing-record-notification-function
+                 (e-board-registry-board-source-board board))
+                (lambda (source record type)
+                  (when-let ((owner (gethash (e-board-id source)
+                                             e-chat-service--board-log-owners)))
+                    (e-chat-service--persist-board-processing-record owner record type))))
           ;; Materialize only the recent bounded tail.  The observer's live
           ;; cursor already starts at the same high watermark, so retained
           ;; history is never rescanned to fill a fixed-capacity projection.
@@ -608,8 +621,11 @@
         (unless existing
           (dolist (envelope (e-session-board-messages
                              (e-harness-sessions harness) session-id))
-            (e-board-import-message
-             (e-board-registry-board-source-board board) envelope)))
+            (if (plist-get envelope :record-type)
+                (e-board-import-processing-record
+                 (e-board-registry-board-source-board board) envelope)
+              (e-board-import-message
+               (e-board-registry-board-source-board board) envelope))))
         (e-chat-service--install-participant-binding
          board harness session-id :principal principal))))
 

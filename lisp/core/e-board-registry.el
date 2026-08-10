@@ -1055,15 +1055,19 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
 
 (cl-defun e-board-registry-install-subscription
     (board-or-id participant-or-id selector &key id (state 'active)
-                (effect 'create-pickup))
+                (effect 'create-pickup) (delivery 'normal) priority
+                (self-delivery nil) failure-policy)
   "Install an ordinary source-board subscription for a local participant."
   (let* ((board (e-board-registry--require-active board-or-id))
          (participant (e-board-registry--participant board participant-or-id))
          (id (or id (e-board-registry--next-id
                      (e-board-registry-board-id-function board) 'subscription))))
     (e-board-subscribe (e-board-registry-board-source-board board)
-                      (e-board-registry-participant-id participant)
-                       selector :id id :state state :effect effect)))
+                       (e-board-registry-participant-id participant)
+                       selector :id id :state state :effect effect
+                       :delivery delivery :priority priority
+                       :self-delivery self-delivery
+                       :failure-policy failure-policy)))
 
 (defun e-board-registry-mute-subscription (board-or-id subscription-id)
   "Mute ordinary SUBSCRIPTION-ID on active BOARD-OR-ID."

@@ -3,8 +3,8 @@
 
 * Status
 
-In-progress.  The operator approved implementation in the same request as this
-plan and asked a plan-implementer subagent to implement it, followed by review.
+In-progress.  Slice 1 is implemented and committed.  Slices 2 through 5 remain
+pending.
 
 * Problem
 
