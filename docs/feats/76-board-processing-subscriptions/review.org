@@ -170,8 +170,28 @@ process-local identity tie-breaker is needed.  The regression rejects symbols
 and numbers, proves caller mutation cannot alter a retained ID, and verifies
 reversed equal-priority inputs sort to the same order.
 
+* Third fix-point re-review findings
+
+** TODO High: Preserve ordinary subscription ID compatibility
+
+The new subscription-ID validator rejects non-string IDs for every subscription,
+including normal routes that accepted symbols before Slice 1.  Restrict the
+stable-string requirement to processing subscriptions, or preserve the legacy
+normal path while deriving a deterministic processing-only ordering key.  Add a
+regression proving ordinary symbol IDs remain accepted and unchanged.
+
+** TODO High: Make processing-record persistence failure atomic or retryable
+
+The board appends a processing record and event before invoking the persistence
+notification.  If the callback signals, the public API reports failure although
+the record remains committed in memory; retry then conflicts while the journal
+may still lack the record.  Define the transaction boundary so notification
+failure either rolls the ledger append back or leaves an explicitly retryable,
+idempotent durable state.  Add failure/retry tests through the chat-service
+persistence adapter.
+
 * Completion
 
-Earlier findings are resolved for stable string and interned-symbol IDs.  Slice
-1 remains in review because the fix-point re-review found the two issues above.
-Slices 2 through 5 remain out of scope for this review.
+The prior findings are resolved, but Slice 1 remains in review because the third
+fix-point review found the two high-severity issues above.  Slices 2 through 5
+remain out of scope for this review.
