@@ -1759,15 +1759,15 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
           (e-session--touch store session timestamp)))
       ("board-message"
        (when session
-         (let ((message
-                (e-session--normalize-board-message
-                 (copy-tree (plist-get record :message)))))
-           (e-session--prepend-replayed-item session :board-messages message)
-           (puthash (e-session--board-message-identity message) message
-                    (or (plist-get session :board-message-id-index)
-                        (let ((index (make-hash-table :test 'equal)))
-                          (plist-put session :board-message-id-index index)
-                          index))))
+         (let* ((message
+                 (e-session--freeze-board-value
+                  (e-session--normalize-board-message
+                   (copy-tree (plist-get record :message)))))
+                (existing (e-session--existing-board-message session message)))
+           (unless existing
+             (puthash (e-session--board-message-identity message) message
+                      (e-session--board-message-index session))
+             (e-session--prepend-replayed-item session :board-messages message)))
          (e-session--touch store session timestamp)))
       ("board-session-state"
        (when session
@@ -2442,9 +2442,30 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
     (e-session--write-index store)
     session))
 
+(defun e-session--freeze-board-value (value)
+  "Return VALUE detached from mutable board-journal input."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((consp value)
+    (cons (e-session--freeze-board-value (car value))
+          (e-session--freeze-board-value (cdr value))))
+   ((vectorp value)
+    (vconcat (mapcar #'e-session--freeze-board-value value)))
+   ((hash-table-p value)
+    (let ((copy (make-hash-table :test (hash-table-test value)
+                                 :size (hash-table-size value))))
+      (maphash (lambda (key item)
+                 (puthash (e-session--freeze-board-value key)
+                          (e-session--freeze-board-value item)
+                          copy))
+               value)
+      copy))
+   (t value)))
+
 (defun e-session-board-messages (store session-id)
   "Return SESSION-ID's durable board envelopes in board order."
-  (copy-tree (plist-get (e-session-get store session-id) :board-messages)))
+  (e-session--freeze-board-value
+   (plist-get (e-session-get store session-id) :board-messages)))
 
 (defun e-session--board-message-identity (message)
   "Return the durable journal identity for board MESSAGE.
@@ -2454,33 +2475,41 @@ silently replacing records from another namespace."
   (cons (or (plist-get message :record-type) 'board-message)
         (plist-get message :id)))
 
+(defun e-session--board-message-index (session)
+  "Return SESSION's board-envelope identity index."
+  (or (plist-get session :board-message-id-index)
+      (let ((index (make-hash-table :test 'equal)))
+        (dolist (message (plist-get session :board-messages))
+          (puthash (e-session--board-message-identity message) message index))
+        (plist-put session :board-message-id-index index)
+        index)))
+
+(defun e-session--existing-board-message (session message)
+  "Return MESSAGE's retained duplicate, or signal for a typed conflict."
+  (let* ((identity (e-session--board-message-identity message))
+         (existing (gethash identity (e-session--board-message-index session))))
+    (when (and existing
+               (plist-get message :record-type)
+               (not (equal existing message)))
+      (signal 'e-session-board-message-conflict
+              (list identity existing message)))
+    existing))
+
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board MESSAGE envelope to SESSION-ID's board log."
   (let* ((session (e-session-get store session-id))
-         (message (copy-tree message))
-         (index (or (plist-get session :board-message-id-index)
-                    (let ((created (make-hash-table :test 'equal)))
-                      (dolist (current (plist-get session :board-messages))
-                        (puthash (e-session--board-message-identity current)
-                                 current created))
-                      (plist-put session :board-message-id-index created)
-                      created))))
-    (let* ((identity (e-session--board-message-identity message))
-           (existing (gethash identity index)))
-      (cond
-       ((null existing)
-        (puthash identity message index)
-        (e-session--append-list-item session :board-messages message)
-        (e-session--touch store session (e-session--timestamp))
-        (e-session--append-record
-         store session-id
-         (list :type "board-message" :session-id session-id
-               :message message)))
-       ((and (plist-get message :record-type)
-             (not (equal existing message)))
-        (signal 'e-session-board-message-conflict
-                (list identity existing message))))
-      (copy-tree (or existing message)))))
+         (message (e-session--freeze-board-value message))
+         (existing (e-session--existing-board-message session message)))
+    (unless existing
+      (puthash (e-session--board-message-identity message) message
+               (e-session--board-message-index session))
+      (e-session--append-list-item session :board-messages message)
+      (e-session--touch store session (e-session--timestamp))
+      (e-session--append-record
+       store session-id
+       (list :type "board-message" :session-id session-id
+             :message (e-session--freeze-board-value message))))
+    (e-session--freeze-board-value (or existing message))))
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear SESSION-ID's durable board log and derived identity index."

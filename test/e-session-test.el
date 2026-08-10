@@ -113,31 +113,80 @@
   "Board journal state remains private across input and return-value mutation."
   (let* ((directory (make-temp-file "e-session-board-freeze-" t))
          (store (e-session-persistent-index-store-create directory :write-mode 'queued))
-         (nested (list "original"))
-         (envelope (list :id "frozen" :attributes (list :nested nested))))
+         (id (copy-sequence "frozen"))
+         (value (copy-sequence "top-level"))
+         (nested-value (copy-sequence "original"))
+         (nested (list nested-value))
+         (envelope (list :id id :value value :attributes (list :nested nested))))
     (unwind-protect
         (progn
           (e-session-create store :id "board-session")
           (let ((returned (e-session-append-board-message
                            store "board-session" envelope)))
-            (setcar nested "caller mutation")
-            (setcar (plist-get (plist-get returned :attributes) :nested)
-                    "return mutation"))
-          (should (equal (plist-get
-                          (plist-get (car (e-session-board-messages
-                                           store "board-session"))
-                                     :attributes)
-                          :nested)
-                         '("original")))
+            (aset id 0 ?x)
+            (aset value 0 ?x)
+            (aset nested-value 0 ?x)
+            (aset (plist-get returned :id) 0 ?x)
+            (aset (plist-get returned :value) 0 ?x)
+            (aset (car (plist-get (plist-get returned :attributes) :nested))
+                  0 ?x))
+          (let ((message (car (e-session-board-messages store "board-session"))))
+            (should (equal (plist-get message :id) "frozen"))
+            (should (equal (plist-get message :value) "top-level"))
+            (should (equal (plist-get (plist-get message :attributes) :nested)
+                           '("original"))))
           (e-session-flush-write-queue store)
-          (let ((reopened (e-session-persistent-store-create directory)))
-            (should (equal (plist-get
-                            (plist-get (car (e-session-board-messages
-                                             reopened "board-session"))
-                                       :attributes)
-                            :nested)
+          (let ((message (car (e-session-board-messages
+                               (e-session-persistent-store-create directory)
+                               "board-session"))))
+            (should (equal (plist-get message :id) "frozen"))
+            (should (equal (plist-get message :value) "top-level"))
+            (should (equal (plist-get (plist-get message :attributes) :nested)
                            '("original")))))
       (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-board-log-replay-deduplicates-identical-typed-envelope ()
+  "Restart ignores repeated typed board envelopes with equal durable values."
+  (let ((directory (make-temp-file "e-session-board-replay-duplicate-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "board-session")
+               (message '(:id "chain" :record-type processing-chain
+                          :root-message-id "root" :created-at "fixed"))
+               (record (list :type "board-message" :session-id session-id
+                             :message message)))
+          (e-session-create store :id session-id)
+          (e-session-append-board-message store session-id message)
+          (e-session--append-record-now store session-id record)
+          (let ((messages (e-session-board-messages
+                           (e-session-persistent-store-create directory) session-id)))
+            (should (= (length messages) 1))
+            (should (equal (plist-get (car messages) :id) "chain"))
+            (should (eq (plist-get (car messages) :record-type)
+                        'processing-chain))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-board-log-replay-rejects-divergent-typed-envelope ()
+  "Restart rejects repeated typed board envelopes with divergent durable values."
+  (let ((directory (make-temp-file "e-session-board-replay-conflict-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "board-session")
+               (message '(:id "chain" :record-type processing-chain
+                          :root-message-id "root" :created-at "fixed"))
+               (divergent '(:id "chain" :record-type processing-chain
+                            :root-message-id "other" :created-at "fixed")))
+          (e-session-create store :id session-id)
+          (e-session-append-board-message store session-id message)
+          (e-session--append-record-now
+           store session-id
+           (list :type "board-message" :session-id session-id
+                 :message divergent))
+          (should-error
+           (e-session-board-messages
+            (e-session-persistent-store-create directory) session-id)
+           :type 'e-session-board-message-conflict))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-board-log-keeps-colliding-record-kinds-across-restart ()
