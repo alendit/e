@@ -661,7 +661,7 @@
             (should-not result)
             (let ((deadline (+ (float-time) 5)))
               (while (and (not result) (not failure) (< (float-time) deadline))
-                (sleep-for 0.01)))
+                (accept-process-output nil 0.01)))
             (should-not failure)
             (should (eq (e-request-lifecycle-state request) 'finished))
             (should (plist-get result :loaded))
@@ -675,6 +675,120 @@
                                       index))
                                    (number-sequence 0 7))))))
       (delete-directory directory t))))
+
+(ert-deftest e-session-test-load-requires-explicit-resume-checkpoint ()
+  "Normal session load never falls back to a full checkpoint-less replay."
+  (let* ((directory (make-temp-file "e-session-no-checkpoint-" t))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (journal (expand-file-name "legacy.jsonl" sessions-directory)))
+    (unwind-protect
+        (progn
+          (make-directory sessions-directory t)
+          (with-temp-file journal
+            (insert
+             "{\"type\":\"session\",\"session-id\":\"legacy\",\"id\":\"root\",\"timestamp\":\"2026-08-10T00:00:00Z\"}\n"))
+          (let ((store (e-session-persistent-index-store-create directory)))
+            (should-error (e-session-load-session store "legacy")
+                          :type 'e-session-checkpoint-missing)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-migrated-checkpoint-loads-only-journal-suffix ()
+  "A migrated checkpoint restores state while journal I/O starts at its offset."
+  (let* ((directory (make-temp-file "e-session-checkpoint-suffix-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "session-1"))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (dotimes (index 20)
+            (e-session-append-message
+             store session-id
+             (list :id (format "before-%d" index)
+                   :role 'user :content (make-string 200 ?x))))
+          (e-session-migrate-session-checkpoint store session-id)
+          (let* ((checkpoint
+                  (e-session--read-checkpoint store session-id))
+                 (offset (plist-get checkpoint :journal-byte-offset)))
+            (e-session-append-message
+             store session-id '(:id "after" :role assistant :content "tail"))
+            (let ((loaded (e-session-persistent-index-store-create directory))
+                  (original (symbol-function 'insert-file-contents-literally))
+                  starts)
+              (cl-letf (((symbol-function 'insert-file-contents-literally)
+                         (lambda (filename &optional visit beg end replace)
+                           (when (string-suffix-p ".jsonl" filename)
+                             (push (or beg 0) starts))
+                           (funcall original filename visit beg end replace))))
+                (should (= (length (e-session-messages loaded session-id)) 21)))
+              (should starts)
+              (should (cl-every (lambda (start) (>= start offset)) starts)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-checkpoint-retains-model-path-and-bounds-audit-state ()
+  "Resume state keeps compacted model context but bounds audit projections."
+  (let* ((store (e-session-store-create))
+         (session-id "checkpoint")
+         (_ (e-session-create store :id session-id))
+         (old (e-session-append-message
+               store session-id '(:id "old" :role user :content "old")))
+         (boundary (e-session-append-message
+                    store session-id
+                    '(:id "boundary" :role user :content "keep"))))
+    (ignore old)
+    (e-session-append-compaction
+     store session-id "summary"
+     :first-kept-entry-id (plist-get boundary :id))
+    (let ((token-event
+           (e-session-append-activity-event
+            store session-id "turn" 'token-usage '(:input 10))))
+      (dotimes (index 80)
+        (e-session-append-activity-event
+         store session-id "turn" 'tool-progress (list :index index)))
+      (let ((answer (e-session-append-message
+                     store session-id
+                     '(:id "answer" :role assistant :content "new"))))
+        (e-session-append-provider-anchor
+         store session-id 'openai :model "model"
+         :covered-entry-id (plist-get answer :id)
+         :fingerprints '(:segments nil)))
+      (dotimes (index 300)
+        (e-session-append-board-message
+         store session-id
+         (list :id (format "board-%d" index)
+               :kind 'activity :content index)))
+      (let* ((records (e-session--checkpoint-records store session-id))
+             (message-ids
+              (mapcar (lambda (record)
+                        (plist-get (plist-get record :message) :id))
+                      (seq-filter
+                       (lambda (record)
+                         (equal (plist-get record :type) "message"))
+                       records)))
+             (activity-records
+              (seq-filter
+               (lambda (record)
+                 (equal (plist-get record :type) "activity-event"))
+               records)))
+        (should (equal message-ids '("boundary" "answer")))
+        (should-not (member "old" message-ids))
+        (should (= (length activity-records) 65))
+        (should (seq-find
+                 (lambda (record)
+                   (equal (plist-get record :id)
+                          (plist-get token-event :id)))
+                 activity-records))
+        (should (= (length
+                    (seq-filter
+                     (lambda (record)
+                       (equal (plist-get record :type) "board-message"))
+                     records))
+                   256))
+        (should (= (length
+                    (seq-filter
+                     (lambda (record)
+                       (equal (plist-get record :type) "provider-anchor"))
+                     records))
+                   1))))))
 
 (ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
   "Persistent replay keeps durable ids and parent links instead of regenerating."
@@ -709,6 +823,9 @@
              "{\"type\":\"session\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:00Z\"}\n"
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n"))
+          (let ((migration-store
+                 (e-session-persistent-index-store-create directory)))
+            (e-session-migrate-session-checkpoint migration-store "legacy"))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (events (e-session-session-events loaded "legacy"))
                  (root (car events))
@@ -953,6 +1070,10 @@
                            "chat-updated"
                            "harness-instance-id"]))
              "\n"))
+          (let ((migration-store
+                 (e-session-persistent-index-store-create directory)))
+            (e-session-migrate-session-checkpoint
+             migration-store "legacy-array"))
           (let* ((store (e-session-persistent-store-create directory))
                  (metadata (plist-get (e-session-get store "legacy-array")
                                       :metadata)))
@@ -1068,6 +1189,9 @@
                                         :last-scope "document"
                                         :last-focus (:point 42)))))
              "\n"))
+          (let ((migration-store
+                 (e-session-persistent-index-store-create directory)))
+            (e-session-migrate-session-checkpoint migration-store "legacy"))
           (let* ((store (e-session-persistent-store-create directory))
                  (metadata (plist-get (e-session-get store "legacy")
                                       :metadata))

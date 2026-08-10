@@ -6,9 +6,9 @@
 ;;; Commentary:
 
 ;; Session mutation remains synchronous and in-memory.  This module owns the
-;; durable outbox and a small Node writer process.  The writer owns JSONL I/O
-;; and derived session-index checkpoints, so neither runs in Emacs's UI event
-;; loop.
+;; durable outbox and a small Node writer process.  The writer owns JSONL I/O,
+;; atomic resume checkpoints, and the derived session catalog, so none of that
+;; work runs in Emacs's UI event loop.
 
 ;;; Code:
 
@@ -31,7 +31,7 @@
   :group 'e-session-persistence)
 
 (defcustom e-session-persistence-checkpoint-delay 2.0
-  "Seconds of quiet before requesting a derived session-index checkpoint."
+  "Seconds of quiet before requesting resume and catalog checkpoints."
   :type 'number
   :group 'e-session-persistence)
 
@@ -333,6 +333,37 @@ reload; new submissions always prepare once before entering the outbox."
   (e-session-persistence--submit
    controller (list :op "append" :session-id session-id :record record)))
 
+(defun e-session-persistence--checkpoint-operation (controller session-ids)
+  "Return writer checkpoint operation for CONTROLLER SESSION-IDS."
+  (let ((store (e-session-persistence-store controller)))
+    (list :op "checkpoint"
+          :sessions
+          (vconcat
+           (mapcar (lambda (session-id)
+                     (e-session-checkpoint-manifest store session-id))
+                   session-ids)))))
+
+(defun e-session-persistence--submit-checkpoint
+    (controller &optional on-done on-error)
+  "Submit dirty resume manifests and catalog checkpoint for CONTROLLER."
+  (let* ((store (e-session-persistence-store controller))
+         (session-ids (e-session-checkpoint-dirty-session-ids store))
+         (operation
+          (e-session-persistence--checkpoint-operation controller session-ids))
+         (command-id
+          (e-session-persistence--submit
+           controller operation on-done
+           (lambda (err)
+             (dolist (session-id session-ids)
+               (e-session--mark-checkpoint-dirty store session-id))
+             (if on-error
+                 (funcall on-error err)
+               (display-warning 'e-session-persistence
+                                (error-message-string err)
+                                :error))))))
+    (e-session-checkpoint-mark-clean store session-ids)
+    command-id))
+
 (defun e-session-persistence-declare-board-state
     (controller session-id principal board-id)
   "Persist board identity for SESSION-ID.
@@ -354,7 +385,7 @@ derived session-index checkpoint remains asynchronous."
          (lambda ()
            ;; Transfer ownership from the timer to the outbox without exposing
            ;; a false quiescent edge between the two states.
-           (e-session-persistence--submit controller (list :op "checkpoint"))
+           (e-session-persistence--submit-checkpoint controller)
            (setf (e-session-persistence-checkpoint-timer controller) nil)
            (e-session--adjust-unsettled-writes
             (e-session-persistence-store controller) -1)))))
@@ -366,8 +397,8 @@ writer rejects it.  Return the stable checkpoint command id."
   (let ((timer (e-session-persistence-checkpoint-timer controller)))
     (when timer (cancel-timer timer))
     (prog1
-        (e-session-persistence--submit
-         controller (list :op "checkpoint") on-done on-error)
+        (e-session-persistence--submit-checkpoint
+         controller on-done on-error)
       (when timer
         (setf (e-session-persistence-checkpoint-timer controller) nil)
         (e-session--adjust-unsettled-writes

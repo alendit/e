@@ -31,7 +31,9 @@
     ("lisp/core/e-request.el" "accept-process-output" 2)
     ("lisp/core/e-request.el" "process-file" 2)
     ("lisp/core/e-request.el" "url-retrieve-synchronously" 2)
-    ("lisp/core/e-session.el" "e-session-load-session" 2)
+    ;; The third occurrence is the explicit eager-store loop.  Interactive
+    ;; resume continues to use `e-session-load-session-start'.
+    ("lisp/core/e-session.el" "e-session-load-session" 3)
     ("lisp/core/e-tools.el" "accept-process-output" 1)
     ("lisp/core/e-ui-work.el" "accept-process-output" 1)
     ("lisp/core/e-work.el" "accept-process-output" 2)

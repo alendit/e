@@ -25,6 +25,11 @@
 
 (define-error 'e-session-missing "Session does not exist")
 (define-error 'e-session-duplicate "Session already exists")
+(define-error 'e-session-checkpoint-missing
+  "Session resume checkpoint does not exist"
+  'e-session-missing)
+(define-error 'e-session-checkpoint-invalid
+  "Session resume checkpoint is invalid")
 
 (defgroup e-session nil
   "Session storage for e."
@@ -48,6 +53,7 @@
   write-queue-timer
   index-write-pending
   persistence-controller
+  (checkpoint-dirty-session-ids (make-hash-table :test 'equal))
   (write-queue-generation 0)
   (write-queue-sequence 0)
   (unsettled-write-count 0)
@@ -91,6 +97,24 @@
   "Number of bytes to read per cooperative persistent session load step."
   :type 'integer
   :group 'e)
+
+(defcustom e-session-checkpoint-activity-event-limit 64
+  "Maximum recent activity entries retained in a resume checkpoint."
+  :type 'integer
+  :group 'e-session)
+
+(defcustom e-session-checkpoint-board-message-limit 256
+  "Maximum recent board messages retained in a resume checkpoint."
+  :type 'integer
+  :group 'e-session)
+
+(defcustom e-session-checkpoint-process-report-limit 32
+  "Maximum recent process reports retained in a resume checkpoint."
+  :type 'integer
+  :group 'e-session)
+
+(defconst e-session-checkpoint-version 1
+  "Current durable resume-checkpoint format version.")
 
 (defconst e-session--replay-list-fields
   '(:session-events :messages :board-messages :activity-events :branch-summaries
@@ -545,6 +569,28 @@ arrays and sometimes inverted key/value pairs."
   (expand-file-name (concat session-id ".jsonl")
                     (e-session-store-sessions-directory store)))
 
+(defun e-session--checkpoint-file (store session-id)
+  "Return resume-checkpoint file path for SESSION-ID in STORE."
+  (expand-file-name (concat session-id ".checkpoint.json")
+                    (e-session-store-sessions-directory store)))
+
+(defun e-session--mark-checkpoint-dirty (store session-id)
+  "Mark SESSION-ID's resume state dirty in STORE."
+  (puthash session-id t (e-session-store-checkpoint-dirty-session-ids store)))
+
+(defun e-session-checkpoint-dirty-session-ids (store)
+  "Return STORE session ids needing a resume checkpoint."
+  (let (ids)
+    (maphash (lambda (session-id _value) (push session-id ids))
+             (e-session-store-checkpoint-dirty-session-ids store))
+    (nreverse ids)))
+
+(defun e-session-checkpoint-mark-clean (store session-ids)
+  "Mark SESSION-IDS' submitted resume state clean in STORE."
+  (dolist (session-id session-ids)
+    (remhash session-id
+             (e-session-store-checkpoint-dirty-session-ids store))))
+
 (defun e-session--queued-writes-p (store)
   "Return non-nil when STORE batches persistent writes through a timer."
   (eq (e-session-store-write-mode store) 'queued))
@@ -572,6 +618,16 @@ arrays and sometimes inverted key/value pairs."
   "Immediately write STORE's persistent session index."
   (when (e-session--persistent-p store)
     (e-session--ensure-directories store)
+    (let ((dirty (e-session-checkpoint-dirty-session-ids store)))
+      (dolist (session-id dirty)
+        ;; Direct stores establish a root checkpoint once; later records are a
+        ;; valid suffix.  Explicit migration and the asynchronous writer
+        ;; compact that suffix at deliberate durability boundaries.
+        (when (and (plist-get (e-session--peek-session store session-id) :loaded)
+                   (not (file-exists-p
+                         (e-session--checkpoint-file store session-id))))
+          (e-session--write-session-checkpoint-now store session-id)))
+      (e-session-checkpoint-mark-clean store dirty))
     (let ((coding-system-for-write 'utf-8))
       (with-temp-file (e-session-store-index-file store)
         (insert (e-session--index-json store))))))
@@ -763,6 +819,7 @@ Return STORE."
          :metadata (list :record-type (plist-get record :type)))
    (lambda ()
      (when (e-session--persistent-p store)
+       (e-session--mark-checkpoint-dirty store session-id)
        (if-let ((controller (e-session--persistence-controller store)))
            (e-session-persistence-submit-record controller session-id record)
          (if (e-session--queued-writes-p store)
@@ -945,8 +1002,9 @@ appending."
 TIMESTAMP is used for creation metadata and legacy deterministic backfill.
 When RECORD is non-nil, identity fields may be replayed from the JSONL record."
   (let ((entry (copy-sequence entry)))
-    (unless (plist-member entry :type)
-      (plist-put entry :type type))
+    ;; TYPE is the replay dispatch contract.  JSON turns a nested symbol into
+    ;; a string, which must never leak into the symbol-based in-memory model.
+    (plist-put entry :type type)
     (unless (plist-get entry :id)
       (plist-put
        entry :id
@@ -1120,6 +1178,203 @@ and RECORD supplies persisted identity fields during replay."
      (and (eq (plist-get entry :type) 'compaction)
           (e-session-compaction-boundary-valid-p store session-id entry)))
    (reverse (e-session-compactions store session-id))))
+
+(defun e-session--checkpoint-tail (items limit)
+  "Return the last at most LIMIT ITEMS without changing their order."
+  (let ((count (length items)))
+    (copy-sequence (nthcdr (max 0 (- count limit)) items))))
+
+(defun e-session--checkpoint-path-suffix (store session-id)
+  "Return SESSION-ID's resumable current-path suffix.
+The latest valid compaction boundary is the earliest retained entry.  Without
+a compaction, the complete current path remains model context and is retained."
+  (let ((path (e-session-current-path store session-id)))
+    (if-let* ((compaction (e-session-latest-valid-compaction store session-id))
+              (boundary-id (plist-get compaction :first-kept-entry-id))
+              (boundary (e-session-entry-by-id store session-id boundary-id))
+              (suffix (member boundary path)))
+        suffix
+      path)))
+
+(defun e-session--checkpoint-retained-entries (store session-id)
+  "Return ordered durable entries needed to resume SESSION-ID."
+  (let* ((session (e-session-get store session-id))
+         (path (e-session--checkpoint-path-suffix store session-id))
+         (path-ids (mapcar (lambda (entry) (plist-get entry :id)) path))
+         (activity
+          (e-session--checkpoint-tail
+           (cl-remove-if-not
+            (lambda (entry) (member (plist-get entry :id) path-ids))
+            (plist-get session :activity-events))
+           e-session-checkpoint-activity-event-limit))
+         (latest-token (plist-get session :latest-token-usage-event))
+         (reports
+          (e-session--checkpoint-tail
+           (cl-remove-if-not
+            (lambda (entry) (member (plist-get entry :id) path-ids))
+            (plist-get session :process-reports))
+           e-session-checkpoint-process-report-limit))
+         (anchors
+          (cl-remove-if-not
+           (lambda (anchor)
+             (and (member (plist-get anchor :id) path-ids)
+                  (member (plist-get anchor :covered-entry-id) path-ids)))
+           (plist-get session :provider-anchors)))
+         (required-ids
+          (delq nil
+                (append
+                 (mapcar
+                  (lambda (entry)
+                    (when (memq (plist-get entry :type)
+                                '(message branch-summary compaction))
+                      (plist-get entry :id)))
+                  path)
+                 (mapcar (lambda (entry) (plist-get entry :id)) activity)
+                 (and latest-token (list (plist-get latest-token :id)))
+                 (mapcar (lambda (entry) (plist-get entry :id)) reports)
+                 (mapcar (lambda (entry) (plist-get entry :id)) anchors)
+                 (list (plist-get session :current-head-id)
+                       (and path (plist-get (car path) :id)))))))
+    (cl-remove-if-not
+     (lambda (entry)
+       (and (not (equal (plist-get entry :id)
+                        (e-session--root-event-id session)))
+            (member (plist-get entry :id) required-ids)))
+     path)))
+
+(defun e-session--checkpoint-root (session)
+  "Return compact current root state for SESSION."
+  (list :id (e-session--root-event-id session)
+        :created-at (plist-get session :created-at)
+        :updated-at (plist-get session :updated-at)
+        :metadata (copy-tree (plist-get session :metadata))
+        :name (plist-get session :name)
+        :turn-options (copy-tree (plist-get session :turn-options))
+        :current-branch (plist-get session :current-branch)
+        :board-output-sequence (or (plist-get session :board-output-sequence) 0)
+        :board-activity-sequence
+        (or (plist-get session :board-activity-sequence) 0)))
+
+(defun e-session-checkpoint-manifest (store session-id)
+  "Return JSON-friendly semantic resume manifest for SESSION-ID in STORE."
+  (let* ((session (e-session-get store session-id))
+         (entries (e-session--checkpoint-retained-entries store session-id))
+         (board-messages
+          (e-session--checkpoint-tail
+           (plist-get session :board-messages)
+           e-session-checkpoint-board-message-limit)))
+    (list :session-id session-id
+          :root (e-session--checkpoint-root session)
+          :board-state (copy-tree (plist-get session :board-session-state))
+          :entry-ids
+          (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
+          :board-message-ids
+          (vconcat (mapcar (lambda (message) (plist-get message :id))
+                           board-messages)))))
+
+(defun e-session--checkpoint-entry-record (session-id entry parent-id)
+  "Return replay record for SESSION-ID ENTRY reparented to PARENT-ID."
+  (let ((timestamp (plist-get entry :created-at))
+        (id (plist-get entry :id)))
+    (pcase (plist-get entry :type)
+      ('message
+       (let ((message (copy-tree entry)))
+         (plist-put message :parent-id parent-id)
+         (list :type "message" :session-id session-id :timestamp timestamp
+               :id id :parent-id parent-id :message message)))
+      ('activity-event
+       (list :type "activity-event" :session-id session-id
+             :id id :parent-id parent-id
+             :turn-id (plist-get entry :turn-id)
+             :board-activity-sequence
+             (plist-get entry :board-activity-sequence)
+             :timestamp timestamp :event-type (plist-get entry :event-type)
+             :payload (copy-tree (plist-get entry :payload))))
+      ('branch-summary
+       (list :type "branch-summary" :session-id session-id
+             :id id :parent-id parent-id :timestamp timestamp
+             :branch-id (plist-get entry :branch-id)
+             :summary (plist-get entry :summary)
+             :metadata (copy-tree (plist-get entry :metadata))))
+      ('compaction
+       (list :type "compaction" :session-id session-id
+             :id id :parent-id parent-id :timestamp timestamp
+             :summary (plist-get entry :summary)
+             :branch-id (plist-get entry :branch-id)
+             :range (copy-tree (plist-get entry :range))
+             :first-kept-entry-id (plist-get entry :first-kept-entry-id)
+             :tokens-before (plist-get entry :tokens-before)
+             :tokens-kept (plist-get entry :tokens-kept)
+             :metadata (copy-tree (plist-get entry :metadata))))
+      ('provider-anchor
+       (list :type "provider-anchor" :session-id session-id
+             :id id :parent-id parent-id :timestamp timestamp
+             :provider-id (plist-get entry :provider-id)
+             :model (plist-get entry :model)
+             :covered-entry-id (plist-get entry :covered-entry-id)
+             :fingerprints
+             (e-session--provider-anchor-fingerprints-for-json
+              (copy-tree (plist-get entry :fingerprints)))
+             :metadata (copy-tree (plist-get entry :metadata))))
+      ('process-report
+       (let ((report (copy-tree entry)))
+         (plist-put report :parent-id parent-id)
+         (list :type "process-report" :session-id session-id
+               :id id :parent-id parent-id :timestamp timestamp
+               :report report)))
+      ('session-event
+       (pcase (plist-get entry :event-type)
+         ('current-branch
+          (list :type "current-branch" :session-id session-id
+                :id id :parent-id parent-id :timestamp timestamp
+                :branch-id (plist-get entry :branch-id)))
+         (_
+          (list :type "session-info" :session-id session-id
+                :id id :parent-id parent-id :timestamp timestamp))))
+      (_
+       (signal 'e-session-checkpoint-invalid
+               (list session-id "Unsupported checkpoint entry"
+                     (plist-get entry :type)))))))
+
+(defun e-session--checkpoint-records (store session-id)
+  "Return canonical replay records for SESSION-ID's current resume state."
+  (let* ((session (e-session-get store session-id))
+         (root (e-session--checkpoint-root session))
+         (root-id (plist-get root :id))
+         (records
+          (list
+           (append (list :type "session" :session-id session-id
+                         :timestamp (plist-get root :created-at))
+                   root)))
+         (parent-id root-id))
+    (when-let ((board-state (plist-get session :board-session-state)))
+      (setq records
+            (append records
+                    (list (list :type "board-session-state"
+                                :session-id session-id
+                                :timestamp (plist-get root :updated-at)
+                                :board-state (copy-tree board-state)
+                                :board-id (plist-get board-state :board-id)
+                                :principal (plist-get board-state :principal)
+                                :board-output-sequence
+                                (plist-get root :board-output-sequence)
+                                :board-activity-sequence
+                                (plist-get root :board-activity-sequence))))))
+    (dolist (message
+             (e-session--checkpoint-tail
+              (plist-get session :board-messages)
+              e-session-checkpoint-board-message-limit))
+      (setq records
+            (append records
+                    (list (list :type "board-message" :session-id session-id
+                                :message (copy-tree message))))))
+    (dolist (entry (e-session--checkpoint-retained-entries store session-id))
+      (setq records
+            (append records
+                    (list (e-session--checkpoint-entry-record
+                           session-id entry parent-id))))
+      (setq parent-id (plist-get entry :id)))
+    records))
 
 (defun e-session--provider-anchor-dynamic-segment-p (segment)
   "Return non-nil when SEGMENT is volatile current-state context."
@@ -1434,11 +1689,13 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                          :messages nil
                          :board-messages nil
                          :board-message-id-index (make-hash-table :test 'equal)
-                         :board-output-sequence 0
-                         :board-activity-sequence 0
+                         :board-output-sequence
+                         (or (plist-get record :board-output-sequence) 0)
+                         :board-activity-sequence
+                         (or (plist-get record :board-activity-sequence) 0)
                             :activity-events nil
                             :branch-summaries nil
-                            :current-branch nil
+                            :current-branch (plist-get record :current-branch)
                             :compactions nil
                             :provider-anchors nil
                             :process-reports nil
@@ -1449,7 +1706,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                             :turn-options
                             (e-session--normalize-turn-options
                              (plist-get record :turn-options))
-                            :name nil)))
+                            :name (plist-get record :name))))
          (e-session--initialize-list-state session)
          (e-session--prepend-replayed-session-event
           session
@@ -1686,8 +1943,99 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
           record)
          (e-session--touch store session timestamp))))))
 
+(defun e-session--checkpoint-json (store session-id offset)
+  "Return SESSION-ID checkpoint JSON value at journal byte OFFSET."
+  (list :version e-session-checkpoint-version
+        :session-id session-id
+        :journal-byte-offset offset
+        :records (vconcat (e-session--checkpoint-records store session-id))
+        :writer-high-watermarks nil))
+
+(defun e-session--write-session-checkpoint-now (store session-id)
+  "Atomically write SESSION-ID's current resume checkpoint from STORE."
+  (let* ((journal (e-session--session-file store session-id))
+         (target (e-session--checkpoint-file store session-id)))
+    (unless (file-readable-p journal)
+      (signal 'e-session-missing (list session-id journal)))
+    (let* ((offset (file-attribute-size (file-attributes journal)))
+           (temporary (make-temp-file (concat target ".") nil ".tmp"))
+           (coding-system-for-write 'utf-8))
+      (unwind-protect
+          (progn
+            (with-temp-file temporary
+              (insert (json-encode
+                       (e-session--checkpoint-json store session-id offset))
+                      "\n"))
+            (rename-file temporary target t))
+        (when (file-exists-p temporary)
+          (delete-file temporary))))
+    target))
+
+(defun e-session--read-checkpoint (store session-id)
+  "Read and validate SESSION-ID's resume checkpoint from STORE."
+  (let ((file (e-session--checkpoint-file store session-id)))
+    (unless (file-readable-p file)
+      (signal 'e-session-checkpoint-missing (list session-id file)))
+    (let ((checkpoint
+           (condition-case err
+               (e-session--json-read-file file)
+             ((file-error json-parse-error)
+              (signal 'e-session-checkpoint-invalid
+                      (list session-id file err))))))
+      (unless (and (= (or (plist-get checkpoint :version) -1)
+                          e-session-checkpoint-version)
+                   (equal (plist-get checkpoint :session-id) session-id)
+                   (integerp (plist-get checkpoint :journal-byte-offset))
+                   (>= (plist-get checkpoint :journal-byte-offset) 0)
+                   (consp (plist-get checkpoint :records)))
+        (signal 'e-session-checkpoint-invalid (list session-id file)))
+      checkpoint)))
+
+(defun e-session--begin-checkpoint-replay (store session-id checkpoint)
+  "Install CHECKPOINT records as the replay prefix for SESSION-ID in STORE."
+  (remhash session-id (e-session-store-sessions store))
+  (e-session--clear-entry-index store session-id)
+  (dolist (record (plist-get checkpoint :records))
+    (e-session--replay-record store record))
+  (unless (gethash session-id (e-session-store-sessions store))
+    (signal 'e-session-checkpoint-invalid
+            (list session-id "Checkpoint has no session root"))))
+
+(defun e-session--replay-jsonl-buffer (store)
+  "Replay newline-delimited JSON records in the current unibyte buffer."
+  (goto-char (point-min))
+  (while (not (eobp))
+    (let ((line (buffer-substring-no-properties
+                 (line-beginning-position) (line-end-position))))
+      (unless (string-empty-p line)
+        (e-session--replay-record
+         store
+         (e-session--json-read-line (decode-coding-string line 'utf-8)))))
+    (forward-line 1)))
+
+(defun e-session--load-session-journal-fully (store session-id)
+  "Replay all of SESSION-ID's journal for explicit offline migration only."
+  (let ((file (e-session--session-file store session-id)))
+    (unless (file-readable-p file)
+      (signal 'e-session-missing (list session-id)))
+    (remhash session-id (e-session-store-sessions store))
+    (e-session--clear-entry-index store session-id)
+    (with-temp-buffer
+      (let ((coding-system-for-read 'no-conversion))
+        (insert-file-contents-literally file))
+      (e-session--replay-jsonl-buffer store))
+    (if-let ((session (gethash session-id (e-session-store-sessions store))))
+        (e-session--finalize-replayed-session store session)
+      (signal 'e-session-missing (list session-id)))))
+
+(defun e-session-migrate-session-checkpoint (store session-id)
+  "Offline-migrate SESSION-ID's complete journal to a resume checkpoint.
+This explicit operation is the only checkpoint-less full-journal replay path."
+  (e-session--load-session-journal-fully store session-id)
+  (e-session--write-session-checkpoint-now store session-id))
+
 (defun e-session-load (store)
-  "Replay STORE's persistent sessions from disk."
+  "Replay STORE's checkpointed persistent sessions from disk."
   (when (e-session--persistent-p store)
     (clrhash (e-session-store-sessions store))
     (clrhash (e-session-store-entry-indexes store))
@@ -1695,21 +2043,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
     (let ((sessions-directory (e-session-store-sessions-directory store)))
       (when (file-directory-p sessions-directory)
         (dolist (file (directory-files sessions-directory t "\\.jsonl\\'"))
-          (with-temp-buffer
-            (insert-file-contents file)
-            (goto-char (point-min))
-            (while (not (eobp))
-              (let ((line (buffer-substring-no-properties
-                           (line-beginning-position)
-                           (line-end-position))))
-                (unless (string-empty-p line)
-                  (e-session--replay-record
-                   store
-                   (e-session--json-read-line line))))
-              (forward-line 1)))))
-      (maphash (lambda (_id session)
-                 (e-session--finalize-replayed-session store session))
-               (e-session-store-sessions store))))
+          (e-session-load-session store (file-name-base file))))))
   store)
 
 (defun e-session--index-entry-session (store entry)
@@ -1884,44 +2218,49 @@ state are requested."
     store))
 
 (defun e-session-load-session (store session-id)
-  "Load SESSION-ID transcript from persistent STORE."
+  "Load SESSION-ID checkpoint and journal suffix from persistent STORE."
   (unless (e-session--persistent-p store)
     (signal 'e-session-missing (list session-id)))
-  (let ((file (e-session--session-file store session-id)))
+  (let* ((file (e-session--session-file store session-id))
+         (checkpoint (e-session--read-checkpoint store session-id))
+         (offset (plist-get checkpoint :journal-byte-offset)))
     (unless (file-readable-p file)
       (signal 'e-session-missing (list session-id)))
-    (remhash session-id (e-session-store-sessions store))
-    (e-session--clear-entry-index store session-id)
+    (let ((file-size (file-attribute-size (file-attributes file))))
+      (when (> offset file-size)
+        (signal 'e-session-checkpoint-invalid
+                (list session-id "Checkpoint offset exceeds journal size"
+                      offset file-size))))
+    (e-session--begin-checkpoint-replay store session-id checkpoint)
     (with-temp-buffer
-      (let ((coding-system-for-read 'utf-8))
-        (insert-file-contents file))
-      (goto-char (point-min))
-      (while (not (eobp))
-        (let ((line (buffer-substring-no-properties
-                     (line-beginning-position)
-                     (line-end-position))))
-          (unless (string-empty-p line)
-            (e-session--replay-record store (e-session--json-read-line line))))
-        (forward-line 1)))
+      (let ((coding-system-for-read 'no-conversion))
+        (insert-file-contents-literally file nil offset))
+      (e-session--replay-jsonl-buffer store))
     (if-let ((session (gethash session-id (e-session-store-sessions store))))
         (e-session--finalize-replayed-session store session)
       (signal 'e-session-missing (list session-id)))))
 
 (cl-defun e-session-load-session-start
     (store session-id &key on-done on-error on-progress chunk-bytes)
-  "Start cooperatively loading SESSION-ID transcript from persistent STORE.
+  "Start cooperatively loading SESSION-ID checkpoint and journal suffix.
 Return an `e-request-lifecycle' request.  ON-DONE receives the loaded session,
 ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
   (unless (e-session--persistent-p store)
     (signal 'e-session-missing (list session-id)))
   (let* ((file (e-session--session-file store session-id))
+         (checkpoint (e-session--read-checkpoint store session-id))
+         (checkpoint-offset (plist-get checkpoint :journal-byte-offset))
          (chunk-bytes (max 1 (or chunk-bytes e-session-load-chunk-bytes))))
     (unless (file-readable-p file)
       (signal 'e-session-missing (list session-id)))
-    (remhash session-id (e-session-store-sessions store))
-    (e-session--clear-entry-index store session-id)
+    (e-session--begin-checkpoint-replay store session-id checkpoint)
     (let* ((file-size (file-attribute-size (file-attributes file)))
-           (position 0)
+           (_ (when (> checkpoint-offset file-size)
+                (signal 'e-session-checkpoint-invalid
+                        (list session-id
+                              "Checkpoint offset exceeds journal size"
+                              checkpoint-offset file-size))))
+           (position checkpoint-offset)
            (carry "")
            timer
            request)

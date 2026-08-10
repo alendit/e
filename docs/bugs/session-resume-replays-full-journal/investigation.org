@@ -1,0 +1,49 @@
+#+title: Session Resume Full-Journal Replay Investigation
+#+startup: overview
+
+* Evidence
+
+The affected journal is about 38 MB and contains 15,722 JSONL records.  An
+isolated exact load did not complete within 96 seconds.  The journal contains
+one valid compaction at record 5,763, followed by almost 10,000 records.
+
+Source inspection found that both =e-session-load-session= and its cooperative
+variant start at byte zero and parse every JSON record.  The recent bounded
+=e-chat= replay applies only after this durable load finishes, so it cannot
+reduce startup work.
+
+The post-compaction suffix contains large quantities of board messages,
+activity events, and process reports.  These are useful audit history but only
+a bounded recent projection is needed to reconstruct the chat shell.  Model
+resume needs messages on the current path from the latest compaction boundary,
+the compaction summary, and a compatible provider anchor.
+
+The running Emacs was closed by the user before this investigation continued.
+No live probe or reload was performed.  The journal and source were inspected
+offline.
+
+* Conclusion
+
+Presentation bounding and persistence replay solve different problems.  The
+session store needs a canonical resume checkpoint with a source byte offset.
+Normal load should replay that checkpoint and only later journal records.
+Checkpoint-less historical journals should be migrated explicitly offline,
+not supported by a permanent fallback in the runtime.
+
+* Resolution
+
+Session resume now requires an atomic per-session checkpoint and reads only the
+journal suffix after its recorded byte offset.  The asynchronous writer owns
+checkpoint I/O and command high-watermarks; Emacs supplies only the semantic
+retention manifest.  Full-journal replay remains available only through the
+offline migration command.
+
+The closed user store contained 974 journals.  Offline migration created 973
+checkpoints without modifying the journals.  One 2026-08-07 journal was already
+missing its session root and board-state records; migration preserved it and
+reported the structural error instead of guessing durable state.
+
+The 37,851,478-byte Bayesian journal now resumes from a 5,756,709-byte
+checkpoint in about 0.07 seconds in batch Emacs.  The checkpoint retains 1,569
+model-path messages, the latest 64 activity events including token usage, 256
+board messages, and 32 process reports.

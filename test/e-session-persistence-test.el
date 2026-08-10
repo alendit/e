@@ -197,8 +197,8 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
-(ert-deftest e-session-persistence-test-stale-catalog-does-not-hide-new-journal ()
-  "Startup supplements a catalog snapshot with journal roots it does not contain."
+(ert-deftest e-session-persistence-test-stale-catalog-lists-unmigrated-journal ()
+  "Catalog reconciliation lists a new journal but resume requires migration."
   (let* ((directory (make-temp-file "e-session-reconcile-" t))
          (first (e-session-persistent-store-create directory)))
     (unwind-protect
@@ -211,7 +211,12 @@
               (insert "{\"type\":\"session\",\"session-id\":\"unindexed\",\"timestamp\":\"2026-07-30T00:00:00Z\"}\n")))
           (let ((indexed (e-session-persistent-index-store-create directory)))
             (should (e-session-get indexed "indexed"))
-            (should (e-session-get indexed "unindexed"))))
+            (should (seq-find
+                     (lambda (session)
+                       (equal (plist-get session :id) "unindexed"))
+                     (e-session-list indexed)))
+            (should-error (e-session-get indexed "unindexed")
+                          :type 'e-session-checkpoint-missing)))
       (delete-directory directory t))))
 
 (ert-deftest e-session-persistence-test-retries-keep-journal-order-and-deduplicate ()
@@ -303,6 +308,34 @@
             (should (equal state
                            '(:board-id "board-1"
                              :principal "principal:owner")))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-checkpoint-folds-message-display-state ()
+  "Writer compaction retains the message record behind a later display update."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-display-checkpoint-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (e-session-append-message
+           store "session-1" '(:id "message-1" :role assistant :content "hi"))
+          (e-session-set-message-display
+           store "session-1" "message-1" 'hidden)
+          (e-session-persistence-test--await-durable store)
+          (let* ((journal
+                  (expand-file-name "sessions/session-1.jsonl" directory))
+                 (checkpoint
+                  (e-session--read-checkpoint store "session-1"))
+                 (loaded (e-session-persistent-store-create directory))
+                 (message (car (e-session-messages loaded "session-1"))))
+            (should (= (plist-get checkpoint :journal-byte-offset)
+                       (file-attribute-size (file-attributes journal))))
+            (should (equal (plist-get message :id) "message-1"))
+            (should (eq (plist-get message :display) 'hidden))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

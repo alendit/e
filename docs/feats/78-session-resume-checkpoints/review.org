@@ -1,0 +1,139 @@
+#+title: Review: Session Resume Checkpoints
+#+author: e implementation
+#+date: 2026-08-11
+#+startup: overview
+
+* Status
+
+Done.  Final review found no unresolved implementation notes.
+
+* Scope reviewed
+
+The review covered the strict checkpoint loaders, semantic retention policy,
+direct and asynchronous checkpoint writers, writer deduplication and catalog
+rebuilds, the offline migration command, restart and suffix-only tests, and the
+existing graphical chat/workspace suite.
+
+* Review loop
+
+** Finding 1: replay restored nested entry types as strings
+
+*** Problem
+
+JSON replay could leave a nested entry's =:type= as a string.  Symbol-based
+context filtering then behaved differently after restart.
+
+*** Change
+
+Replay identity normalization now always installs the semantic symbol type.
+
+*** Evidence
+
+The restart/context suite passes 29/29 tests, including persisted context-path
+construction.
+
+** Finding 2: display updates could replace message records during compaction
+
+*** Problem
+
+The writer indexed =message-display= and =message= records by the same id, so a
+later display record could hide the source message from checkpoint materialization.
+
+*** Change
+
+Only semantic entry records participate in entry-id lookup.  Display records
+are folded onto retained messages separately.
+
+*** Evidence
+
+=e-session-persistence-test-checkpoint-folds-message-display-state= proves the
+message and its hidden display state both survive checkpoint reload.
+
+** Finding 3: timer tests slept without dispatching timers
+
+*** Problem
+
+Three async tests used =sleep-for= as if batch Emacs dispatched timers during
+the sleep.  Their results depended on unrelated event-loop activity and caused
+different failures across complete-suite runs.
+
+*** Change
+
+The tests now use bounded =accept-process-output= loops and wait for the actual
+observable transition.
+
+*** Evidence
+
+The final complete suite passes with no unexpected results.
+
+* Verification
+
+- =node --check lisp/core/e-session-writer.mjs=: passed.
+- =eldev compile -W lisp/core/e-session.el lisp/core/e-session-persistence.el=: passed.
+- Focused session and persistence suite: 90/90 passed.
+- Restart, chat-session, and context suite: 29/29 passed.
+- Complete batch suite: 2,023 tests; 2,021 expected passes, zero unexpected,
+  and two pre-existing expected skips.
+- =bash e2e/run-graphical-tests.sh=: 12/12 passed off-screen, including the
+  model/context mode line, composer focus, scroll pinning, and workspace tests.
+- =git diff --check=: passed.
+
+* Performance and migration playthrough
+
+The real Bayesian journal is 37,851,478 bytes and previously exceeded 96
+seconds for an exact isolated full replay.  Its migrated checkpoint is
+5,756,709 bytes and resumed in about 0.07 seconds.  The restored projection has
+1,569 messages, 64 activity events, 256 board messages, 32 process reports, and
+the latest token-usage event.
+
+The closed user store has 974 journals and 973 checkpoints.  All valid journals
+were migrated.  One legacy 2026-08-07 journal lacks its root record; it remains
+unchanged and indexed, and strict resume reports =e-session-checkpoint-missing=.
+No inferred root or compatibility fallback was added.
+
+* Plan coverage
+
+All five slices are complete.  JSONL remains the immutable audit log; ordinary
+resume is checkpoint plus suffix only; the async writer atomically materializes
+dirty manifests and rebuilds the catalog; old journals use the explicit offline
+migration; focused, complete, graphical, and real-session evidence was collected.
+
+* Design self-check
+
+1. The package is useful at this stopping point: large sessions reopen quickly
+   while the complete audit journal remains intact.
+2. It moves toward bounded semantic resume state over immutable audit history.
+3. Retention limits are local defcustoms.  Checkpoint version and byte-offset
+   semantics are stable.  No speculative compatibility abstraction was added.
+4. =e-session= owns resume semantics; the Node writer owns persistence I/O;
+   presentation shells remain consumers.
+5. Coupling is reduced because shells do not know checkpoint format or policy,
+   and the writer receives a narrow id/state manifest.
+6. Stable session policy does not depend on the writer.  The writer depends on
+   the manifest contract supplied by session core.
+7. Journal reads, atomic renames, catalog writes, and offline migration stay at
+   persistence boundaries outside redisplay.
+8. Checkpoints are durable and rebuildable.  Dirty ids are process-local,
+   high-watermarks are durable, and no focus or presentation state is stored.
+9. Ordinary resume work falls from the whole journal to checkpoint plus suffix;
+   the real session improved from over 96 seconds to about 0.07 seconds.
+10. The contract is a canonical replay prefix plus source byte offset.  Both
+    synchronous and cooperative loaders implement the same semantics.
+11. Existing journals require explicit migration.  There is no runtime legacy
+    loader, fallback scan, or silently weakened behavior.
+12. Ordinary full-journal replay and the writer's all-journal startup scan were
+    removed.  Full replay exists only in the offline migration entrypoint.
+13. Missing and invalid checkpoints surface as explicit errors.  Writer and
+    migration failures remain visible; the malformed journal was not guessed.
+14. Core tests prove retention and suffix-only I/O independently.  Restart,
+    persistence, complete batch, and graphical suites cover integration behavior.
+
+* Live reload
+
+The user's Emacs was closed.  No live reload or live-state mutation was
+performed; repository-side and isolated graphical validation supplied the proof.
+
+* Unresolved
+
+None in the implementation.  Recovering the one pre-existing rootless journal
+requires an explicit operator decision about its missing durable root fields.

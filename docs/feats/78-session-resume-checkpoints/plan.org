@@ -1,0 +1,57 @@
+#+title: Session Resume Checkpoints
+#+startup: overview
+
+* Status
+
+Done.
+
+* Problem
+
+Chat rendering is bounded, but opening a persisted session still parses and
+materializes every record in its append-only journal before presentation can
+render that bounded view.  The Bayesian writing session currently contains
+15,722 records and about 38 MB.  An isolated replay did not finish within 96
+seconds.  Its one valid model-context compaction is followed by almost 10,000
+records, most of which are board and activity audit history.
+
+* Direction
+
+Keep the JSONL journal as immutable audit history.  Add one atomic per-session
+resume checkpoint containing:
+
+- the current model path from the latest valid compaction boundary, or the full
+  message path when no compaction exists;
+- the latest compatible provider continuation state on that retained path;
+- current session configuration, board identity, and branch state;
+- bounded recent board, activity, and process-report projections;
+- the exact source-journal byte offset and writer-command high-watermarks.
+
+Ordinary load replays the checkpoint and only the journal suffix after its byte
+offset.  It never falls back to scanning a checkpoint-less journal.  Existing
+journals are converted by an explicit offline migration command.
+
+The Emacs session core owns the semantic retention manifest.  The asynchronous
+writer owns journal reads, atomic checkpoint files, command deduplication, and
+the derived catalog.  This keeps persistence I/O out of Emacs redisplay and
+avoids duplicating model-path policy in JavaScript.
+
+* Slices
+
+1. Define the checkpoint format, retention manifest, strict checkpoint loader,
+   and direct-store checkpoint writer.
+2. Extend the asynchronous writer so a checkpoint command materializes dirty
+   session manifests and rebuilds the catalog from checkpoints plus suffixes.
+3. Add an explicit offline migration entrypoint for existing journals.
+4. Prove suffix-only sync and cooperative load, retained model/provider/board
+   state, writer restart deduplication, old-journal migration, and bounded work
+   on a large synthetic session.
+5. Run the complete batch and graphical suites, review the architecture, and
+   migrate the user's existing session directory while Emacs remains closed.
+
+* Non-goals
+
+- Do not rewrite or delete the append-only audit journal.
+- Do not add a runtime legacy loader, automatic compatibility fallback, or
+  swallowed checkpoint errors.
+- Do not make old audit history part of ordinary resume state.
+- Do not reload or mutate the user's running Emacs.

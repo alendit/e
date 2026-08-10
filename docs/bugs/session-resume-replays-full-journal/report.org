@@ -1,0 +1,9 @@
+#+title: Session Resume Replays the Full Journal
+#+startup: overview
+
+* Report
+
+Opening the large Bayesian writing session still stalls and turns fail after a
+restart even though chat presentation recently changed to render only a bounded
+recent tail.  The user asked why the whole session must be loaded and requested
+checkpointed resume plus suffix replay instead.
