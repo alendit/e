@@ -276,8 +276,28 @@ value, then verifies live and reopened journal state retain the original value.
   lisp/core/e-chat-service.el=: passed with warnings treated as errors.
 - =git diff --check=: passed.
 
+* Sixth fix-point re-review findings
+
+** TODO High: Deep-freeze string atoms in session board envelopes
+
+The session boundary uses =copy-tree=, which preserves mutable string atoms.
+Mutating caller-owned ID or value strings after append changes live and reopened
+journal state.  Use a deep freezer that copies strings and nested containers for
+input, retained state, queued records, and returned envelopes.  Add top-level
+and nested string mutation regressions.
+
+** TODO High: Validate typed journal identity during restart replay
+
+Persistent replay currently accepts duplicate or conflicting typed board
+envelopes from disk without applying the live append conflict rules.  Concurrent
+or stale writers can therefore leave two divergent envelopes with the same typed
+identity; reopen accepts both and later board import fails.  Rebuild journal
+state through the same identity/equality validation used by live append and
+signal a conflict during load.  Add duplicate-identical and duplicate-divergent
+restart tests.
+
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the fifth
-fix-point review found the three issues above.  Slices 2 through 5 remain out of
+Earlier findings are resolved.  Slice 1 remains in review because the sixth
+fix-point review found the two issues above.  Slices 2 through 5 remain out of
 scope for this review.
