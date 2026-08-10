@@ -134,14 +134,24 @@
 
 (defun e-graphical-test-wait-until (predicate &optional timeout description)
   "Wait for PREDICATE through graphical redisplay or fail after TIMEOUT.
-DESCRIPTION names the expected state in failure output."
+DESCRIPTION names the expected state in failure output.  A state is settled
+only after it remains true across an event-loop and forced-redisplay cycle;
+native window restoration can otherwise invalidate a just-observed window tree
+on the first redisplay after this helper returns."
   (let ((deadline (+ (float-time) (or timeout 2.0)))
+        (stable-observations 0)
         value)
-    (while (and (not (setq value (funcall predicate)))
+    (while (and (< stable-observations 2)
                 (< (float-time) deadline))
-      (sit-for 0.01)
-      (redisplay t))
-    (unless value
+      (setq value (funcall predicate))
+      (setq stable-observations
+            (if value (1+ stable-observations) 0))
+      (unless (= stable-observations 2)
+        ;; Exercise the same event-loop and redisplay boundary that the next
+        ;; user command will cross before declaring graphical state settled.
+        (sit-for 0.01)
+        (redisplay t)))
+    (unless (= stable-observations 2)
       (when (e-graphical-test-screenshot-enabled-p)
         (e-graphical-test-capture-state
          (format "timeout-%s" (or description "graphical-ui-state"))))

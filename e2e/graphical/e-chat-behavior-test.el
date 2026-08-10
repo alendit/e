@@ -50,6 +50,20 @@
          (window-live-p composer-window)
          (cons transcript-window composer-window))))
 
+(defun e-chat-behavior-test--fixture-windows (fixture)
+  "Resolve and retain FIXTURE's current composed-surface windows.
+Window objects are presentation state: native redisplay and perspective
+restoration may rebuild an equivalent atom and reuse an old window object for
+another buffer.  The transcript and composer buffers are the stable fixture
+identity, so every settled transition resolves the current pair from them."
+  (let* ((transcript (plist-get fixture :transcript))
+         (windows (and (buffer-live-p transcript)
+                       (e-chat-behavior-test--surface-windows transcript))))
+    (should windows)
+    (plist-put fixture :transcript-window (car windows))
+    (plist-put fixture :composer-window (cdr windows))
+    windows))
+
 (defun e-chat-behavior-test--window-mode-line-text (window)
   "Return WINDOW's rendered mode-line text after graphical redisplay."
   (redisplay t)
@@ -85,13 +99,12 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (with-current-buffer transcript
               (null (e-ui-work-pending (current-buffer))))))
      2.0 "settled composed chat surface")
-    (let ((windows (e-chat-behavior-test--surface-windows transcript)))
-      (list :stream stream
-            :harness harness
-            :session-id session-id
-            :transcript transcript
-            :transcript-window (car windows)
-            :composer-window (cdr windows)))))
+    (let ((fixture (list :stream stream
+                         :harness harness
+                         :session-id session-id
+                         :transcript transcript)))
+      (e-chat-behavior-test--fixture-windows fixture)
+      fixture)))
 
 (defun e-chat-behavior-test--cleanup (fixture configuration frame-size)
   "Clean FIXTURE and restore CONFIGURATION and FRAME-SIZE."
@@ -109,7 +122,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
 
 (defun e-chat-behavior-test--submit (fixture prompt)
   "Type and submit PROMPT through FIXTURE's composer command loop."
-  (select-window (plist-get fixture :composer-window))
+  (select-window (cdr (e-chat-behavior-test--fixture-windows fixture)))
   (e-graphical-test-type-text prompt)
   (e-graphical-test-send-keys "C-c C-c")
   (e-graphical-test-wait-until
@@ -125,8 +138,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
     (condition-case err
         (e-graphical-test-wait-until
          (lambda ()
-           (with-current-buffer transcript
-             (string-match-p (regexp-quote needle) (buffer-string))))
+           (and (with-current-buffer transcript
+                  (string-match-p (regexp-quote needle) (buffer-string)))
+                (e-chat-behavior-test--surface-windows transcript)))
          2.0 (format "transcript text %S" needle))
       (error
        (ert-fail
@@ -190,7 +204,8 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                         e-ui-work--pending-jobs))
                   (buffer-substring-no-properties
                    (max (point-min) (- (point-max) 2000))
-                   (point-max)))))))))
+                   (point-max)))))))
+    (e-chat-behavior-test--fixture-windows fixture)))
 
 (defun e-chat-behavior-test--finish (fixture answer)
   "Finish FIXTURE's active turn with ANSWER and wait for settlement."
@@ -206,13 +221,16 @@ Return a plist containing its stream, harness, transcript, and visible windows."
           (with-current-buffer (plist-get fixture :transcript)
             (and (string-match-p (regexp-quote answer) (buffer-string))
                  (equal e-chat--status "done")
-                 (null (e-ui-work-pending (current-buffer)))))))
-   3.0 "settled assistant answer"))
+                 (null (e-ui-work-pending (current-buffer)))
+                 (e-chat-behavior-test--surface-windows
+                  (current-buffer))))))
+   3.0 "settled assistant answer")
+  (e-chat-behavior-test--fixture-windows fixture))
 
 (defun e-chat-behavior-test--assert-tail-near-bottom (fixture)
   "Assert that FIXTURE's visible transcript tail is near its window bottom."
   (let ((transcript (plist-get fixture :transcript))
-        (window (plist-get fixture :transcript-window)))
+        (window (car (e-chat-behavior-test--fixture-windows fixture))))
     (with-current-buffer transcript
       (redisplay t)
       (let* ((tail (point-max))
@@ -295,6 +313,28 @@ Return a plist containing its stream, harness, transcript, and visible windows."
         (kill-buffer after-buffer))
       (delete-directory directory t)
       (redisplay t))))
+
+(ert-deftest e-chat-behavior-test-settled-wait-crosses-event-loop ()
+  "A settled graphical wait observes pending native/timer transitions."
+  (skip-unless (display-graphic-p))
+  (let ((ready t)
+        fired
+        restore-timer)
+    (unwind-protect
+        (progn
+          (run-at-time
+           0 nil
+           (lambda ()
+             (setq fired t
+                   ready nil)
+             (setq restore-timer
+                   (run-at-time 0.01 nil (lambda () (setq ready t))))))
+          (e-graphical-test-wait-until
+           (lambda () ready) 1.0 "state stable after pending event")
+          (should fired)
+          (should ready))
+      (when (timerp restore-timer)
+        (cancel-timer restore-timer)))))
 
 (ert-deftest e-chat-behavior-test-focus-and-atomic-delete ()
   "Opening focuses the composer; C-x 0 closes the complete chat atom."

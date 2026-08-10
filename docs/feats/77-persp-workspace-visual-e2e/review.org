@@ -14,9 +14,10 @@ scenarios under a small non-Doom configuration.  They cover agent-owned buffer
 focus, chat-focused split/delete commands and round trips, and deletion of an
 actively updating chat perspective without changing the target perspective.
 
-The scenarios exposed production adapter and chat-shell defects as well as a
-source-isolation defect in the private runner.  All were fixed and have focused
-batch coverage.  The final hidden graphical suite passes all nine scenarios.
+The scenarios exposed production adapter and chat-shell defects as well as
+source-isolation and settled-state defects in the private runner.  All were
+fixed and have focused coverage.  The final hidden graphical suite passes all
+ten scenarios.
 
 * Scope reviewed
 
@@ -118,7 +119,35 @@ Workspace signatures compare frame-relative percentage geometry, buffer order,
 selection, perspective name, and atom membership.  Screenshot state sidecars
 continue to retain exact pixel and character viewport data for diagnosis.
 
+** Resolved: a true-once wait returned before native window restoration
+
+*** Problem
+
+The graphical wait helper returned as soon as its predicate was true.  A
+pending native redisplay or perspective transition could then rebuild the same
+chat atom and reuse the fixture's old window object for =*scratch*= on the next
+command.  Screenshot capture added an accidental extra event-loop cycle and
+made the failure disappear, so screenshot and normal runs disagreed.
+
+The chat fixture compounded this by retaining native window objects across
+asynchronous provider transitions even though transcript/composer buffers are
+the stable surface identity.
+
+*** Change
+
+=e-graphical-test-wait-until= now requires two successful observations across
+an event-loop and forced-redisplay boundary.  The chat fixture resolves the
+current transcript/composer pair from the stable transcript buffer after each
+settled transition, while still failing if either pane is absent.
+
 *** Evidence
+
+=e-chat-behavior-test-settled-wait-crosses-event-loop= starts from a
+momentarily true state, schedules a zero-delay invalidation, and proves the
+helper observes that event before returning.  The complete hidden graphical
+matrix then passed repeatedly without screenshot timing enabled.
+
+*** Visual evidence
 
 The final screenshot-enabled matrix passed all three workspace scenarios, and
 the inspected images showed the owner target, the external chat split, the
@@ -142,19 +171,20 @@ bash e2e/run-graphical-tests.sh
 #+end_src
 
 #+begin_example
-Ran 9 tests, 9 results as expected, 0 unexpected
-Graphical E2E complete: 9 tests, 0 unexpected.
+Ran 10 tests, 10 results as expected, 0 unexpected
+Graphical E2E complete: 10 tests, 0 unexpected.
 #+end_example
 
 #+begin_src sh
-eldev --source test test/e-chat-test.el test/e-workspaces-test.el
+env http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
+  no_proxy=127.0.0.1,localhost eldev --source test
 eldev compile
 git diff --check
 bash -n e2e/run-graphical-tests.sh
 #+end_src
 
 #+begin_example
-Ran 356 tests, 355 results as expected, 0 unexpected, 1 optional Markdown skip.
+Ran 2018 tests, 2016 results as expected, 0 unexpected, 2 optional skips.
 Compilation finished successfully.
 Whitespace and shell syntax checks passed.
 #+end_example
