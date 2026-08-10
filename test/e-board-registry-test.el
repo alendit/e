@@ -620,6 +620,24 @@
           (should (= (length (e-board-publication-pickup-ids new-publication))
                      1)))))))
 
+(ert-deftest e-board-registry-test-replacement-forwards-processing-policy ()
+  "Registry replacement forwards explicitly supplied processing policy fields."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant board :id "member"))
+           (old (e-board-registry-install-subscription
+                 board participant '(:tags (old)) :id "old"))
+           (replacement
+            (e-board-registry-replace-subscription
+             board "old" '(:tags (new)) :id "new"
+             :delivery 'process :priority 10 :self-delivery t
+             :failure-policy 'consume)))
+      (should (eq (e-board-subscription-state old) 'cancelled))
+      (should (eq (e-board-subscription-delivery replacement) 'process))
+      (should (= (e-board-subscription-priority replacement) 10))
+      (should (e-board-subscription-self-delivery replacement))
+      (should (eq (e-board-subscription-failure-policy replacement) 'consume)))))
+
 (ert-deftest e-board-registry-test-attached-client-owns-observer-cursor ()
   "Observation is available only through a board-local attached client."
   (e-board-registry-test--with-empty-registries

@@ -52,6 +52,26 @@
                        1))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-board-log-keeps-colliding-record-kinds-across-restart ()
+  "Board messages and processing records share raw ids without journal loss."
+  (let ((directory (make-temp-file "e-session-board-collision-" t)))
+    (unwind-protect
+        (let ((store (e-session-persistent-store-create directory)))
+          (e-session-create store :id "board-session")
+          (dolist (envelope '((:id "shared" :kind output)
+                              (:id "shared" :record-type processing-chain)
+                              (:id "shared" :record-type processing-result)))
+            (e-session-append-board-message store "board-session" envelope))
+          (e-session-flush-write-queue store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal
+                     (mapcar #'e-session--board-message-identity
+                             (e-session-board-messages reopened "board-session"))
+                     '((board-message . "shared")
+                       (processing-chain . "shared")
+                       (processing-result . "shared"))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-append-message-preserves-order ()
   "Messages are returned in insertion order."
   (let ((store (e-session-store-create)))

@@ -1742,7 +1742,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                 (e-session--normalize-board-message
                  (copy-tree (plist-get record :message)))))
            (e-session--prepend-replayed-item session :board-messages message)
-           (puthash (plist-get message :id) t
+           (puthash (e-session--board-message-identity message) t
                     (or (plist-get session :board-message-id-index)
                         (let ((index (make-hash-table :test 'equal)))
                           (plist-put session :board-message-id-index index)
@@ -2425,6 +2425,14 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
   "Return SESSION-ID's durable board envelopes in board order."
   (copy-tree (plist-get (e-session-get store session-id) :board-messages)))
 
+(defun e-session--board-message-identity (message)
+  "Return the durable journal identity for board MESSAGE.
+Processing records have a record type, while ordinary board messages occupy the
+untyped board-message namespace.  The pair prevents equal raw ids from
+silently replacing records from another namespace."
+  (cons (or (plist-get message :record-type) 'board-message)
+        (plist-get message :id)))
+
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board MESSAGE envelope to SESSION-ID's board log."
   (let* ((session (e-session-get store session-id))
@@ -2432,11 +2440,12 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
          (index (or (plist-get session :board-message-id-index)
                     (let ((created (make-hash-table :test 'equal)))
                       (dolist (current (plist-get session :board-messages))
-                        (puthash (plist-get current :id) t created))
+                        (puthash (e-session--board-message-identity current)
+                                 t created))
                       (plist-put session :board-message-id-index created)
                       created))))
-    (unless (gethash (plist-get message :id) index)
-      (puthash (plist-get message :id) t index)
+    (unless (gethash (e-session--board-message-identity message) index)
+      (puthash (e-session--board-message-identity message) t index)
       (e-session--append-list-item session :board-messages message)
       (e-session--touch store session (e-session--timestamp))
       (e-session--append-record

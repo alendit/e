@@ -35,6 +35,31 @@
         (should (e-board-subscription-self-delivery replacement))
         (should (eq (e-board-subscription-failure-policy replacement) 'consume))))))
 
+(ert-deftest e-board-processing-test-invalid-replacement-preserves-active-subscription ()
+  "An invalid replacement must not cancel the active subscription."
+  (e-board-processing-test--with-board
+    (let ((subscription
+           (e-board-subscribe board "processor" '(:tags (old)) :id "old")))
+      (should-error
+       (e-board-replace-subscription board "old" '(:tags (new)) :priority 1)
+       :type 'e-board-error)
+      (should (eq (e-board-subscription-state subscription) 'active))
+      (should (eq (e-board-find-subscription board "old") subscription)))))
+
+(ert-deftest e-board-processing-test-priority-order-is-stable-by-subscription-id ()
+  "Processing subscriptions sort by descending priority then subscription id."
+  (e-board-processing-test--with-board
+    (let ((low (e-board-subscribe board "processor" '(:tags (x)) :id "z"
+                                 :delivery 'process :priority 1))
+          (first (e-board-subscribe board "processor" '(:tags (x)) :id "a"
+                                   :delivery 'process :priority 10))
+          (second (e-board-subscribe board "processor" '(:tags (x)) :id "b"
+                                    :delivery 'process :priority 10)))
+      (should (equal (mapcar #'e-board-subscription-id
+                             (e-board-order-processing-subscriptions
+                              (list low second first)))
+                     '("a" "b" "z"))))))
+
 (ert-deftest e-board-processing-test-invalid-subscription-combinations ()
   "Processing-only fields reject incompatible declarations and bad bounds."
   (e-board-processing-test--with-board

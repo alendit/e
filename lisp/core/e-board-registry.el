@@ -1095,18 +1095,27 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
 
 (cl-defun e-board-registry-replace-subscription
     (board-or-id subscription-id selector &key id (effect nil effect-supplied-p)
+                 (delivery nil delivery-supplied-p)
+                 (priority nil priority-supplied-p)
+                 (self-delivery nil self-delivery-supplied-p)
+                 (failure-policy nil failure-policy-supplied-p)
                  (state 'active))
-  "Replace ordinary SUBSCRIPTION-ID with SELECTOR on active BOARD-OR-ID.
-The core retains the existing participant and default effect when EFFECT is
-omitted; this registry supplies only the board-local replacement identity."
+  "Replace SUBSCRIPTION-ID with SELECTOR on active BOARD-OR-ID.
+The core retains omitted subscription policy fields; this registry supplies
+only the board-local replacement identity."
   (let* ((board (e-board-registry--require-active board-or-id))
          (arguments
           (list :id (or id (e-board-registry--next-id
                             (e-board-registry-board-id-function board)
                             'subscription))
                 :state state)))
-    (when effect-supplied-p
-      (setq arguments (append arguments (list :effect effect))))
+    (dolist (field `((,effect-supplied-p :effect ,effect)
+                     (,delivery-supplied-p :delivery ,delivery)
+                     (,priority-supplied-p :priority ,priority)
+                     (,self-delivery-supplied-p :self-delivery ,self-delivery)
+                     (,failure-policy-supplied-p :failure-policy ,failure-policy)))
+      (when (car field)
+        (setq arguments (append arguments (cdr field)))))
     (apply #'e-board-replace-subscription
            (e-board-registry-board-source-board board)
            subscription-id selector arguments)))

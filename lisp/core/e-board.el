@@ -1655,6 +1655,19 @@ restricted to input records."
         (e-board--queue-subscription-replay board subscription start-seq))
       subscription)))
 
+(defun e-board-order-processing-subscriptions (subscriptions)
+  "Return processing SUBSCRIPTIONS in deterministic delivery order.
+Higher priority runs first.  Equal priorities order by printable subscription
+identity, so replay does not depend on hash-table or registration traversal."
+  (sort (copy-sequence subscriptions)
+        (lambda (left right)
+          (let ((left-priority (e-board-subscription-priority left))
+                (right-priority (e-board-subscription-priority right)))
+            (if (= left-priority right-priority)
+                (string< (format "%s" (e-board-subscription-id left))
+                         (format "%s" (e-board-subscription-id right)))
+              (> left-priority right-priority))))))
+
 (defun e-board--tags-match-p (selector message)
   "Return non-nil when SELECTOR's tag clauses match MESSAGE."
   (let ((tags (e-board-message-tags message))
@@ -2165,11 +2178,24 @@ subscription records the relationship without rewriting its terminal state."
              (replacement-lifetime
               (if lifetime-supplied-p lifetime
                 (e-board-subscription-lifetime subscription))))
+        (setq replacement-priority
+              (if (and (eq replacement-delivery 'process)
+                       (null replacement-priority))
+                  0
+                replacement-priority)
+              replacement-failure-policy
+              (if (and (eq replacement-delivery 'process)
+                       (null replacement-failure-policy))
+                  'pass
+                replacement-failure-policy))
         (unless (or (eq replacement-effect 'create-pickup)
                     (and (listp replacement-effect)
                          (eq (car replacement-effect) :post-input)))
           (signal 'e-board-error
                   (list "Unsupported board effect" replacement-effect)))
+        (e-board--validate-subscription-delivery
+         replacement-effect replacement-delivery replacement-priority
+         replacement-self-delivery replacement-failure-policy)
         (e-board--validate-continuation-readiness
          replacement-effect replacement-readiness)
         (when replacement-firing-limit

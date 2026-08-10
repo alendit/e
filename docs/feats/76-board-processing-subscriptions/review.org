@@ -3,8 +3,8 @@
 
 * Status
 
-In-review.  Slice 1 is implemented, but this review found unresolved contract
-and persistence defects.
+In-review.  The implementation findings below are resolved; the parent retains
+the final independent-review verdict.
 
 * Review summary
 
@@ -31,7 +31,7 @@ policy fields, and deterministic priority ordering is not represented or tested.
 
 * Findings
 
-** TODO High: Validate replacements before cancelling the active subscription
+** DONE High: Validate replacements before cancelling the active subscription
 
 =e-board-replace-subscription= cancels the old subscription at
 =lisp/core/e-board.el:2190=, then delegates validation and creation to
@@ -44,7 +44,7 @@ subscription, or construct the replacement transactionally and publish it only
 after every check passes.  Add a regression test that an invalid replacement
 leaves the old subscription active.
 
-** TODO High: Give processing records collision-safe durable identities
+** DONE High: Give processing records collision-safe durable identities
 
 Chains and results reject duplicate IDs only within separate board tables at
 =lisp/core/e-board.el:523= and line 562.  The session journal deduplicates every
@@ -57,7 +57,7 @@ Use a journal identity that includes record kind, or enforce one board-wide ID
 namespace shared with persisted messages.  Add session-backed persistence and
 restart tests for colliding raw IDs.
 
-** TODO Medium: Expose processing policy through registry replacement
+** DONE Medium: Expose processing policy through registry replacement
 
 =e-board-registry-install-subscription= forwards =:delivery=, =:priority=,
 =:self-delivery=, and =:failure-policy= at
@@ -69,7 +69,7 @@ processing policy through the registry boundary.
 Add supplied-p arguments for all four fields and forward only explicitly
 provided values, matching the core replacement API.
 
-** TODO Medium: Represent and test deterministic processing order
+** DONE Medium: Represent and test deterministic processing order
 
 The implementation validates and stores priority at
 =lisp/core/e-board.el:1541= and line 1631, but it defines no ordering helper or
@@ -83,15 +83,14 @@ consume that contract without redefining it.
 
 * Plan coverage
 
-- Delivery mode, priority, self-delivery, and failure policy fields: partial;
-  core creation works, registry replacement is incomplete.
-- Immutable processing records: partial; in-memory records freeze mutable
-  fields, but durable identity collisions can lose records.
-- Creation/replacement validation: partial; creation validates, replacement is
-  not transactional.
-- Normal compatibility: focused legacy board suites pass.
-- Exit criteria: defaults and invalid combinations pass; ordering and
-  session-backed persistence/restart coverage are incomplete.
+- Delivery mode, priority, self-delivery, and failure policy fields: complete;
+  creation and core and registry replacement preserve supplied policy.
+- Immutable processing records: complete for Slice 1; durable journal identity
+  includes record kind and retains raw-ID collisions through restart.
+- Creation/replacement validation: complete; invalid replacement leaves the
+  active subscription unchanged.
+- Normal compatibility and Slice 1 exit criteria: covered by focused and
+  affected legacy tests.
 
 * Architecture review
 
@@ -101,7 +100,33 @@ persistence side effects outside board policy.  The shared journal identity
 contract is the main boundary defect: board-local record tables and the session
 journal currently disagree about uniqueness.
 
+* Resolution evidence
+
+- Invalid replacement validates the complete inherited and supplied declaration
+  before cancelling the active route.  The regression test proves a normal
+  subscription remains active after an invalid processing-only priority.
+- The session board journal now deduplicates on =(record-type . id)=, with
+  =board-message= as the ordinary message namespace.  A persistent restart
+  test retains a message, chain, and result that use the same raw ID.
+- Registry replacement accepts supplied-p =:delivery=, =:priority=,
+  =:self-delivery=, and =:failure-policy= fields and forwards only fields the
+  caller supplied.  The regression test replaces a normal route with a
+  processing route and verifies all four stored policy values.
+- =e-board-order-processing-subscriptions= defines descending priority then
+  ascending printable subscription-ID ordering.  The regression test covers
+  priority ordering and equal-priority ID tie-breaking.
+
+* Verification
+
+- =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
+  test/e-board-processing-subscription-test.el -f test/e-session-test.el=:
+  182/182 passed.
+- =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
+  lisp/core/e-session.el=: passed with warnings treated as errors.
+- =git diff --check=: passed.
+
 * Completion
 
-Slice 1 remains in review until all four findings are resolved and focused tests
-cover each regression.  Slices 2 through 5 remain out of scope for this review.
+All reported implementation findings have resolution evidence.  Slice 1 remains
+in review pending the parent independent-review verdict.  Slices 2 through 5
+remain out of scope for this review.
