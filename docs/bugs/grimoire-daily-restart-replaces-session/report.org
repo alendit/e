@@ -12,4 +12,3 @@ pane was absent even though opening a Grimoire daily should focus that pane.
 
 The user explicitly reported these as independent from the graphical E2E suite
 failure being fixed at the same time.
-

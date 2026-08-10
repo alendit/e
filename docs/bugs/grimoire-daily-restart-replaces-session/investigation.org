@@ -62,4 +62,3 @@ For the composer symptom, capture the selected chat's composer buffer, visible
 window pair, loaded function source, and activation-hook membership before any
 reload.  The existing graphical screenshot/state tools can then reproduce the
 same display transition outside the user's desktop.
-
