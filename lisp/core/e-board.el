@@ -221,7 +221,9 @@
   participants subscriptions subscriptions-tail subscription-count
   subscription-index-table subscription-id-table
   processing-chains-internal processing-chains-tail-internal processing-chain-table-internal
+  processing-chain-reservations
   processing-results-internal processing-results-tail-internal processing-result-table-internal
+  processing-result-reservations
   processing-record-notification-function
   observers pickups source-high-watermarks source-recent work-table invocations aggregations
   pending-effects pending-effects-tail effects-scheduled
@@ -395,9 +397,11 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                  :processing-chains-internal nil
                  :processing-chains-tail-internal nil
                  :processing-chain-table-internal (make-hash-table :test 'equal)
+                 :processing-chain-reservations (make-hash-table :test 'equal)
                  :processing-results-internal nil
                  :processing-results-tail-internal nil
                  :processing-result-table-internal (make-hash-table :test 'equal)
+                 :processing-result-reservations (make-hash-table :test 'equal)
                  :processing-record-notification-function
                  processing-record-notification-function
                  :observers (make-hash-table :test 'equal)
@@ -538,36 +542,47 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
   "Persist immutable processing RECORD of TYPE before publishing it to BOARD.
 A callback failure leaves the ledger unchanged.  Retrying the same record is
 safe when the persistence adapter deduplicates its durable identity."
-  ;; The durable adapter must succeed before the in-memory ledger makes the id
-  ;; unavailable to a retry.
-  (unless e-board--processing-replay-p
-    (when-let ((notify (e-board-processing-record-notification-function board)))
-      (funcall notify board (e-board--copy-processing-record record) type)))
-  (pcase type
-    ('processing-chain
-     (puthash (e-board-processing-chain-id record) record
-              (e-board-processing-chain-table-internal board))
-     (let ((cell (list record)))
-       (if (e-board-processing-chains-tail-internal board)
-           (setcdr (e-board-processing-chains-tail-internal board) cell)
-         (setf (e-board-processing-chains-internal board) cell))
-       (setf (e-board-processing-chains-tail-internal board) cell)))
-    ('processing-result
-     (puthash (e-board-processing-result-id record) record
-              (e-board-processing-result-table-internal board))
-     (let ((cell (list record)))
-       (if (e-board-processing-results-tail-internal board)
-           (setcdr (e-board-processing-results-tail-internal board) cell)
-         (setf (e-board-processing-results-internal board) cell))
-       (setf (e-board-processing-results-tail-internal board) cell))))
-  (e-board--append-event
-   board type
-   (list :id (e-board--freeze-envelope-value
-              (pcase type
-                ('processing-chain (e-board-processing-chain-id record))
-                ('processing-result (e-board-processing-result-id record)))
-              'processing-record-id e-board-message-metadata-byte-limit)))
-  record)
+  (pcase-let* ((`(,id ,table ,reservations)
+                (pcase type
+                  ('processing-chain
+                   (list (e-board-processing-chain-id record)
+                         (e-board-processing-chain-table-internal board)
+                         (e-board-processing-chain-reservations board)))
+                  ('processing-result
+                   (list (e-board-processing-result-id record)
+                         (e-board-processing-result-table-internal board)
+                         (e-board-processing-result-reservations board))))))
+    (when (or (gethash id table) (gethash id reservations))
+      (signal 'e-board-id-conflict (list id)))
+    (puthash id t reservations)
+    (unwind-protect
+        (progn
+          ;; A reservation prevents a reentrant persistence callback from
+          ;; committing this ID before the outer durable append settles.
+          (unless e-board--processing-replay-p
+            (when-let ((notify (e-board-processing-record-notification-function board)))
+              (funcall notify board (e-board--copy-processing-record record) type)))
+          (pcase type
+            ('processing-chain
+             (puthash id record table)
+             (let ((cell (list record)))
+               (if (e-board-processing-chains-tail-internal board)
+                   (setcdr (e-board-processing-chains-tail-internal board) cell)
+                 (setf (e-board-processing-chains-internal board) cell))
+               (setf (e-board-processing-chains-tail-internal board) cell)))
+            ('processing-result
+             (puthash id record table)
+             (let ((cell (list record)))
+               (if (e-board-processing-results-tail-internal board)
+                   (setcdr (e-board-processing-results-tail-internal board) cell)
+                 (setf (e-board-processing-results-internal board) cell))
+               (setf (e-board-processing-results-tail-internal board) cell))))
+          (e-board--append-event
+           board type
+           (list :id (e-board--freeze-envelope-value
+                      id 'processing-record-id e-board-message-metadata-byte-limit)))
+          record)
+      (remhash id reservations))))
 
 (cl-defun e-board-record-processing-chain
     (board &key id root-message-id candidate-message-id caused-by-message-id
@@ -588,8 +603,6 @@ safe when the persistence adapter deduplicates its durable identity."
     (signal 'wrong-type-argument
             (list 'bounded-processor-history processor-history)))
   (let ((id (or id (e-board--next-id board 'processing-chain))))
-    (when (gethash id (e-board-processing-chain-table-internal board))
-      (signal 'e-board-id-conflict (list id)))
     (e-board--append-processing-record
      board
      (e-board-processing-chain--create
@@ -635,8 +648,6 @@ safe when the persistence adapter deduplicates its durable identity."
     (signal 'wrong-type-argument
             (list '(member pass consume) failure-policy)))
   (let ((id (or id (e-board--next-id board 'processing-result))))
-    (when (gethash id (e-board-processing-result-table-internal board))
-      (signal 'e-board-id-conflict (list id)))
     (e-board--append-processing-record
      board
      (e-board-processing-result--create

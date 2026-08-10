@@ -52,6 +52,22 @@
                        1))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-board-log-rejects-divergent-typed-envelope-retries ()
+  "A typed journal retry must exactly match the envelope it already appended."
+  (let ((store (e-session-store-create))
+        (first '(:id "chain" :record-type processing-chain
+                 :root-message-id "root" :created-at "fixed"))
+        (divergent '(:id "chain" :record-type processing-chain
+                     :root-message-id "other" :created-at "fixed")))
+    (e-session-create store :id "board-session")
+    (e-session-append-board-message store "board-session" first)
+    (e-session-append-board-message store "board-session" first)
+    (should-error
+     (e-session-append-board-message store "board-session" divergent)
+     :type 'e-session-board-message-conflict)
+    (should (equal (e-session-board-messages store "board-session")
+                   (list first)))))
+
 (ert-deftest e-session-test-board-log-keeps-colliding-record-kinds-across-restart ()
   "Board messages and processing records share raw ids without journal loss."
   (let ((directory (make-temp-file "e-session-board-collision-" t)))

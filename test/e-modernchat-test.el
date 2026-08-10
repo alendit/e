@@ -190,16 +190,23 @@ messages so the transcript reads as one clean answer."
          (e-board-record-processing-chain
           board :id "chain" :root-message-id "root"
           :candidate-message-id "candidate" :caused-by-message-id "root"
-          :processor-history nil :processing-depth 0))
+          :processor-history nil :processing-depth 0 :created-at 1))
         (should-not (e-board-list-processing-chains board))
         (should (equal (mapcar (lambda (record) (plist-get record :id))
                                (e-session-board-messages store session-id))
                        '("chain")))
+        (should-error
+         (e-board-record-processing-chain
+          board :id "chain" :root-message-id "root"
+          :candidate-message-id "other" :caused-by-message-id "root"
+          :processor-history nil :processing-depth 0 :created-at 1)
+         :type 'e-session-board-message-conflict)
+        (should-not (e-board-list-processing-chains board))
         (e-board-record-processing-chain
          board :id "chain" :root-message-id "root"
          :candidate-message-id "candidate" :caused-by-message-id "root"
-         :processor-history nil :processing-depth 0)
-        (should (= attempts 2))
+         :processor-history nil :processing-depth 0 :created-at 1)
+        (should (= attempts 3))
         (should (equal (mapcar #'e-board-processing-chain-id
                                (e-board-list-processing-chains board))
                        '("chain")))

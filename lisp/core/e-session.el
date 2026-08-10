@@ -30,6 +30,8 @@
   'e-session-missing)
 (define-error 'e-session-checkpoint-invalid
   "Session resume checkpoint is invalid")
+(define-error 'e-session-board-message-conflict
+  "Conflicting board message envelope")
 
 (defgroup e-session nil
   "Session storage for e."
@@ -1742,7 +1744,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                 (e-session--normalize-board-message
                  (copy-tree (plist-get record :message)))))
            (e-session--prepend-replayed-item session :board-messages message)
-           (puthash (e-session--board-message-identity message) t
+           (puthash (e-session--board-message-identity message) message
                     (or (plist-get session :board-message-id-index)
                         (let ((index (make-hash-table :test 'equal)))
                           (plist-put session :board-message-id-index index)
@@ -2441,18 +2443,25 @@ silently replacing records from another namespace."
                     (let ((created (make-hash-table :test 'equal)))
                       (dolist (current (plist-get session :board-messages))
                         (puthash (e-session--board-message-identity current)
-                                 t created))
+                                 current created))
                       (plist-put session :board-message-id-index created)
                       created))))
-    (unless (gethash (e-session--board-message-identity message) index)
-      (puthash (e-session--board-message-identity message) t index)
-      (e-session--append-list-item session :board-messages message)
-      (e-session--touch store session (e-session--timestamp))
-      (e-session--append-record
-       store session-id
-       (list :type "board-message" :session-id session-id
-             :message message)))
-    message))
+    (let* ((identity (e-session--board-message-identity message))
+           (existing (gethash identity index)))
+      (cond
+       ((null existing)
+        (puthash identity message index)
+        (e-session--append-list-item session :board-messages message)
+        (e-session--touch store session (e-session--timestamp))
+        (e-session--append-record
+         store session-id
+         (list :type "board-message" :session-id session-id
+               :message message)))
+       ((and (plist-get message :record-type)
+             (not (equal existing message)))
+        (signal 'e-session-board-message-conflict
+                (list identity existing message))))
+      message)))
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear SESSION-ID's durable board log and derived identity index."
