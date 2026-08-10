@@ -612,6 +612,22 @@ arrays and sometimes inverted key/value pairs."
                       (e-session--session-file store session-id)
                       t 'silent)))))
 
+(defun e-session--record-already-appended-p (store session-id record)
+  "Return non-nil when RECORD already occupies SESSION-ID's journal."
+  (let ((journal (e-session--session-file store session-id))
+        (encoded (json-encode record)))
+    (and (file-readable-p journal)
+         (with-temp-buffer
+           (insert-file-contents journal)
+           (goto-char (point-min))
+           (catch 'found
+             (while (not (eobp))
+               (when (string= encoded
+                              (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position)))
+                 (throw 'found t))
+               (forward-line 1)))))))
+
 (defun e-session--index-json (store)
   "Return STORE's current index JSON line."
   (concat (json-encode (vconcat (e-session-list store))) "\n"))
@@ -751,13 +767,16 @@ Ordering remains stable within each criticality class."
     (nconc (nreverse critical) (nreverse derived))))
 
 (defun e-session--flush-queued-records (store entries)
-  "Append queued ENTRIES, acknowledging each successful record write."
+  "Append queued ENTRIES, acknowledging each durable record write."
   (dolist (entry entries)
-    (e-session--append-record-now
-     store
-     (e-session--queued-entry-session-id entry)
-     (e-session--queued-entry-record entry))
-    (e-session--drop-queued-write-entry store entry)))
+    (let ((session-id (e-session--queued-entry-session-id entry))
+          (record (e-session--queued-entry-record entry)))
+      (condition-case error
+          (e-session--append-record-now store session-id record)
+        (error
+         (unless (e-session--record-already-appended-p store session-id record)
+           (signal (car error) (cdr error)))))
+      (e-session--drop-queued-write-entry store entry))))
 
 (defun e-session-flush-write-queue (store)
   "Synchronously flush queued persistent writes for STORE.
@@ -2461,7 +2480,7 @@ silently replacing records from another namespace."
              (not (equal existing message)))
         (signal 'e-session-board-message-conflict
                 (list identity existing message))))
-      message)))
+      (copy-tree (or existing message)))))
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear SESSION-ID's durable board log and derived identity index."

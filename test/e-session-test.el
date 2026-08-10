@@ -16,6 +16,7 @@
 (require 'e)
 (require 'e-dev-profile)
 (require 'e-session)
+(require 'e-board)
 
 (ert-deftest e-session-test-create-and-read ()
   "Sessions can be created and read by id."
@@ -67,6 +68,77 @@
      :type 'e-session-board-message-conflict)
     (should (equal (e-session-board-messages store "board-session")
                    (list first)))))
+
+(ert-deftest e-session-test-processing-journal-rejects-cross-record-reentrancy-in-order ()
+  "The live ledger and replay retain the same durable processing order."
+  (let ((directory (make-temp-file "e-session-processing-order-" t))
+        reentrant-error)
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "board-session"))
+          (e-session-create store :id session-id)
+          (let ((board
+                 (e-board-create
+                  :id "board"
+                  :processing-record-notification-function
+                  (lambda (callback-board record _type)
+                    (e-session-append-board-message
+                     store session-id
+                     (e-board-processing-record-envelope record))
+                    (condition-case error
+                        (e-board-record-processing-chain
+                         callback-board :id "nested" :root-message-id "root"
+                         :candidate-message-id "nested" :caused-by-message-id "root"
+                         :processor-history nil :processing-depth 0)
+                      (e-board-id-conflict
+                       (setq reentrant-error error)))))))
+            (e-board-record-processing-chain
+             board :id "outer" :root-message-id "root"
+             :candidate-message-id "outer" :caused-by-message-id "root"
+             :processor-history nil :processing-depth 0)
+            (should reentrant-error)
+            (should (equal (mapcar #'e-board-processing-chain-id
+                                   (e-board-list-processing-chains board))
+                           '("outer")))
+            (let* ((reopened (e-session-persistent-store-create directory))
+                   (restored (e-board-create :id "restored" :register nil)))
+              (dolist (envelope (e-session-board-messages reopened session-id))
+                (e-board-import-processing-record restored envelope))
+              (should (equal (mapcar #'e-board-processing-chain-id
+                                     (e-board-list-processing-chains restored))
+                             '("outer"))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-board-log-freezes-input-and-returned-envelopes ()
+  "Board journal state remains private across input and return-value mutation."
+  (let* ((directory (make-temp-file "e-session-board-freeze-" t))
+         (store (e-session-persistent-index-store-create directory :write-mode 'queued))
+         (nested (list "original"))
+         (envelope (list :id "frozen" :attributes (list :nested nested))))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "board-session")
+          (let ((returned (e-session-append-board-message
+                           store "board-session" envelope)))
+            (setcar nested "caller mutation")
+            (setcar (plist-get (plist-get returned :attributes) :nested)
+                    "return mutation"))
+          (should (equal (plist-get
+                          (plist-get (car (e-session-board-messages
+                                           store "board-session"))
+                                     :attributes)
+                          :nested)
+                         '("original")))
+          (e-session-flush-write-queue store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal (plist-get
+                            (plist-get (car (e-session-board-messages
+                                             reopened "board-session"))
+                                       :attributes)
+                            :nested)
+                           '("original")))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-test-board-log-keeps-colliding-record-kinds-across-restart ()
   "Board messages and processing records share raw ids without journal loss."
@@ -615,6 +687,36 @@
                            '("session" "message" index)))
             (should-not (e-session-store-write-queue store))
             (should-not (e-session-store-index-write-pending store))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-flush-write-queue-settles-post-write-failure ()
+  "A record written before its error is not appended a second time."
+  (let* ((directory (make-temp-file "e-session-post-write-" t))
+         (store (e-session-persistent-index-store-create
+                 directory :write-mode 'queued))
+         (original-append (symbol-function 'e-session--append-record-now))
+         (failed nil))
+    (unwind-protect
+        (let* ((session (e-session-create store :id "post-write"))
+               (session-id (plist-get session :id)))
+          (e-session-append-board-message
+           store session-id
+           '(:id "chain" :record-type processing-chain :created-at "fixed"))
+          (cl-letf (((symbol-function 'e-session--append-record-now)
+                     (lambda (append-store append-session-id record)
+                       (funcall original-append append-store append-session-id record)
+                       (when (and (equal (plist-get record :type) "board-message")
+                                  (not failed))
+                         (setq failed t)
+                         (error "simulated post-write failure")))))
+            (e-session-flush-write-queue store))
+          (should failed)
+          (should-not (e-session-store-write-queue store))
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal (mapcar #'e-session--board-message-identity
+                                   (e-session-board-messages reopened session-id))
+                           '((processing-chain . "chain"))))))
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 

@@ -243,28 +243,38 @@ releases its reservation for the subsequent identical retry.
 
 * Fifth fix-point re-review findings
 
-** TODO High: Preserve ledger order across reentrant persistence callbacks
+** DONE High: Preserve ledger order across reentrant persistence callbacks
 
-When an outer record persists before its callback reentrantly commits a different
-record, the nested record enters the live ledger first while the durable journal
-contains outer then nested.  Restart therefore changes ledger order.  Make live
-publication follow reserved durable order, or forbid/requeue cross-record
-reentrancy.  Add live-versus-restart order coverage.
+A processing-record persistence callback now establishes a dynamic same-board
+persistence boundary.  A nested processing record is rejected before it can
+publish ahead of the outer record.  The direct board regression covers a
+different-ID nested chain.  The session-backed regression proves the live
+ledger and a reopened, replayed ledger both contain only the outer record.
 
-** TODO High: Make queued persistence robust to post-write failure
+** DONE High: Make queued persistence robust to post-write failure
 
-If the low-level append reaches disk and then signals, the queued entry remains
-and a later flush appends the same envelope again.  Reopen then sees duplicate
-typed records.  Queue settlement must recognize already-durable identical
-entries before retrying, with a test that injects a post-write failure.
+Queued flush now scans the target journal for the exact encoded record after an
+append error.  If the line reached disk before the error, the queue acknowledges
+it instead of retrying it.  The regression injects an error after writing a
+typed board envelope and verifies reopening finds exactly one envelope.
 
-** TODO High: Freeze the session board-journal boundary
+** DONE High: Freeze the session board-journal boundary
 
-=e-session-append-board-message= returns and retains aliased mutable envelope
-state.  Mutating caller nested values or the returned envelope can rewrite the
-in-memory journal and identity index, defeating duplicate checks and corrupting
-queued writes.  Freeze on input, retain private state, and return detached
-copies.  Add caller and return-value mutation tests.
+=e-session-append-board-message= deep-copies input before indexing, retention,
+and queued persistence.  It returns a detached copy of the retained envelope.
+The regression mutates both caller-owned nested input and the returned nested
+value, then verifies live and reopened journal state retain the original value.
+
+* Fifth fix-point resolution verification
+
+- =eldev test -f test/e-board-test.el -f test/e-session-test.el=: 149/149
+  passed.
+- =eldev test -f test/e-board-registry-test.el -f
+  test/e-board-processing-subscription-test.el -f test/e-modernchat-test.el=:
+  61/61 passed.
+- =eldev compile -W lisp/core/e-board.el lisp/core/e-session.el
+  lisp/core/e-chat-service.el=: passed with warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 

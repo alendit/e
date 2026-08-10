@@ -51,6 +51,33 @@
                             (mapcar #'e-board-event-type (e-board-events board)))
                    1))))))
 
+(ert-deftest e-board-test-processing-record-rejects-cross-record-reentrancy ()
+  "A callback cannot publish a later record before its durable predecessor."
+  (e-board-test--with-empty-registry
+    (let (reentrant-error)
+      (let ((board
+             (e-board-create
+              :id "board"
+              :processing-record-notification-function
+              (lambda (callback-board _record _type)
+                (condition-case error
+                    (e-board-record-processing-chain
+                     callback-board :id "nested" :root-message-id "root"
+                     :candidate-message-id "nested" :caused-by-message-id "root"
+                     :processor-history nil :processing-depth 0)
+                  (e-board-id-conflict
+                   (setq reentrant-error error)))))))
+        (e-board-record-processing-chain
+         board :id "outer" :root-message-id "root"
+         :candidate-message-id "outer" :caused-by-message-id "root"
+         :processor-history nil :processing-depth 0)
+        (should reentrant-error)
+        (should (equal (mapcar #'e-board-processing-chain-id
+                               (e-board-list-processing-chains board))
+                       '("outer")))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(processing-chain)))))))
+
 (ert-deftest e-board-test-generated-and-injected-identities ()
   "Board creation and member creation support deterministic identities."
   (e-board-test--with-empty-registry

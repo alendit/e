@@ -477,6 +477,9 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
 (defvar e-board--processing-replay-p nil
   "Non-nil while restoring processing records without persistence notification.")
 
+(defvar e-board--processing-persistence-board nil
+  "Board whose processing-record persistence callback is currently running.")
+
 (defun e-board--copy-processing-record (record)
   "Return a detached copy of retained processing RECORD."
   (cond
@@ -552,16 +555,18 @@ safe when the persistence adapter deduplicates its durable identity."
                    (list (e-board-processing-result-id record)
                          (e-board-processing-result-table-internal board)
                          (e-board-processing-result-reservations board))))))
-    (when (or (gethash id table) (gethash id reservations))
+    (when (or (eq e-board--processing-persistence-board board)
+              (gethash id table)
+              (gethash id reservations))
       (signal 'e-board-id-conflict (list id)))
     (puthash id t reservations)
     (unwind-protect
         (progn
-          ;; A reservation prevents a reentrant persistence callback from
-          ;; committing this ID before the outer durable append settles.
+          ;; A nested record would publish before its outer durable predecessor.
           (unless e-board--processing-replay-p
             (when-let ((notify (e-board-processing-record-notification-function board)))
-              (funcall notify board (e-board--copy-processing-record record) type)))
+              (let ((e-board--processing-persistence-board board))
+                (funcall notify board (e-board--copy-processing-record record) type))))
           (pcase type
             ('processing-chain
              (puthash id record table)
