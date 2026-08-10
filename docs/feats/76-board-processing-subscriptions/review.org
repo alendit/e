@@ -241,8 +241,33 @@ releases its reservation for the subsequent identical retry.
   treated as errors.
 - =git diff --check=: passed.
 
+* Fifth fix-point re-review findings
+
+** TODO High: Preserve ledger order across reentrant persistence callbacks
+
+When an outer record persists before its callback reentrantly commits a different
+record, the nested record enters the live ledger first while the durable journal
+contains outer then nested.  Restart therefore changes ledger order.  Make live
+publication follow reserved durable order, or forbid/requeue cross-record
+reentrancy.  Add live-versus-restart order coverage.
+
+** TODO High: Make queued persistence robust to post-write failure
+
+If the low-level append reaches disk and then signals, the queued entry remains
+and a later flush appends the same envelope again.  Reopen then sees duplicate
+typed records.  Queue settlement must recognize already-durable identical
+entries before retrying, with a test that injects a post-write failure.
+
+** TODO High: Freeze the session board-journal boundary
+
+=e-session-append-board-message= returns and retains aliased mutable envelope
+state.  Mutating caller nested values or the returned envelope can rewrite the
+in-memory journal and identity index, defeating duplicate checks and corrupting
+queued writes.  Freeze on input, retain private state, and return detached
+copies.  Add caller and return-value mutation tests.
+
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the fourth
-fix-point review found the two issues above.  Slices 2 through 5 remain out of
+Earlier findings are resolved.  Slice 1 remains in review because the fifth
+fix-point review found the three issues above.  Slices 2 through 5 remain out of
 scope for this review.
