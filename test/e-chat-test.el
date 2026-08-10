@@ -1759,6 +1759,18 @@ must drop any revealed hidden blocks."
             (e-chat--after-display-buffer buffer)
             (should (eq e-chat--surface-composer-buffer composer))
             (should (= (length e-chat--surface-window-pairs) 1))
+            (should (eq (buffer-local-value
+                         'e-chat--surface-transcript-buffer composer)
+                        buffer))
+            (setq-local e-chat--mode-line-status
+                        "e-chat gpt-5.6-sol/high 18% (64k/353k tok)")
+            ;; Host mode-line packages may temporarily replace the transcript's
+            ;; display form during reload.  The composer projects semantic
+            ;; status and must never forward an evaluable form recursively.
+            (setq-local mode-name '(:eval (format-mode-line mode-name)))
+            (with-current-buffer composer
+              (should (equal (e-chat--surface-composer-mode-name)
+                             "e-chat gpt-5.6-sol/high 18%% (64k/353k tok)")))
             (should (= (length
                         (e-chat--surface-composer-windows
                          (window-frame transcript-window)))

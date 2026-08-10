@@ -21,6 +21,7 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-anthropic)
 (require 'evil)
 (require 'persp-mode)
 (setq persp-auto-save-opt 0
@@ -392,6 +393,21 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (e-chat-behavior-test--fixture-windows fixture)
             (should (eq (plist-get fixture :harness) retained))
             (should (eq (e-harness-backend retained) fresh-backend))
+            (let ((transcript (plist-get fixture :transcript))
+                  (composer
+                   (window-buffer (plist-get fixture :composer-window))))
+              (should (eq (buffer-local-value
+                           'e-chat--surface-transcript-buffer composer)
+                          transcript))
+              (with-current-buffer transcript
+                (setq-local e-chat--mode-line-status
+                            "e-chat gpt-5.6-sol/high 18% (64k/353k tok)")
+                (setq-local mode-name
+                            '(:eval (format-mode-line mode-name))))
+              (with-current-buffer composer
+                (should
+                 (equal (e-chat--surface-composer-mode-name)
+                        "e-chat gpt-5.6-sol/high 18%% (64k/353k tok)"))))
             (should (eq (selected-window)
                         (plist-get fixture :composer-window)))
             (with-current-buffer
@@ -433,15 +449,29 @@ Return a plist containing its stream, harness, transcript, and visible windows."
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-focused-composer-shows-model-context-fill ()
-  "The focused composer's visible mode line includes model and context fill."
+  "Async catalog fill reaches the focused composer's visible mode line."
   (skip-unless (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-anthropic--context-window-cache (make-hash-table :test 'equal))
+        (e-anthropic--context-window-refresh-requests
+         (make-hash-table :test 'equal))
+        (e-anthropic--context-window-failure-cache
+         (make-hash-table :test 'equal))
+        (catalog-calls 0)
         fixture)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-chat--model-context-window)
-                   (lambda (model)
-                     (and (equal model "gpt-5.6-sol") 353400))))
+        (cl-letf (((symbol-function 'e-anthropic--headers)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'e-anthropic--http-get-start)
+                   (lambda (&rest args)
+                     (cl-incf catalog-calls)
+                     (let ((complete (plist-get args :on-complete)))
+                       (run-at-time
+                        0.05 nil complete
+                        "{\"data\":[{\"id\":\"gpt-5.6-sol\",\"max_input_tokens\":353400}]}"))
+                     (e-backend-request-create
+                      :metadata '(:test graphical-catalog)))))
           (setq fixture (e-chat-behavior-test--open-surface))
           (let ((composer-window (plist-get fixture :composer-window)))
             (e-graphical-test-wait-until
@@ -498,6 +528,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                    (plist-get fixture :harness)
                    (plist-get fixture :session-id)))))))
             (should (eq (selected-window) composer-window))))
+          (should (= catalog-calls 1))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll ()

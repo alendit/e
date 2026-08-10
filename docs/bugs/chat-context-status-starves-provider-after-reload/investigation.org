@@ -1,0 +1,79 @@
+#+title: Investigation: chat context status starves provider after reload
+#+startup: overview
+
+* Evidence
+
+The newest durable session journal showed that board admission succeeded:
+each prompt produced =turn-started= and =provider-request-started=.  The
+=url-retrieve= request then finished with =status error= after approximately
+180 seconds.  A credential-free probe reached the configured gateway in 0.6
+seconds, and an isolated Emacs =url.el= probe reached it in the same time.
+
+The live graphical Emacs process remained at approximately 99 percent CPU.  A
+native stack sample showed recursive mode-line evaluation through Doom's major
+mode segment: =major-mode -> format-mode-line -> major-mode=.  The composed
+chat input buffer exposed =mode-name= as an evaluable form which forwarded the
+transcript's display form.  Reload could therefore leave the composer
+projection returning another evaluable mode-line form instead of a string.
+Redisplay and garbage collection then monopolized the Emacs main thread, so
+async URL callbacks could not make progress.
+
+The context-window path had a second main-thread violation.
+=e-anthropic-context-window= was documented and tested as cache-only but called
+a helper that synchronously fetched =/models= on a cache miss.  Its test fake
+raised an error that the implementation swallowed; the test asserted only the
+resulting =nil= and never asserted that transport was not called.  The
+graphical model/context test replaced =e-chat--model-context-window= with a
+constant, bypassing both the synchronous lookup and async cache completion.
+The graphical reload test exercised =e-chat-reload-buffers= but did not emulate
+Doom's nested =format-mode-line= behavior.
+
+* Fix
+
+- Make =e-anthropic-context-window= a literal in-memory cache lookup and remove
+  the obsolete synchronous catalog-fetch path.
+- Keep catalog refresh asynchronous, deduplicate in-flight requests, and apply
+  the failure cooldown to asynchronous refresh attempts.
+- Notify presentation consumers when a catalog is cached so visible chat
+  buffers recompute model/context status after the async result arrives.
+- Project the transcript's semantic =e-chat--mode-line-status= string into the
+  composer instead of forwarding its =mode-name= display form.
+- Rebind a retained composer to its distinct transcript and chat context at the
+  original surface attachment boundary on every reload.
+
+* Regression evidence
+
+The Anthropic cache tests now count transport starts and prove that ordinary
+context-window lookup starts zero requests.  Failure cooldown tests exercise
+the asynchronous refresh API.
+
+The composed-surface reload test proves retained composer ownership and proves
+that an evaluable transcript =mode-name= cannot escape through the composer.
+The graphical context test now starts from an empty real cache, completes a
+fake asynchronous =/models= response, submits through the board/backend path,
+and verifies the focused composer displays
+=gpt-5.6-sol/high 18% (64k/353k tok)=.  Screenshot sidecars record the exact
+rendered mode line.
+
+* Validation
+
+- Focused context-window tests: 8/8 passed.
+- Focused composed-surface reload test: passed.
+- Focused private-frame graphical tests: 2/2 passed with screenshot traces.
+- Changed-subsystem tests: 391 expected results, zero unexpected, one optional
+  Markdown-rendering skip.
+- Complete batch suite: 2,016 expected results, zero unexpected, two optional
+  skips across 2,018 tests.
+- Complete private-frame graphical suite: 11/11 passed.
+- Warning-as-error compilation of the changed production modules and
+  =git diff --check=: passed.
+
+* Design self-check
+
+The provider adapter owns catalog transport and now exposes only a cache read
+plus explicit asynchronous refresh.  The chat shell owns projection and
+rebinds its composer at the existing surface attachment boundary.  The only
+new state is an adapter update hook; it carries no catalog payload and exists
+only to invalidate derived presentation state.  No compatibility fallback or
+error swallowing was added, and the obsolete synchronous catalog path was
+removed.

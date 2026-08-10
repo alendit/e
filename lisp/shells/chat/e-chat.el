@@ -1476,10 +1476,18 @@ and / expands available prompts."
 (defun e-chat--surface-composer-mode-name ()
   "Return the transcript-owned mode-line status for this composer.
 The composer is the focused half of a composed chat surface, but model and
-context-fill state belongs to the transcript.  Project that existing value at
-display time so the two buffers cannot drift or maintain duplicate caches."
-  (if (buffer-live-p e-chat--surface-transcript-buffer)
-      (buffer-local-value 'mode-name e-chat--surface-transcript-buffer)
+context-fill state belongs to the transcript.  Project its semantic status
+cache, never its `mode-name' display form: Doom formats `mode-name' recursively,
+so forwarding another evaluable mode-line form creates an infinite redisplay
+cycle."
+  (if (and (buffer-live-p e-chat--surface-transcript-buffer)
+           (not (eq e-chat--surface-transcript-buffer (current-buffer))))
+      (let ((status
+             (buffer-local-value 'e-chat--mode-line-status
+                                 e-chat--surface-transcript-buffer)))
+        (if (stringp status)
+            (e-chat--mode-line-display-text status)
+          "e-chat"))
     "e-chat-input"))
 
 (define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
@@ -1562,24 +1570,36 @@ composer buffer; transcript rendering never calls it."
                    (min saved-point (point-max))
                  (point-max)))))
 
+(defun e-chat--surface-bind-composer (composer transcript)
+  "Bind COMPOSER to its distinct owning TRANSCRIPT and current chat context."
+  (unless (and (buffer-live-p composer)
+               (buffer-live-p transcript)
+               (not (eq composer transcript)))
+    (signal 'wrong-type-argument
+            (list 'distinct-live-chat-surface-buffers composer transcript)))
+  (with-current-buffer composer
+    (setq-local e-chat--surface-transcript-buffer transcript)
+    (setq-local e-current-harness
+                (buffer-local-value 'e-current-harness transcript))
+    (setq-local e-chat-harness
+                (buffer-local-value 'e-chat-harness transcript))
+    (setq-local e-chat-harness-instance-id
+                (buffer-local-value 'e-chat-harness-instance-id transcript))
+    (setq-local e-chat-session-id
+                (buffer-local-value 'e-chat-session-id transcript))
+    (setq-local e-chat--preview-buffer nil)
+    (setq-local default-directory
+                (buffer-local-value 'default-directory transcript)))
+  composer)
+
 (defun e-chat--surface-create-composer (transcript)
   "Create and return TRANSCRIPT's dedicated composer buffer."
   (let ((composer (generate-new-buffer
                    (format " *e-chat input:%s*" (buffer-name transcript)))))
     (with-current-buffer composer
-      (e-chat-composer-mode)
-      (setq-local e-chat--surface-transcript-buffer transcript)
-      (setq-local e-current-harness
-                  (buffer-local-value 'e-current-harness transcript))
-      (setq-local e-chat-harness
-                  (buffer-local-value 'e-chat-harness transcript))
-      (setq-local e-chat-harness-instance-id
-                  (buffer-local-value 'e-chat-harness-instance-id transcript))
-      (setq-local e-chat-session-id
-                  (buffer-local-value 'e-chat-session-id transcript))
-      (setq-local e-chat--preview-buffer nil)
-      (setq-local default-directory
-                  (buffer-local-value 'default-directory transcript))
+      (e-chat-composer-mode))
+    (e-chat--surface-bind-composer composer transcript)
+    (with-current-buffer composer
       (e-chat--surface-initialize-composer))
     composer))
 
@@ -7913,6 +7933,20 @@ until the gateway cache is populated or when MODEL is not listed."
               (e-anthropic-refresh-context-window-cache)))
           nil))))
 
+(defun e-chat--context-window-cache-updated (&rest _)
+  "Refresh visible chat status after an async model catalog update."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (derived-mode-p 'e-chat-mode)
+          (e-chat--invalidate-mode-line-context-estimate)
+          (setq-local e-chat--mode-line-status-dirty t)
+          (when (e-chat--redraw-visible-p)
+            (e-chat--request-mode-line-status-refresh nil t)))))))
+
+(add-hook 'e-anthropic-context-window-cache-updated-hook
+          #'e-chat--context-window-cache-updated)
+
 (defun e-chat--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."
   (e-context-status-context-token-estimate
@@ -8939,6 +8973,7 @@ When SESSION-ID is nil, create a private execution session for the participant."
                    (not same-session))
           (kill-buffer previous-surface-composer))
         (when (buffer-live-p surface-composer)
+          (e-chat--surface-bind-composer surface-composer buffer)
           (setq-local e-chat--surface-composer-buffer surface-composer))
         (e-chat--surface-ensure-composer))
       (e-buffer-set-workspace

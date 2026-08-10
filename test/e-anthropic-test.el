@@ -776,27 +776,14 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 (ert-deftest e-anthropic-test-context-window-cache-only-before-refresh ()
   "Context-window lookup does not fetch the gateway catalog synchronously."
   (e-anthropic-reset-context-window-cache)
-  (cl-letf (((symbol-function 'e-anthropic--http-get)
-             (lambda (&rest _)
-               (error "context-window lookup must not fetch synchronously"))))
-    (should-not (e-anthropic-context-window "claude-opus-4-8")))
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 (error "cache-only lookup must not start transport"))))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should (= calls 0))))
   (e-anthropic-reset-context-window-cache))
-
-(ert-deftest e-anthropic-test-sync-http-get-rejects-hot-path-before-url-retrieve ()
-  "The synchronous model-catalog GET fails before url.el in hot paths."
-  (let (started)
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (&rest _args)
-                 (setq started t)
-                 (error "url-retrieve-synchronously should not run"))))
-      (let ((err (should-error
-                  (e-request-with-hot-path 'anthropic-model-info
-                    (e-anthropic--http-get "https://example.test/model/info"
-                                           nil))
-                  :type 'e-request-blocking-call-in-hot-path)))
-        (should (equal (cdr err)
-                       '(e-anthropic--http-get anthropic-model-info))))
-      (should-not started))))
 
 (ert-deftest e-anthropic-test-sync-http-request-rejects-hot-path-before-start ()
   "The synchronous Messages HTTP wrapper fails before starting transport."
@@ -909,53 +896,63 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
   (e-anthropic-reset-context-window-cache))
 
 (ert-deftest e-anthropic-test-context-window-failure-is-negative-cached ()
-  "A failed gateway query is remembered, so repeated lookups query once."
+  "A failed async refresh is remembered, so repeated refreshes query once."
   (e-anthropic-reset-context-window-cache)
   (let ((calls 0)
         (e-anthropic-context-window-retry-cooldown 60))
     (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-              ((symbol-function 'e-anthropic--http-get)
-               (lambda (&rest _)
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
                  (cl-incf calls)
-                 (signal 'e-anthropic-backend-error '("boom")))))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
-      ;; The gateway is queried once; the cooldown suppresses the rest.
+                 (funcall (plist-get args :on-error)
+                          '(e-anthropic-backend-error "boom"))
+                 (e-backend-request-create :metadata '(:test error)))))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache)))
+      (should-not (e-anthropic-refresh-context-window-cache))
+      (should-not (e-anthropic-refresh-context-window-cache))
       (should (= calls 1))))
   (e-anthropic-reset-context-window-cache))
 
 (ert-deftest e-anthropic-test-context-window-retries-after-cooldown ()
-  "Once the failure cooldown elapses, the next lookup re-queries the gateway."
+  "Once the failure cooldown elapses, the next refresh re-queries the gateway."
   (e-anthropic-reset-context-window-cache)
   (let ((calls 0)
         (e-anthropic-context-window-retry-cooldown 60))
     (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-              ((symbol-function 'e-anthropic--http-get)
-               (lambda (&rest _)
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
                  (cl-incf calls)
-                 (signal 'e-anthropic-backend-error '("boom")))))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+                 (funcall (plist-get args :on-error)
+                          '(e-anthropic-backend-error "boom"))
+                 (e-backend-request-create :metadata '(:test error)))))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache)))
       (should (= calls 1))
       ;; Backdate the recorded failure beyond the cooldown window.
       (puthash 'gateway (- (float-time) 120)
                e-anthropic--context-window-failure-cache)
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache)))
       (should (= calls 2))))
   (e-anthropic-reset-context-window-cache))
 
 (ert-deftest e-anthropic-test-context-window-cooldown-zero-disables-negative-cache ()
-  "A zero cooldown disables negative caching and retries every lookup."
+  "A zero cooldown retries every asynchronous refresh."
   (e-anthropic-reset-context-window-cache)
   (let ((calls 0)
         (e-anthropic-context-window-retry-cooldown 0))
     (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-              ((symbol-function 'e-anthropic--http-get)
-               (lambda (&rest _)
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
                  (cl-incf calls)
-                 (signal 'e-anthropic-backend-error '("boom")))))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
-      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+                 (funcall (plist-get args :on-error)
+                          '(e-anthropic-backend-error "boom"))
+                 (e-backend-request-create :metadata '(:test error)))))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache)))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache)))
       (should (= calls 2))))
   (e-anthropic-reset-context-window-cache))
 

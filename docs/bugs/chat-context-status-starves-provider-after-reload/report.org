@@ -1,0 +1,9 @@
+#+title: Chat Context Status Starves Provider After Reload
+#+startup: overview
+
+* Report
+
+After restarting or reloading Emacs, every e chat backend request timed out at
+180 seconds, including requests from new chats.  The focused composer's model
+name and context-usage display also disappeared.  The running Emacs consumed a
+full CPU core while the failures repeated.
