@@ -146,6 +146,67 @@ messages so the transcript reads as one clean answer."
              (lambda () nil)))
     (should-error (e-modernchat--ensure-runtime) :type 'user-error)))
 
+(ert-deftest e-chat-service-test-processing-record-persistence-failure-retries-atomically ()
+  "A chat persistence failure leaves a processing record available for retry."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create
+                     :backend (e-backend-create :name "noop")
+                     :enabled-layer-ids nil))
+           (session (e-chat-service-create-session :harness harness :id "retry"))
+           (session-id (plist-get session :id))
+           (binding (e-chat-service-binding harness session-id))
+           (board (e-board-registry-board-source-board
+                   (e-chat-service-binding-board binding)))
+           (store (e-harness-sessions harness))
+           (append-function (symbol-function 'e-session-append-board-message))
+           (attempts 0))
+      (cl-letf (((symbol-function 'e-session-append-board-message)
+                 (lambda (&rest arguments)
+                   (setq attempts (1+ attempts))
+                   (let ((result (apply append-function arguments)))
+                     (if (= attempts 1)
+                         (error "simulated post-append failure")
+                       result)))))
+        (should-error
+         (e-board-record-processing-chain
+          board :id "chain" :root-message-id "root"
+          :candidate-message-id "candidate" :caused-by-message-id "root"
+          :processor-history nil :processing-depth 0))
+        (should-not (e-board-list-processing-chains board))
+        (should (equal (mapcar (lambda (record) (plist-get record :id))
+                               (e-session-board-messages store session-id))
+                       '("chain")))
+        (e-board-record-processing-chain
+         board :id "chain" :root-message-id "root"
+         :candidate-message-id "candidate" :caused-by-message-id "root"
+         :processor-history nil :processing-depth 0)
+        (should (= attempts 2))
+        (should (equal (mapcar #'e-board-processing-chain-id
+                               (e-board-list-processing-chains board))
+                       '("chain")))
+        (should (equal (mapcar (lambda (record) (plist-get record :id))
+                               (e-session-board-messages store session-id))
+                       '("chain")))))))
+
 (ert-deftest e-chat-service-test-submit-uses-bound-board-ingress ()
   "Shell-neutral submit posts only through its attached board participant."
   (let ((e-board--registry (make-hash-table :test 'equal))

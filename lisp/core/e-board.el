@@ -535,7 +535,14 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
    (t (signal 'wrong-type-argument (list 'e-board-processing-record-p record)))))
 
 (defun e-board--append-processing-record (board record type)
-  "Append immutable processing RECORD of TYPE to BOARD's durable ledger."
+  "Persist immutable processing RECORD of TYPE before publishing it to BOARD.
+A callback failure leaves the ledger unchanged.  Retrying the same record is
+safe when the persistence adapter deduplicates its durable identity."
+  ;; The durable adapter must succeed before the in-memory ledger makes the id
+  ;; unavailable to a retry.
+  (unless e-board--processing-replay-p
+    (when-let ((notify (e-board-processing-record-notification-function board)))
+      (funcall notify board (e-board--copy-processing-record record) type)))
   (pcase type
     ('processing-chain
      (puthash (e-board-processing-chain-id record) record
@@ -553,7 +560,6 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
            (setcdr (e-board-processing-results-tail-internal board) cell)
          (setf (e-board-processing-results-internal board) cell))
        (setf (e-board-processing-results-tail-internal board) cell))))
-  ;; Events and notifications must not share ledger-owned mutable values.
   (e-board--append-event
    board type
    (list :id (e-board--freeze-envelope-value
@@ -561,9 +567,6 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                 ('processing-chain (e-board-processing-chain-id record))
                 ('processing-result (e-board-processing-result-id record)))
               'processing-record-id e-board-message-metadata-byte-limit)))
-  (unless e-board--processing-replay-p
-    (when-let ((notify (e-board-processing-record-notification-function board)))
-      (funcall notify board (e-board--copy-processing-record record) type)))
   record)
 
 (cl-defun e-board-record-processing-chain
@@ -1640,9 +1643,10 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
   (unless (e-board--valid-continuation-readiness-p readiness)
     (signal 'e-board-error (list "Invalid continuation readiness" readiness))))
 
-(defun e-board--validate-subscription-id (id)
-  "Reject subscription ID that cannot persist and sort stably."
-  (unless (stringp id)
+(defun e-board--validate-subscription-id (id &optional processing-p)
+  "Validate subscription ID, requiring a durable string when PROCESSING-P.
+Normal subscriptions retain the legacy identifier contract."
+  (when (and processing-p (not (stringp id)))
     (signal 'wrong-type-argument (list 'stringp id)))
   id)
 
@@ -1728,7 +1732,7 @@ restricted to input records."
   (unless (memq state '(active muted))
     (signal 'wrong-type-argument (list '(member active muted) state)))
   (let ((id (or id (e-board--next-id board 'subscription))))
-    (e-board--validate-subscription-id id)
+    (e-board--validate-subscription-id id (eq delivery 'process))
     (setq id (e-board--freeze-envelope-value
               id 'subscription-id e-board-message-metadata-byte-limit))
     (when (e-board-find-subscription board id)
@@ -1771,7 +1775,10 @@ restricted to input records."
 Higher priority runs first.  Equal priorities order by durable string
 subscription IDs, so replay does not depend on traversal or input order."
   (dolist (subscription subscriptions)
-    (e-board--validate-subscription-id (e-board-subscription-id subscription)))
+    (unless (eq (e-board-subscription-delivery subscription) 'process)
+      (signal 'e-board-error (list "Processing order requires process delivery"
+                                   subscription)))
+    (e-board--validate-subscription-id (e-board-subscription-id subscription) t))
   (sort (copy-sequence subscriptions)
         (lambda (left right)
           (let ((left-priority (e-board-subscription-priority left))
@@ -2261,12 +2268,6 @@ subscription records the relationship without rewriting its terminal state."
     (when (e-board-subscription-built-in-p subscription)
       (signal 'e-board-error (list "Membership-owned subscription" subscription-id)))
     (let ((replacement-id (or id (e-board--next-id board 'subscription))))
-      (e-board--validate-subscription-id replacement-id)
-      (setq replacement-id (e-board--freeze-envelope-value
-                            replacement-id 'subscription-id
-                            e-board-message-metadata-byte-limit))
-      (when (e-board-find-subscription board replacement-id)
-        (signal 'e-board-id-conflict (list replacement-id)))
       ;; Validate the replacement before changing the old subscription.
       (unless (listp selector)
         (signal 'wrong-type-argument (list 'listp selector)))
@@ -2295,6 +2296,13 @@ subscription records the relationship without rewriting its terminal state."
              (replacement-lifetime
               (if lifetime-supplied-p lifetime
                 (e-board-subscription-lifetime subscription))))
+        (e-board--validate-subscription-id
+         replacement-id (eq replacement-delivery 'process))
+        (setq replacement-id
+              (e-board--freeze-envelope-value
+               replacement-id 'subscription-id e-board-message-metadata-byte-limit))
+        (when (e-board-find-subscription board replacement-id)
+          (signal 'e-board-id-conflict (list replacement-id)))
         (setq replacement-priority
               (if (and (eq replacement-delivery 'process)
                        (null replacement-priority))

@@ -60,15 +60,25 @@
                               (list low second first)))
                      '("a" "b" "z"))))))
 
+(ert-deftest e-board-processing-test-normal-subscription-symbol-id-remains-compatible ()
+  "Normal subscriptions retain their legacy non-string identifier contract."
+  (e-board-processing-test--with-board
+    (let ((subscription
+           (e-board-subscribe board "processor" '(:tags (normal))
+                              :id 'legacy-normal)))
+      (should (eq (e-board-subscription-id subscription) 'legacy-normal))
+      (should (eq (e-board-find-subscription board 'legacy-normal) subscription)))))
+
 (ert-deftest e-board-processing-test-subscription-ids-are-durable-strings ()
-  "Subscription ids reject values without a persistent total order."
+  "Processing subscription ids reject values without a persistent total order."
   (e-board-processing-test--with-board
     (should-error
      (e-board-subscribe board "processor" '(:tags (x)) :id 'symbol
                         :delivery 'process :priority 10)
      :type 'wrong-type-argument)
     (should-error
-     (e-board-subscribe board "processor" '(:tags (x)) :id 1)
+     (e-board-subscribe board "processor" '(:tags (x)) :id 1
+                        :delivery 'process :priority 10)
      :type 'wrong-type-argument)
     (let* ((first-id (copy-sequence "a"))
            (second-id (copy-sequence "b"))

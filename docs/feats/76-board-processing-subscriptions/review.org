@@ -121,11 +121,29 @@ journal currently disagree about uniqueness.
   accessors, and exported envelopes return detached copies.  The mutation
   regression verifies caller-owned timestamps and every public record path
   retain their pre-mutation values.
-- Subscription IDs are copied durable strings.  Equal-priority processing order
-  therefore has a replay-stable total key, and invalid symbol and numeric IDs
-  are rejected.
+- Processing subscription IDs are copied durable strings.  Equal-priority
+  processing order therefore has a replay-stable total key, while normal
+  subscriptions retain their legacy identifier compatibility.
+
+* Third fix-point resolution evidence
+
+- Normal subscriptions accept legacy symbol IDs unchanged.  Processing
+  subscriptions alone require durable string IDs, which preserves the existing
+  deterministic priority and ID ordering contract.
+- Processing record persistence runs before board ledger publication.  The
+  chat-service regression covers an error after the journal append, then proves
+  a retry creates one in-memory record and retains one deduplicated envelope.
 
 * Verification
+
+- =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
+  test/e-board-processing-subscription-test.el -f test/e-session-test.el -f
+  test/e-modernchat-test.el=: 204/204 passed.
+- =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
+  lisp/core/e-session.el=: passed with warnings treated as errors.
+- =git diff --check=: passed.
+
+* Earlier verification
 
 - =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
   test/e-board-processing-subscription-test.el -f test/e-session-test.el=:
@@ -164,34 +182,36 @@ verifies the retained ledger remains unchanged.
 
 ** DONE Medium: Constrain IDs or define a truly total persistent ordering key
 
-Subscription IDs are now durable strings, copied on entry before retention.
-Processing order uses that stable string identity after priority, so no
-process-local identity tie-breaker is needed.  The regression rejects symbols
-and numbers, proves caller mutation cannot alter a retained ID, and verifies
-reversed equal-priority inputs sort to the same order.
+Processing subscription IDs are durable strings, copied on entry before
+retention.  Processing order uses that stable string identity after priority, so
+no process-local identity tie-breaker is needed.  Normal subscriptions retain
+their legacy IDs.  The regression rejects processing symbols and numbers,
+proves caller mutation cannot alter a retained ID, and verifies reversed
+equal-priority inputs sort to the same order.
 
 * Third fix-point re-review findings
 
-** TODO High: Preserve ordinary subscription ID compatibility
+** DONE High: Preserve ordinary subscription ID compatibility
 
-The new subscription-ID validator rejects non-string IDs for every subscription,
-including normal routes that accepted symbols before Slice 1.  Restrict the
-stable-string requirement to processing subscriptions, or preserve the legacy
-normal path while deriving a deterministic processing-only ordering key.  Add a
-regression proving ordinary symbol IDs remain accepted and unchanged.
+The durable string requirement now applies only to =process= delivery.  Normal
+subscriptions retain their existing ID contract, including symbol IDs.  The
+processing ordering function accepts only processing subscriptions and keeps
+its deterministic string-ID tie-breaker.  The regression proves a normal symbol
+ID is retained unchanged and remains findable.
 
-** TODO High: Make processing-record persistence failure atomic or retryable
+** DONE High: Make processing-record persistence failure atomic or retryable
 
-The board appends a processing record and event before invoking the persistence
-notification.  If the callback signals, the public API reports failure although
-the record remains committed in memory; retry then conflicts while the journal
-may still lack the record.  Define the transaction boundary so notification
-failure either rolls the ledger append back or leaves an explicitly retryable,
-idempotent durable state.  Add failure/retry tests through the chat-service
-persistence adapter.
+The board invokes the processing-record persistence callback before appending
+the in-memory ledger record and event.  A callback failure therefore leaves the
+ledger ID available for a retry.  The chat-service adapter persists through the
+session journal's record-type-and-ID identity, so a retry after an uncertain
+post-append callback failure is idempotent: it commits the ledger record without
+duplicating the durable envelope.  The regression simulates that failure through
+the chat-service adapter, then retries and verifies one durable envelope and
+one ledger record.
 
 * Completion
 
-The prior findings are resolved, but Slice 1 remains in review because the third
-fix-point review found the two high-severity issues above.  Slices 2 through 5
-remain out of scope for this review.
+All third fix-point findings are resolved.  Slice 1 remains in review for the
+parent's final independent-review verdict.  Slices 2 through 5 remain out of
+scope for this review.
