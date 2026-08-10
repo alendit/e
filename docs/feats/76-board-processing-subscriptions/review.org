@@ -146,8 +146,30 @@ canonical key containing both ID type and printed representation.  The
 regression verifies string ="a"= and symbol =a= produce the same fixed order
 when supplied in either direction.
 
+* Fix-point re-review findings
+
+** TODO High: Keep retained processing records immutable through public access
+
+The board stores and returns mutable =cl-defstruct= records.  Public accessors
+and =e-board-processing-record-envelope= expose the retained object and identity
+strings, so callers can mutate committed ledger state after notification or
+persistence.  Caller-supplied =created-at= values are also retained directly.
+
+Keep mutable structs private and return frozen copies/envelopes, or use immutable
+plain values at the public boundary.  Add regressions that mutate returned
+records, exported envelopes, and caller-owned timestamps without changing the
+board ledger.
+
+** TODO Medium: Constrain IDs or define a truly total persistent ordering key
+
+The type-plus-printed-representation key still aliases distinct uninterned
+symbols with the same name.  Reversing those subscriptions reverses their sorted
+order.  Prefer constraining subscription IDs to stable persistent scalar types;
+otherwise no replay-stable tie-breaker exists for arbitrary identity objects.
+Add validation and tests for the chosen ID contract.
+
 * Completion
 
-All findings recorded in this review are resolved.  The parent retains the
-final independent-review verdict.  Slices 2 through 5 remain out of scope for
-this review.
+Earlier findings are resolved for stable string and interned-symbol IDs.  Slice
+1 remains in review because the fix-point re-review found the two issues above.
+Slices 2 through 5 remain out of scope for this review.
