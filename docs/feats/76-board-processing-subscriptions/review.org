@@ -210,8 +210,27 @@ duplicating the durable envelope.  The regression simulates that failure through
 the chat-service adapter, then retries and verifies one durable envelope and
 one ledger record.
 
+* Fourth fix-point re-review findings
+
+** TODO High: Reject divergent duplicate durable processing envelopes
+
+A persistence callback can append an envelope and then signal.  A retry with the
+same typed journal identity but different content is currently treated as a
+successful duplicate by the session journal.  The board can then commit the
+retry value while restart replays the first value.  Duplicate typed identities
+must be accepted only when their complete frozen envelopes match; otherwise
+signal a conflict.  Add post-append failure and divergent retry coverage.
+
+** TODO High: Reserve processing record IDs across persistence callbacks
+
+The board checks record uniqueness before calling the persistence callback but
+does not reserve the ID.  A reentrant callback can record the same typed ID,
+after which the outer operation appends a duplicate ledger entry and event.
+Reserve IDs before crossing the callback boundary and release reservations on
+failure.  Add a reentrant callback regression.
+
 * Completion
 
-All third fix-point findings are resolved.  Slice 1 remains in review for the
-parent's final independent-review verdict.  Slices 2 through 5 remain out of
+Earlier findings are resolved.  Slice 1 remains in review because the fourth
+fix-point review found the two issues above.  Slices 2 through 5 remain out of
 scope for this review.
