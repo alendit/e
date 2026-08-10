@@ -3,62 +3,77 @@
 
 * Session replacement finding
 
-The replacement is confirmed in persisted state.
+The replacement was confirmed in persisted state.
 
 - The committed daily property named =20260810T075004-2058eb1f5548=.
-- The working daily now names =20260810T153449-a65e7a8d0179=; that property
-  replacement is the only current diff at the top of the note.
-- The old session still exists.  Its persisted index reports 356 messages and
-  points to a roughly 10 MB JSONL log last updated at 11:30 UTC.
-- The old index entry has no board id or principal, and its JSONL contains no
+- The working daily had been changed to =20260810T153449-a65e7a8d0179=.
+- The old index entry reported 356 messages but had no board id or principal.
+- Its 3,947-record JSONL had neither a root =session= record nor a
   =board-session-state= record.
-- The new session has six messages and a persisted board id, principal, and
-  =board-session-state= record.
+- The replacement session had a normal root, board id, principal, and board
+  state record.
 
-The Grimoire project shell resumes a stored id only when
-=grimoire-topic--session-live-p= accepts it.  That function delegates to
-=e-chat-service-board-session-p=, which requires the persisted session record
-to contain a board id and principal.  If the check fails,
-=grimoire-topic--start-agentic-session= creates a session and immediately
-overwrites =E_SESSION= with the replacement.
+The malformed old log still contained 356 transcript messages and 2,603 board
+messages.  Every causal delivery id named exactly one board,
+=brd_01KZNACW713M7TE592Q73SWAMJ=, and its durable entry graph had exactly one
+missing parent, the absent root id =01KZNACW8P4M8AVXHJ9XDN6W1K=.  This made a
+strict offline repair possible without adding compatibility behavior to the
+runtime.
 
-The old log containing board messages but no durable board identity is
-consistent with a session produced by a partially updated or stale live
-runtime.  After restart, the current board-only contract correctly rejected
-that incomplete record, but the shell treated rejection as permission to
-replace the document's explicit reference.  The data was not lost; the old
-session file remains present.
+The Grimoire shell resumed a stored id only when
+=e-chat-service-board-session-p= accepted it.  If that check failed,
+=grimoire-topic--start-agentic-session= created a session and immediately
+overwrote =E_SESSION=.  That policy was independently wrong even for an
+unrecoverable session: an explicit document reference must not be silently
+overwritten.
 
 * Composer finding
 
-Current repository source still uses the pre-existing composer path:
+The project shell still uses the existing composed-chat path:
 
 - =grimoire-topic--display-doc-and-chat= selects the chat window and calls
   =e-chat--after-display-buffer=.
-- =e-chat--after-display-buffer= creates/displays the dedicated composer and
-  enters composer input state.
-- The focused Org Canvas regression and graphical perspective restoration test
-  exercise those existing paths.
+- =e-chat--after-display-buffer= displays the dedicated composer and enters its
+  input state.
 
-A bounded =emacsclient= probe could not inspect the screenshot's process because
-no Emacs server socket or main graphical Emacs process was available by the
-time of investigation.  Therefore the screenshot proves the missing pane, but
-there is not enough live evidence to say whether the restarted process loaded
-stale definitions, the Grimoire display callback was skipped, or a later host
-window restoration removed the pane.
+No live graphical Emacs process or server socket remained for a bounded probe
+of the screenshot's process.  The isolated graphical reload regression now
+proves that backend reconciliation keeps the existing composed surface,
+selected composer, and draft.  The repaired daily resumes through the ordinary
+=e-chat-open= and =e-chat--after-display-buffer= path; no alternate composer
+path was added.
 
-This composer symptom remains open and should not be attributed to the session
-replacement without a live scalar probe or isolated reproduction.
+* Fix
 
-* Next step
+The one-off =repair-board-session.py= beside this investigation validates one
+explicit session and board id, runs as a dry run by default, creates timestamped
+backups, then prepends only the missing root/state records and updates the
+derived index.
 
-Do not silently overwrite an explicit =E_SESSION= merely because it lacks the
-new board identity fields.  The compatibility decision belongs at the
-Grimoire/session boundary: either migrate a recoverable pre-board session or
-surface a confirmation/error that preserves the old id.  That change was not
-made during this diagnosis.
+It was first applied to a copied store.  Unmodified runtime replay then loaded
+all 356 transcript messages and 2,603 board messages.  The same validated
+migration repaired the offline user store, with backups created beside both
+changed files.
 
-For the composer symptom, capture the selected chat's composer buffer, visible
-window pair, loaded function source, and activation-hook membership before any
-reload.  The existing graphical screenshot/state tools can then reproduce the
-same display transition outside the user's desktop.
+The daily's =E_SESSION= property was restored to
+=20260810T075004-2058eb1f5548=.  Grimoire now raises a visible error and
+preserves the property when an explicit stored session cannot be resumed.  It
+creates a replacement only when the document has no stored session id.
+
+* Validation
+
+- The repaired real store loads the original root, board id, principal, 356
+  transcript messages, and 2,603 board envelopes using unmodified runtime
+  replay code.
+- =grimoire-topic-session-test-preserves-unresumable-explicit-session= passes.
+- =e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer= passes in
+  the private off-screen macOS frame.
+- The full Grimoire topic-session file passes all seven tests.
+
+* Design self-check
+
+The malformed data was repaired offline and the normal session format remains
+strict.  Grimoire owns the document-reference policy, so it now preserves an
+explicit id rather than treating a failed runtime lookup as permission to
+rewrite user state.  The one-off script is colocated with the bug evidence,
+requires explicit identities, and has no runtime call path.

@@ -8,7 +8,8 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | grimoire-daily-restart-replaces-session/ | Restarted Grimoire daily replaces its referenced session |
+| Closed | reload-replaced-harness-keeps-stale-backend/ | Reloaded chat keeps stale backend after harness replacement |
+| Closed | grimoire-daily-restart-replaces-session/ | Restarted Grimoire daily replaces its referenced session |
 | Closed | anthropic-cache-and-context-catalog/ | Anthropic Cache and Context Catalog |
 | Closed | e-chat-subscription-missing-registry-client/ | e-chat subscription timer reports missing registry client |
 | Closed | e-chat-output-follow-pin-unpin/ | e-chat output follow ignores composer-side scrollback |
