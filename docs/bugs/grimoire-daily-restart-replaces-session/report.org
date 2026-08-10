@@ -1,0 +1,15 @@
+#+title: Restarted Grimoire daily replaces its referenced session
+#+startup: overview
+
+* Report
+
+After restarting Emacs and opening the August 10 Grimoire daily, the shell
+created a new =Grimoire: Daily 2026-08-10= chat instead of resuming the session
+stored in the note's =E_SESSION= property.
+
+The newly displayed chat also appeared transcript-only: its dedicated composer
+pane was absent even though opening a Grimoire daily should focus that pane.
+
+The user explicitly reported these as independent from the graphical E2E suite
+failure being fixed at the same time.
+

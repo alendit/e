@@ -1,0 +1,65 @@
+#+title: Investigation: restarted Grimoire daily replaces its referenced session
+#+startup: overview
+
+* Session replacement finding
+
+The replacement is confirmed in persisted state.
+
+- The committed daily property named =20260810T075004-2058eb1f5548=.
+- The working daily now names =20260810T153449-a65e7a8d0179=; that property
+  replacement is the only current diff at the top of the note.
+- The old session still exists.  Its persisted index reports 356 messages and
+  points to a roughly 10 MB JSONL log last updated at 11:30 UTC.
+- The old index entry has no board id or principal, and its JSONL contains no
+  =board-session-state= record.
+- The new session has six messages and a persisted board id, principal, and
+  =board-session-state= record.
+
+The Grimoire project shell resumes a stored id only when
+=grimoire-topic--session-live-p= accepts it.  That function delegates to
+=e-chat-service-board-session-p=, which requires the persisted session record
+to contain a board id and principal.  If the check fails,
+=grimoire-topic--start-agentic-session= creates a session and immediately
+overwrites =E_SESSION= with the replacement.
+
+The old log containing board messages but no durable board identity is
+consistent with a session produced by a partially updated or stale live
+runtime.  After restart, the current board-only contract correctly rejected
+that incomplete record, but the shell treated rejection as permission to
+replace the document's explicit reference.  The data was not lost; the old
+session file remains present.
+
+* Composer finding
+
+Current repository source still uses the pre-existing composer path:
+
+- =grimoire-topic--display-doc-and-chat= selects the chat window and calls
+  =e-chat--after-display-buffer=.
+- =e-chat--after-display-buffer= creates/displays the dedicated composer and
+  enters composer input state.
+- The focused Org Canvas regression and graphical perspective restoration test
+  exercise those existing paths.
+
+A bounded =emacsclient= probe could not inspect the screenshot's process because
+no Emacs server socket or main graphical Emacs process was available by the
+time of investigation.  Therefore the screenshot proves the missing pane, but
+there is not enough live evidence to say whether the restarted process loaded
+stale definitions, the Grimoire display callback was skipped, or a later host
+window restoration removed the pane.
+
+This composer symptom remains open and should not be attributed to the session
+replacement without a live scalar probe or isolated reproduction.
+
+* Next step
+
+Do not silently overwrite an explicit =E_SESSION= merely because it lacks the
+new board identity fields.  The compatibility decision belongs at the
+Grimoire/session boundary: either migrate a recoverable pre-board session or
+surface a confirmation/error that preserves the old id.  That change was not
+made during this diagnosis.
+
+For the composer symptom, capture the selected chat's composer buffer, visible
+window pair, loaded function source, and activation-hook membership before any
+reload.  The existing graphical screenshot/state tools can then reproduce the
+same display transition outside the user's desktop.
+
