@@ -125,8 +125,27 @@ journal currently disagree about uniqueness.
   lisp/core/e-session.el=: passed with warnings treated as errors.
 - =git diff --check=: passed.
 
+* Independent re-review findings
+
+** TODO High: Freeze all processing record identities
+
+=e-board-record-processing-result= retains caller-owned identity values for the
+chain, subscription, participant, candidate message, and replacement message.
+=e-board-record-processing-chain= also retains the caller-owned record ID.
+Mutating those strings after commit changes the retained record and its exported
+envelope.  Freeze every retained identity on both record types and add mutation
+regressions for records and envelopes.
+
+** TODO Medium: Define a total ordering for heterogeneous subscription IDs
+
+=e-board-order-processing-subscriptions= compares only =(format "%s" id)=.
+Distinct valid IDs such as string ="a"= and symbol =a= have the same formatted
+key, so their result depends on input order.  Either constrain subscription IDs
+to one stable type or compare a canonical key that includes type and printed
+representation.  Add reverse-input tests proving one total order.
+
 * Completion
 
-All reported implementation findings have resolution evidence.  Slice 1 remains
-in review pending the parent independent-review verdict.  Slices 2 through 5
-remain out of scope for this review.
+The first four findings are resolved.  Slice 1 remains in review because the
+independent re-review found the two issues above.  Slices 2 through 5 remain out
+of scope for this review.
