@@ -113,39 +113,41 @@ journal currently disagree about uniqueness.
   caller supplied.  The regression test replaces a normal route with a
   processing route and verifies all four stored policy values.
 - =e-board-order-processing-subscriptions= defines descending priority then
-  ascending printable subscription-ID ordering.  The regression test covers
-  priority ordering and equal-priority ID tie-breaking.
+  ascending type-qualified subscription-ID ordering.  The regressions cover
+  priority ordering, equal-priority ID tie-breaking, and reverse input order
+  for distinct string and symbol IDs with the same printed text.
+- Processing chain and result records deep-copy every retained identity.  The
+  mutation regression verifies record accessors and exported envelopes retain
+  their pre-mutation values.
 
 * Verification
 
 - =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
   test/e-board-processing-subscription-test.el -f test/e-session-test.el=:
-  182/182 passed.
+  184/184 passed.
 - =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
   lisp/core/e-session.el=: passed with warnings treated as errors.
 - =git diff --check=: passed.
 
 * Independent re-review findings
 
-** TODO High: Freeze all processing record identities
+** DONE High: Freeze all processing record identities
 
-=e-board-record-processing-result= retains caller-owned identity values for the
-chain, subscription, participant, candidate message, and replacement message.
-=e-board-record-processing-chain= also retains the caller-owned record ID.
-Mutating those strings after commit changes the retained record and its exported
-envelope.  Freeze every retained identity on both record types and add mutation
-regressions for records and envelopes.
+=e-board-record-processing-chain= and =e-board-record-processing-result= now
+deep-copy every retained identity, including record, board, chain, subscription,
+participant, candidate, and replacement IDs.  The mutation regression changes
+the caller-owned strings after commit and verifies both retained records and
+exported envelopes preserve their original identities.
 
-** TODO Medium: Define a total ordering for heterogeneous subscription IDs
+** DONE Medium: Define a total ordering for heterogeneous subscription IDs
 
-=e-board-order-processing-subscriptions= compares only =(format "%s" id)=.
-Distinct valid IDs such as string ="a"= and symbol =a= have the same formatted
-key, so their result depends on input order.  Either constrain subscription IDs
-to one stable type or compare a canonical key that includes type and printed
-representation.  Add reverse-input tests proving one total order.
+=e-board-order-processing-subscriptions= now orders equal priorities by a
+canonical key containing both ID type and printed representation.  The
+regression verifies string ="a"= and symbol =a= produce the same fixed order
+when supplied in either direction.
 
 * Completion
 
-The first four findings are resolved.  Slice 1 remains in review because the
-independent re-review found the two issues above.  Slices 2 through 5 remain out
-of scope for this review.
+All findings recorded in this review are resolved.  The parent retains the
+final independent-review verdict.  Slices 2 through 5 remain out of scope for
+this review.

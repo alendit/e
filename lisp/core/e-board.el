@@ -526,7 +526,10 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
     (e-board--append-processing-record
      board
      (e-board-processing-chain--create
-      :id id :board-id (e-board-id board)
+      :id (e-board--freeze-envelope-value id 'processing-chain-id
+                                          e-board-message-metadata-byte-limit)
+      :board-id (e-board--freeze-envelope-value (e-board-id board) 'board-id
+                                                 e-board-message-metadata-byte-limit)
       :root-message-id
       (e-board--freeze-envelope-value root-message-id 'root-message-id
                                       e-board-message-metadata-byte-limit)
@@ -565,10 +568,26 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
     (e-board--append-processing-record
      board
      (e-board-processing-result--create
-      :id id :board-id (e-board-id board) :chain-id chain-id
-      :subscription-id subscription-id :participant-id participant-id
-      :candidate-message-id candidate-message-id :outcome outcome
-      :replacement-message-id replacement-message-id :failure-policy failure-policy
+      :id (e-board--freeze-envelope-value id 'processing-result-id
+                                          e-board-message-metadata-byte-limit)
+      :board-id (e-board--freeze-envelope-value (e-board-id board) 'board-id
+                                                 e-board-message-metadata-byte-limit)
+      :chain-id (e-board--freeze-envelope-value chain-id 'chain-id
+                                                e-board-message-metadata-byte-limit)
+      :subscription-id
+      (e-board--freeze-envelope-value subscription-id 'subscription-id
+                                      e-board-message-metadata-byte-limit)
+      :participant-id
+      (e-board--freeze-envelope-value participant-id 'participant-id
+                                      e-board-message-metadata-byte-limit)
+      :candidate-message-id
+      (e-board--freeze-envelope-value candidate-message-id 'candidate-message-id
+                                      e-board-message-metadata-byte-limit)
+      :outcome outcome
+      :replacement-message-id
+      (e-board--freeze-envelope-value replacement-message-id 'replacement-message-id
+                                      e-board-message-metadata-byte-limit)
+      :failure-policy failure-policy
       :failure (e-board--freeze-envelope-value failure 'processing-failure
                                                e-board-message-metadata-byte-limit)
       :created-at (or created-at (float-time)))
@@ -1655,17 +1674,23 @@ restricted to input records."
         (e-board--queue-subscription-replay board subscription start-seq))
       subscription)))
 
+(defun e-board--subscription-order-key (id)
+  "Return ID's type-qualified canonical processing-order key."
+  (format "%S:%S" (type-of id) id))
+
 (defun e-board-order-processing-subscriptions (subscriptions)
   "Return processing SUBSCRIPTIONS in deterministic delivery order.
-Higher priority runs first.  Equal priorities order by printable subscription
-identity, so replay does not depend on hash-table or registration traversal."
+Higher priority runs first.  Equal priorities order by type-qualified canonical
+subscription identity, so replay does not depend on traversal or input order."
   (sort (copy-sequence subscriptions)
         (lambda (left right)
           (let ((left-priority (e-board-subscription-priority left))
                 (right-priority (e-board-subscription-priority right)))
             (if (= left-priority right-priority)
-                (string< (format "%s" (e-board-subscription-id left))
-                         (format "%s" (e-board-subscription-id right)))
+                (string< (e-board--subscription-order-key
+                          (e-board-subscription-id left))
+                         (e-board--subscription-order-key
+                          (e-board-subscription-id right)))
               (> left-priority right-priority))))))
 
 (defun e-board--tags-match-p (selector message)

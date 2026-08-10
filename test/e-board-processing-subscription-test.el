@@ -60,6 +60,22 @@
                               (list low second first)))
                      '("a" "b" "z"))))))
 
+(ert-deftest e-board-processing-test-order-is-total-for-heterogeneous-ids ()
+  "Equal-priority heterogeneous ids sort independently of input order."
+  (e-board-processing-test--with-board
+    (let ((string-id (e-board-subscribe board "processor" '(:tags (x)) :id "a"
+                                        :delivery 'process :priority 10))
+          (symbol-id (e-board-subscribe board "processor" '(:tags (x)) :id 'a
+                                        :delivery 'process :priority 10)))
+      (should (equal (mapcar #'e-board-subscription-id
+                             (e-board-order-processing-subscriptions
+                              (list string-id symbol-id)))
+                     '("a" a)))
+      (should (equal (mapcar #'e-board-subscription-id
+                             (e-board-order-processing-subscriptions
+                              (list symbol-id string-id)))
+                     '("a" a))))))
+
 (ert-deftest e-board-processing-test-invalid-subscription-combinations ()
   "Processing-only fields reject incompatible declarations and bad bounds."
   (e-board-processing-test--with-board
@@ -78,6 +94,53 @@
     (should-error (e-board-subscribe board "processor" '(:tags (x))
                                      :delivery 'process :failure-policy 'retry)
                   :type 'wrong-type-argument)))
+
+(ert-deftest e-board-processing-test-record-identities-remain-frozen ()
+  "Caller mutation cannot rewrite retained processing identities or envelopes."
+  (e-board-processing-test--with-board
+    (let* ((chain-id (copy-sequence "chain"))
+           (root-id (copy-sequence "root"))
+           (candidate-id (copy-sequence "candidate"))
+           (caused-by-id (copy-sequence "caused-by"))
+           (result-id (copy-sequence "result"))
+           (subscription-id (copy-sequence "subscription"))
+           (participant-id (copy-sequence "processor"))
+           (replacement-id (copy-sequence "replacement"))
+           (chain (e-board-record-processing-chain
+                   board :id chain-id :root-message-id root-id
+                   :candidate-message-id candidate-id :caused-by-message-id caused-by-id
+                   :processor-history nil :processing-depth 0))
+           (result (e-board-record-processing-result
+                    board :id result-id :chain-id chain-id
+                    :subscription-id subscription-id :participant-id participant-id
+                    :candidate-message-id candidate-id :outcome 'replace
+                    :replacement-message-id replacement-id :failure-policy 'pass)))
+      (dolist (identity (list chain-id root-id candidate-id caused-by-id result-id
+                              subscription-id participant-id replacement-id))
+        (aset identity 0 ?x))
+      (should (equal (e-board-processing-chain-id chain) "chain"))
+      (should (equal (e-board-processing-chain-root-message-id chain) "root"))
+      (should (equal (e-board-processing-chain-candidate-message-id chain) "candidate"))
+      (should (equal (e-board-processing-chain-caused-by-message-id chain) "caused-by"))
+      (should (equal (e-board-processing-result-id result) "result"))
+      (should (equal (e-board-processing-result-chain-id result) "chain"))
+      (should (equal (e-board-processing-result-subscription-id result) "subscription"))
+      (should (equal (e-board-processing-result-participant-id result) "processor"))
+      (should (equal (e-board-processing-result-candidate-message-id result) "candidate"))
+      (should (equal (e-board-processing-result-replacement-message-id result) "replacement"))
+      (let ((chain-envelope (e-board-processing-record-envelope chain))
+            (result-envelope (e-board-processing-record-envelope result)))
+        (should (equal (plist-get chain-envelope :id) "chain"))
+        (should (equal (plist-get chain-envelope :root-message-id) "root"))
+        (should (equal (plist-get chain-envelope :candidate-message-id) "candidate"))
+        (should (equal (plist-get chain-envelope :caused-by-message-id) "caused-by"))
+        (should (equal (plist-get result-envelope :id) "result"))
+        (should (equal (plist-get result-envelope :chain-id) "chain"))
+        (should (equal (plist-get result-envelope :subscription-id) "subscription"))
+        (should (equal (plist-get result-envelope :participant-id) "processor"))
+        (should (equal (plist-get result-envelope :candidate-message-id) "candidate"))
+        (should (equal (plist-get result-envelope :replacement-message-id)
+                       "replacement"))))))
 
 (ert-deftest e-board-processing-test-records-round-trip-through-durable-envelopes ()
   "Processing chain and result records retain immutable replay state." 
