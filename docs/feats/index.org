@@ -9,82 +9,82 @@ Status values for coding agents:
 - In-review :: =review.org= exists in the dev work directory and still has notes to resolve.
 - Done :: review finished and has no unresolved notes.
 
-| ID | Status | Path | Title |
-|----+--------+------+-------|
-| 01 | Done        | 01-skills-over-capabilities/ | Skills over Capabilities |
-| 02 | Done       | 02-write-path-parents/ | Write Creates Parent Paths |
-| 03 | Done      | 03-web-layer-basic/ | Web Layer Basic |
-| 04 | Done | 04-message-turn-identity/ | Message and Turn Identity |
-| 05 | Done | 05-turn-progress-round-trips/ | Turn Progress Round Trips |
-| 06 | Done | 06-agents-std-context/ | Agents Std Context |
-| 07 | Done | 07-capability-config/ | Capability Config |
-| 08 | Done | 08-context-protection-tool-calls/ | Context Protection from Tool Calls |
-| 09 | Done | 09-context-ordering/ | Context Ordering |
-| 10 | Done | 10-session-append-performance/ | Session Append Performance |
-| 11 | Done | 11-context-compaction/ | Context Compaction |
-| 12 | Done | 12-session-overview-shell/ | Session Overview Shell |
-| 13 | Done | 13-global-session-starter/ | Global Session Starter |
-| 14 | Done | 14-canvas-shell/ | Canvas Shell |
-| 15 | Done | 15-chat-harness-instances/ | Chat Harness Instances |
-| 16 | In-review | 16-turn-finish-latency/ | Turn Finish Latency |
-| 17 | Done | 17-org-canvas/ | Org Canvas |
-| 18 | Done | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
-| 19 | Done | 19-project-local-capabilities/ | Project-Local Capabilities |
-| 20 | Done | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
-| 21 | Done | 21-dev-profiling/ | Developer Profiling Traces |
-| 22 | Done | 22-project-shells/ | Project Shells |
-| 23 | Done | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
-| 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
-| 25 | In-review | 25-resource-glob-search/ | Resource Glob and Search Tools |
-| 26 | In-review | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
-| 27 | In-review | 27-debug-agent-session/ | Debug Agent Session |
-| 28 | In-review | 28-context-auto-compaction/ | Context Auto-Compaction |
-| 29 | In-review | 29-workspace-roots/ | Workspace Roots |
-| 30 | In-review | 30-prompt-capabilities/ | Prompt Capabilities |
-| 31 | In-review | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
-| 32 | In-review | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
-| 33 | In-review | 33-workspace-awareness/ | Workspace Awareness |
-| 34 | In-review | 34-agent-shell-fleet/ | Agent Shell Fleet |
-| 35 | In-review | 35-provider-context-anchors/ | Provider Context Anchors |
-| 36 | In-review | 36-steering-and-queuing/ | Steering and Queuing |
-| 37 | Planned | 37-ask-user-question/ | Ask User Question Tool |
-| 38 | In-review | 38-output-style/ | Output Style |
-| 39 | Done | 39-chat-hot-path-optimizations/ | Chat Hot Path Optimizations |
-| 40 | In-progress | 40-async-interactions-transition/ | Async Interactions Transition |
-| 41 | In-progress | 41-perf-regression-testing/ | Performance Regression Testing |
-| 42 | Done | 42-goal-capability/ | Goal Capability |
-| 43 | Done | 43-action-dispatcher/ | Action Dispatcher |
-| 44 | In-progress | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |
-| 45 | Done | 45-state-lifetime-and-persistence/ | State Lifetime and Persistence Boundaries |
-| 46 | Done | 46-elisp-batch-job-tool/ | Elisp Batch Job Actions |
-| 47 | In-review | 47-agent-task-queue/ | Agent Task Queue |
-| 48 | Planned | 48-chat-image-support/ | Chat Image Support |
-| 49 | In-review | 49-chat-org-output-mode/ | Chat Org Output Mode |
-| 50 | Planned | 50-annotation-reactive-sessions/ | Annotation-Reactive Background Sessions |
-| 51 | In-progress | 51-emacs-cron-schedules/ | Emacs Cron Schedules for e |
-| 52 | Done | 52-agent-process-reporting-tool/ | Agent Process-Reporting Tool |
-| 53 | Planned | 53-e-doom-keymap/ | e Doom Keymap |
-| 54 | Planned | 54-activity-log-view/ | e Activity Log View |
-| 55 | Done | 55-generic-work-api/ | Generic Work API |
-| 56 | Done | 56-session-resource/ | Session Resource |
-| 57 | Planned | 57-resource-query-controls/ | Resource Query Controls |
-| 58 | Done | 58-ui-work-substrate/ | UI Work Substrate |
-| 59 | Done | 59-subagents/ | Subagents |
-| 60 | Done | 60-await-tool/ | Await Tool (event-driven waiting on work) |
-| 61 | In-review | 61-resource-table-of-content/ | Resource Table Of Content |
-| 62 | In-review | 62-egui-modern-chat-shell/ | egui Modern Chat Shell |
-| 63 | In-review | 63-org-annotate-answer-loop/ | Org-Annotate Answer Loop |
-| 64 | In-review | 64-wait-for-async-tools/ | wait_for: deadline-raced detach for async tools |
-| 65 | In-review | 65-bayesian-reasoning-capability/ | Bayesian Reasoning Capability |
-| 66 | Done | 66-work-bus-interaction-model/ | Board: Top-Level Interaction and Work Coordination |
-| 67 | Done | 67-evidence-traceable-claim-audit/ | Evidence-Traceable Claim Audit |
-| 68 | Done | 68-responsive-persistence-and-projection/ | Responsive Persistence and Scheduled Chat Projection |
-| 69 | Done | 69-source-aware-claim-repair/ | Source-Aware Claim Repair |
-| 70 | Done | 70-chat-surface-composition/ | Chat Surface Composition |
-| 71 | Done | 71-profile-memory-bounds/ | Profile Memory Bounds |
-| 72 | Done | 72-transcript-only-reasoning-blocks/ | Transcript-Only Reasoning Blocks |
-| 73 | Done | 73-persistence-preflight/ | Persistence Command Preflight |
-| 74 | Done | 74-capability-message-details/ | Capability-Owned Message Details |
-| 75 | Done | 75-graphical-ui-e2e/ | Graphical UI Behavioral E2E |
-| 76 | In-progress | 76-board-processing-subscriptions/ | Board Processing Subscriptions |
-| 77 | Done | 77-persp-workspace-visual-e2e/ | Persp Workspace Visual E2E |
+| ID | Status      | Path                                      | Title                                                |
+|----+-------------+-------------------------------------------+------------------------------------------------------|
+| 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |
+| 02 | Done        | 02-write-path-parents/                    | Write Creates Parent Paths                           |
+| 03 | Done        | 03-web-layer-basic/                       | Web Layer Basic                                      |
+| 04 | Done        | 04-message-turn-identity/                 | Message and Turn Identity                            |
+| 05 | Done        | 05-turn-progress-round-trips/             | Turn Progress Round Trips                            |
+| 06 | Done        | 06-agents-std-context/                    | Agents Std Context                                   |
+| 07 | Done        | 07-capability-config/                     | Capability Config                                    |
+| 08 | Done        | 08-context-protection-tool-calls/         | Context Protection from Tool Calls                   |
+| 09 | Done        | 09-context-ordering/                      | Context Ordering                                     |
+| 10 | Done        | 10-session-append-performance/            | Session Append Performance                           |
+| 11 | Done        | 11-context-compaction/                    | Context Compaction                                   |
+| 12 | Done        | 12-session-overview-shell/                | Session Overview Shell                               |
+| 13 | Done        | 13-global-session-starter/                | Global Session Starter                               |
+| 14 | Done        | 14-canvas-shell/                          | Canvas Shell                                         |
+| 15 | Done        | 15-chat-harness-instances/                | Chat Harness Instances                               |
+| 16 | In-review   | 16-turn-finish-latency/                   | Turn Finish Latency                                  |
+| 17 | Done        | 17-org-canvas/                            | Org Canvas                                           |
+| 18 | Done        | 18-resource-coherence/                    | Resource Coherence for Live Buffers and Files        |
+| 19 | Done        | 19-project-local-capabilities/            | Project-Local Capabilities                           |
+| 20 | Done        | 20-org-canvas-context-status/             | Org Canvas Context Status and Compaction             |
+| 21 | Done        | 21-dev-profiling/                         | Developer Profiling Traces                           |
+| 22 | Done        | 22-project-shells/                        | Project Shells                                       |
+| 23 | Done        | 23-prompt-cache-context/                  | Prompt Cache Friendly Context                        |
+| 24 | Done        | 24-mcp-capability-wrapper/                | MCP Capability Wrapper                               |
+| 25 | In-review   | 25-resource-glob-search/                  | Resource Glob and Search Tools                       |
+| 26 | In-review   | 26-elisp-tool-chaining/                   | Elisp Tool Chaining                                  |
+| 27 | In-review   | 27-debug-agent-session/                   | Debug Agent Session                                  |
+| 28 | In-review   | 28-context-auto-compaction/               | Context Auto-Compaction                              |
+| 29 | In-review   | 29-workspace-roots/                       | Workspace Roots                                      |
+| 30 | In-review   | 30-prompt-capabilities/                   | Prompt Capabilities                                  |
+| 31 | In-review   | 31-composer-prefix-shortcuts/             | Composer Prefix Shortcuts                            |
+| 32 | In-review   | 32-floating-picker/                       | Floating Picker and Active Sessions Popup            |
+| 33 | In-review   | 33-workspace-awareness/                   | Workspace Awareness                                  |
+| 34 | In-review   | 34-agent-shell-fleet/                     | Agent Shell Fleet                                    |
+| 35 | In-review   | 35-provider-context-anchors/              | Provider Context Anchors                             |
+| 36 | In-review   | 36-steering-and-queuing/                  | Steering and Queuing                                 |
+| 37 | Planned     | 37-ask-user-question/                     | Ask User Question Tool                               |
+| 38 | In-review   | 38-output-style/                          | Output Style                                         |
+| 39 | Done        | 39-chat-hot-path-optimizations/           | Chat Hot Path Optimizations                          |
+| 40 | In-progress | 40-async-interactions-transition/         | Async Interactions Transition                        |
+| 41 | In-progress | 41-perf-regression-testing/               | Performance Regression Testing                       |
+| 42 | Done        | 42-goal-capability/                       | Goal Capability                                      |
+| 43 | Done        | 43-action-dispatcher/                     | Action Dispatcher                                    |
+| 44 | In-progress | 44-action-telemetry-tool-surface/         | Action Telemetry and Tool Surface Cleanup            |
+| 45 | Done        | 45-state-lifetime-and-persistence/        | State Lifetime and Persistence Boundaries            |
+| 46 | Done        | 46-elisp-batch-job-tool/                  | Elisp Batch Job Actions                              |
+| 47 | In-review   | 47-agent-task-queue/                      | Agent Task Queue                                     |
+| 48 | Planned     | 48-chat-image-support/                    | Chat Image Support                                   |
+| 49 | In-review   | 49-chat-org-output-mode/                  | Chat Org Output Mode                                 |
+| 50 | Planned     | 50-annotation-reactive-sessions/          | Annotation-Reactive Background Sessions              |
+| 51 | In-progress | 51-emacs-cron-schedules/                  | Emacs Cron Schedules for e                           |
+| 52 | Done        | 52-agent-process-reporting-tool/          | Agent Process-Reporting Tool                         |
+| 53 | Planned     | 53-e-doom-keymap/                         | e Doom Keymap                                        |
+| 54 | Planned     | 54-activity-log-view/                     | e Activity Log View                                  |
+| 55 | Done        | 55-generic-work-api/                      | Generic Work API                                     |
+| 56 | Done        | 56-session-resource/                      | Session Resource                                     |
+| 57 | Planned     | 57-resource-query-controls/               | Resource Query Controls                              |
+| 58 | Done        | 58-ui-work-substrate/                     | UI Work Substrate                                    |
+| 59 | Done        | 59-subagents/                             | Subagents                                            |
+| 60 | Done        | 60-await-tool/                            | Await Tool (event-driven waiting on work)            |
+| 61 | In-review   | 61-resource-table-of-content/             | Resource Table Of Content                            |
+| 62 | In-review   | 62-egui-modern-chat-shell/                | egui Modern Chat Shell                               |
+| 63 | In-review   | 63-org-annotate-answer-loop/              | Org-Annotate Answer Loop                             |
+| 64 | In-review   | 64-wait-for-async-tools/                  | wait_for: deadline-raced detach for async tools      |
+| 65 | In-review   | 65-bayesian-reasoning-capability/         | Bayesian Reasoning Capability                        |
+| 66 | Done        | 66-work-bus-interaction-model/            | Board: Top-Level Interaction and Work Coordination   |
+| 67 | Done        | 67-evidence-traceable-claim-audit/        | Evidence-Traceable Claim Audit                       |
+| 68 | Done        | 68-responsive-persistence-and-projection/ | Responsive Persistence and Scheduled Chat Projection |
+| 69 | Done        | 69-source-aware-claim-repair/             | Source-Aware Claim Repair                            |
+| 70 | Done        | 70-chat-surface-composition/              | Chat Surface Composition                             |
+| 71 | Done        | 71-profile-memory-bounds/                 | Profile Memory Bounds                                |
+| 72 | Done        | 72-transcript-only-reasoning-blocks/      | Transcript-Only Reasoning Blocks                     |
+| 73 | Done        | 73-persistence-preflight/                 | Persistence Command Preflight                        |
+| 74 | Done        | 74-capability-message-details/            | Capability-Owned Message Details                     |
+| 75 | Done        | 75-graphical-ui-e2e/                      | Graphical UI Behavioral E2E                          |
+| 76 | In-progress | 76-board-processing-subscriptions/        | Board Processing Subscriptions                       |
+| 77 | Done        | 77-persp-workspace-visual-e2e/            | Persp Workspace Visual E2E                           |
