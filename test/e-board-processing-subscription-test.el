@@ -60,21 +60,28 @@
                               (list low second first)))
                      '("a" "b" "z"))))))
 
-(ert-deftest e-board-processing-test-order-is-total-for-heterogeneous-ids ()
-  "Equal-priority heterogeneous ids sort independently of input order."
+(ert-deftest e-board-processing-test-subscription-ids-are-durable-strings ()
+  "Subscription ids reject values without a persistent total order."
   (e-board-processing-test--with-board
-    (let ((string-id (e-board-subscribe board "processor" '(:tags (x)) :id "a"
-                                        :delivery 'process :priority 10))
-          (symbol-id (e-board-subscribe board "processor" '(:tags (x)) :id 'a
-                                        :delivery 'process :priority 10)))
+    (should-error
+     (e-board-subscribe board "processor" '(:tags (x)) :id 'symbol
+                        :delivery 'process :priority 10)
+     :type 'wrong-type-argument)
+    (should-error
+     (e-board-subscribe board "processor" '(:tags (x)) :id 1)
+     :type 'wrong-type-argument)
+    (let* ((first-id (copy-sequence "a"))
+           (second-id (copy-sequence "b"))
+           (first (e-board-subscribe board "processor" '(:tags (x)) :id first-id
+                                     :delivery 'process :priority 10))
+           (second (e-board-subscribe board "processor" '(:tags (x)) :id second-id
+                                      :delivery 'process :priority 10)))
+      (aset first-id 0 ?z)
+      (aset second-id 0 ?z)
       (should (equal (mapcar #'e-board-subscription-id
                              (e-board-order-processing-subscriptions
-                              (list string-id symbol-id)))
-                     '("a" a)))
-      (should (equal (mapcar #'e-board-subscription-id
-                             (e-board-order-processing-subscriptions
-                              (list symbol-id string-id)))
-                     '("a" a))))))
+                              (list second first)))
+                     '("a" "b"))))))
 
 (ert-deftest e-board-processing-test-invalid-subscription-combinations ()
   "Processing-only fields reject incompatible declarations and bad bounds."
@@ -141,6 +148,34 @@
         (should (equal (plist-get result-envelope :candidate-message-id) "candidate"))
         (should (equal (plist-get result-envelope :replacement-message-id)
                        "replacement"))))))
+
+(ert-deftest e-board-processing-test-public-record-paths-cannot-mutate-ledger ()
+  "Returned records, notification records, envelopes, and times are detached."
+  (e-board-processing-test--with-board
+    (let* ((created-at (list (copy-sequence "created")))
+           notified
+           (board (e-board-create
+                   :id "notified"
+                   :processing-record-notification-function
+                   (lambda (_board record _type) (setq notified record))))
+           (chain (e-board-record-processing-chain
+                   board :id "chain" :root-message-id "root"
+                   :candidate-message-id "candidate" :caused-by-message-id "root"
+                   :processor-history (list "processor") :processing-depth 0
+                   :created-at created-at))
+           (envelope (e-board-processing-record-envelope chain)))
+      (setcar created-at "changed")
+      (setcar (e-board-processing-chain-processor-history chain) "changed")
+      (setcar (e-board-processing-chain-processor-history notified) "changed")
+      (setcar (plist-get envelope :processor-history) "changed")
+      (setcar (plist-get envelope :created-at) "changed")
+      (let ((listed (car (e-board-list-processing-chains board))))
+        (setcar (e-board-processing-chain-processor-history listed) "changed"))
+      (let ((retained (car (e-board-list-processing-chains board))))
+        (should (equal (e-board-processing-chain-processor-history retained)
+                       '("processor")))
+        (should (equal (e-board-processing-chain-created-at retained)
+                       '("created")))))))
 
 (ert-deftest e-board-processing-test-records-round-trip-through-durable-envelopes ()
   "Processing chain and result records retain immutable replay state." 

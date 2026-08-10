@@ -113,18 +113,23 @@ journal currently disagree about uniqueness.
   caller supplied.  The regression test replaces a normal route with a
   processing route and verifies all four stored policy values.
 - =e-board-order-processing-subscriptions= defines descending priority then
-  ascending type-qualified subscription-ID ordering.  The regressions cover
-  priority ordering, equal-priority ID tie-breaking, and reverse input order
-  for distinct string and symbol IDs with the same printed text.
+  ascending durable string subscription-ID ordering.  The regressions cover
+  priority ordering, equal-priority ID tie-breaking, reverse input order, and
+  rejection of IDs without a persistent total order.
 - Processing chain and result records deep-copy every retained identity.  The
-  mutation regression verifies record accessors and exported envelopes retain
-  their pre-mutation values.
+  ledger stores them only in private slots; creation, notifications, public
+  accessors, and exported envelopes return detached copies.  The mutation
+  regression verifies caller-owned timestamps and every public record path
+  retain their pre-mutation values.
+- Subscription IDs are copied durable strings.  Equal-priority processing order
+  therefore has a replay-stable total key, and invalid symbol and numeric IDs
+  are rejected.
 
 * Verification
 
 - =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
   test/e-board-processing-subscription-test.el -f test/e-session-test.el=:
-  184/184 passed.
+  185/185 passed.
 - =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
   lisp/core/e-session.el=: passed with warnings treated as errors.
 - =git diff --check=: passed.
@@ -148,25 +153,22 @@ when supplied in either direction.
 
 * Fix-point re-review findings
 
-** TODO High: Keep retained processing records immutable through public access
+** DONE High: Keep retained processing records immutable through public access
 
-The board stores and returns mutable =cl-defstruct= records.  Public accessors
-and =e-board-processing-record-envelope= expose the retained object and identity
-strings, so callers can mutate committed ledger state after notification or
-persistence.  Caller-supplied =created-at= values are also retained directly.
+The ledger now retains records only in private board slots.  Record creation,
+notifications, public ledger accessors, and journal envelope export each return
+detached deep copies.  =created-at= passes through the same freezing boundary as
+all other retained fields.  The regression mutates the caller timestamp,
+returned record, notification record, listed record, and exported envelope, then
+verifies the retained ledger remains unchanged.
 
-Keep mutable structs private and return frozen copies/envelopes, or use immutable
-plain values at the public boundary.  Add regressions that mutate returned
-records, exported envelopes, and caller-owned timestamps without changing the
-board ledger.
+** DONE Medium: Constrain IDs or define a truly total persistent ordering key
 
-** TODO Medium: Constrain IDs or define a truly total persistent ordering key
-
-The type-plus-printed-representation key still aliases distinct uninterned
-symbols with the same name.  Reversing those subscriptions reverses their sorted
-order.  Prefer constraining subscription IDs to stable persistent scalar types;
-otherwise no replay-stable tie-breaker exists for arbitrary identity objects.
-Add validation and tests for the chosen ID contract.
+Subscription IDs are now durable strings, copied on entry before retention.
+Processing order uses that stable string identity after priority, so no
+process-local identity tie-breaker is needed.  The regression rejects symbols
+and numbers, proves caller mutation cannot alter a retained ID, and verifies
+reversed equal-priority inputs sort to the same order.
 
 * Completion
 
