@@ -1,0 +1,10 @@
+#+title: Reloaded chat keeps stale backend after harness replacement
+#+startup: overview
+
+* Report
+
+After =e-dev-reload=, every backend request from existing Emacs chat buffers
+timed out at the configured 180-second OpenAI request deadline.
+
+The user reported this separately from the restarted Grimoire daily/session
+problem.

@@ -100,6 +100,10 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
   (make-hash-table :test 'eq :weakness 'key)
   "Weakly-owned effective capability configuration caches by harness.")
 
+(defvar e-harness--pending-runtime-refreshes
+  (make-hash-table :test 'eq :weakness 'key)
+  "Newest deferred runtime refresh request for each busy harness.")
+
 (defvar-local e-current-harness nil
   "Harness currently owned by the active presentation buffer, when any.")
 
@@ -153,6 +157,33 @@ may install this port for board-attached sessions."
   (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
     (setf (e-harness-context-strategy harness)
           (e-context-transcript-stack-create)))
+  harness)
+
+(defun e-harness-refresh-runtime-from (harness fresh)
+  "Refresh replaceable runtime configuration on HARNESS from FRESH.
+
+This preserves HARNESS identity and lifecycle state: its session store,
+subscribers, active turns, prompt queues, and injected board/work ports remain
+owned by the original object.  Provider and configuration fields are replaced
+so a presentation endpoint retained across live reload does not keep stale
+adapter closures after its registry entry has been recreated."
+  (unless (e-harness-p harness)
+    (signal 'wrong-type-argument (list 'e-harness-p harness)))
+  (unless (e-harness-p fresh)
+    (signal 'wrong-type-argument (list 'e-harness-p fresh)))
+  (setf (e-harness-backend harness) (e-harness-backend fresh))
+  (setf (e-harness-default-options harness)
+        (copy-sequence (e-harness-default-options fresh)))
+  (setf (e-harness-default-project-root harness)
+        (e-harness-default-project-root fresh))
+  (setf (e-harness-runtime-capability-config harness)
+        (copy-tree (e-harness-runtime-capability-config fresh)))
+  (e-harness-clear-effective-capability-config-cache harness)
+  ;; The transcript stack is the replaceable built-in default.  A custom
+  ;; strategy may carry live state and remains owned by the retained harness.
+  (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
+    (setf (e-harness-context-strategy harness)
+          (e-harness-context-strategy fresh)))
   harness)
 
 (defun e-harness--normalize-project-root (root)
@@ -808,6 +839,62 @@ no-op."
   (setf (e-harness-subscribers harness)
         (delq subscription (e-harness-subscribers harness)))
   nil)
+
+(defun e-harness--running-turns-p (harness)
+  "Return non-nil when HARNESS owns any running turn."
+  (let (running)
+    (maphash
+     (lambda (_session-id entry)
+       (when (eq (plist-get entry :status) 'running)
+         (setq running t)))
+     (e-harness-active-turns harness))
+    running))
+
+(defun e-harness--apply-pending-runtime-refresh (harness)
+  "Apply HARNESS's pending runtime refresh once no turn is running."
+  (when-let ((pending (gethash harness e-harness--pending-runtime-refreshes)))
+    (plist-put pending :timer nil)
+    (unless (e-harness--running-turns-p harness)
+      (e-harness--remove-activity-sink harness
+                                       (plist-get pending :subscription))
+      (remhash harness e-harness--pending-runtime-refreshes)
+      (e-harness-refresh-runtime-from harness (plist-get pending :fresh)))))
+
+(defun e-harness--schedule-pending-runtime-refresh (harness)
+  "Schedule one post-terminal pending runtime refresh check for HARNESS."
+  (when-let ((pending (gethash harness e-harness--pending-runtime-refreshes)))
+    (unless (timerp (plist-get pending :timer))
+      (plist-put pending :timer
+                 (run-at-time
+                  0 nil #'e-harness--apply-pending-runtime-refresh harness)))))
+
+(defun e-harness-request-runtime-refresh (harness fresh)
+  "Refresh HARNESS from FRESH now, or at its next idle turn boundary.
+
+The newest request replaces an older pending one.  An admitted turn keeps the
+backend it started with; the refresh runs after the last running turn settles
+and before a queued turn scheduled from that terminal edge can start."
+  (unless (e-harness-p harness)
+    (signal 'wrong-type-argument (list 'e-harness-p harness)))
+  (unless (e-harness-p fresh)
+    (signal 'wrong-type-argument (list 'e-harness-p fresh)))
+  (if (not (e-harness--running-turns-p harness))
+      (e-harness-refresh-runtime-from harness fresh)
+    (if-let ((pending
+              (gethash harness e-harness--pending-runtime-refreshes)))
+        (plist-put pending :fresh fresh)
+      (let (subscription)
+        (setq subscription
+              (e-harness--install-activity-sink
+               harness
+               (lambda (event)
+                 (when (memq (plist-get event :type)
+                             '(turn-finished turn-failed turn-cancelled))
+                   (e-harness--schedule-pending-runtime-refresh harness)))))
+        (puthash harness
+                 (list :fresh fresh :subscription subscription :timer nil)
+                 e-harness--pending-runtime-refreshes)))
+    harness))
 
 (defun e-harness--emit (harness event)
   "Emit EVENT to HARNESS subscribers."

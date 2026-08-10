@@ -1,0 +1,65 @@
+#+title: Investigation: reloaded chat keeps stale backend after harness replacement
+#+startup: overview
+
+* Evidence
+
+The affected persisted sessions repeatedly recorded provider request starts
+through =eng-ai-gateway-gpt= followed by errors at approximately 180 seconds.
+The same gateway host answered an unauthenticated credential-free probe quickly
+with HTTP 405, so DNS, TLS, and routing were available during the investigation.
+No live graphical Emacs process or server socket remained for a bounded runtime
+object probe.
+
+The configured Doom =after! e-default-harnesses= block re-runs when development
+reload provides that feature again.  It registers the current custom factory
+and clears the cached =:chat-default= registry instance.  The next lookup then
+creates a fresh harness with the current backend.
+
+=e-chat-reload-buffers= deliberately retained the old harness object for a
+board-bound or active chat, preserving its board endpoint and session state.
+It skipped registry resolution in precisely that branch, however, so the old
+object also retained its stale provider closure.  The existing default-harness
+startup refresh could not repair it because the old object was no longer the
+registry instance.
+
+* Fix
+
+The harness now owns =e-harness-request-runtime-refresh=:
+
+- an idle retained harness copies provider/configuration fields from the fresh
+  registry harness while preserving identity, sessions, subscribers, board
+  ports, and queues;
+- a busy harness records only the newest refresh request and applies it at the
+  terminal turn edge, before queued work starts;
+- the default-harness startup sync and chat reload path use the same lifecycle
+  operation.
+
+The chat shell still keeps the admitted harness object.  It no longer has to
+choose between preserving the board endpoint and receiving current backend
+configuration.
+
+* Regression evidence
+
+=e-chat-test-reload-buffers-keeps-board-bound-harness= proves that an idle
+board-bound chat keeps its object, transcript, and draft while receiving the
+fresh backend.
+
+=e-chat-test-reload-buffers-keeps-active-turn-harness= proves that an active
+turn is not switched mid-flight and that the deferred refresh applies after
+the turn is cancelled or settled.
+
+=e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer= runs in the
+isolated graphical frame and proves that the selected composer, draft, and
+composed windows survive the refresh.
+
+The complete packaged batch suite passes 2,019 tests with zero unexpected
+results, and the complete private-frame graphical suite passes all 11 tests.
+
+* Design self-check
+
+The harness owns provider runtime configuration and turn lifecycle, so it owns
+the safe refresh boundary.  The chat shell only asks for reconciliation after
+resolving its configured registry candidate.  The new pending state is weak,
+process-local, newest-wins, and exists only while a harness has running turns.
+No provider, persistence, workspace, or presentation state is copied into the
+replacement boundary, and unexpected refresh errors remain visible.

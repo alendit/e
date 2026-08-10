@@ -9000,27 +9000,32 @@ When SESSION-ID is nil, create a private execution session for the participant."
                          (e-harness-p e-chat-harness)
                          (e-chat-service-board-session-p
                           e-chat-harness session-id))
-                (let* ((candidate
-                        (if (or (e-chat-service-binding
-                                 e-chat-harness session-id)
-                                (e-chat--harness-session-active-turn-p
-                                 e-chat-harness session-id))
-                            e-chat-harness
-                          (condition-case err
-                              (if e-chat-harness-instance-id
-                                  (e-chat--harness-for-instance
-                                   (e-harness-instance-get
-                                    e-chat-harness-instance-id))
-                                (e-chat--default-harness))
-                            (user-error
-                             (if (e-harness-p e-chat-harness)
-                                 e-chat-harness
-                               (signal (car err) (cdr err)))))))
+                (let* ((retained-endpoint-p
+                        (or (e-chat-service-binding
+                             e-chat-harness session-id)
+                            (e-chat--harness-session-active-turn-p
+                             e-chat-harness session-id)))
+                       (candidate
+                        (condition-case err
+                            (if e-chat-harness-instance-id
+                                (e-chat--harness-for-instance
+                                 (e-harness-instance-get
+                                  e-chat-harness-instance-id))
+                              (e-chat--default-harness))
+                          (user-error
+                           (if (e-harness-p e-chat-harness)
+                               e-chat-harness
+                             (signal (car err) (cdr err))))))
                        (harness
-                        (if (e-chat-service-board-session-p
-                             candidate session-id)
-                            candidate
-                          e-chat-harness)))
+                        (cond
+                         (retained-endpoint-p
+                         (unless (eq candidate e-chat-harness)
+                            (e-harness-request-runtime-refresh
+                             e-chat-harness candidate))
+                          e-chat-harness)
+                         ((e-chat-service-board-session-p candidate session-id)
+                          candidate)
+                         (t e-chat-harness))))
                   (setq count (1+ count))
                   (e-chat--attach-buffer
                    buffer harness session-id

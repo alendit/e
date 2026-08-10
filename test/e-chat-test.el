@@ -7425,6 +7425,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (should (= (e-chat-reload-buffers) 1))))
           (with-current-buffer buffer
             (should (eq e-chat-harness old-harness))
+            (should (eq (e-harness-backend e-chat-harness) new-backend))
             (should (equal e-chat-session-id "chat-reload"))
             (should (string-match-p "stale prompt" (buffer-string)))
             (should (string-match-p "saved prompt" (buffer-string)))))
@@ -7445,9 +7446,18 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                      nil))))
          (old-harness (e-chat-test--activate-chat-session
                        (e-harness-create :backend old-backend)))
+         (new-backend
+          (e-backend-create
+           :name "fresh-held-chat"
+           :start (cl-function
+                   (lambda (&key messages options on-item on-done
+                                  on-error on-request-start)
+                     (ignore messages options on-item on-done
+                             on-error on-request-start)
+                     nil))))
          (new-harness (e-chat-test--activate-chat-session
                        (e-harness-create
-                        :backend (e-backend-fake-create :items nil))))
+                        :backend new-backend)))
          (buffer (e-chat-open :harness old-harness
                               :session-id "chat-reload-active")))
     (unwind-protect
@@ -7469,8 +7479,14 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (with-current-buffer buffer
             (should (eq e-chat-harness old-harness))
             (should (not (eq e-chat-harness new-harness)))
+            (should (eq (e-harness-backend e-chat-harness) old-backend))
             (should (e-chat-service-active-turn-p
-                     e-chat-harness e-chat-session-id))))
+                     e-chat-harness e-chat-session-id)))
+          (e-harness-test-abort old-harness "chat-reload-active")
+          (should (e-chat-test--wait-until
+                   (lambda ()
+                     (eq (e-harness-backend old-harness) new-backend))
+                   1.0)))
       (ignore-errors
         (e-harness-test-abort old-harness "chat-reload-active"))
       (when (buffer-live-p buffer)

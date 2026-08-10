@@ -19,6 +19,8 @@
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-harness)
+(require 'e-harness-instances)
+(require 'e-harness-registry)
 (require 'evil)
 (require 'persp-mode)
 (setq persp-auto-save-opt 0
@@ -358,6 +360,46 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (should-not (window-live-p composer-window))
             (should (window-live-p outside-window))
             (should (eq (selected-window) outside-window))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer ()
+  "Reload refreshes a retained chat endpoint without losing composer state."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-harness-registry--instances (make-hash-table :test 'equal))
+        (e-harness-registry--factories (make-hash-table :test 'equal))
+        (e-harness-instance--instances (make-hash-table :test 'equal))
+        (e-harness-instance--defaults (make-hash-table :test 'equal))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let* ((retained (plist-get fixture :harness))
+                 (fresh-backend
+                  (e-backend-fake-create :name "fresh after reload" :items nil))
+                 (fresh
+                  (e-harness-create
+                   :backend fresh-backend
+                   :sessions (e-harness-sessions retained))))
+            (e-harness-activate-capability
+             fresh (e-chat-session-capability-create))
+            (e-harness-registry-register-factory :chat-test (lambda () fresh))
+            (let ((e-chat-default-harness-id :chat-test))
+              (select-window (plist-get fixture :composer-window))
+              (e-graphical-test-type-text "draft across reload")
+              (should (= (e-chat-reload-buffers) 1)))
+            (e-chat-behavior-test--fixture-windows fixture)
+            (should (eq (plist-get fixture :harness) retained))
+            (should (eq (e-harness-backend retained) fresh-backend))
+            (should (eq (selected-window)
+                        (plist-get fixture :composer-window)))
+            (with-current-buffer
+                (window-buffer (plist-get fixture :composer-window))
+              (should (string-suffix-p
+                       "draft across reload"
+                       (buffer-substring-no-properties
+                        (point-min) (point-max)))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-short-output-stays-bottom-and-keeps-draft ()
