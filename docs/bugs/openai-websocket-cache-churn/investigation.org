@@ -1,0 +1,211 @@
+#+title: Investigation: OpenAI WebSocket cache churn
+#+date: 2026-08-11
+#+startup: overview
+
+* Status
+
+Confirmed and unresolved.
+
+The earlier in-turn provider-anchor fix is validated.  The remaining primary
+defect is that =e= discards the Responses WebSocket connection after every
+provider request, losing the connection-local cache that WebSocket continuation
+is designed to use.  Tool-workflow amplification is a second independent cost.
+
+* Evidence
+
+The first user turn in
+=20260811T204017-a87fd377a500.jsonl= produced:
+
+| Client | Requests | Input     | Cached    | Uncached | Hit rate |
+|--------+----------+-----------+-----------+----------+----------|
+| e      |       27 | 1,708,004 |   972,800 |  735,204 | 56.96%   |
+| Codex  |       20 | 1,709,190 | 1,598,464 |  110,726 | 93.52%   |
+
+Total logical input is almost identical.  =e= incurred 6.64 times as much
+uncached input.
+
+For =e= requests 2 through 27, lifecycle diagnostics report:
+
+- =provider-continuation= is =used=;
+- =previous-response-id-present= is true;
+- =provider-anchor-present= is true;
+- =input-message-count= equals the new tool-result batch rather than the full
+  transcript.
+
+This validates the repository-side continuation remediation.  It also rules
+out full transcript replay as the cause of the remaining first-turn cache
+misses.
+
+Nine =e= requests reported zero cached input: ordinals 2, 3, 4, 5, 9, 11, 13,
+14, and 19.  The misses occur after both large parallel batches and single
+tools such as =edit=, =run_elisp=, and =process_marker=, so no individual tool
+schema or result type explains the pattern.
+
+The prompt-cache-key hash is constant across all 27 requests.  The model,
+reasoning effort, tool count, and within-turn context instructions are also
+stable.
+
+* Primary root cause: one WebSocket per provider request
+
+=e-openai-codex--websocket-request-start= calls =websocket-open= for each
+backend request.  On =response.completed= it schedules =websocket-close=.
+Every tool follow-up therefore opens a new connection, sends one
+=response.create= event, and closes that connection when the response settles.
+
+The adapter still supplies =previous_response_id=, so stored-response
+continuation works and the tool loop remains semantically correct.  It cannot,
+however, reuse the previous response from the WebSocket's connection-local
+cache because that connection no longer exists.
+
+Current official OpenAI documentation states that Responses WebSocket mode is
+a persistent connection for long-running model/tool workflows and that
+=previous_response_id= uses a connection-local cache for low-latency
+continuation.  It instructs clients to send incremental input items on the same
+WebSocket.  If an uncached id cannot be resolved, the documented fallback is a
+new turn with full input context.
+
+Sources:
+
+- [[https://developers.openai.com/api/docs/guides/websocket-mode][OpenAI WebSocket mode]]
+- [[https://developers.openai.com/api/docs/guides/conversation-state][OpenAI conversation state]]
+
+Codex implements that topology in
+=codex-rs/core/src/client.rs=.  A =WebsocketSession= retains the connection,
+last request, and last response.  Incremental reuse requires both an input
+prefix and equality of non-input request properties.  The next request carries
+only appended items plus =previous_response_id= over the retained connection.
+
+This difference directly explains why the continuation fix reduced wire input
+without preserving the documented connection-local warm path.  It is the
+leading explanation for the cache-hit gap, but its exact share requires the
+same-task A/B after connection reuse is implemented.  The intermittent =e=
+hits are compatible with ordinary provider prompt-cache reuse rather than the
+retained WebSocket path.
+
+* Secondary cost: tool-workflow amplification
+
+The =e= task used 77 model-facing tool calls:
+
+| Tool                 | Calls |
+|----------------------+-------|
+| read                 |    29 |
+| bash                 |    13 |
+| process_marker       |     7 |
+| table_of_content     |     5 |
+| resource_sync_status |     5 |
+| edit                 |     4 |
+| search               |     3 |
+| run_elisp            |     3 |
+| await                |     3 |
+| list_buffers         |     2 |
+| other                |     3 |
+
+The Codex first turn made 19 =exec= orchestration calls containing 22 nested
+tool operations: 16 command executions, three plan updates, two process polls,
+and one patch application.
+
+The comparison is not one-to-one because Codex can group shell reads inside one
+command, while =e= exposes finer resource tools.  It still shows a real second
+source of amplification:
+
+- =e= repeatedly alternated among table-of-content, read, search, and bash;
+- seven process markers and five sync-status checks consumed tool calls without
+  advancing source understanding;
+- the artifact went through one write and four edit calls, versus one Codex
+  patch application;
+- every additional provider round lengthened the response chain whose prefix
+  then needed to be recovered on a fresh connection.
+
+The planned session workspace and =update_plan=-style facade in feature 79 can
+make progress state explicit and reduce wandering, but it must not be treated
+as the transport fix.  Persistent WebSocket ownership is required even for a
+perfectly planned tool loop.
+
+* Additional cache risks to measure
+
+These are plausible secondary contributors, not established as the cause of
+the first-turn zero-cache rounds:
+
+** Cache-key scope
+
+=e-harness--derived-prompt-cache-key= hashes model, project root, active layer
+ids, and tool names.  It does not include the session id.  Concurrent sessions
+with the same project/layers/tools therefore share one routing key after their
+response chains diverge.
+
+Codex defaults =prompt_cache_key= to its session id.  Official guidance says a
+key should identify traffic with shared prefixes and recommends partitioning a
+key above roughly 15 requests per minute.  A session-scoped key may improve
+continuation routing, while the current project-scoped key may improve cold
+cross-session instruction reuse.  This needs an A/B measurement after
+persistent WebSocket reuse is implemented; changing it first would confound
+the primary fix.
+
+Source:
+
+- [[https://developers.openai.com/api/docs/guides/prompt-caching][OpenAI prompt caching]]
+
+** Dynamic instructions between user turns
+
+All backend-neutral system messages become the Responses top-level
+=instructions= string.  Current-state context is stable during one =e-loop=
+turn, but can change before the next user turn.  Provider-anchor compatibility
+intentionally excludes current-state segment fingerprints, so =e= may continue
+an anchor while sending different instructions.
+
+The API permits replacement instructions with =previous_response_id=, so this
+is not inherently incorrect.  Codex is more conservative: it uses incremental
+WebSocket continuation only when instructions and every other context-bearing
+non-input property remain equal.  Telemetry should record these property hashes
+so the cache impact can be measured rather than inferred.
+
+* Live Emacs inspection
+
+A bounded live probe on 2026-08-11 reported:
+
+#+begin_example
+(:e-openai-loaded t
+ :request-start-source
+ "/Users/dimitrivorona/.emacs.d/.local/straight/build-30.2/e/e-openai.el"
+ :websocket-timeout 60
+ :provider-profile
+ (:name "ChatGPT Codex"
+  :wire-api responses
+  :responses-transport websocket
+  :continuation t ...))
+#+end_example
+
+The running Emacs therefore used the WebSocket Responses profile with
+continuation enabled.  No live reload or mutation was performed during this
+investigation.
+
+* Recommended repair order
+
+1. Introduce a provider-client WebSocket session owner with one serialized
+   in-flight =response.create= and explicit lifecycle/cleanup.
+2. Retain the connection and last compatible request/response across tool
+   follow-ups.  Compare non-input request properties before incremental reuse.
+3. On connection loss or an unresolved response id, invalidate the warm
+   transport state and retry through an explicit full-context path.
+4. Record connection id, reuse count, incremental/full decision, property
+   compatibility, reconnect reason, and fallback reason in bounded lifecycle
+   telemetry.
+5. Run the identical task A/B.  Only after the connection fix, test
+   project-scoped versus session-scoped =prompt_cache_key=.
+6. Separately use feature 79 and tool-policy work to reduce unnecessary
+   provider rounds and progress-only tool calls.
+
+* Verification gate for a fix
+
+- Unit tests prove one socket serves sequential tool follow-ups and closes on
+  harness/backend teardown rather than each completed response.
+- Integration tests cover compatible incremental create, changed non-input
+  properties, reconnect, unresolved id, cancellation, and explicit unstored
+  mode.
+- Request telemetry proves requests 2..N use one connection in the compatible
+  case and says why any request falls back.
+- A live rerun reports per-request input/cached tokens and aggregate hit rate.
+- The comparison separates provider requests, tool calls, and child sessions so
+  transport improvement is not confused with workflow changes.
+- Repository-side validation passes; the running Emacs remains unchanged
+  unless the operator explicitly requests a reload.

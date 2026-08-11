@@ -1,0 +1,32 @@
+#+title: OpenAI WebSocket continuation loses connection-local cache
+#+date: 2026-08-11
+
+* Report
+
+After the in-turn =previous_response_id= fix, a fresh rerun of the same
+semantic-IR documentation task still used 735,204 uncached input tokens across
+27 provider requests.  A Codex run of the same task used nearly identical total
+input but only 110,726 uncached input tokens.
+
+The =e= transcript proves that requests 2 through 27 used a provider anchor and
+sent incremental tool-result messages.  Nevertheless, nine of the 27 requests
+reported zero cached input and the aggregate cache-hit rate was only 56.96
+percent, compared with 93.52 percent for Codex.
+
+This is a remaining transport/cache-efficiency defect, separate from the fixed
+provider-anchor advancement defect.
+
+* Expected behavior
+
+- One active OpenAI Responses tool loop reuses one persistent WebSocket while
+  request properties remain compatible.
+- A completed response id is continued with only newly appended input items.
+- Reconnect, failure, cancellation, or incompatible non-input request fields
+  select an explicit safe fallback rather than pretending connection-local
+  continuation is still warm.
+- Telemetry records connection identity/reuse and the exact reason an
+  incremental request was or was not used.
+- Cache routing keys avoid mixing unrelated active response chains enough to
+  cause measurable cache churn.
+- A repeated live task approaches the cache behavior of the reference Codex
+  client without relying on task-specific prompt changes.

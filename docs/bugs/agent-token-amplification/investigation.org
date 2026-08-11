@@ -4,7 +4,15 @@
 * Status
 
 Resolved repository-side.
-The running Emacs has not been reloaded.
+The running Emacs had not been reloaded when the original resolution was
+recorded; the follow-up rerun occurred after the user restarted Emacs.
+
+Follow-up validation after an Emacs restart confirms that all 26 first-turn
+tool follow-ups now use =previous_response_id= with a provider anchor and delta
+messages.  The rerun still had a 56.96 percent cache-hit rate because =e= opens
+a new Responses WebSocket for every provider request.  That separate transport
+defect is tracked in
+=docs/bugs/openai-websocket-cache-churn/investigation.org=.
 
 * Evidence
 
