@@ -28,6 +28,18 @@ test("compaction deduplicates exact typed board-envelope retries", () => {
   assert.deepEqual(compacted.at(-1).message, message);
 });
 
+test("compaction retains the first divergent ordinary board envelope", () => {
+  const first = { id: "ordinary", kind: "first" };
+  const compacted = compactRecords([
+    boardRecord(first, "writer-a:1"),
+    boardRecord({ id: "ordinary", kind: "later" }, "writer-b:2"),
+  ], {
+    ...manifest,
+    "board-message-identities": [{ "record-type": "board-message", id: "ordinary" }],
+  });
+  assert.deepEqual(compacted.at(-1).message, first);
+});
+
 test("compaction rejects divergent typed board-envelope duplicates", () => {
   const records = [
     boardRecord({ id: "chain", "record-type": "processing-chain", "root-message-id": "root" }, "writer-a:1"),
@@ -36,15 +48,17 @@ test("compaction rejects divergent typed board-envelope duplicates", () => {
   assert.throws(() => compactRecords(records, manifest), /Conflicting checkpoint board message/);
 });
 
-test("compaction starts a fresh typed board identity domain after clear", () => {
+test("compaction starts a fresh board identity domain after clear", () => {
   const records = [
     boardRecord({ id: "shared", kind: "before" }, "writer-a:1"),
-    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "before" }, "writer-a:2"),
-    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "before" }, "writer-a:3"),
-    { type: "board-messages-cleared", "session-id": "session-1", "writer-command-id": "writer-a:4" },
-    boardRecord({ id: "shared", kind: "after" }, "writer-a:5"),
-    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "after" }, "writer-a:6"),
-    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "after" }, "writer-a:7"),
+    boardRecord({ id: "shared", kind: "before-divergent" }, "writer-a:2"),
+    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "before" }, "writer-a:3"),
+    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "before" }, "writer-a:4"),
+    { type: "board-messages-cleared", "session-id": "session-1", "writer-command-id": "writer-a:5" },
+    boardRecord({ id: "shared", kind: "after" }, "writer-a:6"),
+    boardRecord({ id: "shared", kind: "after-divergent" }, "writer-a:7"),
+    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "after" }, "writer-a:8"),
+    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "after" }, "writer-a:9"),
   ];
   const clearedManifest = {
     ...manifest,

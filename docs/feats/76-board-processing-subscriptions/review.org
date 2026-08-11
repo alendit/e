@@ -411,17 +411,27 @@ post-clear envelopes.
 
 * Eleventh fix-point re-review finding
 
-** TODO Medium: Preserve ordinary board-envelope deduplication semantics in Node
+** DONE Medium: Preserve ordinary board-envelope deduplication semantics in Node
 
-Emacs retains the first ordinary board envelope for a raw ID without comparing
-later content.  Node checkpoint compaction currently rejects a divergent
-ordinary duplicate, so it can fail on a journal that Emacs accepts and replays.
-Restrict divergence conflicts to typed processing records while keeping legacy
-ordinary first-record semantics.  Add direct Node and async checkpoint coverage
-for divergent ordinary duplicates, including clear boundaries.
+Node checkpoint compaction now retains the first ordinary board envelope for a
+raw ID without comparing later content, matching legacy Emacs replay. Divergent
+typed processing envelopes still fail before checkpoint write. The direct Node
+regressions cover the ordinary first-record rule, typed conflicts, and divergent
+ordinary duplicates before and after a clear boundary. The asynchronous
+checkpoint/reopen regression writes divergent ordinary journal records in both
+clear domains and verifies reopened state retains only the first post-clear
+envelope.
+
+* Eleventh fix-point resolution verification
+
+- =node --test test/e-session-writer-test.mjs=: 5/5 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 15/15 passed.
+- =eldev compile -f -W lisp/core/e-session.el lisp/core/e-session-persistence.el=:
+  passed with warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the eleventh
-fix-point review found the compatibility mismatch above.  Slices 2 through 5
-remain out of scope for this review.
+All re-review findings are resolved. Slice 1 is ready for the parent’s final
+independent-review verdict. Slices 2 through 5 remain out of scope for this
+review.

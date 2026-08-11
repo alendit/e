@@ -158,7 +158,9 @@ function boardMessageManifestIdentity(identity) {
 function retainBoardMessage(byIdentity, record) {
   const identity = boardMessageIdentity(record);
   const existing = byIdentity.get(identity);
-  if (existing && !isDeepStrictEqual(existing.message, record.message)) {
+  if (existing &&
+      boardMessageRecordType(record.message?.["record-type"]) !== "board-message" &&
+      !isDeepStrictEqual(existing.message, record.message)) {
     throw new WriterRequestError(`Conflicting checkpoint board message ${identity}`);
   }
   if (!existing) byIdentity.set(identity, record);

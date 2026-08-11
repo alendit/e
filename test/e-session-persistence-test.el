@@ -367,6 +367,37 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-checkpoint-retains-first-divergent-ordinary-board-envelope-after-clear ()
+  "Async checkpoint replay keeps the first ordinary envelope in each clear domain."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-board-checkpoint-ordinary-clear-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (session-id "session-1"))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (e-session-append-board-message store session-id
+                                          '(:id "shared" :kind before))
+          (e-session-persistence-submit-record
+           controller session-id
+           '(:type "board-message" :session-id "session-1"
+             :message (:id "shared" :kind before-divergent)))
+          (e-session-clear-board-messages store session-id)
+          (e-session-append-board-message store session-id
+                                          '(:id "shared" :kind after))
+          (e-session-persistence-submit-record
+           controller session-id
+           '(:type "board-message" :session-id "session-1"
+             :message (:id "shared" :kind after-divergent)))
+          (e-session-persistence-test--await-durable store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal (e-session-board-messages reopened session-id)
+                           '((:id "shared" :kind after :tags nil))))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-checkpoint-reuses-typed-board-ids-after-clear ()
   "Async compaction starts a new typed board identity domain after clear."
   (skip-unless (executable-find e-session-persistence-node-executable))
