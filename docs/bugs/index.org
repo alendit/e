@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | openai-websocket-retry-keeps-active-request/ | OpenAI WebSocket retry keeps failed request active |
 | Closed | openai-websocket-cross-session-active-request/ | OpenAI WebSocket sessions collide on one active request |
 | Closed | openai-websocket-cache-churn/ | OpenAI WebSocket continuation loses connection-local cache |
 | Closed | agent-token-amplification/ | Agent tool turns replay full context and child cache policy is lost |

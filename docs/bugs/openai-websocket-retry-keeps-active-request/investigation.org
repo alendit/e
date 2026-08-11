@@ -1,0 +1,114 @@
+#+title: Investigation: OpenAI WebSocket retry keeps failed request active
+#+date: 2026-08-12
+
+* Status
+
+Resolved repository-side on 2026-08-12.  The running Emacs has not been
+reloaded, so it still needs a reload before it can use the fix.
+
+* Live evidence
+
+The failed session =20260811T220732-ec7137abaed0= recorded one input delivery
+and one pickup, ruling out duplicate board dispatch.  Its activity sequence
+showed:
+
+1. =turn-started= and provider request ordinal 1;
+2. provider request ordinal 1 finished with =:status error=;
+3. the same turn id started again about three seconds later;
+4. =turn-failed= with =Responses WebSocket already has an active request=.
+
+The running Emacs loaded the current project source, and a bounded live probe
+confirmed that =e-loop= passed the correct =:session-id= to the backend.  This
+was therefore distinct from the already-fixed cross-session identity defect.
+
+* Root cause
+
+The OpenAI adapter mapped a Responses =response.failed= protocol event to a
+backend-neutral =backend-error= item.  That item correctly caused =e-loop= to
+fail the provider attempt and the harness correctly classified the error as
+retryable.
+
+However, the adapter only cleared its WebSocket session's =active-request= in
+its transport error, cancellation, timeout, close, and successful-completion
+paths.  Emitting the =backend-error= item did not settle the adapter request.
+When the harness started its retry, the failed request still owned the session
+slot and the adapter raised =e-openai-websocket-busy=.
+
+The previous E2E covered two concurrent sessions whose requests completed
+successfully.  It did not cover terminal provider failure followed by harness
+retry, so it could not expose this lifecycle leak.
+
+* Repair
+
+The WebSocket adapter now treats a =backend-error= produced by a terminal
+Responses event as adapter settlement.  Before delivering the error item to
+the loop it marks the request settled, cancels its timeout, clears
+=active-request=, and closes the failed socket.  The existing loop/harness path
+then retains the full provider error payload and applies the existing retry
+policy.
+
+The deterministic integration regression sends =response.failed= with a
+retryable =529: overloaded_error= through the mocked WebSocket.  It requires
+the same harness turn to emit one retry, open a fresh socket, complete the
+second request, and avoid =turn-failed=.
+
+The credentialed live provider failure test now continues after its deliberate
+invalid-model failure: it restores the configured model and requires a second
+request in the same session to return a fresh nonce.  Two pre-existing E2E
+problems were repaired while making that check trustworthy: assistant content
+is extracted from the settled entry's nested harness result, and the concurrent
+session test captures both active entries before either queue-drain timer can
+remove them.
+
+* Verification
+
+The new integration test first failed against the defective implementation:
+the final status was =error= because the retry hit the busy guard.  It passed
+after the adapter lifecycle repair, with two sends over two sockets and final
+status =done=.
+
+Repository-side validation on 2026-08-12:
+
+- focused failure/retry reproducer: 1 passed, 0 failed;
+- complete OpenAI, loop, harness, and provider-continuation files: 246 passed,
+  0 failed;
+- credentialed ChatGPT/Codex live suite: 11 passed, 0 failed in 81.03 seconds,
+  including induced provider failure followed by same-session recovery and two
+  concurrent sessions;
+- =rtk eldev compile --warnings-as-errors=: passed;
+- =rtk eldev test=: 2,047 passed, 16 expected skips, 0 failed;
+- =git diff --check=: passed.
+
+* Architecture self-check
+
+1. *Better if stopped here?* Yes.  A retryable provider failure can recover
+   instead of deterministically becoming a local busy error.
+2. *Final direction?* Provider adapters own protocol-terminal transport
+   cleanup; the harness owns backend-neutral retry policy.
+3. *Likely to change?* Retry policy and provider event varieties may change.
+   The fact that =response.failed= terminates its request is stable and
+   documented by the Responses API.
+4. *Owner?* The OpenAI adapter owns WebSocket request state and is the only
+   component that can release it at the protocol boundary.
+5. *Coupling?* The change reduces coupling: the harness need not know about
+   OpenAI session slots or WebSocket cleanup.
+6. *Dependency direction?* Core continues to depend only on backend-neutral
+   items; provider lifecycle details remain in the outward adapter.
+7. *Side effects outward?* Timeout cancellation and socket closure remain in
+   the adapter.
+8. *State lifetime?* No state is added.  Existing ephemeral request ownership
+   now ends at the correct terminal event.
+9. *Performance?* Failed sockets are closed once and retries open a fresh
+   connection.  Successful connection reuse and caching are unchanged.
+10. *Real abstractions?* No abstraction is added; adapter settlement is a real
+    existing lifecycle operation.
+11. *Compatibility?* Backend error items retain their message and payload.
+    Existing retry classification and successful WebSocket reuse are unchanged.
+12. *Legacy removable?* No compatibility path is introduced.  The stale
+    active-request behavior is removed.
+13. *Errors?* Provider failures still surface through the normal loop error
+    path; unexpected transport errors still use the adapter error callback.
+14. *Independent tests?* The deterministic E2E crosses board, harness, loop,
+    backend work carrier, adapter, and mocked WebSocket boundaries while
+    asserting cleanup through successful retry.  The credentialed suite also
+    proves real provider failure cleanup and subsequent session reuse.

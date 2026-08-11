@@ -1,0 +1,25 @@
+#+title: OpenAI WebSocket retry keeps failed request active
+#+date: 2026-08-12
+
+* Report
+
+After the cross-session WebSocket isolation fix and an Emacs reload, a new
+OpenAI/Codex chat turn still failed with:
+
+#+begin_example
+Responses WebSocket already has an active request:
+"wss://chatgpt.com/backend-api/codex/responses"
+#+end_example
+
+The affected session was =20260811T220732-ec7137abaed0=.  Its first provider
+request failed transiently; the same harness turn then retried and immediately
+hit the active-request error.
+
+* Expected behavior
+
+- A terminal =response.failed= event releases its request ownership before the
+  harness receives the error.
+- Retryable provider failures may be retried on a fresh WebSocket without
+  colliding with the failed request.
+- End-to-end coverage drives failure, harness retry, adapter cleanup, and
+  recovery through the production board/harness/loop/backend path.

@@ -1456,6 +1456,17 @@ list.  Return a cancellable `e-backend-request' handle."
              (e-openai-codex--websocket-schedule-idle-close session)
              (when on-complete
                (funcall on-complete '(:status done)))))
+         (settle-backend-error (item)
+           ;; `response.failed' is a terminal Responses event.  Preserve its
+           ;; backend-neutral error item for the loop/harness while releasing
+           ;; the transport first, so a retry cannot collide with this request.
+           (unless settled
+             (setq settled t)
+             (cancel-timeout)
+             (clear-active-request)
+             (e-openai-codex--websocket-session-close session)
+             (when on-item
+               (funcall on-item item))))
          (emit-item (item)
            (pcase (plist-get item :type)
              ('assistant-message
@@ -1475,6 +1486,8 @@ list.  Return a cancellable `e-backend-request' handle."
                     (funcall on-item assistant-message-candidate))))
               (when on-item
                 (funcall on-item item)))
+             ('backend-error
+              (settle-backend-error item))
              (_
               (when on-item
                 (funcall on-item item)))))

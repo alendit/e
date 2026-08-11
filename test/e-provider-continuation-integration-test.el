@@ -273,6 +273,79 @@
                              :status)
                   'done)))))
 
+(ert-deftest e-provider-continuation-integration-test-websocket-failure-retry-clears-active-request ()
+  "A terminal Responses failure releases the socket before harness retry."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-harness-retry-initial-backoff-seconds 0.01)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.01)
+         (e-harness-retry-max-elapsed-seconds 1.0)
+         (e-openai-websocket-idle-timeout-seconds nil)
+         (e-openai-model-providers
+          '((continuation-websocket-e2e
+             :name "Continuation WebSocket E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :response-store t
+             :continuation t
+             :requires-openai-auth nil)))
+         (harness
+          (e-openai-create-harness
+           :provider 'continuation-websocket-e2e
+           :model "gpt-test"))
+         (open-count 0)
+         (send-count 0)
+         (events nil)
+         (callbacks (make-hash-table :test 'eq)))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (let ((socket (intern (format "fake-websocket-%d"
+                                               (cl-incf open-count)))))
+                   (puthash socket (plist-get args :on-message) callbacks)
+                   socket)))
+              ((symbol-function 'websocket-send-text)
+               (lambda (socket _text)
+                 (cl-incf send-count)
+                 (let ((on-message (gethash socket callbacks)))
+                   (if (= send-count 1)
+                       (funcall
+                        on-message socket
+                        (json-encode
+                         '(:type "response.failed"
+                           :response
+                           (:status "failed"
+                            :error
+                            (:code "server_error"
+                             :message "529: overloaded_error")))))
+                     (funcall on-message socket
+                              (json-encode
+                               '(:type "response.output_text.done"
+                                 :text "recovered")))
+                     (funcall on-message socket
+                              (json-encode
+                               '(:type "response.completed"
+                                 :response (:id "response-recovered"
+                                            :status "completed"))))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-board-e2e-reset-runtime)
+      (e-chat-service-create-session :harness harness :id "session-one")
+      (e-harness--install-activity-sink
+       harness (lambda (event) (push event events)) :session-id "session-one")
+      (e-board-e2e-prompt-async harness "session-one" "recover once")
+      (let ((result (e-board-e2e-wait-batch harness "session-one" 1.0)))
+        (should (eq (plist-get result :status) 'done)))
+      (should (= send-count 2))
+      (should (= open-count 2))
+      (let ((types (mapcar (lambda (event) (plist-get event :type)) events)))
+        (should (= (seq-count (lambda (type) (eq type 'turn-retrying)) types)
+                   1))
+        (should-not (memq 'turn-failed types))))))
+
 (provide 'e-provider-continuation-integration-test)
 
 ;;; e-provider-continuation-integration-test.el ends here

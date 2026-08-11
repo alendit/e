@@ -113,8 +113,10 @@ backend is whatever the configuration selected."
        (string-match-p (regexp-quote needle) text)))
 
 (defun e-live-e2e--assistant-content (result)
-  "Return assistant content from a harness prompt RESULT."
-  (or (plist-get result :assistant-content) ""))
+  "Return assistant content from a harness result or settled E2E entry RESULT."
+  (or (plist-get result :assistant-content)
+      (plist-get (plist-get result :result) :assistant-content)
+      ""))
 
 (defun e-live-e2e--events-of-type (events type)
   "Return EVENTS whose :type is TYPE."
@@ -274,8 +276,19 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
           (e-board-e2e-prompt-async
            harness session-two
            (format "Reply with exactly this token: %s" nonce-two))
-          (let ((result-one (e-board-e2e-wait-batch harness session-one))
-                (result-two (e-board-e2e-wait-batch harness session-two)))
+          ;; Capture both entries before waiting.  Either turn may settle and
+          ;; be removed by the queue-drain timer while the other is awaited.
+          (let* ((result-one (gethash session-one
+                                      (e-harness-active-turns harness)))
+                 (result-two (gethash session-two
+                                      (e-harness-active-turns harness)))
+                 (deadline (+ (float-time) 30.0)))
+            (should result-one)
+            (should result-two)
+            (while (and (or (eq (plist-get result-one :status) 'running)
+                            (eq (plist-get result-two :status) 'running))
+                        (< (float-time) deadline))
+              (sit-for 0.01))
             (should (eq (plist-get result-one :status) 'done))
             (should (eq (plist-get result-two :status) 'done))
             (should (e-live-e2e--contains-p
@@ -433,7 +446,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
         (should cancelled)))))
 
 (ert-deftest e-live-e2e-test-provider-errors_surface_as_turn_failures ()
-  "Live provider errors surface as harness failures."
+  "A live provider failure releases the session for the next request."
   (e-live-e2e--with-harness (harness session-id)
     (e-session-set-turn-options
      (e-harness-sessions harness) session-id
@@ -443,7 +456,17 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
       harness session-id
       "This request should fail because the model is invalid."))
     (should (e-live-e2e--activity-of-type
-             harness session-id 'turn-failed))))
+             harness session-id 'turn-failed))
+    (e-session-set-turn-options
+     (e-harness-sessions harness) session-id nil)
+    (let* ((nonce (e-live-e2e--nonce))
+           (result
+            (e-board-e2e-prompt-batch
+             harness session-id
+             (format "Reply with exactly this recovery token: %s" nonce))))
+      (should (e-live-e2e--contains-p
+               (e-live-e2e--assistant-content result)
+               nonce)))))
 
 (provide 'e-live-e2e-test)
 
