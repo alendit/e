@@ -243,6 +243,51 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                (e-live-e2e--assistant-content result)
                nonce)))))
 
+(ert-deftest e-live-e2e-test-concurrent-sessions-isolate-provider-requests ()
+  "Two live sessions can keep provider requests active concurrently."
+  (e-live-e2e--require-enabled)
+  (let* ((root (make-temp-file "e-live-e2e-concurrent-" t))
+         (store (e-session-store-create))
+         (harness (e-live-e2e--make-harness store))
+         (nonce-one (e-live-e2e--nonce))
+         (nonce-two (e-live-e2e--nonce))
+         session-one
+         session-two)
+    (unwind-protect
+        (progn
+          (e-board-e2e-reset-runtime)
+          (setq session-one
+                (plist-get
+                 (e-chat-service-create-session
+                  :harness harness :id "live-concurrent-one"
+                  :metadata (list :project-root root))
+                 :id))
+          (setq session-two
+                (plist-get
+                 (e-chat-service-create-session
+                  :harness harness :id "live-concurrent-two"
+                  :metadata (list :project-root root))
+                 :id))
+          (e-board-e2e-prompt-async
+           harness session-one
+           (format "Reply with exactly this token: %s" nonce-one))
+          (e-board-e2e-prompt-async
+           harness session-two
+           (format "Reply with exactly this token: %s" nonce-two))
+          (let ((result-one (e-board-e2e-wait-batch harness session-one))
+                (result-two (e-board-e2e-wait-batch harness session-two)))
+            (should (eq (plist-get result-one :status) 'done))
+            (should (eq (plist-get result-two :status) 'done))
+            (should (e-live-e2e--contains-p
+                     (e-live-e2e--assistant-content
+                      (plist-get result-one :result))
+                     nonce-one))
+            (should (e-live-e2e--contains-p
+                     (e-live-e2e--assistant-content
+                      (plist-get result-two :result))
+                     nonce-two))))
+      (ignore-errors (delete-directory root t)))))
+
 (ert-deftest e-live-e2e-test-follow-up-uses-session-context ()
   "A follow-up live prompt can use earlier transcript context."
   (e-live-e2e--with-harness (harness session-id)

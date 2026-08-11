@@ -291,7 +291,11 @@ started through `e-backend-start'.  Tool execution is started through
 TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
 tool I/O, and turn settlement are callback-driven."
   (let ((turn-messages (copy-sequence messages))
-        (turn-options (copy-sequence options))
+        ;; Session identity is runtime request context, not provider input.  It
+        ;; lets stateful backend adapters isolate connection/request ownership
+        ;; even when callers do not redundantly persist it in turn options.
+        (turn-options (plist-put (copy-sequence options)
+                                 :session-id session-id))
         (settled nil)
         (active-request nil)
         (provider-request-sequence 0)

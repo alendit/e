@@ -1,0 +1,87 @@
+#+title: Investigation: OpenAI WebSocket sessions collide on one active request
+#+date: 2026-08-12
+
+* Status
+
+Resolved repository-side on 2026-08-12.  The running Emacs has not been
+reloaded, so it still needs a reload before it can use the fix.
+
+* Root cause
+
+The persistent WebSocket implementation correctly keyed connection owners by
+the =:session-id= in backend request options.  Direct OpenAI adapter tests
+manually supplied that option.
+
+The production harness passes =session-id= separately to =e-loop-start-turn=,
+but =e-loop= previously forwarded only the model/context options to
+=e-backend-start=.  The OpenAI adapter therefore received no session identity
+and used its =:backend-default= fallback for every live chat.  One active turn
+then made an unrelated session fail with =e-openai-websocket-busy=.
+
+This was a validation defect as well as a code defect.  The retained-connection
+change had adapter tests and broader repository tests, but no WebSocket E2E
+that drove concurrent sessions through the board, harness, loop, backend work
+carrier, and OpenAI adapter.
+
+* Repair
+
+=e-loop-start-turn= now adds its authoritative =session-id= to the copied
+backend options.  This is runtime request identity; OpenAI request-body encoding
+continues to select only provider fields, so the identifier is not sent to the
+model API or added to mutable instructions.
+
+The regression test starts two board-backed sessions on one OpenAI harness,
+holds the first mocked WebSocket response open, starts the second turn, and
+requires two sockets and two successful settlements.
+
+* Verification
+
+The new E2E was first run against the defective implementation and failed with
+=open-count= equal to 1 instead of 2.  This proved both harness sessions reached
+the same retained WebSocket owner.  It passed after the loop propagated session
+identity.
+
+Repository-side validation on 2026-08-12:
+
+- focused reproducer: 1 passed, 0 failed;
+- complete OpenAI, loop, and provider-continuation files: 118 passed, 0 failed;
+- credentialed ChatGPT/Codex WebSocket E2E with two concurrent sessions:
+  1 passed, 0 failed in 4.57 seconds;
+- =rtk eldev compile --warnings-as-errors=: passed;
+- =rtk eldev test=: 2,046 passed, 16 expected skips, 0 failed;
+- =git diff --check=: passed.
+
+* Architecture self-check
+
+1. *Better if stopped here?* Yes.  Independent sessions can use the retained
+   WebSocket backend concurrently instead of failing at provider start.
+2. *Final direction?* Stateful provider transports receive runtime identity
+   through the generic backend request boundary while retaining provider state
+   inside their adapters.
+3. *Likely to change?* Provider-specific connection policies may change.  The
+   loop's authoritative session identity and per-session isolation are stable.
+4. *Owner?* =e-loop= owns provider request orchestration and already receives
+   =session-id=; the OpenAI adapter owns connection state keyed by that value.
+5. *Coupling?* One backend-neutral option removes the adapter's accidental
+   dependence on callers redundantly persisting transport identity.
+6. *Dependency direction?* Core passes identity outward.  Core does not depend
+   on OpenAI or the WebSocket library.
+7. *Side effects outward?* Socket creation and retention remain entirely in
+   the adapter.
+8. *State lifetime?* The change adds no state.  It correctly partitions the
+   existing ephemeral backend connection table by durable session identity.
+9. *Performance?* There is no added provider work.  Concurrent sessions open
+   the separate sockets the design already required; same-session reuse is
+   unchanged.
+10. *Real abstractions?* Session identity is a real request-lifecycle fact, not
+    a new interface or provider-specific abstraction.
+11. *Compatibility?* Backends already accept extensible option plists.  Request
+    encoders select known wire fields, so =:session-id= remains local metadata.
+12. *Legacy removable?* The OpenAI adapter's =:backend-default= fallback remains
+    useful for direct adapter callers, but production loop requests no longer
+    depend on it.
+13. *Errors?* Same-session overlap still surfaces explicitly as busy.  Different
+    sessions no longer enter that error path.
+14. *Independent tests?* The E2E crosses production board/harness/loop/backend
+    boundaries with deterministic mocked network I/O; adapter unit and full
+    repository suites cover the surrounding behavior.

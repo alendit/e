@@ -1,0 +1,23 @@
+#+title: OpenAI WebSocket sessions collide on one active request
+#+date: 2026-08-12
+
+* Report
+
+After reloading Emacs with the persistent OpenAI Responses WebSocket change, a
+new chat turn failed immediately with:
+
+#+begin_example
+Responses WebSocket already has an active request:
+"wss://chatgpt.com/backend-api/codex/responses"
+#+end_example
+
+The failure appeared in the chat surface before the provider produced output.
+
+* Expected behavior
+
+- Each =e= session owns an independent serialized OpenAI WebSocket request
+  lifecycle.
+- Concurrent turns in different sessions may use different retained sockets.
+- Only overlapping requests within the same session are rejected as busy.
+- End-to-end coverage exercises the real harness-to-adapter option path rather
+  than manually supplying adapter-only test options.

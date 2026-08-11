@@ -214,6 +214,65 @@
                       (nth 2 ordered))
                      '("function_call_output"))))))
 
+(ert-deftest e-provider-continuation-integration-test-websocket-isolated-by-session ()
+  "Concurrent harness sessions do not share one active Responses request."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-websocket-idle-timeout-seconds nil)
+         (e-openai-model-providers
+          '((continuation-websocket-e2e
+             :name "Continuation WebSocket E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :response-store t
+             :continuation t
+             :requires-openai-auth nil)))
+         (harness
+          (e-openai-create-harness
+           :provider 'continuation-websocket-e2e
+           :model "gpt-test"))
+         (open-count 0)
+         (callbacks (make-hash-table :test 'eq))
+         sockets)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (let ((socket (intern (format "fake-websocket-%d"
+                                               (cl-incf open-count)))))
+                   (puthash socket (plist-get args :on-message) callbacks)
+                   (push socket sockets)
+                   socket)))
+              ((symbol-function 'websocket-send-text)
+               (lambda (_websocket _text) t))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-board-e2e-reset-runtime)
+      (e-chat-service-create-session :harness harness :id "session-one")
+      (e-chat-service-create-session :harness harness :id "session-two")
+      (e-board-e2e-prompt-async harness "session-one" "first request")
+      (e-board-e2e-prompt-async harness "session-two" "second request")
+      (should (= open-count 2))
+      (dolist (socket sockets)
+        (let ((on-message (gethash socket callbacks)))
+          (funcall on-message socket
+                   (json-encode
+                    '(:type "response.output_text.done" :text "done")))
+          (funcall on-message socket
+                   (json-encode
+                    `(:type "response.completed"
+                      :response (:id ,(format "response-%s" socket)
+                                 :status "completed"))))))
+      (should (eq (plist-get (e-board-e2e-wait-batch
+                              harness "session-one" 1.0)
+                             :status)
+                  'done))
+      (should (eq (plist-get (e-board-e2e-wait-batch
+                              harness "session-two" 1.0)
+                             :status)
+                  'done)))))
+
 (provide 'e-provider-continuation-integration-test)
 
 ;;; e-provider-continuation-integration-test.el ends here
