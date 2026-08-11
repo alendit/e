@@ -332,7 +332,32 @@ rejected without retaining a journal entry.
   treated as errors.
 - =git diff --check=: passed.
 
+* Eighth fix-point re-review findings
+
+** TODO High: Preserve typed board identities during async checkpoint compaction
+
+The Node session writer indexes board records by raw =:id=.  A normal message,
+processing chain, and processing result sharing one raw ID compact into copies
+of the first envelope; reopen then loses the processing records.  Make the
+writer use the same =(record-type . id)= identity contract as Emacs and add an
+async checkpoint/reopen collision test.
+
+** TODO High: Detach checkpoint manifest board identifiers
+
+=e-session-checkpoint-manifest= exposes live board-journal ID strings.  Mutating
+the returned manifest can corrupt private journal state and later queued
+persistence.  Freeze or detach every board-derived manifest value and add a
+mutation regression.
+
+** TODO Medium: Normalize processing record types at live append
+
+Live identity currently distinguishes symbol and string record types, while
+replay normalizes both to symbols and then reports a conflict.  Canonicalize
+record type before indexing, comparison, and persistence.  Add mixed symbol/string
+append and reopen coverage.
+
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review pending the parent
-review verdict.  Slices 2 through 5 remain out of scope for this review.
+Earlier findings are resolved.  Slice 1 remains in review because the eighth
+fix-point review found the three issues above.  Slices 2 through 5 remain out of
+scope for this review.
