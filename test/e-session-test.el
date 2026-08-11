@@ -1545,10 +1545,16 @@
           (e-session-set-turn-options
            store
            session-id
-           '(:model "gpt-test" :reasoning-effort "high"))
+           '(:model "gpt-test"
+             :reasoning-effort "high"
+             :prompt-cache-default t
+             :prompt-cache-retention "24h"))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (e-session-turn-options loaded session-id)
-                           '(:model "gpt-test" :reasoning-effort "high")))))
+                           '(:model "gpt-test"
+                             :reasoning-effort "high"
+                             :prompt-cache-default t
+                             :prompt-cache-retention "24h")))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-branch-summary-persists-through-replay ()

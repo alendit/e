@@ -427,11 +427,23 @@ When PROVIDER is nil, use `e-openai-default-provider'."
        (plist-member options :response-store)
        (eq (plist-get options :response-store) :json-false)))
 
-(defun e-openai--profile-prompt-cache-retention-supported-p (profile)
-  "Return non-nil when PROFILE accepts `prompt_cache_retention'."
-  (if (plist-member profile :prompt-cache-retention)
-      (plist-get profile :prompt-cache-retention)
-    (not (plist-get profile :requires-openai-auth))))
+(defun e-openai--gpt56-or-later-p (model)
+  "Return non-nil when MODEL names GPT-5.6 or a later numbered GPT model."
+  (and (stringp model)
+       (string-match "\\`gpt-\\([0-9]+\\)\\.\\([0-9]+\\)" model)
+       (let ((major (string-to-number (match-string 1 model)))
+             (minor (string-to-number (match-string 2 model))))
+         (or (> major 5)
+             (and (= major 5) (>= minor 6))))))
+
+(defun e-openai--profile-prompt-cache-retention-supported-p (profile model)
+  "Return non-nil when PROFILE and MODEL accept `prompt_cache_retention'.
+GPT-5.6 and later use `prompt_cache_options.ttl' instead; their only current
+TTL is the default, so the legacy retention option must not reach the wire."
+  (and (not (e-openai--gpt56-or-later-p model))
+       (if (plist-member profile :prompt-cache-retention)
+           (plist-get profile :prompt-cache-retention)
+         (not (plist-get profile :requires-openai-auth)))))
 
 (defun e-openai--profile-continuation-supported-p (profile)
   "Return non-nil when PROFILE should use Responses continuation anchors."
@@ -1719,7 +1731,8 @@ OpenAI request and backend-neutral context."
             (_ (when (and (eq wire-api 'responses)
                           (plist-member effective-options :prompt-cache-retention)
                           (not (e-openai--profile-prompt-cache-retention-supported-p
-                                profile)))
+                                profile
+                                (plist-get effective-options :model))))
                  (cl-remf effective-options :prompt-cache-retention)))
             (body-data
              (e-openai--profile-call

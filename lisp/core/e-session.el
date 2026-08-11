@@ -1583,6 +1583,12 @@ a compaction, the complete current path remains model context and is retained."
       (when (and (stringp effort) (not (string-empty-p (string-trim effort))))
         (setq normalized
               (plist-put normalized :reasoning-effort (string-trim effort)))))
+    (when (and (plist-member options :prompt-cache-default)
+               (memq (plist-get options :prompt-cache-default) '(nil t)))
+      (setq normalized
+            (plist-put normalized
+                       :prompt-cache-default
+                       (plist-get options :prompt-cache-default))))
     (when-let ((cache-key (plist-get options :prompt-cache-key)))
       (when (and (stringp cache-key)
                  (not (string-empty-p (string-trim cache-key))))

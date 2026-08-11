@@ -507,6 +507,49 @@ A later configure-type override is preserved across subsequent spawns."
                           :type :lean :prompt "again" :runner noop)
         (should (memq 'web (e-harness-enabled-layer-ids harness)))))))
 
+(ert-deftest e-subagent-runner-test-child-inherits-prompt-cache-policy ()
+  "A child without cache policy derives its own key from the parent's opt-in."
+  (e-subagent-runner-test--with-instances
+    (let ((e-subagent-child-layer-ids nil))
+      (e-harness-instance-register
+       :id :cached-child
+       :name "Cached child"
+       :kind 'tool-user
+       :subagent t
+       :description "Child used to verify inherited cache policy."
+       :factory (lambda ()
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :default-options '(:model "child-model"))))
+      (let* ((registry (e-subagent-registry-create))
+             (parent
+              (e-harness-create
+               :backend (e-backend-fake-create :items nil)
+               :default-options '(:model "parent-model"
+                                  :prompt-cache-default t
+                                  :prompt-cache-retention "24h")))
+             (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+        (e-harness-test-create-board-session parent :id "parent-1")
+        (let* ((record
+                (e-subagent-spawn registry parent "parent-1"
+                                  :type :cached-child
+                                  :prompt "go"
+                                  :runner noop))
+               (child
+                (e-subagent-registry-child-harness
+                 registry (plist-get record :subagent-id)))
+               (child-session-id (plist-get record :session-id))
+               (session-options
+                (e-harness-session-options child child-session-id))
+               (turn-options (e-harness-turn-options child child-session-id)))
+          (should (eq (plist-get session-options :prompt-cache-default) t))
+          (should (equal (plist-get session-options :prompt-cache-retention)
+                         "24h"))
+          (should (stringp (plist-get turn-options :prompt-cache-key)))
+          (should (equal (plist-get turn-options :prompt-cache-retention)
+                         "24h"))
+          (should-not (plist-member turn-options :prompt-cache-default)))))))
+
 (ert-deftest e-subagent-runner-test-configure-type-passes-layer-config ()
   "configure-type writes a capability's runtime config on the type's harness.
 This is the generic way to pass or overwrite layer configuration, e.g. the
@@ -537,9 +580,10 @@ report is child-side and must not be on the parent surface."
       (let ((uris (mapcar #'e-store-entry-uri (e-store-list store))))
         (should (member "e://subagents/skills/subagents" uris))
         (should (member "e://subagents/refs/types.md" uris)))
-      (should (string-match-p
-               "spawn"
-               (e-store-read store "e://subagents/skills/subagents" nil))))))
+      (let ((skill (e-store-read store "e://subagents/skills/subagents" nil)))
+        (should (string-match-p "spawn" skill))
+        (should (string-match-p "Delegate by replacement" skill))
+        (should (string-match-p "Use `any`" skill))))))
 
 (ert-deftest e-subagent-runner-test-child-capability-is-report-only ()
   "The child capability exposes only report, and no spawn surface or catalog."

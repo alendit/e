@@ -702,6 +702,38 @@
     (should (equal (alist-get 'prompt_cache_key captured) "cache-key"))
     (should (equal (alist-get 'prompt_cache_retention captured) "24h"))))
 
+(ert-deftest e-openai-test-gpt56-omits-deprecated-prompt-cache-retention ()
+  "GPT-5.6 keeps its cache key but omits the legacy retention policy."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-compatible-gateway
+             :name "OpenAI-compatible gateway"
+             :base-url "https://gateway.example.test"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         captured
+         (backend
+          (e-openai-backend-create
+           :provider 'openai-compatible-gateway
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (setq captured (json-read-from-string body))
+              "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (e-backend-stream-batch
+     backend
+     :messages '((:role user :content "hello"))
+     :options '(:model "gpt-5.6-sol"
+                :prompt-cache-key "cache-key"
+                :prompt-cache-retention "24h")
+     :on-item #'ignore)
+    (should (equal (alist-get 'prompt_cache_key captured) "cache-key"))
+    (should-not (assq 'prompt_cache_retention captured))
+    (should-not (assq 'prompt_cache_options captured))))
+
 (ert-deftest e-openai-test-backend-captures-default-provider-at-create-time ()
   "Backends created from the default provider do not follow later default changes."
   (let* ((process-environment
