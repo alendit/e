@@ -390,8 +390,19 @@ Node tests cover exact retry deduplication and conflict rejection.
   lisp/core/e-chat-service.el=: passed with warnings treated as errors.
 - =git diff --check=: passed.
 
+* Tenth fix-point re-review finding
+
+** TODO High: Honor board-journal clear boundaries during Node compaction
+
+The Node compactor indexes all historical board-message records but ignores
+=board-messages-cleared=.  A later valid envelope reusing a typed ID after clear
+is compared with the pre-clear envelope and rejected as divergent, although
+Emacs replay correctly starts a fresh journal identity domain.  Clear the Node
+identity map at each clear record and add async checkpoint/reopen tests for
+ordinary and typed ID reuse after clear.
+
 * Completion
 
-All ninth fix-point findings are resolved. Slice 1 remains in review pending the
-parent's final independent-review verdict. Slices 2 through 5 remain out of
-scope for this review.
+Earlier findings are resolved.  Slice 1 remains in review because the tenth
+fix-point review found the clear-boundary defect above.  Slices 2 through 5
+remain out of scope for this review.
