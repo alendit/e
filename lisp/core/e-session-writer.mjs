@@ -99,13 +99,18 @@ async function knownCommands(directory, sessionId) {
     for (const [instance, sequence] of Object.entries(checkpoint["writer-high-watermarks"] || {})) {
       known.highwaters[instance] = Math.max(known.highwaters[instance] || 0, sequence);
     }
+  }
+  const journal = path.join(dir, `${sessionId}.jsonl`);
+  try {
     const suffix = await journalRecordsAfter(
-      path.join(dir, `${sessionId}.jsonl`), checkpoint["journal-byte-offset"]);
+      journal, checkpoint ? checkpoint["journal-byte-offset"] : 0);
     for (const record of suffix.records) {
       const id = record["writer-command-id"];
       if (typeof id === "string") known.exact.add(id);
       recordHighwater(known.highwaters, record);
     }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
   bySession.set(sessionId, known);
   return known;

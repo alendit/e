@@ -432,16 +432,25 @@ envelope.
 
 * Twelfth fix-point re-review finding
 
-** TODO High: Recover known command IDs when no checkpoint exists
+** DONE High: Recover known command IDs when no checkpoint exists
 
-The Node writer rebuilds known command identities only from a checkpoint and its
-suffix.  If a journal exists before any checkpoint, restart treats the known set
-as empty and appends a retried command ID again.  Scan the full journal when no
-checkpoint exists, preserving writer command idempotence from process start.
-Add a direct restart-without-checkpoint duplicate-command test.
+The Node writer now scans the full journal from offset zero when a checkpoint is
+absent, and continues to scan only its suffix when a checkpoint exists.  This
+rebuilds both exact IDs and high-watermarks before accepting an append.  The
+direct Node regression starts two writer processes, retries a non-sequenced
+command ID before the first checkpoint, and verifies the journal contains one
+record.  The affected Emacs persistence integration suite remains green.
+
+* Twelfth fix-point resolution verification
+
+- =node --test test/e-session-writer-test.mjs=: 6/6 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 15/15 passed.
+- =eldev compile -f -W lisp/core/e-session-persistence.el=: passed with
+  warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the twelfth
-fix-point review found the writer restart defect above.  Slices 2 through 5
-remain out of scope for this review.
+All re-review findings are resolved.  Slice 1 remains in review for the parent
+independent-review verdict.  Slices 2 through 5 remain out of scope for this
+review.
