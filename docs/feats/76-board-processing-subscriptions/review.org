@@ -449,8 +449,26 @@ record.  The affected Emacs persistence integration suite remains green.
   warnings treated as errors.
 - =git diff --check=: passed.
 
+* Thirteenth fix-point re-review findings
+
+** TODO High: Reject or repair malformed journal tails before append
+
+The Node parser silently discards a truncated final JSONL record.  The next
+append is written directly after that partial line, producing a joined malformed
+record while reporting success.  Restart then loses command identity and admits
+a duplicate retry.  Before append, require a newline-terminated valid tail or
+repair/truncate it under an explicit recovery policy.  Add malformed and
+truncated-tail restart tests.
+
+** TODO Medium: Do not infer missing lower command sequences from a high-watermark
+
+A journal containing only sequence 2 currently causes sequence 1 to be
+acknowledged as already committed.  Exact identity or proven contiguous ranges
+must drive deduplication; gaps and reordering cannot be silently accepted.  Add
+out-of-order and gapped command-ID tests.
+
 * Completion
 
-All re-review findings are resolved.  Slice 1 remains in review for the parent
-independent-review verdict.  Slices 2 through 5 remain out of scope for this
-review.
+Earlier findings are resolved.  Slice 1 remains in review because the thirteenth
+fix-point review found the two writer defects above.  Slices 2 through 5 remain
+out of scope for this review.
