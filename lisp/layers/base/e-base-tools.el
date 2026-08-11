@@ -77,10 +77,10 @@ pass 0 to detach immediately or a larger value to hold longer."
 (define-error 'e-base-tools-process-failed
   "Base file discovery command failed")
 
-(defconst e-base-tools--max-lines 2000
+(defconst e-base-tools--max-lines 1000
   "Maximum text lines returned by base tools before truncation.")
 
-(defconst e-base-tools--max-bytes (* 16 1024)
+(defconst e-base-tools--max-bytes (* 8 1024)
   "Maximum text bytes returned by base tools before truncation.")
 
 (defconst e-base-tools--replace-contents-max-secs 0.5

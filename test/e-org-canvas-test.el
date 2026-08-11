@@ -995,6 +995,8 @@
         ;; *e-org-canvas* / *e-org-canvas-input* helper buffers.
         (should (string-match-p "document-uri" content))
         (should (string-match-p "helper buffers" content))
+        (should (string-match-p "already saves the live canvas buffer" content))
+        (should (string-match-p "one targeted read" content))
         (should (string-match-p
                  "audit metadata belongs only in the final assistant transcript message"
                  content))

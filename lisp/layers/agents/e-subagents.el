@@ -66,10 +66,11 @@
      "## Context discipline"
      ""
      "A child shares one `tmp://` namespace with this session (same lineage). Tell children to write artifacts under `tmp://` and keep their final message terse, e.g. `Result: tmp://sub_result_1.org -- 3 issues found`. That terse final message is the default result; a child that produces artifacts should call `report` instead. Read a child's full transcript only on demand through its `session://` resource."
+     "Delegate by replacement, not duplication. Give each child a mutually exclusive scope and use its compact result instead of repeating the same source traversal in the parent. Do not spawn overlapping children unless their independently required outputs justify the duplicate reads. If the parent must validate a child finding, inspect only the cited range or artifact."
      ""
      "## Waiting for children"
      ""
-     "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 120)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires, then returns each child's status, summary, and outputs. On timeout it lists the pending references so you can await again. This is the fan-in step after a fan-out: spawn a child per unit, then await them all in one call.")
+     "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 120)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires, then returns each child's status, summary, and outputs. Use `any` when useful parent work can consume the first result while other children continue; use `all` only when synthesis genuinely requires every result. On timeout it lists the pending references so you can await again. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
    "\n")
   "Skill body documenting the subagents action contract.")
 
