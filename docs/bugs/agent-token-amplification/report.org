@@ -1,0 +1,32 @@
+#+title: Agent tool turns replay full context and child cache policy is lost
+#+date: 2026-08-11
+
+* Report
+
+An identical architecture-research task run through =e= used 70 provider
+requests and 4,575,584 logical input tokens across one parent and two child
+sessions.
+The children accounted for 57.6 percent of input and 67.0 percent of uncached
+input.
+
+Every provider request in the three fresh first-turn tool loops used full
+continuation even though the OpenAI backend supports =previous_response_id=.
+Both child sessions also lacked a stable =prompt_cache_key= while the parent
+had one.
+
+This is a product-level efficiency defect rather than an unavoidable cost of
+the research task.
+
+* Expected behavior
+
+- Each successfully completed stored Responses request becomes the continuation
+  anchor for the next request in the same turn.
+- A tool follow-up sends only the new =function_call_output= items.
+- Failed, cancelled, or explicitly unstored requests do not advance an anchor.
+- Child sessions inherit the parent's prompt-cache policy when their harness
+  does not declare one and derive a child-specific key.
+- Delegated work replaces parent traversal of the same scope instead of
+  duplicating it.
+- Large tool results keep a small model-visible preview and a full-result
+  resource.
+- A successful Org Canvas file edit is treated as the atomic save/sync result.

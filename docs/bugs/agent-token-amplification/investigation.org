@@ -1,0 +1,151 @@
+#+title: Investigation: agent token amplification
+#+date: 2026-08-11
+
+* Status
+
+Resolved repository-side.
+The running Emacs has not been reloaded.
+
+* Evidence
+
+The measured task comprised:
+
+| Session              | Requests | Input     | Cached    | Uncached |
+|----------------------+----------+-----------+-----------+----------|
+| Parent               |       30 | 1,941,392 | 1,293,312 |  648,080 |
+| Implementation child |       20 | 1,294,380 |   685,056 |  609,324 |
+| Wasm-mapping child   |       20 | 1,339,812 |   634,880 |  704,932 |
+| Total                |       70 | 4,575,584 | 2,613,248 | 1,962,336 |
+
+The three sessions accumulated 117 tool results containing approximately
+984,000 characters.
+Thirty-nine results approached the former 16 KiB preview limit.
+
+* Root causes
+
+** Provider anchors advanced only between user turns
+
+=e-openai= emitted a =provider-anchor-candidate= for every completed stored
+response, but =e-loop= only forwarded it as an event.
+=e-harness= persisted the final candidate after the complete user turn.
+Every tool follow-up therefore reused the previous user turn's anchor or
+replayed the full first turn.
+
+The old continuation integration test encoded that behavior by expecting a
+tool follow-up to keep using =resp-seed= after =resp-tool= completed.
+
+** Child harnesses lost prompt-cache opt-in
+
+The parent custom harness enabled =:prompt-cache-default=, while the child
+harness factories did not.
+All 40 child requests consequently lacked a derived prompt-cache key.
+
+Session turn-option normalization also discarded
+=:prompt-cache-default=, preventing a parent policy from being inherited by an
+individual child session.
+
+** Work orchestration multiplied context
+
+Two overlapping children and the parent traversed much of the same source.
+Broad reads repeatedly hit the maximum tool-result preview.
+The parent then used 17 provider rounds after drafting for editing, saving,
+synchronization, and verification even though the file resource operation
+already owns those effects.
+
+* Resolution
+
+** In-turn continuation
+
+=e-loop= now keeps a turn-local copy of request options.
+After a provider request completes successfully and all of its tools settle,
+the latest matching continuation candidate becomes the next request's anchor.
+The next request's explicit delta contains only tool-result messages; provider
+output items already stored in the response are not replayed.
+
+Candidates are promoted only on the successful provider completion path.
+Explicitly unstored WebSocket requests still fall back to full replay in the
+OpenAI adapter.
+
+Integration coverage proves both transition from a previous-turn anchor and a
+fresh first turn with two sequential tool responses.
+
+** Child cache policy
+
+At spawn time, a child session inherits =:prompt-cache-default= and
+=:prompt-cache-retention= only when its harness and session did not specify
+those options.
+The child then derives its own cache key from its own model, project root,
+layers, and tools.
+Session persistence now preserves the boolean cache-default policy.
+
+Official OpenAI documentation checked on 2026-08-11 says GPT-5.6 deprecates
+=prompt_cache_retention= in favor of =prompt_cache_options.ttl=, whose only
+current value is the default =30m=.
+The OpenAI adapter now omits the stale retention field for GPT-5.6 and later
+while preserving =prompt_cache_key=.
+Older compatible models keep the legacy retention mapping.
+
+Source:
+https://developers.openai.com/api/docs/guides/prompt-caching
+
+** Context and orchestration bounds
+
+- Default model-visible tool previews are reduced from 16 KiB / 2,000 lines to
+  8 KiB / 1,000 lines.
+  Full truncated output remains available through tmp/raw-result resources;
+  file reads retain offset continuation.
+- The subagent skill now requires mutually exclusive scopes, delegation by
+  replacement, targeted validation of child evidence, and =await any= when the
+  parent can consume the first result.
+- Org Canvas context now says one successful file edit/write already saves and
+  synchronizes linked live buffers and permits only one targeted verification
+  read when materially needed.
+
+No stale Graphify executable path remains in the installed Graphify skill or
+the =e= repository, so no path rewrite was made.
+
+* Verification
+
+- Focused continuation and loop gate: 31 tests, 31 expected, 0 unexpected.
+- Combined continuation, session, subagent, OpenAI, truncation, base-tool, and
+  Org Canvas gate: 265 tests, 265 expected, 0 unexpected.
+- Full repository gate: 2,057 tests, 2,041 expected, 0 unexpected, 16 skipped.
+- =git diff --check=: clean.
+
+* Design review
+
+1. *Better if stopped here?* Yes. First-turn tool loops chain stored responses,
+   children regain stable cache routing, and model-visible intermediate output
+   is bounded more tightly.
+2. *Final direction?* Provider-neutral turn orchestration with provider-specific
+   wire mapping, plus deliberate bounded delegation.
+3. *Change uncertainty?* Response-id promotion is a stable continuation
+   contract. Cache retention is provider/model-specific and remains isolated in
+   the adapter. Preview sizes remain user-customizable.
+4. *Owner?* =e-loop= owns in-turn lifecycle, =e-subagent-runner= owns child
+   spawn inheritance, the OpenAI adapter owns wire compatibility, and the
+   capability layers own model-facing work policy.
+5. *Coupling?* Reduced. The loop consumes opaque candidates; it does not know
+   OpenAI response shapes. Child keys are derived locally instead of copied.
+6. *Dependency direction?* Core depends only on provider-neutral options and
+   candidates. Adapter policy does not leak into presentation.
+7. *Side effects outward?* Anchor promotion is pure option transformation.
+   Persistence remains in the harness/session boundary.
+8. *State lifetime?* The promoted anchor exists only for one active turn.
+   Durable final anchors remain session-owned. Inherited cache policy is a
+   durable session option because resumed children must keep it.
+9. *Performance?* Follow-up payloads and previews shrink. The only added work is
+   small plist copying per provider response and child spawn.
+10. *Real abstractions?* A continuation candidate is produced only by adapters
+    with a real stored-response identifier. Explicitly unstored transports
+    continue by full replay.
+11. *Compatibility?* Full replay remains the fallback. Explicit child policy
+    wins. Older models keep legacy cache retention.
+12. *Legacy removed?* The test expectation that reused =resp-seed= after
+    =resp-tool= is removed.
+13. *Errors?* Provider failures and cancellation settle without promotion;
+    unsupported retention is removed before request encoding; unexpected tool
+    and provider errors continue to surface.
+14. *Independent tests?* Loop and request-shape tests prove continuation without
+    a live API; session/subagent tests prove cache inheritance and persistence;
+    capability tests prove the bounded workflow guidance.
