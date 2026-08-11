@@ -451,24 +451,34 @@ record.  The affected Emacs persistence integration suite remains green.
 
 * Thirteenth fix-point re-review findings
 
-** TODO High: Reject or repair malformed journal tails before append
+** DONE High: Reject malformed journal tails before append
 
-The Node parser silently discards a truncated final JSONL record.  The next
-append is written directly after that partial line, producing a joined malformed
-record while reporting success.  Restart then loses command identity and admits
-a duplicate retry.  Before append, require a newline-terminated valid tail or
-repair/truncate it under an explicit recovery policy.  Add malformed and
-truncated-tail restart tests.
+The Node writer now requires every journal it reads for append, checkpoint, or
+catalog work to be newline-terminated JSONL.  An incomplete final record or a
+malformed complete line causes a terminal request error before any append.  The
+journal remains unchanged, so a retry cannot join a damaged tail and lose
+command identity.  Direct Node and Emacs persistence tests cover truncated and
+malformed tails across a new writer process.
 
-** TODO Medium: Do not infer missing lower command sequences from a high-watermark
+** DONE Medium: Deduplicate only exact command identities
 
-A journal containing only sequence 2 currently causes sequence 1 to be
-acknowledged as already committed.  Exact identity or proven contiguous ranges
-must drive deduplication; gaps and reordering cannot be silently accepted.  Add
-out-of-order and gapped command-ID tests.
+The writer now rebuilds its known command set from exact =writer-command-id=
+values in the full journal and no longer stores or consults sequence
+high-watermarks.  A gapped or reordered sequence therefore commits each unseen
+identity and suppresses only an exact retry.  Direct Node and Emacs persistence
+restart tests cover journal sequences =2, 4, 1, 3= and preserve the exact
+append order.
+
+* Thirteenth fix-point resolution verification
+
+- =node --test test/e-session-writer-test.mjs=: 9/9 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 19/19 passed.
+- =eldev compile -f -W lisp/core/e-session-persistence.el=: passed with
+  warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the thirteenth
-fix-point review found the two writer defects above.  Slices 2 through 5 remain
-out of scope for this review.
+All implementation findings in this review are resolved.  The parent retains
+the final independent-review verdict.  Slices 2 through 5 remain out of scope
+for this review.

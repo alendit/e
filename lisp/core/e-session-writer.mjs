@@ -9,8 +9,6 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const CHECKPOINT_VERSION = 1;
-const knownCommandsByDirectory = new Map();
-
 class WriterRequestError extends Error {}
 
 async function sessionsDirectory(directory) {
@@ -23,28 +21,30 @@ function checkpointPath(directory, sessionId) {
   return path.join(directory, "sessions", `${sessionId}.checkpoint.json`);
 }
 
-function parseLines(content) {
+function parseLines(content, file) {
+  if (content && !content.endsWith("\n")) {
+    throw new WriterRequestError(`Journal ${file} does not end with a newline`);
+  }
   const records = [];
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
-    try { records.push(JSON.parse(line)); } catch (_) {}
+    try {
+      records.push(JSON.parse(line));
+    } catch (_) {
+      throw new WriterRequestError(`Journal ${file} contains malformed JSONL`);
+    }
   }
   return records;
 }
 
-function commandParts(id) {
-  if (typeof id !== "string") return null;
-  const separator = id.lastIndexOf(":");
-  if (separator <= 0) return null;
-  const sequence = Number(id.slice(separator + 1));
-  if (!Number.isSafeInteger(sequence) || sequence < 0) return null;
-  return [id.slice(0, separator), sequence];
-}
-
-function recordHighwater(highwaters, record) {
-  const parts = commandParts(record?.["writer-command-id"]);
-  if (!parts) return;
-  highwaters[parts[0]] = Math.max(highwaters[parts[0]] || 0, parts[1]);
+function commandIds(records) {
+  const ids = new Set();
+  for (const record of records) {
+    if (typeof record?.["writer-command-id"] === "string") {
+      ids.add(record["writer-command-id"]);
+    }
+  }
+  return ids;
 }
 
 async function readCheckpoint(directory, sessionId) {
@@ -73,7 +73,7 @@ async function journalRecordsAfter(file, offset) {
     }
     const buffer = Buffer.alloc(size - offset);
     if (buffer.length) await handle.read(buffer, 0, buffer.length, offset);
-    return { size, records: parseLines(buffer.toString("utf8")) };
+    return { size, records: parseLines(buffer.toString("utf8"), file) };
   } finally {
     await handle.close();
   }
@@ -86,46 +86,24 @@ async function writeAtomicJson(target, value) {
 }
 
 async function knownCommands(directory, sessionId) {
-  let bySession = knownCommandsByDirectory.get(directory);
-  if (!bySession) {
-    bySession = new Map();
-    knownCommandsByDirectory.set(directory, bySession);
-  }
-  if (bySession.has(sessionId)) return bySession.get(sessionId);
-  const known = { exact: new Set(), highwaters: {} };
+  const known = { exact: new Set() };
   const dir = await sessionsDirectory(directory);
-  const checkpoint = await readCheckpoint(directory, sessionId);
-  if (checkpoint) {
-    for (const [instance, sequence] of Object.entries(checkpoint["writer-high-watermarks"] || {})) {
-      known.highwaters[instance] = Math.max(known.highwaters[instance] || 0, sequence);
-    }
-  }
   const journal = path.join(dir, `${sessionId}.jsonl`);
   try {
-    const suffix = await journalRecordsAfter(
-      journal, checkpoint ? checkpoint["journal-byte-offset"] : 0);
-    for (const record of suffix.records) {
-      const id = record["writer-command-id"];
-      if (typeof id === "string") known.exact.add(id);
-      recordHighwater(known.highwaters, record);
-    }
+    const contents = await journalRecordsAfter(journal, 0);
+    known.exact = commandIds(contents.records);
   } catch (error) {
-    if (checkpoint || error?.code !== "ENOENT") throw error;
+    if (error?.code !== "ENOENT") throw error;
   }
-  bySession.set(sessionId, known);
   return known;
 }
 
 function commandKnown(known, id) {
-  if (known.exact.has(id)) return true;
-  const parts = commandParts(id);
-  return !!parts && parts[1] <= (known.highwaters[parts[0]] || 0);
+  return known.exact.has(id);
 }
 
 function rememberCommand(known, id) {
   known.exact.add(id);
-  const parts = commandParts(id);
-  if (parts) known.highwaters[parts[0]] = Math.max(known.highwaters[parts[0]] || 0, parts[1]);
 }
 
 const ENTRY_RECORD_TYPES = new Set([
@@ -256,14 +234,11 @@ async function writeSessionCheckpoint(directory, manifest) {
   const offset = previous?.["journal-byte-offset"] || 0;
   const suffix = await journalRecordsAfter(journal, offset);
   const records = [...(previous?.records || []), ...suffix.records];
-  const highwaters = { ...(previous?.["writer-high-watermarks"] || {}) };
-  for (const record of records) recordHighwater(highwaters, record);
   const checkpoint = {
     version: CHECKPOINT_VERSION,
     "session-id": sessionId,
     "journal-byte-offset": suffix.size,
     records: compactRecords(records, manifest),
-    "writer-high-watermarks": highwaters,
   };
   await writeAtomicJson(checkpointPath(directory, sessionId), checkpoint);
   return checkpoint;
@@ -274,14 +249,11 @@ async function ensureInitialCheckpoint(directory, sessionId, record) {
   const dir = await sessionsDirectory(directory);
   const journal = path.join(dir, `${sessionId}.jsonl`);
   const size = (await fs.stat(journal)).size;
-  const highwaters = {};
-  recordHighwater(highwaters, record);
   await writeAtomicJson(checkpointPath(directory, sessionId), {
     version: CHECKPOINT_VERSION,
     "session-id": sessionId,
     "journal-byte-offset": size,
     records: [record],
-    "writer-high-watermarks": highwaters,
   });
 }
 
@@ -337,7 +309,11 @@ export async function rebuildIndex(directory) {
       try {
         const buffer = Buffer.alloc(Math.min(65536, (await handle.stat()).size));
         await handle.read(buffer, 0, buffer.length, 0);
-        records = parseLines(buffer.toString("utf8")).slice(0, 1);
+        const firstLineEnd = buffer.indexOf(0x0a);
+        if (firstLineEnd < 0) {
+          throw new WriterRequestError(`Journal ${file} has no complete first record`);
+        }
+        records = parseLines(buffer.subarray(0, firstLineEnd + 1).toString("utf8"), file);
       } finally { await handle.close(); }
     }
     const entry = { id: sessionId, "message-count": 0, loaded: false, file };

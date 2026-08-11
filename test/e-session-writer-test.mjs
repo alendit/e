@@ -19,7 +19,17 @@ async function appendThroughWriter(directory, id) {
     record: { type: "message", id: "message-1" },
   }) + "\n");
   await once(writer, "exit");
-  assert.deepEqual(JSON.parse(Buffer.concat(output).toString("utf8")), { id, ok: true });
+  return JSON.parse(Buffer.concat(output).toString("utf8"));
+}
+
+async function successfulAppend(directory, id) {
+  assert.deepEqual(await appendThroughWriter(directory, id), { id, ok: true });
+}
+
+async function writeJournal(directory, content) {
+  const sessions = path.join(directory, "sessions");
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.writeFile(path.join(sessions, "session-1.jsonl"), content, "utf8");
 }
 
 const manifest = {
@@ -40,11 +50,52 @@ function boardRecord(message, commandId) {
 test("writer restart deduplicates a command before its first checkpoint", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await appendThroughWriter(directory, "retry-id");
-  await appendThroughWriter(directory, "retry-id");
+  await successfulAppend(directory, "retry-id");
+  await successfulAppend(directory, "retry-id");
   const journal = await fs.readFile(path.join(directory, "sessions", "session-1.jsonl"), "utf8");
   assert.equal(journal.trim().split("\n").length, 1);
   assert.equal(await fs.stat(path.join(directory, "sessions", "session-1.checkpoint.json")).then(() => true, () => false), false);
+});
+
+test("writer rejects a truncated journal tail without appending", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-tail-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const journal = `${JSON.stringify({ type: "message", "writer-command-id": "writer:1" })}\n{`;
+  await writeJournal(directory, journal);
+  const response = await appendThroughWriter(directory, "writer:2");
+  assert.equal(response.ok, false);
+  assert.equal(response.retryable, false);
+  assert.match(response.error, /does not end with a newline/);
+  assert.equal(await fs.readFile(path.join(directory, "sessions", "session-1.jsonl"), "utf8"), journal);
+});
+
+test("writer rejects a malformed newline-terminated journal tail without appending", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-tail-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const journal = `${JSON.stringify({ type: "message", "writer-command-id": "writer:1" })}\nnot json\n`;
+  await writeJournal(directory, journal);
+  const response = await appendThroughWriter(directory, "writer:2");
+  assert.equal(response.ok, false);
+  assert.equal(response.retryable, false);
+  assert.match(response.error, /contains malformed JSONL/);
+  assert.equal(await fs.readFile(path.join(directory, "sessions", "session-1.jsonl"), "utf8"), journal);
+});
+
+test("writer deduplicates only exact command identities across gaps and reordering", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-identities-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await writeJournal(directory, [
+    JSON.stringify({ type: "message", "writer-command-id": "writer:2" }),
+    JSON.stringify({ type: "message", "writer-command-id": "writer:4" }),
+    "",
+  ].join("\n"));
+  await successfulAppend(directory, "writer:1");
+  await successfulAppend(directory, "writer:3");
+  await successfulAppend(directory, "writer:2");
+  const records = (await fs.readFile(path.join(directory, "sessions", "session-1.jsonl"), "utf8"))
+    .trim().split("\n").map(JSON.parse);
+  assert.deepEqual(records.map((record) => record["writer-command-id"]),
+                   ["writer:2", "writer:4", "writer:1", "writer:3"]);
 });
 
 test("compaction deduplicates exact typed board-envelope retries", () => {

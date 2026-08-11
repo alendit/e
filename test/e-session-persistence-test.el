@@ -254,6 +254,105 @@
           (when (process-live-p process) (kill-process process))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-restart-accepts-missing-and-reordered-command-identities ()
+  "A gapped journal does not make an unseen lower command ID durable."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-gaps-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (first (e-session-persistence--create
+                 :store store :instance-id "writer"))
+         (second (e-session-persistence--create
+                  :store store :instance-id "writer" :next-sequence 2))
+         (journal (expand-file-name "sessions/session-1.jsonl" directory)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory journal) t)
+          (with-temp-file journal
+            (insert "{\"type\":\"message\",\"writer-command-id\":\"writer:2\"}\n"))
+          (e-session-persistence-submit-record
+           first "session-1" '(:type "message" :id "message-1"))
+          (e-session-persistence-test--await-command first)
+          (e-session-persistence-submit-record
+           second "session-1" '(:type "message" :id "message-3"))
+          (e-session-persistence-test--await-command second)
+          (with-temp-buffer
+            (insert-file-contents journal)
+            (should (equal (mapcar (lambda (line)
+                                     (plist-get
+                                      (json-parse-string line :object-type 'plist)
+                                      :writer-command-id))
+                                   (split-string (buffer-string) "\n" t))
+                           '("writer:2" "writer:1" "writer:3")))))
+      (dolist (controller (list first second))
+        (when-let ((process (e-session-persistence-process controller)))
+          (when (process-live-p process) (kill-process process))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-rejects-truncated-journal-tail ()
+  "A rejected tail leaves the journal unchanged and settles the command."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-tail-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence--create :store store :instance-id "writer"))
+         (journal (expand-file-name "sessions/session-1.jsonl" directory))
+         (tail "{\"type\":\"message\",\"writer-command-id\":\"writer:2\"}\n{")
+         failure)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory journal) t)
+          (with-temp-file journal (insert tail))
+          (e-session-persistence--submit
+           controller
+           '(:op "append" :session-id "session-1"
+             :record (:type "message" :id "message-1"))
+           nil (lambda (err) (setq failure err)))
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (not failure) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should failure)
+          (should (string-match-p "does not end with a newline"
+                                  (error-message-string failure)))
+          (should (= (hash-table-count
+                      (e-session-persistence-outbox controller))
+                     0))
+          (with-temp-buffer
+            (insert-file-contents journal)
+            (should (equal (buffer-string) tail))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-rejects-malformed-journal-tail ()
+  "A malformed newline-terminated tail leaves the journal unchanged."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-malformed-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence--create :store store :instance-id "writer"))
+         (journal (expand-file-name "sessions/session-1.jsonl" directory))
+         (tail "{\"type\":\"message\",\"writer-command-id\":\"writer:2\"}\nnot json\n")
+         failure)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory journal) t)
+          (with-temp-file journal (insert tail))
+          (e-session-persistence--submit
+           controller
+           '(:op "append" :session-id "session-1"
+             :record (:type "message" :id "message-1"))
+           nil (lambda (err) (setq failure err)))
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (not failure) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should failure)
+          (should (string-match-p "contains malformed JSONL"
+                                  (error-message-string failure)))
+          (with-temp-buffer
+            (insert-file-contents journal)
+            (should (equal (buffer-string) tail))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-retries-keep-journal-order-and-deduplicate ()
   "Replayed writer commands append once and preserve session record order."
   (skip-unless (executable-find e-session-persistence-node-executable))
