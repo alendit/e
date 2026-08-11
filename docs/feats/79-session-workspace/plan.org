@@ -1,0 +1,308 @@
+#+title: Plan: Session Workspace and Plan Projection
+#+date: 2026-08-11
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Give each agent session a generic writable workspace for compact, mutable
+working state, then build an =update_plan=-style checklist as the first
+consumer of that workspace.
+
+The workspace should let an agent maintain plans, notes, hypotheses, and other
+small coordination artifacts without putting their current contents into every
+model request.  A shell may project selected workspace resources, such as the
+current plan, without making presentation state the source of truth.
+
+* Problem
+
+=e= has several adjacent mechanisms, but none provides the complete contract:
+
+- =buffer://= exposes process-global Emacs buffers.  Buffer names are
+  presentation identities, buffer contents are not session-owned, and ordinary
+  buffers do not have a durable session lifecycle.
+- =tmp://= provides session-scoped writable resources, but those resources are
+  explicitly ephemeral, are deleted with their runtime lineage, and are not
+  restored as session state.
+- =file://= is durable but pollutes the project or requires the model to invent
+  private filesystem locations.
+- the Goal capability keeps structured steps in memory, but it is a controller
+  protocol rather than a generic agent workspace and does not give shells a
+  resource-backed checklist to render.
+- transcript messages are durable, but rewriting a current plan by adding more
+  transcript text grows context and makes the latest state expensive to find.
+
+Codex's =update_plan= illustrates the missing interaction: the model submits a
+small structured plan, later updates item statuses, and the shell renders a
+checkbox list.  The useful primitive is broader than a plan tool.  It is a
+session-owned mutable resource with a compact specialized facade.
+
+* Direction
+
+Add a =workspace://= resource scheme owned by the harness/session runtime.
+Resources are text or JSON values addressed relative to the current session:
+
+#+begin_example
+workspace://plan.json
+workspace://notes/semantic-ir.org
+workspace://hypotheses/cache-churn.md
+#+end_example
+
+The first specialized consumer is an =update_plan= model-facing tool.  It
+validates structured plan items, replaces =workspace://plan.json= atomically,
+and emits a compact workspace-change event.  Chat and other shells may render
+that resource as a checklist.
+
+The generic workspace and the plan facade are separate responsibilities:
+
+- the workspace owns storage, revisions, resource operations, limits,
+  persistence, and cleanup;
+- the plan facade owns the plan schema and plan-specific validation;
+- shells own checklist presentation and interaction;
+- the OpenAI adapter remains unaware of workspaces and plans.
+
+* Core contracts
+
+** Resource namespace
+
+Register =read=, =write=, =edit=, =glob=, and =search= for =workspace://=.
+
+- Paths are relative, normalized, and cannot escape the session root.
+- =write= creates or atomically replaces a resource.
+- =edit= applies exact replacements against one known revision.
+- =glob= and =search= are bounded and use the existing resource result shapes.
+- Resource metadata includes =:uri=, =:revision=, =:bytes=, =:created-at=,
+  =:updated-at=, and =:content-type=.
+- Write and edit results return metadata, not the complete new content.
+- Per-resource and per-workspace byte limits are explicit and configurable.
+
+The workspace is semantic session state, not an Emacs buffer registry.  A shell
+may create a buffer visiting a workspace resource, but buffer identity and
+modified state remain presentation concerns.
+
+** Persistence and lifetime
+
+Workspace content is agent-authored current state, so it should survive an
+Emacs restart and an ordinary session resume.  It should not be appended in
+full to the session JSONL on every rewrite.
+
+Store current resource snapshots in an atomically updated session sidecar
+directory resolved by the session store.  Keep only a small manifest with
+resource names, revisions, content types, sizes, and timestamps.  Do not put
+workspace contents in generic session metadata, the session index, or every
+resume checkpoint.
+
+Initial lifecycle rules:
+
+- one isolated workspace per session;
+- subagent sessions receive their own workspace by default;
+- ordinary resume reopens the same workspace;
+- explicit session reset clears the workspace after pending writes settle;
+- session deletion removes its workspace;
+- harness teardown does not delete durable workspace content;
+- transcript branch rewinds do not silently rewind workspace state in the
+  first version; the workspace is session-current state, and that limitation is
+  shown in resource metadata and documentation.
+
+If branch-relative workspaces become necessary, add them as an explicit later
+contract rather than inferring branches from directory names.
+
+** Revision and concurrency
+
+Every successful mutation advances a monotonically increasing resource
+revision.  =edit= and the plan facade accept an optional expected revision and
+fail with a conflict when it no longer matches.
+
+This prevents a shell edit, agent update, and background worker from silently
+overwriting one another.  The current revision is cheap to query and is not a
+provider-context input.
+
+** Plan facade
+
+Register a stable =update_plan= tool when the capability is active.  Its
+consumer-shaped arguments are:
+
+#+begin_src emacs-lisp
+(:explanation "Why the plan changed"
+ :plan ((:step "Inspect request construction" :status "completed")
+        (:step "Keep one WebSocket session" :status "in_progress")
+        (:step "Run a cache A/B comparison" :status "pending"))
+ :expected-revision 3)
+#+end_src
+
+Validation rules:
+
+- statuses are =pending=, =in_progress=, or =completed=;
+- at most one item is =in_progress=;
+- steps are non-empty and bounded in length and count;
+- unknown fields are rejected;
+- a revision conflict returns the current revision and asks the caller to read
+  =workspace://plan.json= before retrying.
+
+The tool result contains only the URI, revision, and status counts.  The
+canonical JSON resource contains the full current plan.  A
+=workspace-resource-updated= event carries the session id, URI, revision, and
+content type, but not a second copy of the full plan.
+
+Static model guidance should explain when plans are useful: nontrivial,
+multi-phase, dependent, ambiguous, or multi-part work.  It should also say not
+to create ceremonial plans for simple requests.  The guidance and tool schema
+must remain stable across plan updates.
+
+** Shell projection
+
+Chat shells subscribe to workspace-change events and may render
+=workspace://plan.json= as a checkbox list near the active turn.  The renderer
+reads the resource through the workspace API and treats it as a projection:
+
+- closing or rebuilding the chat buffer does not destroy the plan;
+- rendering does not write transcript messages;
+- progress display is coalesced and does not refocus or recenter the composer;
+- malformed plan content produces a visible bounded error without breaking the
+  turn;
+- other workspace resources remain discoverable without receiving bespoke UI.
+
+* Cache-preservation contract
+
+Workspace state must be out of band from model context by default.
+
+- Do not register workspace contents as context-provider messages.
+- Do not include workspace revisions, timestamps, names, or contents in
+  top-level =instructions=.
+- Do not include mutable workspace state in =prompt_cache_key=, provider-anchor
+  fingerprints, active-layer identity, or tool definitions.
+- Keep the =update_plan= tool definition stable.  Only its ordinary tool call
+  and compact result enter the append-only transcript tail.
+- Do not echo complete workspace contents from =write=, =edit=, or
+  =update_plan= results.
+- On a full transcript replay, historical tool calls remain ordinary history;
+  the current workspace snapshot is not additionally injected.
+- Reading a workspace resource is explicit model work and returns only the
+  requested bounded content.
+
+This means a workspace update changes new tail input, which is unavoidable and
+correct, but does not mutate an earlier reusable request prefix.  A shell-only
+render or an out-of-band workspace write must not change the next provider
+request at all.
+
+* Relationship to existing facilities
+
+- Keep =tmp://= for disposable large tool results and lineage-shared temporary
+  artifacts.  Do not silently make it durable.
+- Keep the Goal capability for deterministic success criteria, blockers, and
+  controller-loop semantics.  A later adapter may project a goal into
+  =workspace://plan.json=, but the first slice does not merge the two models.
+- Keep =buffer://= as access to live Emacs buffers.  Workspace buffers are
+  optional shell projections over =workspace://= resources.
+- Keep =session://= read-only.  It describes persisted session history across
+  engines; it is not the mutation API for the current session.
+
+* Implementation slices
+
+** Slice 1: Workspace store and resource methods
+
+- Add a session-workspace store with atomic snapshot writes, manifests,
+  revisions, bounds, and explicit cleanup.
+- Register bounded =workspace://= read/write/edit/glob/search methods in a
+  default harness capability.
+- Cover path safety, overwrite conflicts, limits, restart restoration, reset,
+  deletion, and independent session ownership.
+
+This slice is useful on its own as a durable agent scratch space.
+
+** Slice 2: Structured plan facade
+
+- Add the =update_plan= tool and schema validation.
+- Store the canonical plan at =workspace://plan.json=.
+- Emit compact workspace-change events and retain only bounded tool results.
+- Add stable guidance for when to use the plan.
+
+This slice provides the model interaction even before richer UI exists.
+
+** Slice 3: Chat checklist projection
+
+- Render the current plan as a checkbox list in chat surfaces.
+- Subscribe through the existing board/shell event path without making the
+  shell the state owner.
+- Cover redraw, reload, active-turn, and composed-surface behavior with focused
+  unit and graphical tests.
+
+** Slice 4: Cache and continuation gate
+
+- Assert that an out-of-band workspace mutation leaves instructions, tools,
+  cache key, stable segment fingerprints, and provider options byte-identical.
+- Assert that =update_plan= contributes only its new function call and compact
+  output to an incremental Responses request.
+- Compare a repeated multi-round live task with and without plan updates after
+  the WebSocket cache-churn bug is fixed.
+- Record request count, input, cached input, uncached input, zero-cache rounds,
+  and request-property compatibility.
+
+* Non-goals
+
+- Do not automatically inject the plan or all workspace files into prompts.
+- Do not make arbitrary Emacs buffers durable session state.
+- Do not turn the workspace into a project file synchronization mechanism.
+- Do not add collaborative multi-writer merging in the first version.
+- Do not make workspace state branch-relative without an explicit branch
+  ownership design.
+- Do not replace goal criteria, task queues, subagent coordination, or
+  =tmp://= raw-result storage.
+- Do not implement this plan while its status is =Planned=.
+
+* Verification plan
+
+- Focused ERT for storage, resources, plan validation, conflicts, events, and
+  shell projection.
+- Restart integration test proving current workspace state is restored without
+  replaying obsolete revisions.
+- Graphical E2E for plan updates during an active chat turn.
+- Provider request-shape tests proving workspace state is absent from mutable
+  prefix fields.
+- A live OpenAI A/B run with the same model, task, layers, tools, and cache key
+  policy; report both per-request and aggregate cache metrics.
+- Full repository gate and =git diff --check= before review.
+
+Repository-side tests are sufficient during implementation.  Do not reload the
+running Emacs unless the operator explicitly asks; offer a reload after the
+review gate if immediate live use is desired.
+
+* Design review
+
+1. *Better if stopped here?* Yes.  Slice 1 gives agents a durable, bounded
+   session scratch space before plan-specific UI exists.
+2. *Final direction?* Session-owned working state with thin consumer-shaped
+   tools and shell projections, separate from transcript and provider adapters.
+3. *Likely to change?* Plan rendering and future resource types may change.
+   Session ownership, explicit resource access, stable tool schemas, and no
+   automatic prompt injection are stable constraints.
+4. *Owner?* The workspace capability owns current workspace state; the plan
+   facade owns plan validation; shells own rendering.
+5. *Coupling?* The resource contract lets new consumers use the workspace
+   without depending on chat, OpenAI, or the plan schema.
+6. *Dependency direction?* Shells and plan tools depend on the workspace API.
+   Core workspace code does not depend on UI or provider implementations.
+7. *Side effects outward?* Filesystem persistence stays in the workspace-store
+   adapter; schema validation and rendering remain pure over values.
+8. *State lifetime?* Workspace snapshots are durable session-current facts.
+   Render state is buffer-local; in-flight writes are runtime-local; old
+   revisions are replaceable rather than transcript history.
+9. *Performance?* Writes are bounded atomic sidecar replacements.  The cache
+   contract prevents mutable workspace contents from becoming repeated input.
+10. *Real abstractions?* A writable session resource and a structured current
+    plan are concrete contracts.  No generic extension framework beyond those
+    consumers is introduced.
+11. *Compatibility?* There is no existing =workspace://= state to migrate.
+    =tmp://=, =buffer://=, =file://=, Goal, and =session://= retain their
+    meanings.
+12. *Legacy removable?* No legacy path is removed in the first slice.  Later
+    plan consumers may retire ad hoc in-memory progress lists explicitly.
+13. *Errors?* Invalid paths, limits, schema violations, and revision conflicts
+    are expected workspace errors.  Persistence and invariant failures surface
+    to the turn and are not swallowed by the shell.
+14. *Independent tests?* Store and schema tests do not require chat or OpenAI;
+    request-shape tests do not require a live API; shell tests consume workspace
+    events through the public contract.

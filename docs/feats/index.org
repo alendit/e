@@ -89,3 +89,4 @@ Status values for coding agents:
 | 76 | In-review   | 76-board-processing-subscriptions/        | Board Processing Subscriptions                       |
 | 77 | Done        | 77-persp-workspace-visual-e2e/            | Persp Workspace Visual E2E                           |
 | 78 | Done        | 78-session-resume-checkpoints/             | Session Resume Checkpoints                           |
+| 79 | Planned     | 79-session-workspace/                       | Session Workspace and Plan Projection                |
