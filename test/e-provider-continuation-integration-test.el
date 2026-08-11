@@ -42,8 +42,8 @@
    'text
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
 
-(ert-deftest e-provider-continuation-integration-test-tool-followup-sends-in-turn-output ()
-  "A full anchored tool turn sends function call and output on follow-up."
+(ert-deftest e-provider-continuation-integration-test-tool-followup-advances-anchor ()
+  "An anchored tool turn advances to its response and sends only tool output."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-harness-auto-compaction-enabled nil)
@@ -127,17 +127,92 @@
                       anchored-tool-request)
                      "inspect now"))
       (should (equal (alist-get 'previous_response_id followup-request)
-                     "resp-seed"))
+                     "resp-tool"))
       (should (equal (e-provider-continuation-integration--input-types
                       followup-request)
-                     '("message" "function_call" "function_call_output")))
+                     '("function_call_output")))
       (let* ((input (alist-get 'input followup-request))
-             (function-call (aref input 1))
-             (function-output (aref input 2)))
-        (should (equal (alist-get 'call_id function-call) "call-1"))
+             (function-output (aref input 0)))
         (should (equal (alist-get 'call_id function-output) "call-1"))
         (should (equal (alist-get 'output function-output)
                        "fresh state"))))))
+
+(ert-deftest e-provider-continuation-integration-test-fresh-turn-advances-each-tool-response ()
+  "A fresh multi-tool turn chains each stored response without replay."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-model-providers
+          '((continuation-e2e
+             :name "Continuation E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :response-store t
+             :continuation t
+             :requires-openai-auth nil)))
+         (requests nil)
+         (call-count 0)
+         (harness
+          (e-openai-create-harness
+           :provider 'continuation-e2e
+           :model "gpt-test"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (setq call-count (1+ call-count))
+              (push (json-read-from-string body) requests)
+              (if (< call-count 3)
+                  (e-provider-continuation-integration--sse
+                   `((type . "response.output_item.done")
+                     (item . ((type . "function_call")
+                              (call_id . ,(format "call-%d" call-count))
+                              (name . "inspect")
+                              (arguments . ,(format
+                                             "{\"target\":\"state-%d\"}"
+                                             call-count)))))
+                   `((type . "response.completed")
+                     (response . ((id . ,(format "resp-tool-%d" call-count))
+                                  (status . "completed")))))
+                (e-provider-continuation-integration--sse
+                 '((type . "response.output_text.done")
+                   (text . "final answer"))
+                 '((type . "response.completed")
+                   (response . ((id . "resp-final")
+                                (status . "completed")))))))))))
+    (e-harness-activate-capability
+     harness
+     (e-capability-create
+      :id 'inspect-capability
+      :tools
+      (list
+       (lambda (registry)
+         (e-tools-register
+          registry
+          :name "inspect"
+          :description "Inspect state."
+          :work
+          (e-tools-cheap-work
+           "e2e.provider-continuation.inspect"
+           (lambda (arguments)
+             (format "fresh %s" (plist-get arguments :target)))))))))
+    (e-board-e2e-create-session harness :id "session-1")
+    (e-board-e2e-prompt-batch harness "session-1" "inspect twice")
+    (let ((ordered (nreverse requests)))
+      (should (= call-count 3))
+      (should-not (alist-get 'previous_response_id (nth 0 ordered)))
+      (should (equal (alist-get 'previous_response_id (nth 1 ordered))
+                     "resp-tool-1"))
+      (should (equal (e-provider-continuation-integration--input-types
+                      (nth 1 ordered))
+                     '("function_call_output")))
+      (should (equal (alist-get 'previous_response_id (nth 2 ordered))
+                     "resp-tool-2"))
+      (should (equal (e-provider-continuation-integration--input-types
+                      (nth 2 ordered))
+                     '("function_call_output"))))))
 
 (provide 'e-provider-continuation-integration-test)
 

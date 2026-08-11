@@ -76,6 +76,35 @@
       (plist-put (copy-sequence item) :type 'tool-call))
      (t item))))
 
+(defun e-loop--continuation-candidate-p (options candidate)
+  "Return non-nil when CANDIDATE may continue the request in OPTIONS."
+  (and (plist-get options :provider-continuation)
+       (eq (plist-get candidate :provider-id)
+           (plist-get options :provider-anchor-provider-id))))
+
+(defun e-loop--promote-continuation-candidate
+    (options candidate source-message-count delta-messages)
+  "Return OPTIONS advanced to CANDIDATE for an in-turn follow-up.
+SOURCE-MESSAGE-COUNT covers the local transcript through the completed
+provider response.  DELTA-MESSAGES are new client inputs, normally tool
+results, that the stored response does not contain."
+  (if (not (e-loop--continuation-candidate-p options candidate))
+      options
+    (let ((advanced (copy-sequence options)))
+      (setq advanced
+            (plist-put advanced
+                       :provider-anchor
+                       (list :provider-id (plist-get candidate :provider-id)
+                             :metadata (copy-tree
+                                        (plist-get candidate :metadata)))))
+      (setq advanced
+            (plist-put advanced
+                       :provider-anchor-delta-messages
+                       (copy-tree delta-messages)))
+      (plist-put advanced
+                 :provider-anchor-source-message-count
+                 source-message-count))))
+
 (defun e-loop--shape-value (value)
   "Return durable hash and byte length for model-visible VALUE."
   (let ((text (prin1-to-string value)))
@@ -262,6 +291,7 @@ started through `e-backend-start'.  Tool execution is started through
 TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
 tool I/O, and turn settlement are callback-driven."
   (let ((turn-messages (copy-sequence messages))
+        (turn-options (copy-sequence options))
         (settled nil)
         (active-request nil)
         (provider-request-sequence 0)
@@ -314,6 +344,8 @@ tool I/O, and turn settlement are callback-driven."
                   (response-assistant-message nil)
                   (token-usage nil)
                   (done-reason nil)
+                  (provider-anchor-candidate nil)
+                  (provider-followup-messages nil)
                   (provider-request nil)
                   (provider-request-id nil)
                   (provider-request-ordinal nil)
@@ -334,7 +366,8 @@ tool I/O, and turn settlement are callback-driven."
                     (setq provider-request-id (e-session-generate-ulid))
                     (setq provider-request-ordinal provider-request-sequence)
                     (setq provider-request-shape
-                          (e-loop--request-shape turn-messages options segments))
+                          (e-loop--request-shape
+                           turn-messages turn-options segments))
                     (setq provider-request-started-at (float-time))
                     (setq provider-request-finished nil)
                     (publish-request request)
@@ -360,6 +393,15 @@ tool I/O, and turn settlement are callback-driven."
                         provider-request-ordinal provider-request-shape
                         provider-request-started-at
                         provider-request-causes))))
+                   (promote-provider-anchor
+                    ()
+                    (when provider-anchor-candidate
+                      (setq turn-options
+                            (e-loop--promote-continuation-candidate
+                             turn-options
+                             provider-anchor-candidate
+                             (length turn-messages)
+                             provider-followup-messages))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -383,6 +425,7 @@ tool I/O, and turn settlement are callback-driven."
                          (list :type 'reasoning-delta
                                :stream-kind 'summary
                                :content (response-text))))
+                      (promote-provider-anchor)
                       (start-request)))
                    (current-tool-p
                     (token)
@@ -408,6 +451,9 @@ tool I/O, and turn settlement are callback-driven."
                                    :metadata (plist-get result :metadata))))
                         (setq turn-messages
                               (append turn-messages (list message)))
+                        (setq provider-followup-messages
+                              (append provider-followup-messages
+                                      (list message)))
                         (funcall append-message message)
                         (e-loop--emit
                          :on-event on-event
@@ -495,7 +541,7 @@ tool I/O, and turn settlement are callback-driven."
                                                    (e-work-handle-id turn-work-handle))
                                               :board-enroll-work board-enroll-work
                                               :deadline
-                                              (plist-get options :deadline))
+                                              (plist-get turn-options :deadline))
                                       :on-request-start
                                       (lambda (request)
                                         (publish-tool-request
@@ -562,6 +608,9 @@ tool I/O, and turn settlement are callback-driven."
                                :type 'token-usage
                                :payload token-usage))
                              ('provider-anchor-candidate
+                              (when (e-loop--continuation-candidate-p
+                                     turn-options item)
+                                (setq provider-anchor-candidate item))
                               (e-loop--emit
                                :on-event on-event
                                :type 'provider-anchor-candidate
@@ -613,7 +662,7 @@ tool I/O, and turn settlement are callback-driven."
                                   :messages (lambda (_arguments _context)
                                               turn-messages)
                                   :options (lambda (_arguments _context)
-                                             options)
+                                             turn-options)
                                   :request-handler
                                   (lambda (handle _request _arguments _context)
                                     (let ((request
@@ -634,7 +683,7 @@ tool I/O, and turn settlement are callback-driven."
                                                  (and (e-work-handle-p turn-work-handle)
                                                       (e-work-handle-id turn-work-handle))
                                                  :deadline
-                                                 (plist-get options :deadline))
+                                                 (plist-get turn-options :deadline))
                                  :on-done
                                  (lambda (_backend-result)
                                    (unless (or settled (cancelled))
@@ -660,6 +709,7 @@ tool I/O, and turn settlement are callback-driven."
                                                        (append turn-messages
                                                                (list message)))
                                                  (funcall append-message message)
+                                                 (promote-provider-anchor)
                                                  (if (drain-pending)
                                                      (start-request)
                                                    (finish done-reason
