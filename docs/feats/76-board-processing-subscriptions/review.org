@@ -409,8 +409,19 @@ post-clear envelopes.
   passed with warnings treated as errors.
 - =git diff --check=: passed.
 
+* Eleventh fix-point re-review finding
+
+** TODO Medium: Preserve ordinary board-envelope deduplication semantics in Node
+
+Emacs retains the first ordinary board envelope for a raw ID without comparing
+later content.  Node checkpoint compaction currently rejects a divergent
+ordinary duplicate, so it can fail on a journal that Emacs accepts and replays.
+Restrict divergence conflicts to typed processing records while keeping legacy
+ordinary first-record semantics.  Add direct Node and async checkpoint coverage
+for divergent ordinary duplicates, including clear boundaries.
+
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review for the parent’s
-final independent-review verdict.  Slices 2 through 5 remain out of scope for
-this review.
+Earlier findings are resolved.  Slice 1 remains in review because the eleventh
+fix-point review found the compatibility mismatch above.  Slices 2 through 5
+remain out of scope for this review.
