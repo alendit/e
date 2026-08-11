@@ -36,6 +36,35 @@ test("compaction rejects divergent typed board-envelope duplicates", () => {
   assert.throws(() => compactRecords(records, manifest), /Conflicting checkpoint board message/);
 });
 
+test("compaction starts a fresh typed board identity domain after clear", () => {
+  const records = [
+    boardRecord({ id: "shared", kind: "before" }, "writer-a:1"),
+    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "before" }, "writer-a:2"),
+    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "before" }, "writer-a:3"),
+    { type: "board-messages-cleared", "session-id": "session-1", "writer-command-id": "writer-a:4" },
+    boardRecord({ id: "shared", kind: "after" }, "writer-a:5"),
+    boardRecord({ id: "shared", "record-type": "processing-chain", "root-message-id": "after" }, "writer-a:6"),
+    boardRecord({ id: "shared", "record-type": "processing-result", outcome: "after" }, "writer-a:7"),
+  ];
+  const clearedManifest = {
+    ...manifest,
+    "board-message-identities": [
+      { "record-type": "board-message", id: "shared" },
+      { "record-type": "processing-chain", id: "shared" },
+      { "record-type": "processing-result", id: "shared" },
+    ],
+  };
+  const compacted = compactRecords(records, clearedManifest);
+  assert.deepEqual(
+    compacted.filter((record) => record.type === "board-message").map((record) => record.message),
+    [
+      { id: "shared", kind: "after" },
+      { id: "shared", "record-type": "processing-chain", "root-message-id": "after" },
+      { id: "shared", "record-type": "processing-result", outcome: "after" },
+    ],
+  );
+});
+
 test("compaction accepts only the shared board record-type domain", () => {
   const untypedManifest = { ...manifest, "board-message-identities": [{ "record-type": "board-message", id: "message" }] };
   assert.equal(compactRecords([boardRecord({ id: "message" }, "writer-a:1")], untypedManifest).length, 2);

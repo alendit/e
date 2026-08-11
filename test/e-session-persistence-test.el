@@ -367,6 +367,41 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-checkpoint-reuses-typed-board-ids-after-clear ()
+  "Async compaction starts a new typed board identity domain after clear."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-board-checkpoint-clear-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (session-id "session-1"))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (dolist (envelope '((:id "shared" :kind before)
+                              (:id "shared" :record-type processing-chain
+                               :root-message-id "before")
+                              (:id "shared" :record-type processing-result
+                               :outcome before)))
+            (e-session-append-board-message store session-id envelope))
+          (e-session-clear-board-messages store session-id)
+          (dolist (envelope '((:id "shared" :kind after)
+                              (:id "shared" :record-type processing-chain
+                               :root-message-id "after")
+                              (:id "shared" :record-type processing-result
+                               :outcome after)))
+            (e-session-append-board-message store session-id envelope))
+          (e-session-persistence-test--await-durable store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal (e-session-board-messages reopened session-id)
+                           '((:id "shared" :kind after :tags nil)
+                             (:id "shared" :record-type processing-chain
+                              :root-message-id "after" :tags nil)
+                             (:id "shared" :record-type processing-result
+                              :outcome after :tags nil))))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (provide 'e-session-persistence-test)
 
 ;;; e-session-persistence-test.el ends here

@@ -392,17 +392,25 @@ Node tests cover exact retry deduplication and conflict rejection.
 
 * Tenth fix-point re-review finding
 
-** TODO High: Honor board-journal clear boundaries during Node compaction
+** DONE High: Honor board-journal clear boundaries during Node compaction
 
-The Node compactor indexes all historical board-message records but ignores
-=board-messages-cleared=.  A later valid envelope reusing a typed ID after clear
-is compared with the pre-clear envelope and rejected as divergent, although
-Emacs replay correctly starts a fresh journal identity domain.  Clear the Node
-identity map at each clear record and add async checkpoint/reopen tests for
-ordinary and typed ID reuse after clear.
+The Node compactor now clears its typed board-message identity map for every
+=board-messages-cleared= record, matching Emacs replay's fresh journal domain.
+The direct Node regression proves ordinary, processing-chain, and
+processing-result envelopes can reuse one raw ID after clear.  The async
+checkpoint/reopen regression proves the reopened journal retains only those
+post-clear envelopes.
+
+* Tenth fix-point resolution verification
+
+- =node --test test/e-session-writer-test.mjs=: 4/4 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 14/14 passed.
+- =eldev compile -f -W lisp/core/e-session.el lisp/core/e-session-persistence.el=:
+  passed with warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the tenth
-fix-point review found the clear-boundary defect above.  Slices 2 through 5
-remain out of scope for this review.
+Earlier findings are resolved.  Slice 1 remains in review for the parent’s
+final independent-review verdict.  Slices 2 through 5 remain out of scope for
+this review.

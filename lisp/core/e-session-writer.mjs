@@ -175,6 +175,8 @@ export function compactRecords(records, manifest) {
     if (id) byEntryId.set(id, record);
     if (record.type === "board-message") {
       retainBoardMessage(byBoardMessageIdentity, record);
+    } else if (record.type === "board-messages-cleared") {
+      byBoardMessageIdentity.clear();
     } else if (record.type === "message-display" && record.id) {
       displays.set(record.id, record);
     }
