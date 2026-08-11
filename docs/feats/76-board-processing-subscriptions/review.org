@@ -334,30 +334,29 @@ rejected without retaining a journal entry.
 
 * Eighth fix-point re-review findings
 
-** TODO High: Preserve typed board identities during async checkpoint compaction
+** DONE High: Preserve typed board identities during async checkpoint compaction
 
-The Node session writer indexes board records by raw =:id=.  A normal message,
-processing chain, and processing result sharing one raw ID compact into copies
-of the first envelope; reopen then loses the processing records.  Make the
-writer use the same =(record-type . id)= identity contract as Emacs and add an
-async checkpoint/reopen collision test.
+The Node writer now indexes checkpoint candidates with the same
+=(record-type . id)= identity as the Emacs board journal.  The asynchronous
+checkpoint/reopen regression retains an ordinary board message, processing
+chain, and processing result that share the raw ID.
 
-** TODO High: Detach checkpoint manifest board identifiers
+** DONE High: Detach checkpoint manifest board identifiers
 
-=e-session-checkpoint-manifest= exposes live board-journal ID strings.  Mutating
-the returned manifest can corrupt private journal state and later queued
-persistence.  Freeze or detach every board-derived manifest value and add a
-mutation regression.
+=e-session-checkpoint-manifest= now returns frozen board state and typed board
+identity values.  The mutation regression changes manifest IDs, board ID, and
+principal, then proves the private journal and session board state are unchanged.
 
-** TODO Medium: Normalize processing record types at live append
+** DONE Medium: Normalize processing record types at live append
 
-Live identity currently distinguishes symbol and string record types, while
-replay normalizes both to symbols and then reports a conflict.  Canonicalize
-record type before indexing, comparison, and persistence.  Add mixed symbol/string
-append and reopen coverage.
+Live append canonicalizes a processing record type before identity lookup,
+retention, and persistence.  Replay applies the same symbol representation.
+The mixed symbol/string regression covers live deduplication and asynchronous
+checkpoint reopen.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the eighth
-fix-point review found the three issues above.  Slices 2 through 5 remain out of
-scope for this review.
+All eighth fix-point findings are resolved.  =e-session-board-messages= now
+loads an indexed but unloaded session before reading its private board journal,
+so its accessor result matches loaded-store semantics.  Slices 2 through 5
+remain out of scope for this review.

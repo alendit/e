@@ -133,22 +133,25 @@ function entryId(record) {
   return record.id || record.message?.id || record.report?.id || null;
 }
 
-function boardMessageId(record) {
-  return record?.message?.id || null;
+function boardMessageIdentity(value) {
+  const message = value?.message || value;
+  return JSON.stringify([
+    message?.["record-type"] || "board-message",
+    message?.id || null,
+  ]);
 }
 
 function compactRecords(records, manifest) {
   const sessionId = manifest["session-id"];
   const root = manifest.root || {};
   const byEntryId = new Map();
-  const byBoardMessageId = new Map();
+  const byBoardMessageIdentity = new Map();
   const displays = new Map();
   for (const record of records) {
     const id = entryId(record);
     if (id) byEntryId.set(id, record);
     if (record.type === "board-message") {
-      const boardId = boardMessageId(record);
-      if (boardId && !byBoardMessageId.has(boardId)) byBoardMessageId.set(boardId, record);
+      byBoardMessageIdentity.set(boardMessageIdentity(record), record);
     } else if (record.type === "message-display" && record.id) {
       displays.set(record.id, record);
     }
@@ -180,9 +183,12 @@ function compactRecords(records, manifest) {
     });
   }
 
-  for (const id of manifest["board-message-ids"] || []) {
-    const record = byBoardMessageId.get(id);
-    if (!record) throw new WriterRequestError(`Checkpoint board message ${id} is absent from ${sessionId}`);
+  for (const identity of manifest["board-message-identities"] || []) {
+    const record = byBoardMessageIdentity.get(boardMessageIdentity(identity));
+    if (!record) {
+      throw new WriterRequestError(
+        `Checkpoint board message ${JSON.stringify(identity)} is absent from ${sessionId}`);
+    }
     output.push(record);
   }
 

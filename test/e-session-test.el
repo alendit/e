@@ -145,6 +145,26 @@
        :type 'e-session-board-message-cycle))
     (should-not (e-session-board-messages store "board-session"))))
 
+(ert-deftest e-session-test-board-messages-loads-an-indexed-session ()
+  "Board message access loads an unloaded indexed session before reading it."
+  (let ((directory (make-temp-file "e-session-board-indexed-access-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "board-session"))
+          (e-session-create store :id session-id)
+          (e-session-append-board-message
+           store session-id '(:id "message-1" :kind output))
+          (e-session-flush-write-queue store)
+          (let ((indexed (e-session-persistent-index-store-create directory)))
+            (should-not (plist-get (e-session--peek-session indexed session-id)
+                                   :loaded))
+            (should (equal (mapcar (lambda (message) (plist-get message :id))
+                                   (e-session-board-messages indexed session-id))
+                           '("message-1")))
+            (should (plist-get (e-session--peek-session indexed session-id)
+                               :loaded))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-board-log-freezes-input-and-returned-envelopes ()
   "Board journal state remains private across input and return-value mutation."
   (let* ((directory (make-temp-file "e-session-board-freeze-" t))
@@ -181,6 +201,48 @@
                            '("original")))))
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
+
+(ert-deftest e-session-test-checkpoint-manifest-detaches-board-identities ()
+  "Checkpoint manifest mutation cannot change the private board journal."
+  (let* ((store (e-session-store-create))
+         (session-id "board-session")
+         (board-id (copy-sequence "board-1"))
+         (principal (copy-sequence "principal-1"))
+         (message-id (copy-sequence "record-1")))
+    (e-session-create store :id session-id)
+    (e-session-declare-board-state store session-id principal board-id)
+    (e-session-append-board-message
+     store session-id
+     (list :id message-id :record-type 'processing-chain))
+    (let* ((manifest (e-session-checkpoint-manifest store session-id))
+           (identity (aref (plist-get manifest :board-message-identities) 0))
+           (state (plist-get manifest :board-state)))
+      (aset (plist-get identity :id) 0 ?x)
+      (aset (plist-get state :board-id) 0 ?x)
+      (aset (plist-get state :principal) 0 ?x))
+    (should (equal (plist-get (car (e-session-board-messages store session-id)) :id)
+                   "record-1"))
+    (should (equal (plist-get (plist-get (e-session-get store session-id)
+                                          :board-session-state)
+                              :board-id)
+                   "board-1"))
+    (should (equal (plist-get (plist-get (e-session-get store session-id)
+                                          :board-session-state)
+                              :principal)
+                   "principal-1"))))
+
+(ert-deftest e-session-test-board-log-canonicalizes-processing-record-types ()
+  "String and symbol processing record types share one durable identity."
+  (let ((store (e-session-store-create))
+        (symbol-envelope '(:id "record-1" :record-type processing-chain))
+        (string-envelope '(:id "record-1" :record-type "processing-chain")))
+    (e-session-create store :id "board-session")
+    (e-session-append-board-message store "board-session" symbol-envelope)
+    (e-session-append-board-message store "board-session" string-envelope)
+    (let ((messages (e-session-board-messages store "board-session")))
+      (should (= (length messages) 1))
+      (should (eq (plist-get (car messages) :record-type)
+                  'processing-chain)))))
 
 (ert-deftest e-session-test-board-log-replay-deduplicates-identical-typed-envelope ()
   "Restart ignores repeated typed board envelopes with equal durable values."

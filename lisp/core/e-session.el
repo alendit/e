@@ -1291,14 +1291,22 @@ a compaction, the complete current path remains model context and is retained."
            (e-session-board-journal-messages
               (e-session--board-journal store session-id))
            e-session-checkpoint-board-message-limit)))
-    (list :session-id session-id
+    (list :session-id (copy-sequence session-id)
           :root (e-session--checkpoint-root session)
-          :board-state (copy-tree (plist-get session :board-session-state))
+          :board-state
+          (e-session--freeze-board-value
+           (plist-get session :board-session-state))
           :entry-ids
           (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
-          :board-message-ids
-          (vconcat (mapcar (lambda (message) (plist-get message :id))
-                           board-messages)))))
+          :board-message-identities
+          (vconcat
+           (mapcar
+            (lambda (message)
+              (e-session--freeze-board-value
+               (list :record-type
+                     (or (plist-get message :record-type) 'board-message)
+                     :id (plist-get message :id))))
+            board-messages)))))
 
 (defun e-session--checkpoint-entry-record (session-id entry parent-id)
   "Return replay record for SESSION-ID ENTRY reparented to PARENT-ID."
@@ -2506,16 +2514,23 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
 
 (defun e-session-board-messages (store session-id)
   "Return SESSION-ID's durable board envelopes in board order."
+  (e-session--get-live store session-id)
   (e-session--freeze-board-value
    (e-session-board-journal-messages
     (e-session--board-journal store session-id))))
+
+(defun e-session--canonical-board-record-type (record-type)
+  "Return RECORD-TYPE in the board journal's in-memory representation."
+  (if (stringp record-type) (intern record-type) record-type))
 
 (defun e-session--board-message-identity (message)
   "Return the durable journal identity for board MESSAGE.
 Processing records have a record type, while ordinary board messages occupy the
 untyped board-message namespace.  The pair prevents equal raw ids from
 silently replacing records from another namespace."
-  (cons (or (plist-get message :record-type) 'board-message)
+  (cons (or (e-session--canonical-board-record-type
+             (plist-get message :record-type))
+            'board-message)
         (plist-get message :id)))
 
 (defun e-session--existing-board-message (journal message)
@@ -2534,6 +2549,11 @@ silently replacing records from another namespace."
   (e-session--get-live store session-id)
   (let* ((journal (e-session--board-journal store session-id))
          (message (e-session--freeze-board-value message))
+         (record-type
+          (e-session--canonical-board-record-type
+           (plist-get message :record-type)))
+         (_ (when record-type
+              (plist-put message :record-type record-type)))
          (existing (e-session--existing-board-message journal message)))
     (unless existing
       (puthash (e-session--board-message-identity message) message

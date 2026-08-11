@@ -340,6 +340,33 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-checkpoint-retains-typed-board-id-collisions ()
+  "Async compaction preserves every typed board envelope sharing a raw id."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-board-checkpoint-collision-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (session-id "session-1"))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (dolist (envelope '((:id "shared" :kind output)
+                              (:id "shared" :record-type processing-chain)
+                              (:id "shared" :record-type "processing-chain")
+                              (:id "shared" :record-type processing-result)))
+            (e-session-append-board-message store session-id envelope))
+          (e-session-persistence-test--await-durable store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal
+                     (mapcar #'e-session--board-message-identity
+                             (e-session-board-messages reopened session-id))
+                     '((board-message . "shared")
+                       (processing-chain . "shared")
+                       (processing-result . "shared"))))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (provide 'e-session-persistence-test)
 
 ;;; e-session-persistence-test.el ends here
