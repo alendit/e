@@ -354,9 +354,33 @@ retention, and persistence.  Replay applies the same symbol representation.
 The mixed symbol/string regression covers live deduplication and asynchronous
 checkpoint reopen.
 
+* Ninth fix-point re-review findings
+
+** TODO High: Deep-freeze the entire checkpoint manifest
+
+=e-session-checkpoint-manifest= still shallow-copies generic root and entry-ID
+values.  Mutating returned strings changes live session names, metadata, branch
+IDs, and retained entry IDs.  Apply the string-aware deep freezer to every
+manifest-derived value, not only board fields.  Add root, metadata, branch, and
+entry-ID mutation regressions.
+
+** TODO High: Align Node and Emacs handling of absent/falsey record types
+
+The Node writer uses JavaScript truthiness to default record type, while Emacs
+uses nil absence.  Empty-string or numeric record types therefore receive
+different typed identities and can overwrite ordinary messages during
+compaction.  Define and validate one record-type domain at journal ingress, then
+use absence semantics consistently in both runtimes.  Add parity tests.
+
+** TODO Medium: Reject divergent typed duplicates during Node compaction
+
+The Node checkpoint identity map overwrites earlier records without comparing
+envelopes.  This silently selects one stale/conflicting value where Emacs replay
+signals a conflict.  Deduplicate exact retries and reject divergent duplicates
+before writing a checkpoint.  Add direct Node compaction tests.
+
 * Completion
 
-All eighth fix-point findings are resolved.  =e-session-board-messages= now
-loads an indexed but unloaded session before reading its private board journal,
-so its accessor result matches loaded-store semantics.  Slices 2 through 5
-remain out of scope for this review.
+Earlier findings are resolved.  Slice 1 remains in review because the ninth
+fix-point review found the three issues above.  Slices 2 through 5 remain out of
+scope for this review.
