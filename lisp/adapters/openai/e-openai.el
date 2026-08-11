@@ -101,6 +101,16 @@ When nil, Responses WebSocket requests do not time out locally."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defcustom e-openai-websocket-connection-idle-seconds 300
+  "Seconds to retain an idle Responses WebSocket connection.
+The connection stays open across compatible model/tool round trips so
+`previous_response_id' can use the provider's connection-local cache.  Set
+this to nil to retain idle connections until cancellation, failure, or backend
+replacement."
+  :type '(choice (const :tag "Retain until teardown" nil)
+                 (number :tag "Seconds"))
+  :group 'e-openai)
+
 (defcustom e-openai-diagnostic-print-length 50
   "Maximum list/vector/hash entries printed in OpenAI diagnostic fallbacks."
   :type 'integer
@@ -667,6 +677,15 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                    messages)))
     (seq-remove #'e-openai-codex--system-message-p source)))
 
+(defun e-openai-codex--without-provider-anchor (options)
+  "Return OPTIONS without provider-anchor continuation state."
+  (let ((options (copy-sequence options)))
+    (dolist (key '(:provider-anchor
+                   :provider-anchor-delta-messages
+                   :provider-anchor-source-message-count))
+      (cl-remf options key))
+    options))
+
 (defun e-openai-codex--text-verbosity (model options)
   "Return Responses text verbosity for MODEL under OPTIONS."
   (or (plist-get options :text-verbosity)
@@ -1119,20 +1138,260 @@ When EMIT-ANCHOR is nil, completed response ids stay transport-local."
          (event-item (e-openai-codex--event-item event)))
     (delq nil (list usage-item anchor-candidate-item event-item))))
 
+(cl-defstruct
+    (e-openai-codex--websocket-session
+     (:constructor e-openai-codex--websocket-session-create))
+  websocket
+  url
+  headers
+  close-function
+  connection-id
+  reuse-count
+  last-response-id
+  last-request-properties
+  active-request
+  idle-timer)
+
+(defvar e-openai-codex--websocket-connection-sequence 0
+  "Process-local sequence for bounded WebSocket connection diagnostics.")
+
+(define-error 'e-openai-websocket-busy
+  "Responses WebSocket already has an active request")
+
+(defun e-openai-codex--websocket-cancel-idle-close (session)
+  "Cancel SESSION's pending idle close timer."
+  (when-let ((timer (e-openai-codex--websocket-session-idle-timer session)))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (setf (e-openai-codex--websocket-session-idle-timer session) nil)))
+
+(defun e-openai-codex--websocket-session-close (session)
+  "Close SESSION's connection and discard its warm continuation state."
+  (e-openai-codex--websocket-cancel-idle-close session)
+  (let ((websocket (e-openai-codex--websocket-session-websocket session))
+        (close-function
+         (e-openai-codex--websocket-session-close-function session)))
+    ;; Clear identity first so the library's synchronous on-close callback is
+    ;; recognized as intentional cleanup rather than a transport failure.
+    (setf (e-openai-codex--websocket-session-websocket session) nil)
+    (setf (e-openai-codex--websocket-session-url session) nil)
+    (setf (e-openai-codex--websocket-session-headers session) nil)
+    (setf (e-openai-codex--websocket-session-close-function session) nil)
+    (setf (e-openai-codex--websocket-session-last-response-id session) nil)
+    (setf (e-openai-codex--websocket-session-last-request-properties session) nil)
+    (setf (e-openai-codex--websocket-session-reuse-count session) 0)
+    (when (and websocket close-function)
+      (funcall close-function websocket))))
+
+(defun e-openai-codex--websocket-active-handler (session key &rest arguments)
+  "Call KEY handler for SESSION's active request with ARGUMENTS."
+  (when-let* ((active
+               (e-openai-codex--websocket-session-active-request session))
+              (handler (plist-get active key)))
+    (apply handler arguments)))
+
+(defun e-openai-codex--websocket-session-open (session url headers)
+  "Open SESSION for URL and HEADERS and return the connection."
+  (e-openai-codex--websocket-session-close session)
+  (let* ((close-function (symbol-function 'websocket-close))
+         (connection-id
+          (format "e-ws-%d"
+                  (cl-incf e-openai-codex--websocket-connection-sequence)))
+         websocket)
+    (setq websocket
+          (websocket-open
+           url
+           :custom-header-alist headers
+           :on-message
+           (lambda (candidate frame)
+             (when (eq candidate
+                       (e-openai-codex--websocket-session-websocket session))
+               (e-openai-codex--websocket-active-handler
+                session :on-message candidate frame)))
+           :on-close
+           (lambda (candidate &rest _args)
+             (when (eq candidate
+                       (e-openai-codex--websocket-session-websocket session))
+               (let ((active
+                      (e-openai-codex--websocket-session-active-request
+                       session)))
+                 (setf (e-openai-codex--websocket-session-websocket session) nil)
+                 (setf (e-openai-codex--websocket-session-last-response-id
+                        session)
+                       nil)
+                 (setf (e-openai-codex--websocket-session-last-request-properties
+                        session)
+                       nil)
+                 (setf (e-openai-codex--websocket-session-active-request session)
+                       nil)
+                 (when-let ((handler (plist-get active :on-close)))
+                   (funcall handler candidate)))))
+           :on-error
+           (lambda (candidate &rest args)
+             (when (eq candidate
+                       (e-openai-codex--websocket-session-websocket session))
+               (e-openai-codex--websocket-active-handler
+                session :on-error candidate args)))))
+    (setf (e-openai-codex--websocket-session-websocket session) websocket)
+    (setf (e-openai-codex--websocket-session-url session) url)
+    (setf (e-openai-codex--websocket-session-headers session)
+          (copy-tree headers))
+    (setf (e-openai-codex--websocket-session-close-function session)
+          close-function)
+    (setf (e-openai-codex--websocket-session-connection-id session)
+          connection-id)
+    (setf (e-openai-codex--websocket-session-reuse-count session) 0)
+    websocket))
+
+(defun e-openai-codex--websocket-schedule-idle-close (session)
+  "Schedule an idle close for SESSION when configured."
+  (e-openai-codex--websocket-cancel-idle-close session)
+  (when (and (numberp e-openai-websocket-connection-idle-seconds)
+             (>= e-openai-websocket-connection-idle-seconds 0)
+             (e-openai-codex--websocket-session-websocket session))
+    (let ((connection-id
+           (e-openai-codex--websocket-session-connection-id session)))
+      (setf
+       (e-openai-codex--websocket-session-idle-timer session)
+       (run-at-time
+        e-openai-websocket-connection-idle-seconds nil
+        (lambda ()
+          (setf (e-openai-codex--websocket-session-idle-timer session) nil)
+          (when (and
+                 (null (e-openai-codex--websocket-session-active-request session))
+                 (equal connection-id
+                        (e-openai-codex--websocket-session-connection-id
+                         session)))
+            (e-openai-codex--websocket-session-close session))))))))
+
+(defun e-openai-codex--websocket-request-properties (body-data)
+  "Return context-bearing non-input properties from BODY-DATA."
+  (e-openai--plist-without
+   (e-openai--plist-without body-data :input)
+   :previous_response_id))
+
+(defun e-openai-codex--websocket-unresolved-response-p (event)
+  "Return non-nil when EVENT rejects an unavailable previous response id."
+  (when (equal (plist-get event :type) "response.failed")
+    (let* ((response (plist-get event :response))
+           (error (or (plist-get response :error)
+                      (plist-get event :error)))
+           (code (and (listp error) (plist-get error :code)))
+           (param (and (listp error) (plist-get error :param)))
+           (message (downcase
+                     (or (and (listp error) (plist-get error :message))
+                         (and (stringp error) error)
+                         ""))))
+      (or (equal param "previous_response_id")
+          (member code '("previous_response_not_found"
+                         "response_not_found"
+                         "unknown_previous_response_id"))
+          (and (string-match-p "previous.response" message)
+               (string-match-p
+                "not found\\|not cached\\|uncached\\|unknown\\|expired"
+                message))))))
+
+(defun e-openai-codex--websocket-actual-metadata
+    (metadata body-data connection-id reused reuse-count mode fallback-reason)
+  "Return METADATA updated for the actual WebSocket BODY-DATA sent.
+CONNECTION-ID identifies the socket, REUSED and REUSE-COUNT describe its
+lifecycle, and MODE and FALLBACK-REASON describe the selected request shape."
+  (let* ((metadata (copy-tree metadata))
+         (diagnostics (copy-sequence (plist-get metadata :diagnostics)))
+         (previous-present
+          (not (null (plist-member body-data :previous_response_id))))
+         (continuation
+          (if previous-present
+              'used
+            (if (eq (plist-get metadata :provider-continuation) 'disabled)
+                'disabled
+              'full))))
+    (setq diagnostics
+          (plist-put diagnostics :provider-continuation continuation))
+    (setq diagnostics
+          (plist-put diagnostics :previous-response-id-present
+                     previous-present))
+    (setq diagnostics
+          (plist-put diagnostics :input-message-count
+                     (length (plist-get body-data :input))))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-connection-id connection-id))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-reused (and reused t)))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-reuse-count reuse-count))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-request-mode mode))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-fallback-reason fallback-reason))
+    (setq metadata (plist-put metadata :provider-continuation continuation))
+    (setq metadata (plist-put metadata :diagnostics diagnostics))
+    (unless previous-present
+      (cl-remf metadata :provider-anchor-response-id)
+      (cl-remf metadata :provider-continuation-delta-count)
+      (cl-remf metadata :provider-anchor-source-message-count))
+    metadata))
+
 (cl-defun e-openai-codex--websocket-request-start
-    (&key url headers body-data on-item on-complete on-error)
+    (&key session url headers body-data full-body-data request-metadata
+          on-item on-complete on-error)
   "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
+SESSION owns a connection reusable by compatible sequential requests.
+FULL-BODY-DATA is the safe request without provider continuation.
 ON-ITEM receives backend-neutral stream items.  ON-COMPLETE receives a status
 plist when a completed event arrives.  ON-ERROR receives an Emacs condition
 list.  Return a cancellable `e-backend-request' handle."
-  (let ((timeout e-openai-websocket-idle-timeout-seconds)
-        websocket
+  (let* ((session (or session
+                      (e-openai-codex--websocket-session-create)))
+         (timeout e-openai-websocket-idle-timeout-seconds)
+         (full-body-data (or full-body-data body-data))
+         (properties
+          (e-openai-codex--websocket-request-properties full-body-data))
+         (requested-response-id (plist-get body-data :previous_response_id))
+         (existing-websocket
+          (e-openai-codex--websocket-session-websocket session))
+         (connection-compatible
+          (and existing-websocket
+               (equal url (e-openai-codex--websocket-session-url session))
+               (equal headers
+                      (e-openai-codex--websocket-session-headers session))))
+         (properties-compatible
+          (equal properties
+                 (e-openai-codex--websocket-session-last-request-properties
+                  session)))
+         (response-compatible
+          (and (stringp requested-response-id)
+               (equal requested-response-id
+                      (e-openai-codex--websocket-session-last-response-id
+                       session))))
+         (incremental-p
+          (and connection-compatible properties-compatible response-compatible))
+         (fallback-reason
+          (cond
+           (incremental-p nil)
+           ((not requested-response-id) nil)
+           ((not connection-compatible) 'new-connection)
+           ((not response-compatible) 'previous-response-mismatch)
+           ((not properties-compatible) 'request-properties-changed)))
+         (actual-body-data (if incremental-p body-data full-body-data))
+         (reused connection-compatible)
         timeout-timer
-        close-timer
         settled
-        closed
+        retried-full
+        completed-response-id
+        request
+        request-token
         assistant-message-candidate
         assistant-message-seen)
+    (when (e-openai-codex--websocket-session-active-request session)
+      (signal 'e-openai-websocket-busy (list url)))
+    (e-openai-codex--websocket-cancel-idle-close session)
+    (unless connection-compatible
+      (e-openai-codex--websocket-session-open session url headers)
+      (setq reused nil))
+    (when reused
+      (cl-incf (e-openai-codex--websocket-session-reuse-count session)))
+    (setq request-token (list :websocket-request))
     (cl-labels
         ((cancel-timeout ()
            (when (timerp timeout-timer)
@@ -1149,38 +1408,54 @@ list.  Return a cancellable `e-backend-request' handle."
                        (list 'e-openai-request-timeout
                              (format "OpenAI WebSocket idle timed out after %s seconds"
                                      timeout))))))))
-         (close-websocket ()
-           (unless closed
-             (setq closed t)
-             (when websocket
-               (websocket-close websocket))))
-         (defer-close-websocket ()
-           (unless closed
-             (setq closed t)
-             (when websocket
-               (let ((socket websocket)
-                     (close-function (symbol-function 'websocket-close)))
-                 (setq close-timer
-                       (run-at-time
-                        0 nil
-                        (lambda ()
-                          (setq close-timer nil)
-                          (funcall close-function socket))))))))
+         (active-request-p ()
+           (eq request-token
+               (plist-get
+                (e-openai-codex--websocket-session-active-request session)
+                :token)))
+         (clear-active-request ()
+           (when (active-request-p)
+             (setf (e-openai-codex--websocket-session-active-request session)
+                   nil)))
+         (refresh-request-metadata (mode reason)
+           (let ((actual
+                  (e-openai-codex--websocket-actual-metadata
+                   request-metadata
+                   actual-body-data
+                   (e-openai-codex--websocket-session-connection-id session)
+                   reused
+                   (e-openai-codex--websocket-session-reuse-count session)
+                   mode
+                   reason)))
+             (setf (e-backend-request-metadata request)
+                   (append
+                    (list :transport 'websocket
+                          :url url
+                          :timeout-seconds timeout
+                          :cancellable t)
+                    actual
+                    (e-openai-codex--url-metadata url)))))
          (settle-error (err)
            (unless settled
              (setq settled t)
              (cancel-timeout)
-             (close-websocket)
+             (clear-active-request)
+             (e-openai-codex--websocket-session-close session)
              (when on-error
                (funcall on-error err))))
          (settle-complete ()
            (unless settled
              (setq settled t)
              (cancel-timeout)
-             (unwind-protect
-                 (when on-complete
-                   (funcall on-complete '(:status done)))
-               (defer-close-websocket))))
+             (clear-active-request)
+             (setf (e-openai-codex--websocket-session-last-response-id session)
+                   completed-response-id)
+             (setf
+              (e-openai-codex--websocket-session-last-request-properties session)
+              properties)
+             (e-openai-codex--websocket-schedule-idle-close session)
+             (when on-complete
+               (funcall on-complete '(:status done)))))
          (emit-item (item)
            (pcase (plist-get item :type)
              ('assistant-message
@@ -1203,6 +1478,28 @@ list.  Return a cancellable `e-backend-request' handle."
              (_
               (when on-item
                 (funcall on-item item)))))
+         (send-current-body ()
+           (websocket-send-text
+            (e-openai-codex--websocket-session-websocket session)
+            (json-encode (append (list :type "response.create")
+                                 actual-body-data))))
+         (retry-full-request ()
+           (setq retried-full t)
+           (setq actual-body-data full-body-data)
+           (setq completed-response-id nil)
+           (setq assistant-message-candidate nil)
+           (setq assistant-message-seen nil)
+           (setf (e-openai-codex--websocket-session-last-response-id session)
+                 nil)
+           (setf
+            (e-openai-codex--websocket-session-last-request-properties session)
+            nil)
+           (refresh-request-metadata 'full-retry
+                                     'previous-response-unresolved)
+           (arm-timeout)
+           (condition-case err
+               (send-current-body)
+             (error (settle-error err))))
          (handle-message (_websocket frame)
            (unless settled
              (condition-case err
@@ -1214,12 +1511,20 @@ list.  Return a cancellable `e-backend-request' handle."
                         (emit-anchor
                          (not (eq (plist-get body-data :store) :json-false))))
                    (arm-timeout)
-                   (dolist (item (e-openai-codex--websocket-event-items
-                                  event
-                                  emit-anchor))
-                     (emit-item item))
-                   (when completed-event-p
-                     (settle-complete)))
+                   (if (and incremental-p
+                            (not retried-full)
+                            (e-openai-codex--websocket-unresolved-response-p
+                             event))
+                       (retry-full-request)
+                     (when completed-event-p
+                       (setq completed-response-id
+                             (plist-get (plist-get event :response) :id)))
+                     (dolist (item (e-openai-codex--websocket-event-items
+                                    event
+                                    emit-anchor))
+                       (emit-item item))
+                     (when completed-event-p
+                       (settle-complete))))
                (error
                 (settle-error err)))))
          (handle-close (&rest _args)
@@ -1229,35 +1534,40 @@ list.  Return a cancellable `e-backend-request' handle."
            (settle-error (list 'error
                                (format "Responses WebSocket error: %s"
                                        (e-openai--bounded-diagnostic-string
-                                        args))))))
-      (setq websocket
-            (websocket-open
-             url
-             :custom-header-alist headers
+                                       args))))))
+      (setq request
+            (e-backend-request-create
+             :cancel
+             (lambda ()
+               (unless settled
+                 (setq settled t))
+               (cancel-timeout)
+               (clear-active-request)
+               (e-openai-codex--websocket-session-close session)
+               t)))
+      (setf
+       (e-openai-codex--websocket-session-active-request session)
+       (list :token request-token
              :on-message #'handle-message
              :on-close #'handle-close
              :on-error #'handle-error))
-      (websocket-send-text
-       websocket
-       (json-encode (append (list :type "response.create")
-                            body-data)))
+      (refresh-request-metadata (if incremental-p 'incremental 'full)
+                                fallback-reason)
       (arm-timeout)
-      (e-backend-request-create
-       :cancel (lambda ()
-                 (unless settled
-                   (setq settled t))
-                 (cancel-timeout)
-                 (when (timerp close-timer)
-                   (cancel-timer close-timer))
-                 (setq close-timer nil)
-                 (close-websocket)
-                 t)
-       :metadata (append
-                  (list :transport 'websocket
-                        :url url
-                        :timeout-seconds timeout
-                        :cancellable t)
-                  (e-openai-codex--url-metadata url))))))
+      (condition-case err
+          (send-current-body)
+        (error
+         (if reused
+             (condition-case retry-error
+                 (progn
+                   (e-openai-codex--websocket-session-open session url headers)
+                   (setq reused nil)
+                   (setq actual-body-data full-body-data)
+                   (refresh-request-metadata 'full-retry 'send-failed-reconnect)
+                   (send-current-body))
+               (error (settle-error retry-error)))
+           (settle-error err))))
+      request)))
 
 (defun e-openai-codex--parse-json (value)
   "Parse VALUE as JSON into plist data."
@@ -1754,6 +2064,14 @@ OpenAI request and backend-neutral context."
                     :messages messages
                     :options effective-options
                     :tools (plist-get effective-options :tools)))))))
+            (full-body-data
+             (when (and (eq wire-api 'responses)
+                        (eq responses-transport 'websocket))
+               (e-openai-codex-request-body
+                :messages messages
+                :options
+                (e-openai-codex--without-provider-anchor effective-options)
+                :tools (plist-get effective-options :tools))))
             (metadata (e-openai--request-metadata
                        wire-api effective-options body-data))
             (body
@@ -1794,10 +2112,12 @@ OpenAI request and backend-neutral context."
        (list :provider provider
              :wire-api wire-api
              :responses-transport responses-transport
+             :session-id session-id
              :url url
              :headers headers
              :metadata metadata
              :body-data body-data
+             :full-body-data full-body-data
              :body body)))))
 
 (defun e-openai--emit-response-items (response context on-item)
@@ -1816,7 +2136,8 @@ for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
 URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
 default when turn options do not include `:model'.  The provider profile's
 `:wire-api' chooses the Responses or Chat Completions request/stream mapping."
-  (let ((provider (or provider e-openai-default-provider)))
+  (let ((provider (or provider e-openai-default-provider))
+        (websocket-sessions (make-hash-table :test 'equal)))
     (cl-labels
         ((request-metadata (context transport cancellable)
            (append
@@ -1827,7 +2148,20 @@ default when turn options do not include `:model'.  The provider profile's
                   :transport transport)
             (plist-get context :metadata)
             (e-openai-codex--url-metadata
-             (plist-get context :url)))))
+             (plist-get context :url))))
+         (websocket-session (context)
+           (let ((key (or (plist-get context :session-id)
+                          :backend-default)))
+             (or (gethash key websocket-sessions)
+                 (puthash
+                  key
+                  (e-openai-codex--websocket-session-create)
+                  websocket-sessions))))
+         (websocket-request-metadata (context)
+           (append
+            (list :provider (plist-get context :provider)
+                  :wire-api (plist-get context :wire-api))
+            (plist-get context :metadata))))
       (e-backend-create
        :name (or name (e-openai-provider-name provider))
        :stream
@@ -1848,9 +2182,12 @@ default when turn options do not include `:model'.  The provider profile's
                 (let (done failure)
                   (e-backend-note-request-started
                    (e-openai-codex--websocket-request-start
+                    :session (websocket-session context)
                     :url (plist-get context :url)
                     :headers (plist-get context :headers)
                     :body-data (plist-get context :body-data)
+                    :full-body-data (plist-get context :full-body-data)
+                    :request-metadata (websocket-request-metadata context)
                     :on-item on-item
                     :on-complete (lambda (_status)
                                    (setq done t))
@@ -1927,18 +2264,15 @@ default when turn options do not include `:model'.  The provider profile's
              ((eq (plist-get context :responses-transport) 'websocket)
               (let ((request
                      (e-openai-codex--websocket-request-start
+                      :session (websocket-session context)
                       :url (plist-get context :url)
                       :headers (plist-get context :headers)
                       :body-data (plist-get context :body-data)
+                      :full-body-data (plist-get context :full-body-data)
+                      :request-metadata (websocket-request-metadata context)
                       :on-item on-item
                       :on-complete on-done
                       :on-error on-error)))
-                (setf (e-backend-request-metadata request)
-                      (append
-                       (list :provider (plist-get context :provider)
-                             :wire-api (plist-get context :wire-api))
-                       (plist-get context :metadata)
-                       (e-backend-request-metadata request)))
                 (when on-request-start
                   (funcall on-request-start request))
                 request))

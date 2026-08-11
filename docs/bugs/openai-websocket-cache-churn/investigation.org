@@ -4,12 +4,16 @@
 
 * Status
 
-Confirmed and unresolved.
+Resolved repository-side on 2026-08-11.  The running Emacs was not reloaded,
+so the identical-task live cache-rate A/B remains pending.
 
 The earlier in-turn provider-anchor fix is validated.  The remaining primary
-defect is that =e= discards the Responses WebSocket connection after every
+defect was that =e= discarded the Responses WebSocket connection after every
 provider request, losing the connection-local cache that WebSocket continuation
-is designed to use.  Tool-workflow amplification is a second independent cost.
+is designed to use.  The adapter now retains one serialized connection per
+=e= session and uses incremental continuation only while its transport and
+request-property invariants remain valid.  Tool-workflow amplification remains
+a separate efficiency concern.
 
 * Evidence
 
@@ -179,33 +183,96 @@ The running Emacs therefore used the WebSocket Responses profile with
 continuation enabled.  No live reload or mutation was performed during this
 investigation.
 
-* Recommended repair order
+* Resolution
 
-1. Introduce a provider-client WebSocket session owner with one serialized
-   in-flight =response.create= and explicit lifecycle/cleanup.
-2. Retain the connection and last compatible request/response across tool
-   follow-ups.  Compare non-input request properties before incremental reuse.
-3. On connection loss or an unresolved response id, invalidate the warm
-   transport state and retry through an explicit full-context path.
-4. Record connection id, reuse count, incremental/full decision, property
-   compatibility, reconnect reason, and fallback reason in bounded lifecycle
-   telemetry.
-5. Run the identical task A/B.  Only after the connection fix, test
-   project-scoped versus session-scoped =prompt_cache_key=.
-6. Separately use feature 79 and tool-policy work to reduce unnecessary
-   provider rounds and progress-only tool calls.
+The OpenAI backend now owns a private WebSocket-session table keyed by the
+=e= session id.  Each entry retains the socket, connection identity, last
+completed response id, last non-input request properties, reuse count, active
+request, and idle-close timer.  This places warm transport state at the backend
+adapter that gives it meaning rather than in the harness, session persistence,
+or presentation layers.
 
-* Verification gate for a fix
+A completed response no longer closes its socket.  The connection stays warm
+for compatible model/tool follow-ups and closes after 300 idle seconds by
+default; =e-openai-websocket-connection-idle-seconds= can change that bound.
+Cancellation and transport/request errors close immediately and discard the
+warm state.  A session permits only one active =response.create= at a time;
+different =e= sessions have different connection owners.
 
-- Unit tests prove one socket serves sequential tool follow-ups and closes on
-  harness/backend teardown rather than each completed response.
-- Integration tests cover compatible incremental create, changed non-input
-  properties, reconnect, unresolved id, cancellation, and explicit unstored
-  mode.
-- Request telemetry proves requests 2..N use one connection in the compatible
-  case and says why any request falls back.
-- A live rerun reports per-request input/cached tokens and aggregate hit rate.
-- The comparison separates provider requests, tool calls, and child sessions so
-  transport improvement is not confused with workflow changes.
-- Repository-side validation passes; the running Emacs remains unchanged
-  unless the operator explicitly requests a reload.
+Incremental input is sent only when all of these are true:
+
+- the same socket, URL, and headers are still live;
+- every non-input request property is equal to the previous request; and
+- the requested =previous_response_id= is the last response completed on that
+  connection.
+
+Otherwise the adapter sends the separately constructed full request without a
+provider anchor.  A closed connection reconnects with full input.  If OpenAI
+rejects a connection-local response id as unavailable, the adapter invalidates
+that warm state and retries once with full input.  A send failure on a reused
+socket reconnects and also retries with full input.  Explicit =store=false=
+behavior remains a full replay, preserving its existing contract.
+
+Bounded request diagnostics now report =websocket-connection-id=,
+=websocket-reused=, =websocket-reuse-count=, =websocket-request-mode=, and
+=websocket-fallback-reason=.  They also recompute continuation and input-count
+metadata from the request actually sent, so telemetry does not claim an anchor
+was used after a safe fallback.
+
+The repair intentionally does not change =prompt_cache_key= scope or tool-loop
+policy.  Those are separable experiments after a live transport A/B and would
+otherwise confound whether connection retention fixed the primary defect.
+
+* Verification
+
+Repository-side validation on 2026-08-11:
+
+- =rtk eldev test -f test/e-openai-test.el=: 86 passed, 0 failed;
+- focused continuation/loop/backend/harness integration: 164 passed, 0 failed;
+- =rtk eldev compile --warnings-as-errors=: passed;
+- =rtk eldev test=: 2,045 passed, 16 expected skips, 0 failed;
+- =rtk eldev lint=: completed with the repository's existing doc/package/regexp
+  warnings; the OpenAI adapter has no new package-lint or regexp-lint findings.
+  The existing package-lint error is in =e-base-tools.el= at =char-bytes=.
+
+Regression coverage proves retained completion, compatible incremental reuse,
+changed-instruction full fallback, server-close reconnect with full input,
+unresolved-id full retry, cancellation, timeout/error cleanup, and explicit
+unstored full replay.
+
+The live verification boundary is deliberate: no full =e-dev-reload= was run
+against the user's Emacs.  A live rerun after reload still needs to report
+per-request input/cached tokens, aggregate hit rate, connection ids, provider
+request count, tool calls, and child-session totals.  That measurement will
+confirm the provider-side magnitude without confusing transport improvement
+with workflow changes.
+
+* Architecture self-check
+
+1. This slice is independently useful: it removes per-request socket churn and
+   has safe fallbacks even before any workflow optimization.
+2. It moves toward a provider-neutral harness with provider-specific transport
+   policy kept inside the OpenAI adapter.
+3. The stable requirement is serialized same-session reuse.  Idle duration,
+   cache-key policy, and workflow reduction remain local and reversible.
+4. The OpenAI backend owns the behavior because connection-local continuation
+   is an OpenAI transport concern with one reason to change.
+5. Coupling is reduced: the harness passes session identity and continuation
+   facts through existing options, while socket state stays private.
+6. Stable harness/session policy does not depend on the WebSocket library or
+   OpenAI-specific lifecycle.
+7. Socket open/send/close and timers remain at the adapter boundary; no side
+   effect moved into core policy.
+8. Added state is ephemeral, per backend and session, bounded by cancellation,
+   error, server close, or idle expiry, and is never persisted.
+9. The change removes repeated handshakes and restores connection-local cache
+   reuse.  Compatibility checks add only bounded request-plist comparisons.
+10. The private session record names a real provider lifecycle and does not add
+    a shared interface that other backends must pretend to implement.
+11. Existing HTTP, injected-request, and explicit unstored behavior remains;
+    the obsolete close-after-completion path was removed.
+12. The old deferred per-response close timer and its bookkeeping were deleted.
+13. Expected incompatibility selects full input; unresolved ids retry once;
+    unexpected transport errors surface through the request error callback.
+14. Unit tests isolate transport decisions, while focused integration and the
+    full suite prove the harness contract did not need unrelated rewrites.

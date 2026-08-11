@@ -8,7 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | openai-websocket-cache-churn/ | OpenAI WebSocket continuation loses connection-local cache |
+| Closed | openai-websocket-cache-churn/ | OpenAI WebSocket continuation loses connection-local cache |
 | Closed | agent-token-amplification/ | Agent tool turns replay full context and child cache policy is lost |
 | Closed | e-chat-progress-redraw-starves-provider-in-minibuffer/ | Chat progress redraw starves provider in minibuffer |
 | Closed | chat-context-status-starves-provider-after-reload/ | Chat Context Status Starves Provider After Reload |
