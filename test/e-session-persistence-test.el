@@ -219,6 +219,41 @@
                           :type 'e-session-checkpoint-missing)))
       (delete-directory directory t))))
 
+(defun e-session-persistence-test--await-command (controller)
+  "Wait for CONTROLLER to receive responses for its queued commands."
+  (let ((deadline (+ (float-time) 5.0)))
+    (while (and (> (hash-table-count (e-session-persistence-outbox controller)) 0)
+                (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (should (= (hash-table-count (e-session-persistence-outbox controller)) 0))))
+
+(ert-deftest e-session-persistence-test-restart-deduplicates-before-checkpoint ()
+  "A restarted controller does not duplicate an acknowledged pre-checkpoint command."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-no-checkpoint-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (first (e-session-persistence--create :store store :instance-id "restart"))
+         (second (e-session-persistence--create :store store :instance-id "restart"))
+         (journal (expand-file-name "sessions/session-1.jsonl" directory))
+         (checkpoint (expand-file-name "sessions/session-1.checkpoint.json" directory)))
+    (unwind-protect
+        (progn
+          (e-session-persistence-submit-record
+           first "session-1" '(:type "message" :id "message-1"))
+          (e-session-persistence-test--await-command first)
+          (should-not (file-exists-p checkpoint))
+          (kill-process (e-session-persistence-process first))
+          (e-session-persistence-submit-record
+           second "session-1" '(:type "message" :id "message-1"))
+          (e-session-persistence-test--await-command second)
+          (with-temp-buffer
+            (insert-file-contents journal)
+            (should (= (count-lines (point-min) (point-max)) 1))))
+      (dolist (controller (list first second))
+        (when-let ((process (e-session-persistence-process controller)))
+          (when (process-live-p process) (kill-process process))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-retries-keep-journal-order-and-deduplicate ()
   "Replayed writer commands append once and preserve session record order."
   (skip-unless (executable-find e-session-persistence-node-executable))

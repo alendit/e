@@ -444,7 +444,7 @@ record.  The affected Emacs persistence integration suite remains green.
 * Twelfth fix-point resolution verification
 
 - =node --test test/e-session-writer-test.mjs=: 6/6 passed.
-- =eldev test -f test/e-session-persistence-test.el=: 15/15 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 16/16 passed.
 - =eldev compile -f -W lisp/core/e-session-persistence.el=: passed with
   warnings treated as errors.
 - =git diff --check=: passed.
