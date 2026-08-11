@@ -157,11 +157,12 @@ turn, but can change before the next user turn.  Provider-anchor compatibility
 intentionally excludes current-state segment fingerprints, so =e= may continue
 an anchor while sending different instructions.
 
-The API permits replacement instructions with =previous_response_id=, so this
-is not inherently incorrect.  Codex is more conservative: it uses incremental
-WebSocket continuation only when instructions and every other context-bearing
-non-input property remain equal.  Telemetry should record these property hashes
-so the cache impact can be measured rather than inferred.
+The API permits replacement instructions with =previous_response_id=.  A live
+follow-up subsequently proved that the adapter's Codex-style strict comparison
+forced a full replay whenever =e='s dynamic current-state instructions changed.
+This distinct cross-turn defect is resolved in
+=openai-websocket-cross-turn-instructions-replay=: instructions are replaceable,
+while the remaining continuation-invariant properties stay conservative.
 
 * Live Emacs inspection
 
@@ -202,7 +203,8 @@ different =e= sessions have different connection owners.
 Incremental input is sent only when all of these are true:
 
 - the same socket, URL, and headers are still live;
-- every non-input request property is equal to the previous request; and
+- every continuation-invariant request property is equal to the previous
+  request; replacement =instructions= may change; and
 - the requested =previous_response_id= is the last response completed on that
   connection.
 
@@ -236,7 +238,7 @@ Repository-side validation on 2026-08-11:
   The existing package-lint error is in =e-base-tools.el= at =char-bytes=.
 
 Regression coverage proves retained completion, compatible incremental reuse,
-changed-instruction full fallback, server-close reconnect with full input,
+changed-instruction incremental reuse, server-close reconnect with full input,
 unresolved-id full retry, cancellation, timeout/error cleanup, and explicit
 unstored full replay.
 

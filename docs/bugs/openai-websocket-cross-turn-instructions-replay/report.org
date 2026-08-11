@@ -1,0 +1,26 @@
+#+title: OpenAI WebSocket cross-turn instructions force full replay
+#+date: 2026-08-12
+
+* Report
+
+The follow-up turn in
+=20260811T220732-ec7137abaed0.jsonl= had a compatible persisted OpenAI provider
+anchor, but its first provider request did not send =previous_response_id=.
+It replayed 103 messages in a 576,890-byte request, consumed 64,362 input
+tokens, and received zero cached input tokens.
+
+The same turn used incremental continuation from its second provider request
+onward.  This isolates the defect to the user-turn boundary rather than basic
+Responses continuation or in-turn tool output.
+
+* Expected behavior
+
+- A retained OpenAI Responses WebSocket continues from its most recent response
+  when the next user turn changes only replaceable top-level instructions and
+  appends fresh input.
+- Current dynamic context is supplied through the new request's instructions
+  without replaying the prior transcript.
+- Changes to genuinely continuation-invariant request properties still select
+  an explicit full-context fallback.
+- Durable diagnostics record the connection, reuse mode, and fallback reason
+  needed to distinguish intentional fallback from a lost provider anchor.

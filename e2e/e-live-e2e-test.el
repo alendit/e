@@ -28,10 +28,12 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-capabilities)
+(require 'e-context)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-registry)
 (require 'e-layers)
+(require 'e-openai)
 (require 'e-session)
 (require 'e-tools)
 (load (expand-file-name
@@ -129,6 +131,23 @@ backend is whatever the configuration selected."
   (seq-filter
    (lambda (event) (eq (plist-get event :event-type) type))
    (e-session-activity-events (e-harness-sessions harness) session-id)))
+
+(defun e-live-e2e--request-tool-differences (first second)
+  "Return bounded tool identity differences between request bodies FIRST and SECOND."
+  (let ((first-tools (append (plist-get first :tools) nil))
+        (second-tools (append (plist-get second :tools) nil)))
+    (cl-loop for first-tool in first-tools
+             for second-tool in second-tools
+             for index from 0
+             unless (equal first-tool second-tool)
+             collect
+             (list :index index
+                   :first-name (plist-get first-tool :name)
+                   :second-name (plist-get second-tool :name)
+                   :first-sha256
+                   (secure-hash 'sha256 (prin1-to-string first-tool))
+                   :second-sha256
+                   (secure-hash 'sha256 (prin1-to-string second-tool))))))
 
 (defun e-live-e2e--echo-tool-register (registry &rest _context)
   "Register the e2e echo tool in REGISTRY."
@@ -417,6 +436,67 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
         (should (e-session-provider-anchors
                  (e-harness-sessions harness) session-id))
       (ert-skip "The configured live backend does not record continuation anchors."))))
+
+(ert-deftest e-live-e2e-test-openai-cross-turn-dynamic-instructions-continue ()
+  "A live OpenAI follow-up replaces current state without full replay."
+  (unless (fboundp 'e-openai-codex--websocket-request-start)
+    (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
+  (let* ((current-state "live state one")
+         (provider
+          (e-context-provider-create
+           :name 'live-cross-turn-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (layer
+          (e-layer-create
+           :id 'live-cross-turn-current-state
+           :name "Live Cross-Turn Current State"
+           :capabilities
+           (list
+            (e-capability-create
+             :id 'live-cross-turn-current-state
+             :context-providers (list provider))))))
+    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (let ((original-start
+             (symbol-function 'e-openai-codex--websocket-request-start))
+            request-bodies)
+        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+                   (lambda (&rest args)
+                     (push (copy-tree (plist-get args :full-body-data))
+                           request-bodies)
+                     (apply original-start args))))
+          (e-board-e2e-prompt-batch
+           harness session-id
+           "Reply with exactly: CROSS-TURN-ONE")
+          (unless (e-session-provider-anchors
+                   (e-harness-sessions harness) session-id)
+            (ert-skip
+             "The configured live backend does not record continuation anchors."))
+          (setq current-state "live state two")
+          (e-board-e2e-prompt-batch
+           harness session-id
+           "Reply with exactly: CROSS-TURN-TWO"))
+        (let* ((requests (e-live-e2e--activity-of-type
+                          harness session-id 'provider-request-started))
+               (latest (car (last requests)))
+               (diagnostics (plist-get (plist-get latest :payload) :diagnostics))
+               (ordered-bodies (nreverse request-bodies))
+               (latest-body (car (last ordered-bodies)))
+               (tool-differences
+                (e-live-e2e--request-tool-differences
+                 (car ordered-bodies) latest-body)))
+          (unless (plist-member diagnostics :websocket-request-mode)
+            (ert-skip "The configured live backend is not Responses WebSocket mode."))
+          (ert-info ((format "WebSocket diagnostics: %S; tool differences: %S"
+                             diagnostics tool-differences))
+            (should (eq (plist-get diagnostics :websocket-request-mode)
+                        'incremental))
+            (should (eq (plist-get diagnostics :previous-response-id-present) t))
+            (should (eq (plist-get diagnostics :websocket-reused) t))
+            (should (= (plist-get diagnostics :input-message-count) 1))
+            (should (string-match-p "live state two"
+                                    (plist-get latest-body :instructions)))))))))
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."

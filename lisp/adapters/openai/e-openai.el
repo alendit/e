@@ -1265,10 +1265,60 @@ When EMIT-ANCHOR is nil, completed response ids stay transport-local."
             (e-openai-codex--websocket-session-close session))))))))
 
 (defun e-openai-codex--websocket-request-properties (body-data)
-  "Return context-bearing non-input properties from BODY-DATA."
+  "Return continuation-invariant request properties from BODY-DATA.
+The Responses API replaces top-level `instructions' when a request supplies
+`previous_response_id', so changed instructions do not invalidate the warm
+response chain."
   (e-openai--plist-without
-   (e-openai--plist-without body-data :input)
-   :previous_response_id))
+   (e-openai--plist-without
+    (e-openai--plist-without body-data :input)
+    :previous_response_id)
+   :instructions))
+
+(defun e-openai-codex--json-value-equal-p (first second)
+  "Return non-nil when JSON-like values FIRST and SECOND are equivalent.
+Hash tables are compared by contents rather than object identity.  Vector and
+list order remains significant because those values encode JSON arrays and
+ordered request plists in adapter-local request data."
+  (cond
+   ((and (hash-table-p first) (hash-table-p second))
+    (and (= (hash-table-count first) (hash-table-count second))
+         (let ((missing (make-symbol "missing"))
+               (equivalent t))
+           (maphash
+            (lambda (key value)
+              (let ((other (gethash key second missing)))
+                (unless (and (not (eq other missing))
+                             (e-openai-codex--json-value-equal-p value other))
+                  (setq equivalent nil))))
+            first)
+           equivalent)))
+   ((and (vectorp first) (vectorp second))
+    (and (= (length first) (length second))
+         (cl-loop for index below (length first)
+                  always
+                  (e-openai-codex--json-value-equal-p
+                   (aref first index) (aref second index)))))
+   ((and (consp first) (consp second))
+    (and (e-openai-codex--json-value-equal-p (car first) (car second))
+         (e-openai-codex--json-value-equal-p (cdr first) (cdr second))))
+   (t (equal first second))))
+
+(defun e-openai-codex--websocket-changed-property-names (previous current)
+  "Return names of request properties that differ between PREVIOUS and CURRENT."
+  (let (keys changed)
+    (dolist (plist (list previous current))
+      (while plist
+        (cl-pushnew (pop plist) keys)
+        (pop plist)))
+    (dolist (key (nreverse keys))
+      (unless (and (eq (not (null (plist-member previous key)))
+                       (not (null (plist-member current key))))
+                   (e-openai-codex--json-value-equal-p
+                    (plist-get previous key)
+                    (plist-get current key)))
+        (push (symbol-name key) changed)))
+    (nreverse changed)))
 
 (defun e-openai-codex--websocket-unresolved-response-p (event)
   "Return non-nil when EVENT rejects an unavailable previous response id."
@@ -1292,10 +1342,12 @@ When EMIT-ANCHOR is nil, completed response ids stay transport-local."
                 message))))))
 
 (defun e-openai-codex--websocket-actual-metadata
-    (metadata body-data connection-id reused reuse-count mode fallback-reason)
+    (metadata body-data connection-id reused reuse-count mode fallback-reason
+              changed-properties)
   "Return METADATA updated for the actual WebSocket BODY-DATA sent.
 CONNECTION-ID identifies the socket, REUSED and REUSE-COUNT describe its
-lifecycle, and MODE and FALLBACK-REASON describe the selected request shape."
+lifecycle, MODE and FALLBACK-REASON describe the selected request shape, and
+CHANGED-PROPERTIES names incompatible top-level request properties."
   (let* ((metadata (copy-tree metadata))
          (diagnostics (copy-sequence (plist-get metadata :diagnostics)))
          (previous-present
@@ -1324,6 +1376,10 @@ lifecycle, and MODE and FALLBACK-REASON describe the selected request shape."
           (plist-put diagnostics :websocket-request-mode mode))
     (setq diagnostics
           (plist-put diagnostics :websocket-fallback-reason fallback-reason))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-changed-properties
+                     (and changed-properties
+                          (string-join changed-properties ","))))
     (setq metadata (plist-put metadata :provider-continuation continuation))
     (setq metadata (plist-put metadata :diagnostics diagnostics))
     (unless previous-present
@@ -1356,9 +1412,10 @@ list.  Return a cancellable `e-backend-request' handle."
                (equal headers
                       (e-openai-codex--websocket-session-headers session))))
          (properties-compatible
-          (equal properties
-                 (e-openai-codex--websocket-session-last-request-properties
-                  session)))
+          (e-openai-codex--json-value-equal-p
+           properties
+           (e-openai-codex--websocket-session-last-request-properties
+            session)))
          (response-compatible
           (and (stringp requested-response-id)
                (equal requested-response-id
@@ -1373,6 +1430,11 @@ list.  Return a cancellable `e-backend-request' handle."
            ((not connection-compatible) 'new-connection)
            ((not response-compatible) 'previous-response-mismatch)
            ((not properties-compatible) 'request-properties-changed)))
+         (changed-properties
+          (when (eq fallback-reason 'request-properties-changed)
+            (e-openai-codex--websocket-changed-property-names
+             (e-openai-codex--websocket-session-last-request-properties session)
+             properties)))
          (actual-body-data (if incremental-p body-data full-body-data))
          (reused connection-compatible)
         timeout-timer
@@ -1426,7 +1488,8 @@ list.  Return a cancellable `e-backend-request' handle."
                    reused
                    (e-openai-codex--websocket-session-reuse-count session)
                    mode
-                   reason)))
+                   reason
+                   changed-properties)))
              (setf (e-backend-request-metadata request)
                    (append
                     (list :transport 'websocket

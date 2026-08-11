@@ -273,6 +273,93 @@
                              :status)
                   'done)))))
 
+(ert-deftest e-provider-continuation-integration-test-websocket-cross-turn-dynamic-instructions ()
+  "A changed current-state instruction continues on the retained response."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-websocket-idle-timeout-seconds nil)
+         (e-openai-websocket-connection-idle-seconds nil)
+         (e-openai-model-providers
+          '((continuation-websocket-e2e
+             :name "Continuation WebSocket E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :response-store t
+             :continuation t
+             :requires-openai-auth nil)))
+         (current-state "state one")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'cross-turn-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (harness
+          (e-openai-create-harness
+           :provider 'continuation-websocket-e2e
+           :model "gpt-test"))
+         (open-count 0)
+         (send-count 0)
+         sends
+         on-message)
+    (e-harness-activate-capability
+     harness
+     (e-capability-create
+      :id 'cross-turn-current-state-capability
+      :context-providers (list dynamic-provider)))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (cl-incf open-count)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (let ((payload
+                        (json-parse-string text
+                                           :object-type 'plist
+                                           :array-type 'list
+                                           :null-object nil
+                                           :false-object :json-false)))
+                   (cl-incf send-count)
+                   (push payload sends)
+                   (funcall on-message websocket
+                            (json-encode
+                             `(:type "response.output_text.done"
+                               :text ,(format "answer-%d" send-count))))
+                   (funcall on-message websocket
+                            (json-encode
+                             `(:type "response.completed"
+                               :response
+                               (:id ,(format "resp-%d" send-count)
+                                :status "completed")))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-board-e2e-reset-runtime)
+      (e-board-e2e-create-session harness :id "session-one")
+      (e-board-e2e-prompt-batch harness "session-one" "first prompt")
+      (setq current-state "state two")
+      (e-board-e2e-prompt-batch harness "session-one" "second prompt")
+      (let* ((ordered (nreverse sends))
+             (second (cadr ordered)))
+        (should (= open-count 1))
+        (should (= send-count 2))
+        (should (equal (plist-get second :previous_response_id) "resp-1"))
+        (should (string-match-p "state two"
+                                (plist-get second :instructions)))
+        (should-not (string-match-p "state one"
+                                    (plist-get second :instructions)))
+        (should (equal (mapcar (lambda (item) (plist-get item :type))
+                               (plist-get second :input))
+                       '("message")))
+        (should (equal (plist-get
+                        (car (plist-get (car (plist-get second :input))
+                                        :content))
+                        :text)
+                       "second prompt"))))))
+
 (ert-deftest e-provider-continuation-integration-test-websocket-failure-retry-clears-active-request ()
   "A terminal Responses failure releases the socket before harness retry."
   (let* ((process-environment

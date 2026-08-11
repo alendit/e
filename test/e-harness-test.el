@@ -3905,6 +3905,27 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (should (equal (plist-get options :reasoning-effort) "medium"))
         (should-not (plist-get options :tools))))))
 
+(ert-deftest e-harness-test-provider-diagnostics-retain-websocket-routing ()
+  "Durable provider diagnostics explain WebSocket continuation routing."
+  (let ((projected
+         (e-harness--provider-diagnostics-activity-projection
+          '(:provider-continuation full
+            :previous-response-id-present nil
+            :websocket-connection-id "e-ws-7"
+            :websocket-reused t
+            :websocket-reuse-count 3
+            :websocket-request-mode full
+            :websocket-fallback-reason request-properties-changed
+            :websocket-changed-properties ":tools"))))
+    (should (equal (plist-get projected :websocket-connection-id) "e-ws-7"))
+    (should (eq (plist-get projected :websocket-reused) t))
+    (should (= (plist-get projected :websocket-reuse-count) 3))
+    (should (eq (plist-get projected :websocket-request-mode) 'full))
+    (should (eq (plist-get projected :websocket-fallback-reason)
+                'request-properties-changed))
+    (should (equal (plist-get projected :websocket-changed-properties)
+                   ":tools"))))
+
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
   "Harness turn events persist as activity, and messages keep their turn id."
   (let* ((backend (e-backend-fake-create

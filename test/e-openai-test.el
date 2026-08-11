@@ -1956,8 +1956,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (e-backend-cancel-request second-request)
         (should (= close-count 1))))))
 
-(ert-deftest e-openai-test-websocket-changed-instructions-force-full-request ()
-  "Changed non-input properties reuse the socket but not the response anchor."
+(ert-deftest e-openai-test-websocket-changed-instructions-continue-incrementally ()
+  "Replacement instructions keep the current response anchor and socket."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -2032,13 +2032,41 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                (diagnostics
                 (plist-get (e-backend-request-metadata second-request)
                            :diagnostics)))
-          (should-not (plist-member second :previous_response_id))
+          (should (equal (plist-get second :previous_response_id) "resp-one"))
+          (should (equal (mapcar (lambda (item) (plist-get item :type))
+                                 (plist-get second :input))
+                         '("message")))
           (should (equal (plist-get second :instructions)
                          "You are a helpful assistant.\n\ninstruction two"))
-          (should (equal (plist-get diagnostics :websocket-request-mode) 'full))
-          (should (equal (plist-get diagnostics :websocket-fallback-reason)
-                         'request-properties-changed)))
+          (should (equal (plist-get diagnostics :websocket-request-mode)
+                         'incremental))
+          (should-not (plist-get diagnostics :websocket-fallback-reason)))
         (e-backend-cancel-request second-request)))))
+
+(ert-deftest e-openai-test-websocket-properties-compare-json-object-contents ()
+  "Fresh nested JSON objects do not invalidate equivalent tool definitions."
+  (let ((first-parameters (make-hash-table :test 'equal))
+        (second-parameters (make-hash-table :test 'equal)))
+    (puthash "type" "object" first-parameters)
+    (puthash "properties" (make-hash-table :test 'equal) first-parameters)
+    (puthash "properties" (make-hash-table :test 'equal) second-parameters)
+    (puthash "type" "object" second-parameters)
+    (let ((first
+           (list :model "gpt-test"
+                 :tools (vector (list :name "inspect"
+                                      :parameters first-parameters))))
+          (second
+           (list :model "gpt-test"
+                 :tools (vector (list :name "inspect"
+                                      :parameters second-parameters)))))
+      (should (e-openai-codex--json-value-equal-p first second))
+      (should-not
+       (e-openai-codex--websocket-changed-property-names first second))
+      (puthash "additionalProperties" :json-false second-parameters)
+      (should-not (e-openai-codex--json-value-equal-p first second))
+      (should
+       (equal (e-openai-codex--websocket-changed-property-names first second)
+              '(":tools"))))))
 
 (ert-deftest e-openai-test-websocket-reconnects-with-full-request ()
   "A follow-up after server close reconnects without the stale response id."

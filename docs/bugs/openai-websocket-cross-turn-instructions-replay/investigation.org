@@ -1,0 +1,157 @@
+#+title: Investigation: OpenAI WebSocket cross-turn instructions force full replay
+#+date: 2026-08-12
+#+startup: overview
+
+* Status
+
+Resolved and verified repository-side on 2026-08-12, including an isolated
+credentialed live-provider E2E.  The user's running Emacs was not reloaded.
+
+* Evidence
+
+The first request in follow-up turn =01KZSFBMRM4RP6NFBS9K15FKGE= recorded:
+
+| Field | Value |
+|-------+-------|
+| provider anchor present | true |
+| provider continuation | full |
+| previous response id present | false |
+| input message count | 103 |
+| encoded request bytes | 576,890 |
+| input tokens | 64,362 |
+| cached input tokens | 0 |
+
+Request two immediately returned to =previous_response_id= continuation with
+one fresh message.  The retained socket and provider anchor therefore existed;
+the adapter rejected them while shaping the new user turn.
+
+* Root cause
+
+=e-harness--context-with-provider-anchor= deliberately keeps an OpenAI anchor
+compatible when only =current-state= or =dynamic-context= changes.  Those
+backend-neutral system messages become the Responses top-level =instructions=
+string.
+
+=e-openai-codex--websocket-request-properties= compared every non-input request
+field, including =instructions=.  A fresh current-state snapshot therefore made
+=properties-compatible= false and selected =request-properties-changed= full
+replay even though the API and provider anchor both permitted continuation.
+
+That policy copied a conservative Codex WebSocket request-equality check without
+copying Codex's context placement: Codex keeps its top-level instructions stable,
+while =e= intentionally rebuilds dynamic system context for every user turn.
+
+The OpenAI Responses API defines the missing semantic distinction.  When
+=previous_response_id= is supplied, instructions from the previous response are
+not carried over; the new request may replace them.  WebSocket mode otherwise
+continues by sending only new input items plus the latest response id on the
+active connection.
+
+Sources:
+
+- [[https://developers.openai.com/api/reference/resources/responses/websocket-events][OpenAI Responses WebSocket events reference]]
+- [[https://developers.openai.com/api/docs/guides/websocket-mode][OpenAI WebSocket mode guide]]
+- [[https://developers.openai.com/api/docs/guides/conversation-state][OpenAI conversation-state guide]]
+
+A changed-instructions adapter regression failed before the repair because the
+second request omitted =previous_response_id=.  This reproduced the transcript's
+turn-boundary behavior without depending on the live provider.
+
+The first credentialed E2E after fixing instruction compatibility exposed a
+second incompatibility reported as =:tools=.  Both requests contained the same
+=voice_tells_list= tool and their serialized definitions had identical SHA-256
+hashes.  The definitions were freshly constructed nested hash tables, however,
+and raw Emacs =equal= compared those objects by identity rather than their JSON
+contents.  Thus semantically unchanged tools could also force a cross-turn full
+replay.
+
+* Resolution
+
+The OpenAI adapter now excludes =instructions= from its private set of
+continuation-invariant WebSocket request properties.  It compares the remaining
+JSON-like properties recursively, including hash tables by contents rather than
+object identity.  It still requires:
+
+- the same live socket, URL, and headers;
+- the provider anchor response id to equal the last response completed on that
+  connection; and
+- equality of the remaining request properties, including model, tools,
+  reasoning, storage, cache, and output shaping.
+
+The continued request sends the new top-level instructions, only the fresh user
+or tool input, and =previous_response_id=.  This uses the API's replacement
+semantics rather than retaining stale dynamic context.
+
+Durable provider lifecycle events now retain
+=websocket-connection-id=, =websocket-reused=, =websocket-reuse-count=,
+=websocket-request-mode=, =websocket-fallback-reason=, and
+=websocket-changed-properties=.  The original transcript omitted these fields
+because the harness projection discarded them, which made an intentional
+property fallback look like unexplained anchor loss.
+
+* Regression coverage
+
+- The adapter test proves changed replacement instructions reuse the response
+  id and send one fresh input message.
+- A separate adapter test proves independently rebuilt JSON object properties
+  compare by content while genuinely changed schemas remain incompatible.
+- The harness test proves WebSocket routing diagnostics survive durable activity
+  projection.
+- The provider-continuation integration test runs two real harness turns with a
+  changed dynamic-context provider and proves one socket, two requests, fresh
+  second-turn instructions, and =previous_response_id= continuation.
+- The credentialed E2E performs two live turns with changed dynamic context and
+  the configured real tool set, then requires incremental mode, an attached
+  previous response id, and socket reuse.
+
+* Verification
+
+Focused red/green evidence:
+
+- Before the adapter change,
+  =e-openai-test-websocket-changed-instructions-continue-incrementally= failed
+  because the second request had no =previous_response_id=.
+- After both repairs, the adapter, harness telemetry, cross-turn integration,
+  and credentialed live-provider regressions passed.
+
+Final repository-side validation:
+
+- =rtk eldev test -f test/e-openai-test.el=: 87/87 passed;
+- =rtk eldev test -f test/e-provider-continuation-integration-test.el=: 5/5
+  passed;
+- =rtk eldev test -f test/e-harness-test.el=: 128/128 passed;
+- the credentialed two-turn live E2E passed twice consecutively;
+- =rtk eldev compile --warnings-as-errors= passed; and
+- =rtk eldev test=: 2,050 expected passes, 16 expected skips, zero unexpected
+  results across 2,066 tests.
+
+No live reload was performed.
+
+* Architecture self-check
+
+1. This slice is independently useful because ordinary follow-up turns no
+   longer replay the complete transcript solely because current state changed.
+2. It moves toward cache-efficient session continuation with fresh dynamic
+   context on each turn.
+3. The stable API fact is instruction replacement.  Other request-property
+   compatibility remains conservative and local to the adapter.
+4. The OpenAI adapter owns the rule because it is Responses WebSocket transport
+   semantics; the harness continues to own provider-neutral dynamic context.
+5. Coupling is reduced by expressing the provider distinction in one private
+   request-property function.
+6. Core policy does not depend on the WebSocket library or OpenAI request shape.
+7. No new side effect moved inward; socket and request decisions stay at the
+   adapter boundary.
+8. No state was added.  Existing ephemeral per-session socket state is reused.
+9. The change removes a full replay at each compatible user-turn boundary.  Its
+   extra work is a recursive comparison bounded by the already-constructed
+   request properties and tool schemas.
+10. No new abstraction or public interface was introduced.
+11. HTTP, unstored, reconnect, changed-tool/model, and unresolved-id fallbacks
+    retain their existing compatibility behavior.
+12. The obsolete assumptions that instructions must match and that object
+    identity represented JSON-property equality were removed.
+13. Expected incompatibilities still fall back explicitly; unexpected transport
+    errors still surface through the backend error path.
+14. Adapter and harness/integration tests prove request shape, dynamic context,
+    and durable diagnostics independently of the live provider.

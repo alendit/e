@@ -1357,6 +1357,9 @@ Apply TRANSFORM when supplied."
                    :provider-continuation :previous-response-id-present
                    :provider-anchor-present :input-message-count :tool-count
                    :responses-transport :max-tokens :prompt-cache
+                   :websocket-connection-id :websocket-reused
+                   :websocket-reuse-count :websocket-request-mode
+                   :websocket-fallback-reason :websocket-changed-properties
                    :anthropic-cache-mode :anthropic-cache-breakpoint
                    :anthropic-cache-ttl :anthropic-container-id-present))
       (when (and (listp diagnostics) (plist-member diagnostics key))
