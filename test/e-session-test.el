@@ -109,6 +109,42 @@
                              '("outer"))))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-board-journal-is-private-from-generic-session-view ()
+  "Generic session mutation cannot alter the private board journal or its index."
+  (let ((store (e-session-store-create))
+        (message '(:id "board-1" :kind output :content "retained")))
+    (e-session-create store :id "board-session")
+    (e-session-append-board-message store "board-session" message)
+    (let ((session (e-session-get store "board-session")))
+      (should-not (plist-member session :board-messages))
+      (should-not (plist-member session :board-message-id-index))
+      (plist-put session :board-messages
+                 (list '(:id "board-1" :kind output :content "mutated")))
+      (plist-put session :board-message-id-index (make-hash-table :test 'equal)))
+    (e-session-append-board-message store "board-session" message)
+    (should (equal (e-session-board-messages store "board-session")
+                   (list message)))))
+
+(ert-deftest e-session-test-board-log-rejects-cyclic-envelope-values ()
+  "Board journals reject cyclic cons, vector, and hash table envelope values."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "board-session")
+    (dolist (value
+             (list (let ((cycle (list nil)))
+                     (setcar cycle cycle)
+                     cycle)
+                   (let ((cycle (vector nil)))
+                     (aset cycle 0 cycle)
+                     cycle)
+                   (let ((cycle (make-hash-table :test 'eq)))
+                     (puthash :self cycle cycle)
+                     cycle)))
+      (should-error
+       (e-session-append-board-message
+        store "board-session" (list :id "cycle" :value value))
+       :type 'e-session-board-message-cycle))
+    (should-not (e-session-board-messages store "board-session"))))
+
 (ert-deftest e-session-test-board-log-freezes-input-and-returned-envelopes ()
   "Board journal state remains private across input and return-value mutation."
   (let* ((directory (make-temp-file "e-session-board-freeze-" t))

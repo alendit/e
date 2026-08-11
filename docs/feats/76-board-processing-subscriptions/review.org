@@ -306,24 +306,33 @@ during load.  Restart regressions cover both outcomes.
 
 * Seventh fix-point re-review findings
 
-** TODO High: Protect journal state exposed through =e-session-get=
+** DONE High: Protect journal state exposed through =e-session-get=
 
-=e-session-get= exposes the live session plist, including retained board
-envelopes and the typed identity index.  A caller can mutate the envelope while
-leaving the index stale, after which an identical append creates a duplicate.
-Keep the board journal out of mutable generic session views or return detached
-board state.  Add a regression that mutates a fetched session and proves journal
-identity and contents remain intact.
+The board journal and typed identity index now live in private per-store journal
+state rather than the generic session plist.  =e-session-get= retains its live
+mutable generic session contract, while board access goes through the dedicated
+journal accessors.  The regression mutates a fetched session's former board
+fields, then proves the retained envelope and its deduplicated identity remain
+intact.
 
-** TODO Medium: Reject cyclic board-journal values explicitly
+** DONE Medium: Reject cyclic board-journal values explicitly
 
-The deep freezer recursively copies conses, vectors, and hash tables without a
-cycle guard.  Cyclic input ends in a generic recursion-depth failure.  Reject
-cycles with a stable, declared session journal error and add cons, vector, and
-hash-table cycle tests.
+=e-session--freeze-board-value= now tracks the active copy path and signals the
+declared =e-session-board-message-cycle= error for cyclic conses, vectors, and
+hash tables.  Focused regression coverage asserts each cyclic container is
+rejected without retaining a journal entry.
+
+* Seventh fix-point resolution verification
+
+- =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
+  test/e-board-processing-subscription-test.el -f test/e-session-test.el=: 196/196
+  passed.
+- =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
+  lisp/core/e-session.el lisp/core/e-chat-service.el=: passed with warnings
+  treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the seventh
-fix-point review found the two issues above.  Slices 2 through 5 remain out of
-scope for this review.
+Earlier findings are resolved.  Slice 1 remains in review pending the parent
+review verdict.  Slices 2 through 5 remain out of scope for this review.

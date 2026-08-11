@@ -32,6 +32,8 @@
   "Session resume checkpoint is invalid")
 (define-error 'e-session-board-message-conflict
   "Conflicting board message envelope")
+(define-error 'e-session-board-message-cycle
+  "Cyclic board message envelope")
 
 (defgroup e-session nil
   "Session storage for e."
@@ -46,6 +48,7 @@
 (cl-defstruct (e-session-store (:constructor e-session-store-create))
   (sessions (make-hash-table :test 'equal))
   (entry-indexes (make-hash-table :test 'equal))
+  (board-journals (make-hash-table :test 'equal))
   directory
   sessions-directory
   index-file
@@ -61,6 +64,10 @@
   (unsettled-write-count 0)
   (unsettled-generation 0)
   (sequence 0))
+
+(cl-defstruct (e-session-board-journal
+               (:constructor e-session--board-journal-create))
+  messages tail (id-index (make-hash-table :test 'equal)))
 
 (defvar e-session--unsettled-write-count 0)
 (defvar e-session--unsettled-generation 0)
@@ -119,13 +126,12 @@
   "Current durable resume-checkpoint format version.")
 
 (defconst e-session--replay-list-fields
-  '(:session-events :messages :board-messages :activity-events :branch-summaries
+  '(:session-events :messages :activity-events :branch-summaries
     :compactions :provider-anchors :process-reports)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
   '((:messages . :messages-tail)
-    (:board-messages . :board-messages-tail)
     (:activity-events . :activity-events-tail)
     (:branch-summaries . :branch-summaries-tail)
     (:compactions . :compactions-tail)
@@ -1095,7 +1101,7 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session--entries (store session-id)
   "Return all durable entries for SESSION-ID in insertion order."
-  (let ((session (e-session-get store session-id)))
+  (let ((session (e-session--get-live store session-id)))
     (append (plist-get session :session-events)
             (plist-get session :messages)
             (plist-get session :activity-events)
@@ -1132,7 +1138,7 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session-current-path (store session-id &optional head-id)
   "Return SESSION-ID current parent path ending at HEAD-ID or current head."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (head-id (or head-id (plist-get session :current-head-id)))
          path)
     (while head-id
@@ -1219,7 +1225,7 @@ a compaction, the complete current path remains model context and is retained."
 
 (defun e-session--checkpoint-retained-entries (store session-id)
   "Return ordered durable entries needed to resume SESSION-ID."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (path (e-session--checkpoint-path-suffix store session-id))
          (path-ids (mapcar (lambda (entry) (plist-get entry :id)) path))
          (activity
@@ -1278,11 +1284,12 @@ a compaction, the complete current path remains model context and is retained."
 
 (defun e-session-checkpoint-manifest (store session-id)
   "Return JSON-friendly semantic resume manifest for SESSION-ID in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (entries (e-session--checkpoint-retained-entries store session-id))
          (board-messages
           (e-session--checkpoint-tail
-           (plist-get session :board-messages)
+           (e-session-board-journal-messages
+              (e-session--board-journal store session-id))
            e-session-checkpoint-board-message-limit)))
     (list :session-id session-id
           :root (e-session--checkpoint-root session)
@@ -1359,7 +1366,7 @@ a compaction, the complete current path remains model context and is retained."
 
 (defun e-session--checkpoint-records (store session-id)
   "Return canonical replay records for SESSION-ID's current resume state."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (root (e-session--checkpoint-root session))
          (root-id (plist-get root :id))
          (records
@@ -1383,7 +1390,8 @@ a compaction, the complete current path remains model context and is retained."
                                 (plist-get root :board-activity-sequence))))))
     (dolist (message
              (e-session--checkpoint-tail
-              (plist-get session :board-messages)
+              (e-session-board-journal-messages
+               (e-session--board-journal store session-id))
               e-session-checkpoint-board-message-limit))
       (setq records
             (append records
@@ -1501,6 +1509,11 @@ a compaction, the complete current path remains model context and is retained."
   "Restore replayed SESSION field ordering and derived metadata."
   (dolist (field e-session--replay-list-fields)
     (plist-put session field (nreverse (plist-get session field))))
+  (let ((journal (e-session--board-journal store (plist-get session :id))))
+    (setf (e-session-board-journal-messages journal)
+          (nreverse (e-session-board-journal-messages journal))
+          (e-session-board-journal-tail journal)
+          (e-session--list-tail (e-session-board-journal-messages journal))))
   (e-session--initialize-list-state session)
   (cl-remf session :entry-count)
   (plist-put session :loaded t)
@@ -1701,6 +1714,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                                 (e-session-store-sessions store)))))
     (pcase type
       ("session"
+       (e-session--clear-board-journal store session-id)
        (let* ((metadata (e-session--normalize-metadata-for-replay
                          (plist-get record :metadata)
                          t))
@@ -1708,8 +1722,6 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                             :metadata metadata
                             :session-events nil
                          :messages nil
-                         :board-messages nil
-                         :board-message-id-index (make-hash-table :test 'equal)
                          :board-output-sequence
                          (or (plist-get record :board-output-sequence) 0)
                          :board-activity-sequence
@@ -1759,15 +1771,17 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
           (e-session--touch store session timestamp)))
       ("board-message"
        (when session
-         (let* ((message
+         (let* ((journal (e-session--board-journal store session-id))
+                (message
                  (e-session--freeze-board-value
                   (e-session--normalize-board-message
                    (copy-tree (plist-get record :message)))))
-                (existing (e-session--existing-board-message session message)))
+                (existing (e-session--existing-board-message journal message)))
            (unless existing
              (puthash (e-session--board-message-identity message) message
-                      (e-session--board-message-index session))
-             (e-session--prepend-replayed-item session :board-messages message)))
+                      (e-session-board-journal-id-index journal))
+             (setf (e-session-board-journal-messages journal)
+                   (cons message (e-session-board-journal-messages journal)))))
          (e-session--touch store session timestamp)))
       ("board-session-state"
        (when session
@@ -1776,9 +1790,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
          (e-session--touch store session timestamp)))
       ("board-messages-cleared"
        (when session
-         (e-session--replace-list-field session :board-messages nil)
-         (plist-put session :board-message-id-index
-                    (make-hash-table :test 'equal))
+         (e-session--clear-board-journal store session-id)
          (e-session--touch store session timestamp)))
       ("message-display"
        (when session
@@ -2015,6 +2027,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
 (defun e-session--begin-checkpoint-replay (store session-id checkpoint)
   "Install CHECKPOINT records as the replay prefix for SESSION-ID in STORE."
   (remhash session-id (e-session-store-sessions store))
+  (e-session--clear-board-journal store session-id)
   (e-session--clear-entry-index store session-id)
   (dolist (record (plist-get checkpoint :records))
     (e-session--replay-record store record))
@@ -2040,6 +2053,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
     (unless (file-readable-p file)
       (signal 'e-session-missing (list session-id)))
     (remhash session-id (e-session-store-sessions store))
+    (e-session--clear-board-journal store session-id)
     (e-session--clear-entry-index store session-id)
     (with-temp-buffer
       (let ((coding-system-for-read 'no-conversion))
@@ -2060,6 +2074,7 @@ This explicit operation is the only checkpoint-less full-journal replay path."
   (when (e-session--persistent-p store)
     (clrhash (e-session-store-sessions store))
     (clrhash (e-session-store-entry-indexes store))
+    (clrhash (e-session-store-board-journals store))
     (setf (e-session-store-sequence store) 0)
     (let ((sessions-directory (e-session-store-sessions-directory store)))
       (when (file-directory-p sessions-directory)
@@ -2076,8 +2091,6 @@ This explicit operation is the only checkpoint-less full-journal replay path."
              :metadata nil
              :session-events nil
              :messages nil
-             :board-messages nil
-             :board-message-id-index (make-hash-table :test 'equal)
              :activity-events nil
              :branch-summaries nil
              :current-branch nil
@@ -2177,6 +2190,7 @@ This explicit operation is the only checkpoint-less full-journal replay path."
       (when entries
         (clrhash (e-session-store-sessions store))
         (clrhash (e-session-store-entry-indexes store))
+        (clrhash (e-session-store-board-journals store))
         (setf (e-session-store-sequence store) 0)
         (dolist (entry entries)
           (e-session--put-index-entry store entry))
@@ -2404,8 +2418,6 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :metadata metadata
                         :session-events nil
                         :messages nil
-                        :board-messages nil
-                        :board-message-id-index (make-hash-table :test 'equal)
                         :board-output-sequence 0
                         :board-activity-sequence 0
                         :activity-events nil
@@ -2442,30 +2454,61 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
     (e-session--write-index store)
     session))
 
+(defun e-session--board-journal (store session-id)
+  "Return STORE's private board journal for SESSION-ID."
+  (or (gethash session-id (e-session-store-board-journals store))
+      (puthash session-id
+               (e-session--board-journal-create)
+               (e-session-store-board-journals store))))
+
+(defun e-session--clear-board-journal (store session-id)
+  "Remove STORE's private board journal for SESSION-ID."
+  (remhash session-id (e-session-store-board-journals store)))
+
 (defun e-session--freeze-board-value (value)
-  "Return VALUE detached from mutable board-journal input."
-  (cond
-   ((stringp value) (copy-sequence value))
-   ((consp value)
-    (cons (e-session--freeze-board-value (car value))
-          (e-session--freeze-board-value (cdr value))))
-   ((vectorp value)
-    (vconcat (mapcar #'e-session--freeze-board-value value)))
-   ((hash-table-p value)
-    (let ((copy (make-hash-table :test (hash-table-test value)
-                                 :size (hash-table-size value))))
-      (maphash (lambda (key item)
-                 (puthash (e-session--freeze-board-value key)
-                          (e-session--freeze-board-value item)
-                          copy))
-               value)
-      copy))
-   (t value)))
+  "Return VALUE detached from mutable board-journal input.
+Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
+ tables."
+  (let ((visiting (make-hash-table :test 'eq)))
+    (cl-labels
+        ((copy-value (current)
+           (cond
+            ((stringp current) (copy-sequence current))
+            ((consp current)
+             (when (gethash current visiting)
+               (signal 'e-session-board-message-cycle (list 'cons)))
+             (puthash current t visiting)
+             (unwind-protect
+                 (cons (copy-value (car current))
+                       (copy-value (cdr current)))
+               (remhash current visiting)))
+            ((vectorp current)
+             (when (gethash current visiting)
+               (signal 'e-session-board-message-cycle (list 'vector)))
+             (puthash current t visiting)
+             (unwind-protect
+                 (vconcat (mapcar #'copy-value current))
+               (remhash current visiting)))
+            ((hash-table-p current)
+             (when (gethash current visiting)
+               (signal 'e-session-board-message-cycle (list 'hash-table)))
+             (puthash current t visiting)
+             (unwind-protect
+                 (let ((copy (make-hash-table :test (hash-table-test current)
+                                              :size (hash-table-size current))))
+                   (maphash (lambda (key item)
+                              (puthash (copy-value key) (copy-value item) copy))
+                            current)
+                   copy)
+               (remhash current visiting)))
+            (t current))))
+      (copy-value value))))
 
 (defun e-session-board-messages (store session-id)
   "Return SESSION-ID's durable board envelopes in board order."
   (e-session--freeze-board-value
-   (plist-get (e-session-get store session-id) :board-messages)))
+   (e-session-board-journal-messages
+    (e-session--board-journal store session-id))))
 
 (defun e-session--board-message-identity (message)
   "Return the durable journal identity for board MESSAGE.
@@ -2475,19 +2518,10 @@ silently replacing records from another namespace."
   (cons (or (plist-get message :record-type) 'board-message)
         (plist-get message :id)))
 
-(defun e-session--board-message-index (session)
-  "Return SESSION's board-envelope identity index."
-  (or (plist-get session :board-message-id-index)
-      (let ((index (make-hash-table :test 'equal)))
-        (dolist (message (plist-get session :board-messages))
-          (puthash (e-session--board-message-identity message) message index))
-        (plist-put session :board-message-id-index index)
-        index)))
-
-(defun e-session--existing-board-message (session message)
+(defun e-session--existing-board-message (journal message)
   "Return MESSAGE's retained duplicate, or signal for a typed conflict."
   (let* ((identity (e-session--board-message-identity message))
-         (existing (gethash identity (e-session--board-message-index session))))
+         (existing (gethash identity (e-session-board-journal-id-index journal))))
     (when (and existing
                (plist-get message :record-type)
                (not (equal existing message)))
@@ -2497,14 +2531,20 @@ silently replacing records from another namespace."
 
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board MESSAGE envelope to SESSION-ID's board log."
-  (let* ((session (e-session-get store session-id))
+  (e-session--get-live store session-id)
+  (let* ((journal (e-session--board-journal store session-id))
          (message (e-session--freeze-board-value message))
-         (existing (e-session--existing-board-message session message)))
+         (existing (e-session--existing-board-message journal message)))
     (unless existing
       (puthash (e-session--board-message-identity message) message
-               (e-session--board-message-index session))
-      (e-session--append-list-item session :board-messages message)
-      (e-session--touch store session (e-session--timestamp))
+               (e-session-board-journal-id-index journal))
+      (let ((cell (list message)))
+        (if-let ((tail (e-session-board-journal-tail journal)))
+            (setcdr tail cell)
+          (setf (e-session-board-journal-messages journal) cell))
+        (setf (e-session-board-journal-tail journal) cell))
+      (let ((session (e-session--get-live store session-id)))
+        (e-session--touch store session (e-session--timestamp)))
       (e-session--append-record
        store session-id
        (list :type "board-message" :session-id session-id
@@ -2513,9 +2553,11 @@ silently replacing records from another namespace."
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear SESSION-ID's durable board log and derived identity index."
-  (let ((session (e-session-get store session-id)))
-    (e-session--replace-list-field session :board-messages nil)
-    (plist-put session :board-message-id-index (make-hash-table :test 'equal))
+  (let ((journal (e-session--board-journal store session-id))
+        (session (e-session--get-live store session-id)))
+    (setf (e-session-board-journal-messages journal) nil
+          (e-session-board-journal-tail journal) nil
+          (e-session-board-journal-id-index journal) (make-hash-table :test 'equal))
     (e-session--touch store session (e-session--timestamp))
     (e-session--append-record
      store session-id
@@ -2524,7 +2566,7 @@ silently replacing records from another namespace."
 
 (defun e-session-declare-board-state (store session-id principal board-id)
   "Persist SESSION-ID's board identity and PRINCIPAL."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (board-state (list :board-id board-id :principal principal)))
     (plist-put session :board-session-state (copy-tree board-state))
     (e-session--append-record
@@ -2562,7 +2604,7 @@ not copied: the fork starts without provider cache and re-compacts on its own.
 The source session is left untouched; new turns append only to the fork.
 METADATA overrides merge onto the copied metadata; NAME, when given, sets the
 fork's session name (otherwise it inherits the source name)."
-  (let* ((source (e-session-get store session-id))
+  (let* ((source (e-session--get-live store session-id))
          (head-id (or at (plist-get source :current-head-id)))
          (path (e-session-current-path store session-id head-id))
          (messages (seq-filter (lambda (entry)
@@ -2582,43 +2624,49 @@ fork's session name (otherwise it inherits the source name)."
       (e-session-set-turn-options store (plist-get fork :id) turn-options))
     (e-session-get store (plist-get fork :id))))
 
-(defun e-session-get (store session-id)
-  "Return SESSION-ID from STORE."
+(defun e-session--get-live (store session-id)
+  "Return the mutable live SESSION-ID state from STORE."
   (let ((session (e-session--peek-session store session-id)))
     (if (and (e-session--persistent-p store)
              (not (plist-get session :loaded)))
         (e-session-load-session store session-id)
       session)))
 
+(defun e-session-get (store session-id)
+  "Return SESSION-ID's mutable generic session state from STORE.
+Board journal state is owned privately by STORE and is available only through
+its dedicated board journal accessors."
+  (e-session--get-live store session-id))
+
 (defun e-session-messages (store session-id)
   "Return messages for SESSION-ID in STORE in insertion order."
-  (copy-sequence (plist-get (e-session-get store session-id) :messages)))
+  (copy-sequence (plist-get (e-session--get-live store session-id) :messages)))
 
 (defun e-session-activity-events (store session-id)
   "Return durable activity events for SESSION-ID in STORE in insertion order."
-  (copy-sequence (plist-get (e-session-get store session-id) :activity-events)))
+  (copy-sequence (plist-get (e-session--get-live store session-id) :activity-events)))
 
 (defun e-session-latest-token-usage-event (store session-id)
   "Return the latest durable token usage event for SESSION-ID in STORE."
-  (plist-get (e-session-get store session-id) :latest-token-usage-event))
+  (plist-get (e-session--get-live store session-id) :latest-token-usage-event))
 
 (defun e-session-session-events (store session-id)
   "Return durable session events for SESSION-ID in STORE in insertion order."
-  (copy-sequence (plist-get (e-session-get store session-id) :session-events)))
+  (copy-sequence (plist-get (e-session--get-live store session-id) :session-events)))
 
 (defun e-session-compactions (store session-id)
   "Return compaction records for SESSION-ID in STORE in insertion order."
-  (copy-sequence (plist-get (e-session-get store session-id) :compactions)))
+  (copy-sequence (plist-get (e-session--get-live store session-id) :compactions)))
 
 (defun e-session-provider-anchors (store session-id)
   "Return provider anchor records for SESSION-ID in STORE in insertion order."
   (copy-sequence
-   (plist-get (e-session-get store session-id) :provider-anchors)))
+   (plist-get (e-session--get-live store session-id) :provider-anchors)))
 
 (defun e-session-process-reports (store session-id)
   "Return process reports for SESSION-ID in STORE in insertion order."
   (copy-sequence
-   (plist-get (e-session-get store session-id) :process-reports)))
+   (plist-get (e-session--get-live store session-id) :process-reports)))
 
 (cl-defun e-session-latest-compatible-provider-anchor
     (store session-id provider-id &key model fingerprints)
@@ -2631,12 +2679,12 @@ fork's session name (otherwise it inherits the source name)."
 
 (defun e-session-turn-options (store session-id)
   "Return session-scoped turn options for SESSION-ID in STORE."
-  (copy-sequence (plist-get (e-session-get store session-id) :turn-options)))
+  (copy-sequence (plist-get (e-session--get-live store session-id) :turn-options)))
 
 (defun e-session--replace-metadata (store session-id metadata)
   "Replace SESSION-ID METADATA in STORE after validation."
   (let* ((metadata (e-session--validate-metadata metadata))
-         (session (e-session-get store session-id))
+         (session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (event (e-session--append-session-event
                  session
@@ -2676,7 +2724,7 @@ New code should prefer the narrower typed metadata helpers."
 (defun e-session-set-session-config (store session-id config)
   "Merge durable session CONFIG into SESSION-ID metadata."
   (e-session--validate-metadata-class config 'session-config)
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (metadata (e-session--merge-metadata
                     (plist-get session :metadata)
                     config)))
@@ -2684,7 +2732,7 @@ New code should prefer the narrower typed metadata helpers."
 
 (defun e-session-context-references (store session-id owner)
   "Return current-state references for OWNER in SESSION-ID."
-  (let* ((metadata (plist-get (e-session-get store session-id) :metadata))
+  (let* ((metadata (plist-get (e-session--get-live store session-id) :metadata))
          (references (plist-get metadata :context-references))
          (owner-key (e-session--metadata-owner-key owner)))
     (copy-tree
@@ -2694,7 +2742,7 @@ New code should prefer the narrower typed metadata helpers."
 (defun e-session-set-context-references (store session-id owner references)
   "Set durable current-state REFERENCES for OWNER in SESSION-ID."
   (let* ((owner-key (e-session--metadata-owner-key owner))
-         (session (e-session-get store session-id))
+         (session (e-session--get-live store session-id))
          (metadata (copy-sequence (plist-get session :metadata)))
          (all-references (copy-sequence
                           (plist-get metadata :context-references))))
@@ -2712,7 +2760,7 @@ New code should prefer the narrower typed metadata helpers."
   "Set durable current-state REFERENCE metadata KEY for SESSION-ID."
   (e-session--validate-metadata-class (list key reference)
                                       'current-state-reference)
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (metadata (e-session--merge-metadata
                     (plist-get session :metadata)
                     (list key reference))))
@@ -2720,7 +2768,7 @@ New code should prefer the narrower typed metadata helpers."
 
 (defun e-session-capability-state (store session-id capability-id)
   "Return durable capability state for CAPABILITY-ID in SESSION-ID."
-  (let* ((metadata (plist-get (e-session-get store session-id) :metadata))
+  (let* ((metadata (plist-get (e-session--get-live store session-id) :metadata))
          (state (plist-get metadata :capability-state))
          (owner-key (e-session--metadata-owner-key capability-id)))
     (copy-tree
@@ -2731,7 +2779,7 @@ New code should prefer the narrower typed metadata helpers."
     (store session-id capability-id state &key version)
   "Set durable capability STATE for CAPABILITY-ID in SESSION-ID."
   (let* ((owner-key (e-session--metadata-owner-key capability-id))
-         (session (e-session-get store session-id))
+         (session (e-session--get-live store session-id))
          (metadata (copy-sequence (plist-get session :metadata)))
          (all-state (copy-sequence (plist-get metadata :capability-state)))
          (entry (if version
@@ -2746,7 +2794,7 @@ New code should prefer the narrower typed metadata helpers."
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace SESSION-ID turn OPTIONS in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (turn-options (e-session--normalize-turn-options options))
          (timestamp (e-session--timestamp))
          (event (e-session--append-session-event
@@ -2771,7 +2819,7 @@ New code should prefer the narrower typed metadata helpers."
 
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
           (message (e-session--normalize-entry-from-record
                     session
@@ -2810,7 +2858,7 @@ appended before an index rebuild is still found."
         (and entry (eq (plist-get entry :type) 'message) entry))
       (seq-find (lambda (message)
                   (equal (plist-get message :id) message-id))
-                (plist-get (e-session-get store session-id) :messages))))
+                (plist-get (e-session--get-live store session-id) :messages))))
 
 (defun e-session-set-message-display (store session-id message-id display)
   "Set DISPLAY on SESSION-ID's message MESSAGE-ID in STORE and persist it.
@@ -2823,7 +2871,7 @@ the updated message, or nil when no such message exists."
       (if display
           (plist-put message :display display)
         (cl-remf message :display))
-      (e-session--touch store (e-session-get store session-id) timestamp)
+      (e-session--touch store (e-session--get-live store session-id) timestamp)
       (e-session--append-record
        store session-id
        (list :type "message-display"
@@ -2836,7 +2884,7 @@ the updated message, or nil when no such message exists."
 (cl-defun e-session-append-activity-event
     (store session-id turn-id event-type payload &key (write-index t))
   "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (event (e-session--normalize-entry-from-record
                  session
@@ -2877,7 +2925,7 @@ the updated message, or nil when no such message exists."
   "Append out-of-band process REPORT to SESSION-ID in STORE.
 Process reports are durable session entries but are not transcript messages and
 therefore never enter backend context."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (report (e-session--normalize-entry-from-record
                   session
@@ -2902,7 +2950,7 @@ therefore never enter backend context."
 (cl-defun e-session-append-branch-summary
     (store session-id branch-id summary &key metadata)
   "Append BRANCH-ID SUMMARY metadata to SESSION-ID in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (record (e-session--normalize-entry-from-record
                   session
@@ -2935,7 +2983,7 @@ therefore never enter backend context."
   "Append compaction SUMMARY for SESSION-ID in STORE.
 BRANCH-ID, RANGE, FIRST-KEPT-ENTRY-ID, and METADATA describe the compacted
 source when available."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (record (e-session--normalize-entry-from-record
                   session
@@ -2976,7 +3024,7 @@ source when available."
   "Append opaque PROVIDER-ID anchor metadata to SESSION-ID in STORE.
 COVERED-ENTRY-ID identifies the latest transcript entry covered by the
 provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (record (e-session--normalize-entry-from-record
                   session
@@ -3010,7 +3058,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (event (e-session--append-session-event
                  session
@@ -3034,7 +3082,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
 
 (defun e-session-clear-messages (store session-id)
   "Clear all messages for SESSION-ID in STORE."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (root-id (e-session--root-event-id session))
          (event nil))
@@ -3075,7 +3123,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
   "Rename SESSION-ID in STORE to NAME."
   (when (string-empty-p (string-trim (or name "")))
     (user-error "Session name must not be empty"))
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session--get-live store session-id))
          (name (string-trim name))
          (timestamp (e-session--timestamp))
          (event (e-session--append-session-event
