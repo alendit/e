@@ -430,8 +430,18 @@ envelope.
   passed with warnings treated as errors.
 - =git diff --check=: passed.
 
+* Twelfth fix-point re-review finding
+
+** TODO High: Recover known command IDs when no checkpoint exists
+
+The Node writer rebuilds known command identities only from a checkpoint and its
+suffix.  If a journal exists before any checkpoint, restart treats the known set
+as empty and appends a retried command ID again.  Scan the full journal when no
+checkpoint exists, preserving writer command idempotence from process start.
+Add a direct restart-without-checkpoint duplicate-command test.
+
 * Completion
 
-All re-review findings are resolved. Slice 1 is ready for the parent’s final
-independent-review verdict. Slices 2 through 5 remain out of scope for this
-review.
+Earlier findings are resolved.  Slice 1 remains in review because the twelfth
+fix-point review found the writer restart defect above.  Slices 2 through 5
+remain out of scope for this review.
