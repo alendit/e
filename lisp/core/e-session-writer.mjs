@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const CHECKPOINT_VERSION = 1;
@@ -133,15 +134,37 @@ function entryId(record) {
   return record.id || record.message?.id || record.report?.id || null;
 }
 
-function boardMessageIdentity(value) {
-  const message = value?.message || value;
-  return JSON.stringify([
-    message?.["record-type"] || "board-message",
-    message?.id || null,
-  ]);
+function boardMessageRecordType(recordType) {
+  if (recordType === undefined || recordType === null) return "board-message";
+  if (recordType === "processing-chain" || recordType === "processing-result") {
+    return recordType;
+  }
+  throw new WriterRequestError(`Invalid board message record type ${JSON.stringify(recordType)}`);
 }
 
-function compactRecords(records, manifest) {
+function boardMessageIdentity(value) {
+  const message = value?.message || value;
+  return JSON.stringify([boardMessageRecordType(message?.["record-type"]), message?.id ?? null]);
+}
+
+function boardMessageManifestIdentity(identity) {
+  const recordType = identity?.["record-type"];
+  if (recordType === "board-message") {
+    return JSON.stringify([recordType, identity?.id ?? null]);
+  }
+  return JSON.stringify([boardMessageRecordType(recordType), identity?.id ?? null]);
+}
+
+function retainBoardMessage(byIdentity, record) {
+  const identity = boardMessageIdentity(record);
+  const existing = byIdentity.get(identity);
+  if (existing && !isDeepStrictEqual(existing.message, record.message)) {
+    throw new WriterRequestError(`Conflicting checkpoint board message ${identity}`);
+  }
+  if (!existing) byIdentity.set(identity, record);
+}
+
+export function compactRecords(records, manifest) {
   const sessionId = manifest["session-id"];
   const root = manifest.root || {};
   const byEntryId = new Map();
@@ -151,7 +174,7 @@ function compactRecords(records, manifest) {
     const id = entryId(record);
     if (id) byEntryId.set(id, record);
     if (record.type === "board-message") {
-      byBoardMessageIdentity.set(boardMessageIdentity(record), record);
+      retainBoardMessage(byBoardMessageIdentity, record);
     } else if (record.type === "message-display" && record.id) {
       displays.set(record.id, record);
     }
@@ -184,7 +207,7 @@ function compactRecords(records, manifest) {
   }
 
   for (const identity of manifest["board-message-identities"] || []) {
-    const record = byBoardMessageIdentity.get(boardMessageIdentity(identity));
+    const record = byBoardMessageIdentity.get(boardMessageManifestIdentity(identity));
     if (!record) {
       throw new WriterRequestError(
         `Checkpoint board message ${JSON.stringify(identity)} is absent from ${sessionId}`);

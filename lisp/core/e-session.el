@@ -34,6 +34,8 @@
   "Conflicting board message envelope")
 (define-error 'e-session-board-message-cycle
   "Cyclic board message envelope")
+(define-error 'e-session-board-message-invalid-record-type
+  "Invalid board message record type")
 
 (defgroup e-session nil
   "Session storage for e."
@@ -1291,22 +1293,20 @@ a compaction, the complete current path remains model context and is retained."
            (e-session-board-journal-messages
               (e-session--board-journal store session-id))
            e-session-checkpoint-board-message-limit)))
-    (list :session-id (copy-sequence session-id)
-          :root (e-session--checkpoint-root session)
-          :board-state
-          (e-session--freeze-board-value
-           (plist-get session :board-session-state))
-          :entry-ids
-          (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
-          :board-message-identities
-          (vconcat
-           (mapcar
-            (lambda (message)
-              (e-session--freeze-board-value
+    (e-session--freeze-board-value
+     (list :session-id session-id
+           :root (e-session--checkpoint-root session)
+           :board-state (plist-get session :board-session-state)
+           :entry-ids
+           (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
+           :board-message-identities
+           (vconcat
+            (mapcar
+             (lambda (message)
                (list :record-type
                      (or (plist-get message :record-type) 'board-message)
-                     :id (plist-get message :id))))
-            board-messages)))))
+                     :id (plist-get message :id)))
+             board-messages))))))
 
 (defun e-session--checkpoint-entry-record (session-id entry parent-id)
   "Return replay record for SESSION-ID ENTRY reparented to PARENT-ID."
@@ -2520,8 +2520,15 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
     (e-session--board-journal store session-id))))
 
 (defun e-session--canonical-board-record-type (record-type)
-  "Return RECORD-TYPE in the board journal's in-memory representation."
-  (if (stringp record-type) (intern record-type) record-type))
+  "Return supported RECORD-TYPE in the board journal's representation.
+Nil means an ordinary board message."
+  (pcase record-type
+    (`nil nil)
+    ((or 'processing-chain "processing-chain") 'processing-chain)
+    ((or 'processing-result "processing-result") 'processing-result)
+    (_
+     (signal 'e-session-board-message-invalid-record-type
+             (list record-type)))))
 
 (defun e-session--board-message-identity (message)
   "Return the durable journal identity for board MESSAGE.

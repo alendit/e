@@ -356,31 +356,42 @@ checkpoint reopen.
 
 * Ninth fix-point re-review findings
 
-** TODO High: Deep-freeze the entire checkpoint manifest
+** DONE High: Deep-freeze the entire checkpoint manifest
 
-=e-session-checkpoint-manifest= still shallow-copies generic root and entry-ID
-values.  Mutating returned strings changes live session names, metadata, branch
-IDs, and retained entry IDs.  Apply the string-aware deep freezer to every
-manifest-derived value, not only board fields.  Add root, metadata, branch, and
-entry-ID mutation regressions.
+=e-session-checkpoint-manifest= now passes the complete manifest through the
+string-aware deep freezer. Root values, metadata, branch IDs, and retained
+entry IDs are detached with the board state and identities. The mutation
+regression changes every returned string and verifies live session state and
+entry identities remain unchanged.
 
-** TODO High: Align Node and Emacs handling of absent/falsey record types
+** DONE High: Align Node and Emacs handling of absent/falsey record types
 
-The Node writer uses JavaScript truthiness to default record type, while Emacs
-uses nil absence.  Empty-string or numeric record types therefore receive
-different typed identities and can overwrite ordinary messages during
-compaction.  Define and validate one record-type domain at journal ingress, then
-use absence semantics consistently in both runtimes.  Add parity tests.
+Journal ingress accepts only absent record type or the two canonical processing
+types. Emacs accepts its canonical symbols and JSON strings, while Node accepts
+the matching JSON strings; empty strings, numbers, false, and unknown values are
+rejected. The Emacs and direct Node regressions cover these absence and invalid
+value cases.
 
-** TODO Medium: Reject divergent typed duplicates during Node compaction
+** DONE Medium: Reject divergent typed duplicates during Node compaction
 
-The Node checkpoint identity map overwrites earlier records without comparing
-envelopes.  This silently selects one stale/conflicting value where Emacs replay
-signals a conflict.  Deduplicate exact retries and reject divergent duplicates
-before writing a checkpoint.  Add direct Node compaction tests.
+The Node compactor retains the first envelope for each typed identity, ignores an
+exact retry, and rejects a divergent envelope before checkpoint write. Direct
+Node tests cover exact retry deduplication and conflict rejection.
+
+* Ninth fix-point resolution verification
+
+- =eldev test -f test/e-board-test.el -f test/e-board-registry-test.el -f
+  test/e-board-processing-subscription-test.el -f test/e-session-test.el -f
+  test/e-session-persistence-test.el -f test/e-modernchat-test.el=: 232/232
+  passed.
+- =node --test test/e-session-writer-test.mjs=: 3/3 passed.
+- =eldev compile -W lisp/core/e-board.el lisp/core/e-board-registry.el
+  lisp/core/e-session.el lisp/core/e-session-persistence.el
+  lisp/core/e-chat-service.el=: passed with warnings treated as errors.
+- =git diff --check=: passed.
 
 * Completion
 
-Earlier findings are resolved.  Slice 1 remains in review because the ninth
-fix-point review found the three issues above.  Slices 2 through 5 remain out of
+All ninth fix-point findings are resolved. Slice 1 remains in review pending the
+parent's final independent-review verdict. Slices 2 through 5 remain out of
 scope for this review.

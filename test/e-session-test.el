@@ -202,6 +202,53 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-checkpoint-manifest-deep-freezes-all-values ()
+  "Manifest mutation cannot alter generic session state or retained entry IDs."
+  (let* ((store (e-session-store-create))
+         (session-id (copy-sequence "session-1"))
+         (name (copy-sequence "session name"))
+         (project-root (copy-sequence "project root"))
+         (branch-id (copy-sequence "branch-1")))
+    (e-session-create store :id session-id
+                      :metadata (list :name name :project-root project-root))
+    (e-session-append-message store session-id
+                              (list :role 'user :content "message"))
+    (e-session-set-current-branch store session-id branch-id)
+    (let* ((manifest (e-session-checkpoint-manifest store session-id))
+           (root (plist-get manifest :root))
+           (entry-id (aref (plist-get manifest :entry-ids) 0)))
+      (dolist (value (list (plist-get manifest :session-id)
+                           (plist-get root :id)
+                           (plist-get root :name)
+                           (plist-get (plist-get root :metadata) :project-root)
+                           (plist-get root :current-branch)
+                           entry-id))
+        (aset value 0 ?x)))
+    (let ((session (e-session-get store session-id)))
+      (should (equal session-id "session-1"))
+      (should (equal (plist-get session :name) "session name"))
+      (should (equal (plist-get (plist-get session :metadata) :project-root)
+                     "project root"))
+      (should (equal (plist-get session :current-branch) "branch-1"))
+      (should (string-prefix-p "01" (plist-get session :root-event-id)))
+      (should (string-prefix-p "01"
+                               (plist-get (car (e-session-messages store session-id))
+                                          :id))))))
+
+(ert-deftest e-session-test-board-log-rejects-invalid-record-types ()
+  "Only absent and supported processing record types enter the board journal."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "board-session")
+    (e-session-append-board-message store "board-session" '(:id "message"))
+    (dolist (record-type '("" 0 :json-false unknown "unknown"))
+      (should-error
+       (e-session-append-board-message
+        store "board-session" (list :id "message" :record-type record-type))
+       :type 'e-session-board-message-invalid-record-type))
+    (should (equal (mapcar #'e-session--board-message-identity
+                           (e-session-board-messages store "board-session"))
+                   '((board-message . "message"))))))
+
 (ert-deftest e-session-test-checkpoint-manifest-detaches-board-identities ()
   "Checkpoint manifest mutation cannot change the private board journal."
   (let* ((store (e-session-store-create))
