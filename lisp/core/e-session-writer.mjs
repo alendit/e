@@ -110,7 +110,7 @@ async function knownCommands(directory, sessionId) {
       recordHighwater(known.highwaters, record);
     }
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    if (checkpoint || error?.code !== "ENOENT") throw error;
   }
   bySession.set(sessionId, known);
   return known;
