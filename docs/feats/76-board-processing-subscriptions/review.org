@@ -304,8 +304,26 @@ during load.  Restart regressions cover both outcomes.
   treated as errors.
 - =git diff --check=: passed.
 
+* Seventh fix-point re-review findings
+
+** TODO High: Protect journal state exposed through =e-session-get=
+
+=e-session-get= exposes the live session plist, including retained board
+envelopes and the typed identity index.  A caller can mutate the envelope while
+leaving the index stale, after which an identical append creates a duplicate.
+Keep the board journal out of mutable generic session views or return detached
+board state.  Add a regression that mutates a fetched session and proves journal
+identity and contents remain intact.
+
+** TODO Medium: Reject cyclic board-journal values explicitly
+
+The deep freezer recursively copies conses, vectors, and hash tables without a
+cycle guard.  Cyclic input ends in a generic recursion-depth failure.  Reject
+cycles with a stable, declared session journal error and add cons, vector, and
+hash-table cycle tests.
+
 * Completion
 
-All listed findings are resolved.  Slice 1 remains in review pending the
-parent's final independent-review verdict.  Slices 2 through 5 remain out of
+Earlier findings are resolved.  Slice 1 remains in review because the seventh
+fix-point review found the two issues above.  Slices 2 through 5 remain out of
 scope for this review.
