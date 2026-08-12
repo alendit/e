@@ -1,0 +1,109 @@
+#+title: Review: Voice Adjustment Gradual Discovery
+#+author: e implementation
+#+date: 2026-08-12
+#+startup: overview
+
+* Status
+
+Done.  No unresolved findings.
+
+* Review summary
+
+The implementation meets the plan contract.  The default layer no longer adds
+voice-specific model tools or mandatory check instructions.  It advertises one
+on-demand skill resource, keeps record/list/clear as actions, and contributes
+only cached tell labels as a compact dynamic-context reminder.
+
+* Scope reviewed
+
+- =docs/feats/80-voice-adjustment-gradual-discovery/plan.org=
+- =lisp/layers/writing/e-voice-adjustment.el=
+- =test/e-voice-adjustment-test.el=
+- Default-layer, skill-builder, compile, and complete-suite behavior
+
+* Review result
+
+No findings remain.  The detailed workflow explicitly says not to run an extra
+voice check on ordinary responses.  The stable context contains only the short
+skill advertisement.  Mutable cached tell labels occupy one dynamic line;
+descriptions remain behind =e://voice-adjustment/tells=.
+
+* Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-voice-adjustment-test.el
+rtk eldev test -f test/e-defaults-test.el
+rtk eldev test -f test/e-skills-test.el
+rtk eldev compile --warnings-as-errors
+rtk eldev test
+git diff --check
+#+end_src
+
+#+begin_example
+Voice adjustment: 6/6 passed.
+Defaults: 29/29 passed.
+Skills: 8/8 passed.
+Compilation: passed with warnings as errors.
+Full suite: 2,056 expected passes, 16 expected skips, 0 unexpected results
+across 2,072 tests.
+Whitespace: clean.
+#+end_example
+
+* UX and performance playthrough
+
+There is no graphical surface in this slice.  Isolated ERT exercises the three
+model-visible states: no cached tells, compact labels-only context, and reading
+the detailed guide and tell descriptions on demand.  Removing two tool schemas
+and the long default instructions reduces every request; the only per-turn
+work retained is formatting at most =e-voice-adjustment-max-tells= labels.
+
+* Prompt-cache placement audit
+
+The tell reminder is correctly =dynamic-context=: it is mutable session state
+and follows the stable skill advertisement.  This preserves the unchanged
+prefix for OpenAI's automatic longest-prefix caching on GPT-5.5 and earlier.
+Anthropic already attaches =cache_control= to the final stable system block, so
+the later tell line does not move its explicit breakpoint.
+
+For GPT-5.6 and later, e's placement order is not enough by itself.  The OpenAI
+adapter currently flattens all system segments into top-level =instructions=,
+where Responses cannot attach the explicit content-block breakpoint required to
+protect the stable prefix from a changing suffix.  The provider-specific gap
+and a segment-aware follow-up are recorded in
+=docs/research/prompt-cache-dynamic-context-boundary.org=.  It is deliberately
+separate from this capability refactor because it changes OpenAI request and
+continuation semantics and requires credentialed cache-usage evidence.
+
+* Live reload
+
+The running Emacs was left unchanged, following the repository-side validation
+policy.  A reload is required before the current Emacs uses the new surface.
+
+* Architecture self-check
+
+1. The package is useful independently: default prompts are smaller and voice
+   checks stop running by implication.
+2. It moves toward gradual discovery through short metadata and detailed
+   resources.
+3. The stable decision is the action/tool boundary.  The guide text and tell
+   limit remain local and easy to change.
+4. The voice-adjustment capability owns its guide, store, context, and actions.
+5. Coupling is reduced by removing dedicated tool registrations and reusing the
+   existing skills and action contracts.
+6. Core code gains no dependency on the writing layer.
+7. Persistence remains at the action-owned store boundary.
+8. No state was added.  Mutable tells are now correctly marked dynamic context.
+9. Every request loses two tool schemas and long instructions.  Formatting the
+   bounded label list is linear in at most ten entries.
+10. Skills, resources, context providers, and actions use their existing real
+    contracts without a new abstraction.
+11. The model-facing voice tool names are intentionally removed; no compatibility
+    requirement exists for internal model tool surfaces.
+12. The tool registration function and mandatory first-pass prose were removed.
+13. Existing action validation and visible errors remain unchanged.
+14. Focused tests independently prove context, resources, actions, and the
+    absence of tools; broader tests cover integration.
+
+* Unresolved
+
+None.

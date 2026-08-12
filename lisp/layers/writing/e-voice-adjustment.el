@@ -7,15 +7,15 @@
 
 ;;; Commentary:
 
-;; The voice-adjustment capability formalizes a two-phase workflow for keeping
-;; agent-authored prose in a plain, direct voice instead of the ceremonial
-;; "LLM voice."
+;; The voice-adjustment capability keeps agent-authored prose in a plain,
+;; direct voice instead of the ceremonial "LLM voice."  Its active check and
+;; learning workflow is discoverable on demand rather than run on every turn.
 ;;
-;;   Phase 1 (first pass, avoidance): before drafting, the main agent sees a
-;;   small cached list of the tells it has most recently had to correct, so it
-;;   avoids them up front rather than writing then rewriting.
+;;   Passive avoidance: the main agent sees only a compact list of cached tell
+;;   labels, so it can avoid known habits without running a separate check.
 ;;
-;;   Phase 2 (detection, rewrite, learning): when prose still carries a tell --
+;;   On-demand check and learning: when explicitly requested and prose carries
+;;   a tell --
 ;;   grandiose framing, bolded-not stress, em-dash restatement, formulaic
 ;;   scaffolding, antithesis kickers, intensifier tics, catalog/system-tour
 ;;   prose -- the agent flags it, rewrites the passage plainly, and records the
@@ -35,7 +35,7 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-layers)
-(require 'e-tools)
+(require 'e-skills)
 
 (defgroup e-voice-adjustment nil
   "Voice adjustment: detect, rewrite, and cache LLM writing tells."
@@ -54,15 +54,31 @@ Set to nil to keep the cache in memory only for the session."
   :type 'integer
   :group 'e-voice-adjustment)
 
-(defconst e-voice-adjustment-instructions
+(defconst e-voice-adjustment-guide
   (string-join
-   '("The voice-adjustment capability keeps prose you author in a plain, direct voice and out of the ceremonial \"LLM voice.\" It runs in two phases and learns across turns."
-     "First pass (avoidance): before drafting reader-facing prose, consult the cached tells below (read e://voice-adjustment/tells or call voice_tells_list) and write so the draft does not exhibit them. These are the moves you most recently had to correct; avoiding them up front beats writing then rewriting."
-     "Detection and rewrite: when a passage still reads as an LLM tell -- grandiose or epigrammatic framing dressing a plain fact as a Principle, bolded-not stress on a plain negative, em-dash restatement that says the same thing twice, formulaic scaffolding (\"This is what X\", \"It also answers\", \"This refines the earlier\"), antithesis kickers (\"X, not Y\"), intensifier tics (repeated \"exactly\"/\"precisely\"), tidy aphoristic closers, catalog or system-tour prose -- rewrite it in plain engineer voice: state the fact once, let it carry its own weight, cut the stress and the restatement."
-     "Learning: after you correct a tell, record it with voice_tells_record (a short label plus a one-line description). Recording refreshes an existing tell and moves it to the front; a genuinely new tell is added. The store is capped and least-recently-used, so keep labels stable (reuse the same label for the same move) rather than inventing a near-duplicate each time."
-     "Keep this scoped to prose a reader will see. Do not apply it to code, identifiers, quoted source text, or a verbatim requirement.")
+   '("# Voice adjustment"
+     ""
+     "Use this workflow only when the user asks for a voice check or rewrite, or another explicit instruction requires one. Do not run an extra voice-check pass on ordinary responses."
+     ""
+     "The harness may include one compact line of cached tell labels. Avoid those habits while drafting reader-facing prose, but do not treat that passive reminder as a request to run this workflow. Read e://voice-adjustment/tells for the full cached descriptions."
+     ""
+     "## Check and rewrite"
+     ""
+     "Look for grandiose framing, bolded-not stress, em-dash restatement, formulaic scaffolding, antithesis kickers, intensifier tics, tidy aphoristic closers, and catalog or system-tour prose. Rewrite plainly: state the fact once, cut the stress and restatement, and let the fact carry its own weight."
+     ""
+     "Keep the check scoped to prose a reader will see. Do not apply it to code, identifiers, quoted source text, or a verbatim requirement."
+     ""
+     "## Actions"
+     ""
+     "Call actions from run_elisp; there are no dedicated model-facing voice tools:"
+     ""
+     "- List cached tells: (e-actions-call 'voice-adjustment :list nil)"
+     "- Record a corrected tell: (e-actions-call 'voice-adjustment :record '(:label \"stable label\" :description \"One-line description.\"))"
+     "- Clear cached tells only when explicitly requested: (e-actions-call 'voice-adjustment :clear nil)"
+     ""
+     "Recording refreshes an existing normalized label and moves it to the front. A new label is prepended. The least-recently-used store is capped, so reuse a stable label instead of creating near-duplicates.")
    "\n")
-  "Instructions contributed by the voice-adjustment capability.")
+  "Detailed on-demand voice-adjustment guide.")
 
 ;;;; Persistent least-recently-used store
 
@@ -119,7 +135,7 @@ front; a new tell is prepended and the store is truncated to
   (e-voice-adjustment--load)
   (let* ((label (string-trim (or label "")))
          (_ (when (string-empty-p label)
-              (user-error "voice_tells_record requires a non-empty label")))
+              (user-error "Voice-adjustment record requires a non-empty label")))
          (key (e-voice-adjustment--normalize-key label))
          (existing (seq-find (lambda (tell)
                                (equal key (plist-get tell :key)))
@@ -164,7 +180,7 @@ front; a new tell is prepended and the store is truncated to
   (e-voice-adjustment--write)
   (list :count 0))
 
-;;;; First-pass context
+;;;; Compact passive context
 
 (defun e-voice-adjustment--format-tells (tells)
   "Return a compact human-readable rendering of cached TELLS."
@@ -182,20 +198,18 @@ front; a new tell is prepended and the store is truncated to
 
 (cl-defun e-voice-adjustment--context-provider
     (&key _harness _session-id _turn-id _context-purpose)
-  "Return first-pass tell-avoidance context, or nil when the cache is empty."
+  "Return compact tell-avoidance context, or nil when the cache is empty."
   (let ((tells (plist-get (e-voice-adjustment--list) :tells)))
     (when tells
       (list
        (list :role 'system
              :content
-             (concat
-              "Voice-adjustment first pass. You have recently had to correct "
-              "these writing tells. Draft reader-facing prose so it does not "
-              "exhibit them; do not write then rewrite. Recently-corrected "
-              "tells, most recent first:\n"
-              (e-voice-adjustment--format-tells tells)))))))
+             (format
+              "Reader-facing prose: avoid cached writing tells: %s."
+              (mapconcat (lambda (tell) (plist-get tell :label))
+                         tells "; ")))))))
 
-;;;; Resource, tools, actions
+;;;; Resources and actions
 
 (defun e-voice-adjustment--register-resources (store capability)
   "Register the readable cached-tells resource for CAPABILITY in STORE."
@@ -217,75 +231,61 @@ front; a new tell is prepended and the store is truncated to
              :description "Short stable name for the tell, e.g. \"bolded-not stress\". Reuse the same label for the same move.")
      :description (:type "string"
                    :description "One-line description of what the tell is and why it reads as an LLM voice.")))
-  "Parameters for the voice_tells_record tool/action.")
+  "Parameters for the voice-adjustment record action.")
 
-(defun e-voice-adjustment-register-tool (registry &rest _context)
-  "Register voice-adjustment model-facing tools in REGISTRY."
-  (e-tools-register
-   registry
-   :name "voice_tells_record"
-   :description "Record a detected writing tell after correcting it, refreshing the least-recently-used cache used for the next first pass."
-   :parameters e-voice-adjustment--record-parameters
-   :blocking-class 'cheap
-   :work
-   (e-tools-cheap-work
-    "tool.voice-tells-record"
-    (lambda (arguments)
-      (e-voice-adjustment--record
-       (plist-get arguments :label)
-       (plist-get arguments :description)))))
-  (e-tools-register
-   registry
-   :name "voice_tells_list"
-   :description "List the cached least-recently-used writing tells to avoid on this draft."
-   :parameters '(:type "object" :properties nil)
-   :blocking-class 'cheap
-   :work
-   (e-tools-cheap-work
-    "tool.voice-tells-list"
-    (lambda (_arguments)
-      (e-voice-adjustment--list)))))
-
-(defun e-voice-adjustment--action (id parameters runner)
-  "Return a cheap voice-adjustment action ID with PARAMETERS and RUNNER."
+(defun e-voice-adjustment--action (id description parameters runner)
+  "Return a cheap voice-adjustment action ID described by DESCRIPTION.
+PARAMETERS is its input schema and RUNNER implements the action."
   (e-action-cheap-create
    :id id
    :owner 'voice-adjustment
+   :description description
    :parameters parameters
    :runner runner))
 
 (defun e-voice-adjustment-capability-create ()
   "Create the voice-adjustment capability."
-  (e-capability-create
+  (e-capability-with-skills-create
    :id 'voice-adjustment
    :name "Voice Adjustment"
    :instruction-priority 210
-   :instructions e-voice-adjustment-instructions
-   :tools (list #'e-voice-adjustment-register-tool)
+   :skill-heading "Voice adjustment is available on request:"
+   :skills
+   (list
+    (e-skill-spec-create
+     :name "voice-adjustment"
+     :description "Check requested prose and manage cached writing tells."
+     :content e-voice-adjustment-guide))
    :resources (list #'e-voice-adjustment--register-resources)
    :context-providers
    (list (e-context-provider-create
           :name 'voice-adjustment
           :priority 210
-          :cache-placement 'stable-context
+          :cache-placement 'dynamic-context
           :build #'e-voice-adjustment--context-provider))
    :actions
    (list
     :record
     (e-voice-adjustment--action
-     "voice_tells_record" e-voice-adjustment--record-parameters
+     "voice_adjustment_record"
+     "Record a corrected writing tell and refresh its LRU position."
+     e-voice-adjustment--record-parameters
      (lambda (arguments _context)
        (e-voice-adjustment--record
         (plist-get arguments :label)
         (plist-get arguments :description))))
     :list
     (e-voice-adjustment--action
-     "voice_tells_list" '(:type "object" :properties nil)
+     "voice_adjustment_list"
+     "List cached writing tells, most recently corrected first."
+     '(:type "object" :properties nil)
      (lambda (_arguments _context)
        (e-voice-adjustment--list)))
     :clear
     (e-voice-adjustment--action
-     "voice_tells_clear" '(:type "object" :properties nil)
+     "voice_adjustment_clear"
+     "Clear every cached writing tell."
+     '(:type "object" :properties nil)
      (lambda (_arguments _context)
        (e-voice-adjustment--clear))))))
 

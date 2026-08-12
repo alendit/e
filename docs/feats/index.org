@@ -90,3 +90,4 @@ Status values for coding agents:
 | 77 | Done        | 77-persp-workspace-visual-e2e/            | Persp Workspace Visual E2E                           |
 | 78 | Done        | 78-session-resume-checkpoints/             | Session Resume Checkpoints                           |
 | 79 | Planned     | 79-session-workspace/                       | Session Context Resources                             |
+| 80 | Done        | 80-voice-adjustment-gradual-discovery/       | Voice Adjustment Gradual Discovery                    |

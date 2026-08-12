@@ -1,0 +1,64 @@
+#+title: Prompt-cache boundary for dynamic context
+#+date: 2026-08-12
+#+startup: overview
+
+* Question
+
+Does e's distinction between stable and dynamic context preserve provider prompt
+cache hits when dynamic session state changes, and can the request shape be made
+more efficient?
+
+* Current model
+
+=e-context= orders context as =static-prefix=, =stable-context=, then
+=dynamic-context=.  Capabilities preserve that order in the segment metadata.
+The placement is a cache-layout declaration; it is not itself a provider cache.
+Each backend must translate the stable/dynamic boundary into a request shape the
+provider can cache.
+
+This makes mutable session state such as voice-adjustment tell labels a
+=dynamic-context= concern.  Putting it in =stable-context= would make a changing
+value part of the promised stable prefix.  Keeping it as a short final segment
+both reduces input size and leaves earlier stable material unchanged.
+
+* Provider evaluation
+
+| Backend | Existing translation | Effect of a changed dynamic suffix |
+|---------+----------------------+------------------------------------|
+| OpenAI, GPT-5.5 and earlier | All system segments are flattened into one =instructions= string, in placement order; =prompt_cache_key= is sent. | Automatic longest-prefix matching can reuse the unchanged stable prefix once it is long enough to be cacheable. |
+| OpenAI, GPT-5.6 and later | The same flattened =instructions= string is sent; legacy =prompt_cache_retention= is omitted, but no explicit breakpoint or =prompt_cache_options= is emitted. | Ordering alone is insufficient.  The provider's implicit breakpoint is the latest user/tool item, and a changed dynamic suffix can produce zero cached tokens instead of falling back to the longest unmarked prefix. |
+| Anthropic Messages | System segments remain blocks; =cache_control= is attached to the final static/stable block before dynamic context. | The unchanged stable prefix remains behind an explicit cache breakpoint, so later dynamic blocks do not move that boundary. |
+
+The OpenAI GPT-5.6 behavior is documented in [[https://developers.openai.com/api/docs/guides/prompt-caching][Prompt caching]].
+Explicit breakpoints are supported on Responses input content blocks, not on
+the top-level string =instructions= field.  Therefore adding a field to the
+current flattened request would not correctly express e's existing boundary.
+
+* Recommended OpenAI follow-up
+
+Treat GPT-5.6 explicit caching as a provider-adapter feature rather than a
+change to the generic context placements.
+
+1. Preserve the stable/dynamic segment boundary in the OpenAI request renderer.
+2. Represent the final stable segment as a cacheable Responses input content
+   block and put =prompt_cache_breakpoint= there; place dynamic current-state
+   content after it.
+3. Send =prompt_cache_options= in explicit mode together with the existing
+   derived =prompt_cache_key=.
+4. Define continuation behavior deliberately.  A first-turn cacheable input
+   item can be carried by =previous_response_id=, whereas top-level
+   =instructions= are request-local; the adapter must not duplicate stable
+   context on continued requests.
+5. Record =cache_write_tokens= as well as =cached_tokens= so cache creation cost
+   and net reuse are visible.
+6. Add a credentialed end-to-end test with two otherwise identical turns whose
+   dynamic segment changes.  Assert request shape and inspect provider usage;
+   do not claim a hit-rate improvement from request-shape unit tests alone.
+
+* Conclusion
+
+The generic placement model is sound, and the voice tell list belongs in
+=dynamic-context=.  Anthropic already turns the boundary into an explicit cache
+breakpoint.  OpenAI's existing ordering remains useful for GPT-5.5 and earlier,
+but GPT-5.6 needs a segment-aware request shape and explicit breakpoint to make
+dynamic-context changes reliably cache-efficient.

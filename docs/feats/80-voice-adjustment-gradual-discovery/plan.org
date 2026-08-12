@@ -1,0 +1,30 @@
+#+title: Voice Adjustment Gradual Discovery
+#+startup: overview
+
+* Status
+
+Done.
+
+* Goal
+
+Keep passive avoidance of recently corrected writing tells cheap while making
+the active voice-check and learning workflow explicitly on demand.
+
+* Contract
+
+- The capability contributes no dedicated model-facing voice tools.
+- Record, list, and clear remain capability actions callable through
+  =e-actions-call=.
+- Default stable context contains only a short pointer to an on-demand guide.
+- Cached tell labels may enter dynamic context as one compact avoidance line;
+  detailed descriptions stay in =e://voice-adjustment/tells=, and mutable tells
+  never claim stable-prefix placement.
+- The full check, rewrite, and learning workflow lives at
+  =e://voice-adjustment/skills/voice-adjustment= and says not to run an extra
+  check unless explicitly requested.
+
+* Validation
+
+Focused tests cover tool absence, action round trips, guide and tells resources,
+and the exact compact default-context shape.  Compile and the complete ERT suite
+form the repository gate.
