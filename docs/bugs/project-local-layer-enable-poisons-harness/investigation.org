@@ -1,0 +1,117 @@
+#+title: Investigation: Project-local layer enable poisons the chat harness
+#+startup: overview
+
+* Root cause
+
+The persisted trace for session =20260812T111810-81135f8c1aa3= shows that the
+agent read the =layer-selection/enable= action, listed the globally registered
+layers, and then explicitly called:
+
+#+begin_src emacs-lisp
+(e-actions-call 'layer-selection :enable '(:layer "topic"))
+#+end_src
+
+=topic= is contributed by Grimoire through the globally registered
+=project-local= aggregate.  It is intentionally absent from the global layer
+registry and is not independently selectable.
+
+=e-harness-enable-layer-id= appended an id to
+=e-harness-enabled-layer-ids= before resolving the effective layer graph.
+Resolution then signalled =e-layer-registry-missing=, leaving =topic= in the
+harness even though the enable operation failed.  Later turns therefore
+repeated the failure.  Restarting Emacs could not correct the call that occurred
+during this turn.
+
+The action resource also rendered =No description provided.=, so its model-facing
+contract did not explain that only exact globally registered ids returned by
+=:list= are valid.
+
+* Evidence
+
+Read-only probes of the restarted Emacs established that:
+
+- =topic= was not globally registered;
+- the configured default layer ids did not contain =topic=;
+- the cached =:chat-default= harness did contain a trailing =topic= id;
+- the harness project root was the Grimoire repository.
+
+Source inspection established that Grimoire registers =topic= through
+=e-project-layer-register= and that the =project-local= aggregate owns discovery
+and activation of its capability and shell.
+
+Metadata-only inspection of the persisted session trace found the exact
+=layer-selection :enable= call and its =e-layer-registry-missing= result.  No
+encrypted model content or credentials were printed.
+
+This is distinct from the preceding OpenAI replay bug: the repaired OpenAI
+request passed provider validation and the agent completed 75 tool calls before
+this local layer-selection failure.
+
+* Fix
+
+=e-harness-enable-layer-id= now resolves the complete prospective layer graph
+before mutating the harness.  An unknown requested id or unresolved dependency
+therefore fails without changing enabled ids, effective ids, shells, or the
+layer-change callback state.
+
+The layer-selection actions now describe their contract explicitly: =:list=
+reports globally selectable layer ids, and =:enable= and =:toggle= accept an
+exact id from that list.  Project-local extension ids remain activated only
+through the =project-local= aggregate.
+
+No special-case handling for =topic= or Grimoire was added, and no session data
+migration is required.
+
+* Regression coverage
+
+- A focused harness test proves that rejecting an unknown id leaves enabled and
+  effective ids unchanged, does not publish a layer-change event, and leaves
+  the harness usable for a later valid operation.
+- A project-local integration test creates a real =topic= extension, activates
+  it through =project-local=, invokes the same =e-actions-call= path as the
+  persisted trace, and proves rejection leaves the aggregate shell and harness
+  state intact.  A subsequent =:list= action succeeds on that same harness.
+- The action contract test proves the model-facing enable description names the
+  =:list= boundary and the project-local exclusion.
+
+* Validation
+
+- The focused layer-selection, layer, and project-local suite passes all 55
+  tests with no unexpected results.
+- Warning-as-error byte compilation passes.
+- The complete non-graphical suite passes all 2,092 tests with two optional
+  presentation skips and no unexpected results.  Its loopback-server tests were
+  run outside the socket-restricted sandbox.
+- The running Emacs was inspected read-only and was not reloaded or mutated.
+
+* Design self-check
+
+1. The slice is independently useful because one rejected action can no longer
+   corrupt later turns on the same harness.
+2. It moves toward harness-owned lifecycle state with project extensions
+   remaining behind their aggregate layer boundary.
+3. Global registry membership is stable; project-local ids remain dynamic and
+   local.  The prospective graph is computed locally before committing state.
+4. The harness owns enabled-layer state and validates its transition; the
+   layer-selection capability owns the shell-facing action contract.
+5. Coupling is reduced because callers do not need project-specific knowledge
+   and no Grimoire special case was added.
+6. Stable harness policy does not depend on a concrete project or presentation
+   shell.
+7. Registry resolution is kept before the state mutation and notification side
+   effects.
+8. No state was added.  Existing harness layer state keeps its current lifetime
+   and is mutated only after the prospective graph resolves.
+9. Enabling a layer performs one additional prospective graph resolution; this
+   is bounded by the small layer/dependency graph and prevents a corrupt-state
+   recovery path.
+10. The global layer id contract remains narrow and substitutable; project-local
+    extensions are not forced into it.
+11. Valid global ids and aggregate project-local behavior remain compatible;
+    invalid ids now have the already intended all-or-nothing result.
+12. No compatibility shim, project-specific fallback, or obsolete workaround
+    was retained.
+13. Known registry errors surface unchanged before mutation; unexpected shell
+    activation failures still surface rather than being swallowed.
+14. Focused state-transition and real project-local integration tests prove the
+    core behavior without depending on the graphical chat shell or a provider.

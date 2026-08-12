@@ -720,10 +720,16 @@ harness default project root."
 (defun e-harness-enable-layer-id (harness layer-id &optional directory)
   "Enable registered LAYER-ID on HARNESS and refresh layer shells."
   (unless (e-harness-layer-enabled-p harness layer-id)
-    (setf (e-harness-enabled-layer-ids harness)
-          (e-harness--append-layer-id
-           (e-harness-enabled-layer-ids harness)
-           layer-id))
+    (let ((prospective-ids
+           (e-harness--append-layer-id
+            (e-harness-enabled-layer-ids harness)
+            layer-id))
+          (root (or (e-harness--normalize-project-root directory)
+                    (e-harness-default-project-root harness))))
+      ;; Resolve the complete prospective graph before mutating harness state.
+      ;; An unknown id or dependency must fail without poisoning later turns.
+      (e-harness--effective-layer-ids-for-root prospective-ids root)
+      (setf (e-harness-enabled-layer-ids harness) prospective-ids))
     (e-harness-sync-layer-shells harness directory)
     (e-harness--notify-layers-changed harness))
   (list :status 'enabled

@@ -19,6 +19,7 @@
 (require 'e-actions)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-layer-selection)
 (require 'e-project-local)
 (require 'e-shells)
 (require 'e-store)
@@ -348,6 +349,48 @@ SOURCE overrides the default layer source."
             (should (cl-find 'topic
                              (e-layer-shells layer)
                              :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-local-layer-id-is-not-globally-selectable ()
+  "A rejected local layer id cannot poison its aggregate harness."
+  (let* ((project (make-temp-file "e-project-local-select-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-layer--registry (make-hash-table :test 'eq))
+         (e-shell--registry (make-hash-table :test 'eq))
+         (e-shell--scoped-registry (make-hash-table :test 'eq)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (e-layer-register
+           (e-layer-spec-create
+            :id 'project-local
+            :name "Project Local"
+            :factory #'e-project-local-layer-create))
+          (let ((harness (e-harness-create
+                          :project-root project)))
+            (e-harness-activate-capability
+             harness (e-layer-selection-capability-create))
+            (e-harness-enable-layer-id harness 'project-local project)
+            (should (e-shell-get-active 'topic harness))
+            (should-not (e-layer-get 'topic))
+            (should-error
+             (e-actions-call 'layer-selection :enable '(:layer "topic")
+                             (list :harness harness))
+             :type 'e-layer-registry-missing)
+            (should (equal (e-harness-enabled-layer-ids harness)
+                           '(project-local)))
+            (should (equal (e-harness-effective-layer-ids harness)
+                           '(project-local)))
+            (let* ((layers
+                    (e-actions-call 'layer-selection :list nil
+                                    (list :harness harness)))
+                   (project-local
+                    (cl-find 'project-local layers
+                             :key (lambda (entry)
+                                    (plist-get entry :id)))))
+              (should (plist-get project-local :enabled))
+              (should (plist-get project-local :active)))
+            (should (e-shell-get-active 'topic harness))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-project-layer-requires-are-aggregated ()

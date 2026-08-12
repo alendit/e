@@ -53,11 +53,13 @@
      ((stringp layer) (intern layer))
      (t (user-error "Layer action requires :layer")))))
 
-(defun e-layer-selection--action (handler caller &optional parameters)
-  "Return layer-selection cheap work action descriptor for HANDLER."
+(defun e-layer-selection--action (handler caller description &optional parameters)
+  "Return layer-selection cheap work action descriptor for HANDLER.
+DESCRIPTION explains the action contract to callers."
   (e-action-cheap-create
    :id (format "layer_selection_%s" handler)
    :owner 'layer-selection
+   :description description
    :parameters parameters
    :runner (lambda (arguments context)
              (funcall caller context arguments))))
@@ -72,7 +74,8 @@
          (e-layer-selection--action
           #'e-layer-selection-list
           (lambda (context _arguments)
-            (e-layer-selection-list (plist-get context :harness))))
+            (e-layer-selection-list (plist-get context :harness)))
+          "List globally selectable layer ids and their enabled/effective state. Project-local extension layers are activated through the project-local aggregate and are not independently selectable.")
          :enable
          (e-layer-selection--action
           #'e-layer-selection-enable
@@ -80,6 +83,7 @@
             (e-layer-selection-enable
              (plist-get context :harness)
              (e-layer-selection--action-layer-id arguments)))
+          "Enable one globally registered layer. Pass an exact id returned by :list; project-local extension ids are not valid here."
           '(:type "object"
             :properties (:layer (:type "string"))
             :required ["layer"]))
@@ -90,6 +94,7 @@
             (e-layer-selection-disable
              (plist-get context :harness)
              (e-layer-selection--action-layer-id arguments)))
+          "Disable one explicitly enabled globally registered layer. Pass an exact id returned by :list."
           '(:type "object"
             :properties (:layer (:type "string"))
             :required ["layer"]))
@@ -100,6 +105,7 @@
             (e-layer-selection-toggle
              (plist-get context :harness)
              (e-layer-selection--action-layer-id arguments)))
+          "Toggle one globally registered layer. Pass an exact id returned by :list; project-local extension ids are not valid here."
           '(:type "object"
             :properties (:layer (:type "string"))
             :required ["layer"])))))

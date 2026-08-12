@@ -1,0 +1,16 @@
+#+title: Project-local layer enable poisons the chat harness
+#+startup: overview
+
+* Report
+
+After restarting Emacs and retrying the Grimoire daily session, the turn ran
+for 28 minutes and then failed with:
+
+#+begin_example
+Turn failed: No known layer is registered for id: topic
+Turn failed: Turn failed
+#+end_example
+
+The reported session had successfully progressed beyond the earlier OpenAI
+reasoning-summary replay errors.  =topic= is a Grimoire project-local layer,
+not a globally registered layer id.

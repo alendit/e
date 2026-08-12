@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | project-local-layer-enable-poisons-harness/ | Project-local layer enable poisons the chat harness |
 | Closed | openai-replay-null-reasoning-summary/ | OpenAI full replay sends a null reasoning summary |
 | Closed | grimoire-daily-selected-chat-resize/ | Grimoire daily fails from a selected chat composer |
 | Closed | e-chat-new-missing-annotations/ | e-chat-new cannot load e-annotations |

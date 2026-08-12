@@ -29,10 +29,15 @@
 
 (ert-deftest e-layer-selection-test-capability-exposes-layer-actions ()
   "The e layer owns generic layer selection actions."
-  (let ((capability (e-layer-selection-capability-create))
-        (layer (e-core-layer-create)))
+  (let* ((capability (e-layer-selection-capability-create))
+         (layer (e-core-layer-create))
+         (enable-action (e-capabilities-action-spec capability :enable)))
     (should (eq (e-capability-id capability) 'layer-selection))
-    (should (e-action-p (e-capabilities-action-spec capability :enable)))
+    (should (e-action-p enable-action))
+    (should (string-match-p "exact id returned by :list"
+                            (e-action-description enable-action)))
+    (should (string-match-p "project-local extension ids"
+                            (e-action-description enable-action)))
     (should (e-action-p (e-capabilities-action-spec capability :disable)))
     (should (e-action-p (e-capabilities-action-spec capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
@@ -96,6 +101,31 @@
                       :status)
                      'disabled))
       (should-not (e-harness-enabled-layer-ids harness)))))
+
+(ert-deftest e-layer-selection-test-unknown-enable-does-not-poison-harness ()
+  "Rejecting an unknown layer leaves the harness usable and unchanged."
+  (e-layer-selection-test--with-empty-layer-registry
+    (e-layer-register
+     (e-layer-spec-create
+      :id 'known
+      :name "Known"
+      :factory (lambda ()
+                 (e-layer-create :id 'known :name "Known"))))
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+          (change-count 0))
+      (e-harness-enable-layer-id harness 'known)
+      (e-harness-set-layer-change-function
+       harness (lambda (_harness) (cl-incf change-count)))
+      (should-error (e-layer-selection-enable harness 'topic)
+                    :type 'e-layer-registry-missing)
+      (should (equal (e-harness-enabled-layer-ids harness) '(known)))
+      (should (equal (e-harness-effective-layer-ids harness) '(known)))
+      (should (= change-count 0))
+      (should (eq (plist-get (e-layer-selection-disable harness 'known)
+                             :status)
+                  'disabled))
+      (should (= change-count 1)))))
 
 (provide 'e-layer-selection-test)
 
