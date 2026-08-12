@@ -44,7 +44,7 @@
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
 
 (ert-deftest e-provider-continuation-integration-test-null-summary-replays-safely ()
-  "Provider reasoning summary JSON null is omitted from next full replay."
+  "Provider reasoning summary JSON null becomes an array on next full replay."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
                 process-environment))
@@ -101,7 +101,9 @@
                             :provider-replay-items)))
            (item (plist-get record :item)))
       (should (equal (plist-get item :type) "reasoning"))
-      (should-not (plist-member item :summary)))
+      ;; Provider output remains opaque until it crosses back onto the wire.
+      (should (plist-member item :summary))
+      (should-not (plist-get item :summary)))
     (e-board-e2e-prompt-batch harness "null-summary-replay" "continue")
     (let* ((input (append (alist-get 'input captured-body) nil))
            (reasoning
@@ -111,7 +113,7 @@
       (should (= call-count 2))
       (should reasoning)
       (should (equal (alist-get 'encrypted_content reasoning) "ciphertext"))
-      (should-not (assq 'summary reasoning)))))
+      (should (equal (alist-get 'summary reasoning) [])))))
 
 (ert-deftest e-provider-continuation-integration-test-tool-followup-advances-anchor ()
   "An anchored tool turn advances to its response and sends only tool output."

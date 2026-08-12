@@ -7,12 +7,24 @@ OpenAI Responses can emit an encrypted reasoning output item with
 =summary: null=.  The output parser copied the provider item unchanged into the
 backend-neutral replay record.  When continuation was unavailable and the
 adapter built a stateless full request, it copied that record unchanged into
-=input=.  Responses input accepts a summary array or an omitted field, but not
-JSON null.
+=input=.  Responses input requires the field and accepts an array, but not JSON
+null.
 
 This belongs to the OpenAI adapter: the harness intentionally treats provider
 replay items as opaque and cannot know which provider output fields are valid
 on that provider's input wire.
+
+The first repair inferred from the type error that omission was allowed and
+removed the field.  That inference was not verified against the API schema or a
+forced live full replay.  The provider then rejected omission as a missing
+required parameter.  The two provider validations and the official Responses
+API reference establish the actual contract: =summary= is required and must be
+an array, so the correct normalization is =summary: []=.
+
+The [[https://platform.openai.com/docs/api-reference/responses-streaming/response/reasoning_summary_part?lang=javascript][official Responses API reference]] defines reasoning-item =summary= as an
+array.  The [[https://developers.openai.com/api/docs/guides/latest-model][official GPT-5.6 guidance]] requires applications that manually manage
+=store: false= history to preserve and resend every response output item,
+including encrypted reasoning.
 
 * Evidence
 
@@ -34,30 +46,38 @@ request JSON.
 
 * Fix
 
-The OpenAI adapter now makes an input-safe copy of each opaque replay item.
-For reasoning items only, an explicitly null =summary= is omitted.  The same
-normalization runs when parsing new provider output and again when constructing
-request input, so current turns are clean and legacy in-memory session records
-remain replayable.  Non-null summary arrays and every other opaque field remain
-unchanged.
+The OpenAI adapter keeps provider output opaque in the harness.  When a replay
+item crosses back onto the OpenAI request wire, the adapter makes an input-safe
+copy.  For reasoning items only, a null or absent =summary= becomes an empty
+JSON array.  This single request-boundary normalization supports both current
+turns and legacy persisted or in-memory session records.  Non-empty summary
+arrays and every other opaque field remain unchanged.
 
 * Regression coverage
 
-- The parser unit fixture now supplies =summary: null= and proves the retained
-  replay item omits it.
+- The parser unit fixture supplies =summary: null= and proves the opaque
+  provider replay record retains that output shape unchanged.
 - The request unit fixture starts with a legacy =:summary nil= replay record,
-  proves the encoded input omits the key, and proves normalization does not
-  mutate the source record.
+  proves the encoded input contains =summary: []=, and proves normalization
+  does not mutate the source record.
 - A deterministic board-to-harness-to-OpenAI integration test emits the real
   provider shape on turn one, stores it on the assistant carrier, forces a
   stateless full replay on turn two, decodes the actual request JSON, and proves
-  encrypted reasoning remains present while =summary= is absent.
+  encrypted reasoning remains present while =summary= is an empty array.
 - Live E2E documentation now distinguishes opportunistic provider continuation
   behavior from the deterministic forced-full-replay regression.
+- A credentialed live test now obtains a real =summary: null= encrypted
+  reasoning item and requires the provider to accept the next full replay with
+  =summary: []=.  HTTP profiles replay directly; WebSocket profiles close their
+  connection-local continuation first.
 
 * Validation
 
 - The four focused parser, request, and cross-turn integration regressions pass.
+- The credentialed Engineering AI Model Gateway E2E passes a real tool turn and
+  subsequent full replay with =summary: []=.
+- The complete OpenAI adapter and provider-continuation matrix passes all 106
+  tests, including ChatGPT Codex WebSocket full replay.
 - Warning-as-error byte compilation passes.
 - The complete non-graphical suite passes all 2,090 tests with two optional
   presentation skips and no unexpected results.
@@ -67,30 +87,32 @@ unchanged.
 * Design self-check
 
 1. The slice is independently useful because it makes affected current sessions
-   replayable and prevents the provider output shape from recurring.
+   replayable and prevents the provider output shape from becoming invalid
+   request input.
 2. It moves toward provider-specific wire compatibility staying behind backend
    adapters.
-3. The stable rule is that input cannot contain a null reasoning summary.  The
-   uncertain provider payload remains opaque except for that observed mismatch.
-4. The OpenAI adapter owns the output-to-input replay compatibility rule and has
-   one provider-wire reason to change.
+3. The stable rule is that input requires an array-valued reasoning summary.
+   The uncertain provider payload remains opaque except for that observed
+   mismatch.
+4. The OpenAI request adapter owns the output-to-input replay compatibility rule
+   and has one provider-wire reason to change.
 5. Coupling is unchanged outside the adapter; the harness keeps its narrow
    opaque replay-item contract.
 6. No stable harness policy now depends on OpenAI request details.
 7. No new side effect was introduced; normalization operates on a copy at the
-   adapter boundary.
+   request adapter boundary.
 8. No state was added.  Existing session replay data is copied and normalized
-   only for ingestion or request construction.
-9. The added work is one shallow predicate and, only for the bad shape, one
-   property removal per replay item.
+   only during request construction.
+9. The added work is one shallow type/value predicate and, only for the bad
+   shape, one property update per replay item.
 10. The abstraction is a concrete OpenAI output-to-input compatibility mapping,
     not a shared provider interface.
-11. Legacy in-memory null-bearing records are supported without a migration;
-    valid summary arrays remain compatible.
-12. No legacy branch can be removed beyond replacing the raw copies with the
-    normalizer.
-13. The observed optional-field mismatch is handled locally; unrelated and
+11. Legacy in-memory null-bearing or missing-summary records are supported
+    without a migration; valid summary arrays remain compatible.
+12. The parser-side normalization from the first repair was removed; no other
+    legacy branch is needed.
+13. The observed required-field mismatch is handled locally; unrelated and
     unexpected provider errors still surface unchanged.
-14. Unit tests prove both normalization boundaries, and the integration test
-    proves the complete provider-event-to-next-request path independently of a
-    live service.
+14. Unit tests prove opaque output parsing and request-boundary normalization,
+    and the integration test proves the complete provider-event-to-next-request
+    path independently of a live service.

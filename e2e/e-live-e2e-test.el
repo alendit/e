@@ -536,6 +536,81 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                (ert-fail (format "Unexpected WebSocket request mode: %S"
                                  other))))))))))
 
+(ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
+  "The configured OpenAI provider accepts encrypted reasoning full replay."
+  (e-live-e2e--require-enabled)
+  (let ((profile (e-openai-provider-profile e-openai-default-provider)))
+    (unless (and (eq (e-openai--provider-wire-api profile) 'responses)
+                 (eq (plist-get profile :response-store) :json-false))
+      (ert-skip "The configured provider is not an unstored Responses backend.")))
+  (e-live-e2e--with-harness
+      (harness session-id :layers (list (e-live-e2e--tool-layer)))
+    (let ((original-context
+           (symbol-function 'e-openai--request-context))
+          (original-websocket-start
+           (symbol-function 'e-openai-codex--websocket-request-start))
+          websocket-session
+          request-bodies)
+      (cl-letf (((symbol-function 'e-openai--request-context)
+                 (lambda (&rest args)
+                   (let ((context (apply original-context args)))
+                     (when (eq (plist-get context :responses-transport) 'http)
+                       (push (copy-tree (plist-get context :body-data))
+                             request-bodies))
+                     context)))
+                ((symbol-function 'e-openai-codex--websocket-request-start)
+                 (lambda (&rest args)
+                   (setq websocket-session (plist-get args :session))
+                   (push (copy-tree (plist-get args :full-body-data))
+                         request-bodies)
+                   (apply original-websocket-start args))))
+        (e-board-e2e-prompt-batch
+         harness session-id
+         (concat
+          "Reason carefully about why every finite directed acyclic graph has "
+          "a topological ordering. After that private analysis, call e2e_echo "
+          "exactly once with text REPLAY-SEED. Then reply with only that returned text."))
+        (should (e-live-e2e--activity-of-type
+                 harness session-id 'tool-finished))
+        (let ((replay-items
+               (cl-loop
+                for message in (e-harness-messages harness session-id)
+                for carrier = (if (eq (plist-get message :role) 'tool-call)
+                                  (plist-get message :content)
+                                (plist-get message :metadata))
+                append (plist-get carrier :provider-replay-items))))
+          (should replay-items)
+          (let* ((reasoning-record
+                  (seq-find
+                   (lambda (record)
+                     (equal (plist-get (plist-get record :item) :type)
+                            "reasoning"))
+                   replay-items))
+                 (reasoning-item (plist-get reasoning-record :item)))
+            (should reasoning-record)
+            (should (plist-member reasoning-item :summary))
+            (should-not (plist-get reasoning-item :summary))))
+        ;; HTTP profiles without continuation already full-replay every turn.
+        ;; For WebSocket profiles, deliberately discard the connection-local
+        ;; anchor so the next live request must take the same full path.
+        (when websocket-session
+          (should (e-openai-codex--websocket-session-p websocket-session))
+          (e-openai-codex--websocket-session-close websocket-session))
+        (e-board-e2e-prompt-batch
+         harness session-id
+         "Reply with exactly: FULL-REPLAY-ACCEPTED"))
+      (let* ((full-body (car request-bodies))
+             (input (append (plist-get full-body :input) nil))
+             (reasoning
+              (seq-find
+               (lambda (item) (equal (plist-get item :type) "reasoning"))
+               input)))
+        (should-not (plist-member full-body :previous_response_id))
+        (should reasoning)
+        (should (stringp (plist-get reasoning :encrypted_content)))
+        (should (vectorp (plist-get reasoning :summary)))
+        (should (= (length (plist-get reasoning :summary)) 0))))))
+
 (ert-deftest e-live-e2e-test-openai-gpt56-explicit-cache-continues ()
   "A live GPT-5.6 follow-up retains the breakpoint and sends fresh state."
   (unless (fboundp 'e-openai-codex--websocket-request-start)

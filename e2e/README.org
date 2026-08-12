@@ -88,6 +88,15 @@ E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
 eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
+The Engineering AI Model Gateway profile used by the Doom configuration is
+selected with =ENG_AI_MODEL_GW_KEY= and:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
+eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
 The Anthropic gateway sample is selected with:
 
 #+begin_src sh
@@ -108,12 +117,14 @@ the OpenAI API's explicit cache fields, so its sample deliberately leaves the
 capability disabled and that one provider-specific test skips.  Its separate
 =store=false= E2E verifies segmented stable/dynamic developer input,
 connection-local continuation, and whichever new-connection fallback the live
-provider happens to expose.  Deterministic provider-continuation integration
-coverage forces the stateless full-replay path, including a provider reasoning
-item whose optional summary is JSON null.  Both first-party OpenAI profiles
-request encrypted reasoning output and retain it with its following assistant
-message or tool call so a stateless full replay preserves the provider's
-original item order.
+provider happens to expose.  A separate credentialed live regression obtains a
+real =summary: null= encrypted reasoning item and proves that the provider
+accepts it as =summary: []= on full replay.  For HTTP profiles this is the normal
+stateless path; for WebSocket profiles the test deliberately closes the
+connection first.  Deterministic provider-continuation integration coverage
+also forces the conversion.  Both first-party OpenAI profiles request encrypted
+reasoning output and retain it with its following assistant message or tool
+call so a stateless full replay preserves the provider's original item order.
 
 * Development bytecode smoke test
 

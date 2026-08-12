@@ -12,3 +12,10 @@ Invalid type for 'input[40].summary': expected an array of objects, but got null
 
 The failure occurred after earlier turns had completed normally and retained
 encrypted OpenAI reasoning items for replay.
+
+The initial repair incorrectly omitted the null field.  A subsequent retry
+proved omission was also invalid:
+
+#+begin_example
+Missing required parameter: 'input[49].summary'.
+#+end_example

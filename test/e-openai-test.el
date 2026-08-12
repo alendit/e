@@ -435,8 +435,8 @@
                    '("message" "reasoning" "message" "message")))
     (should (equal (nth 1 input)
                    '(:type "reasoning" :id "rs-1"
-                     :encrypted_content "ciphertext")))
-    (should-not (plist-member (nth 1 input) :summary))
+                     :encrypted_content "ciphertext" :summary [])))
+    (should (equal (plist-get (nth 1 input) :summary) []))
     ;; Request normalization must not mutate the persisted replay record.
     (should (plist-member reasoning-item :summary))
     (should (equal (plist-get (nth 2 input) :role) "assistant"))))
@@ -1390,7 +1390,8 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
        :provider-id openai
        :item (:type "reasoning"
               :id "rs-1"
-              :encrypted_content "ciphertext"))))))
+              :encrypted_content "ciphertext"
+              :summary nil))))))
 
 (ert-deftest e-openai-test-parse-tool-call-event ()
   "Responses tool_call items become backend-neutral tool calls."
@@ -2825,7 +2826,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  (let* ((payload (json-parse-string text
                                                     :object-type 'plist
                                                     :array-type 'list
-                                                    :null-object nil
+                                                    :null-object :json-null
                                                     :false-object :json-false))
                         (index (length sends)))
                    (push payload sends)
@@ -2855,7 +2856,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  0.2))
         (e-backend-start backend
                          :messages '((:role user :content "one")
-                                     (:role assistant :content "answer one")
+                                     (:role assistant
+                                      :content "answer one"
+                                      :metadata
+                                      (:provider-replay-items
+                                       ((:type provider-replay-item
+                                         :provider-id openai
+                                         :item
+                                         (:type "reasoning"
+                                          :id "rs-websocket"
+                                          :encrypted_content "ciphertext"
+                                          :summary nil)))))
                                      (:role user :content "two"))
                          :options '(:model "gpt-test")
                          :on-item (lambda (item) (push item seen))
@@ -2876,12 +2887,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          '((:type "message"
                             :role "user"
                             :content ((:type "input_text" :text "one")))
+                           (:type "reasoning"
+                            :id "rs-websocket"
+                            :encrypted_content "ciphertext"
+                            :summary nil)
                            (:type "message"
                             :role "assistant"
                             :content ((:type "output_text" :text "answer one")))
                            (:type "message"
                             :role "user"
-                            :content ((:type "input_text" :text "two")))))))
+                            :content ((:type "input_text" :text "two"))))))
+          ;; Empty JSON arrays decode as nil with `:array-type list', while
+          ;; JSON null decodes as `:json-null' above.
+          (let ((reasoning (nth 1 (plist-get second-response :input))))
+            (should (plist-member reasoning :summary))
+            (should-not (eq (plist-get reasoning :summary) :json-null))))
         (should (seq-some (lambda (item)
                             (eq (plist-get item :type)
                                 'provider-anchor-candidate))
