@@ -273,8 +273,8 @@
                              :status)
                   'done)))))
 
-(ert-deftest e-provider-continuation-integration-test-websocket-cross-turn-dynamic-instructions ()
-  "A changed current-state instruction continues on the retained response."
+(ert-deftest e-provider-continuation-integration-test-websocket-gpt56-explicit-cache ()
+  "GPT-5.6 retains a stable breakpoint while current-state input changes."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-harness-auto-compaction-enabled nil)
@@ -288,7 +288,8 @@
              :env-key "OPENAI_GATEWAY_API_KEY"
              :wire-api responses
              :responses-transport websocket
-             :response-store t
+             :response-store :json-false
+             :prompt-cache-breakpoint-mode explicit
              :continuation t
              :requires-openai-auth nil)))
          (current-state "state one")
@@ -301,7 +302,7 @@
          (harness
           (e-openai-create-harness
            :provider 'continuation-websocket-e2e
-           :model "gpt-test"))
+           :model "gpt-5.6-sol"))
          (open-count 0)
          (send-count 0)
          sends
@@ -310,6 +311,7 @@
      harness
      (e-capability-create
       :id 'cross-turn-current-state-capability
+      :instructions "stable instructions"
       :context-providers (list dynamic-provider)))
     (cl-letf (((symbol-function 'websocket-open)
                (lambda (_url &rest args)
@@ -339,24 +341,41 @@
               ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
       (e-board-e2e-reset-runtime)
       (e-board-e2e-create-session harness :id "session-one")
+      (e-session-set-turn-options
+       (e-harness-sessions harness)
+       "session-one"
+       '(:prompt-cache-default t))
       (e-board-e2e-prompt-batch harness "session-one" "first prompt")
       (setq current-state "state two")
       (e-board-e2e-prompt-batch harness "session-one" "second prompt")
       (let* ((ordered (nreverse sends))
-             (second (cadr ordered)))
+             (first (car ordered))
+             (second (cadr ordered))
+             (first-input (plist-get first :input))
+             (second-input (plist-get second :input))
+             (stable-block
+              (car (plist-get (car first-input) :content)))
+             (dynamic-block
+              (car (plist-get (car second-input) :content))))
         (should (= open-count 1))
         (should (= send-count 2))
+        (should (stringp (plist-get first :prompt_cache_key)))
+        (should (equal (plist-get first :prompt_cache_options)
+                       '(:mode "explicit")))
+        (should (equal (plist-get stable-block :text)
+                       "stable instructions"))
+        (should (equal (plist-get stable-block :prompt_cache_breakpoint)
+                       '(:mode "explicit")))
         (should (equal (plist-get second :previous_response_id) "resp-1"))
-        (should (string-match-p "state two"
-                                (plist-get second :instructions)))
-        (should-not (string-match-p "state one"
-                                    (plist-get second :instructions)))
-        (should (equal (mapcar (lambda (item) (plist-get item :type))
-                               (plist-get second :input))
-                       '("message")))
+        (should (equal (plist-get second :prompt_cache_options)
+                       '(:mode "explicit")))
+        (should (equal (mapcar (lambda (item) (plist-get item :role))
+                               second-input)
+                       '("developer" "user")))
+        (should (equal (plist-get dynamic-block :text) "state two"))
+        (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
         (should (equal (plist-get
-                        (car (plist-get (car (plist-get second :input))
-                                        :content))
+                        (car (plist-get (cadr second-input) :content))
                         :text)
                        "second prompt"))))))
 

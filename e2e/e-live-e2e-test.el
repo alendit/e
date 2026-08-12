@@ -437,11 +437,66 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                  (e-harness-sessions harness) session-id))
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
-(ert-deftest e-live-e2e-test-openai-cross-turn-dynamic-instructions-continue ()
-  "A live OpenAI follow-up replaces current state without full replay."
+(ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
+  "ChatGPT Codex continues on its active socket while keeping store=false."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
+  (e-live-e2e--require-enabled)
+  (let ((profile (e-openai-provider-profile e-openai-default-provider)))
+    (unless (and (eq (plist-get profile :responses-transport) 'websocket)
+                 (eq (plist-get profile :response-store) :json-false))
+      (ert-skip "The configured provider is not an unstored Responses WebSocket.")))
+  (e-live-e2e--with-harness (harness session-id)
+    (let ((original-start
+           (symbol-function 'e-openai-codex--websocket-request-start))
+          request-bodies)
+      (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+                 (lambda (&rest args)
+                   (push (copy-tree (plist-get args :body-data)) request-bodies)
+                   (apply original-start args))))
+        (e-board-e2e-prompt-batch
+         harness session-id
+         "Reply with exactly: LOCAL-CONTINUATION-ONE")
+        (e-board-e2e-prompt-batch
+         harness session-id
+         "Reply with exactly: LOCAL-CONTINUATION-TWO"))
+      (let* ((ordered-bodies (nreverse request-bodies))
+             (first-body (car ordered-bodies))
+             (second-body (car (last ordered-bodies)))
+             (requests (e-live-e2e--activity-of-type
+                        harness session-id 'provider-request-started))
+             (diagnostics
+              (plist-get (plist-get (car (last requests)) :payload)
+                         :diagnostics)))
+        (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
+          (should (eq (plist-get first-body :store) :json-false))
+          (should-not (plist-member first-body :previous_response_id))
+          (should (eq (plist-get second-body :store) :json-false))
+          (should (stringp (plist-get second-body :previous_response_id)))
+          (should-not (plist-member second-body :prompt_cache_options))
+          (should (= (length (plist-get second-body :input)) 1))
+          (should (eq (plist-get diagnostics :websocket-request-mode)
+                      'incremental))
+          (should (eq (plist-get diagnostics :websocket-reused) t))
+          (should (eq (plist-get diagnostics :previous-response-id-present)
+                      t)))))))
+
+(ert-deftest e-live-e2e-test-openai-gpt56-explicit-cache-continues ()
+  "A live GPT-5.6 follow-up retains the breakpoint and sends fresh state."
+  (unless (fboundp 'e-openai-codex--websocket-request-start)
+    (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
+  (e-live-e2e--require-enabled)
+  (unless (eq (plist-get (e-openai-provider-profile e-openai-default-provider)
+                         :prompt-cache-breakpoint-mode)
+              'explicit)
+    (ert-skip "The configured OpenAI provider does not support explicit cache breakpoints."))
   (let* ((current-state "live state one")
+         ;; OpenAI only caches prefixes of at least 1,024 tokens.  Keep this
+         ;; probe independent of whichever default layers the E2E config loads.
+         (stable-guidance
+          (mapconcat #'identity
+                     (make-list 500 "stable cache probe directive")
+                     " "))
          (provider
           (e-context-provider-create
            :name 'live-cross-turn-current-state
@@ -456,14 +511,26 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
            (list
             (e-capability-create
              :id 'live-cross-turn-current-state
+             :instructions stable-guidance
              :context-providers (list provider))))))
     (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (unless (e-openai--gpt56-or-later-p
+               (plist-get (e-harness-display-options harness session-id)
+                          :model))
+        (ert-skip "The configured live model is older than GPT-5.6."))
+      (e-session-set-turn-options
+       (e-harness-sessions harness)
+       session-id
+       '(:prompt-cache-default t))
       (let ((original-start
              (symbol-function 'e-openai-codex--websocket-request-start))
             request-bodies)
         (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
-                     (push (copy-tree (plist-get args :full-body-data))
+                     (push (list :body
+                                 (copy-tree (plist-get args :body-data))
+                                 :full-body
+                                 (copy-tree (plist-get args :full-body-data)))
                            request-bodies)
                      (apply original-start args))))
           (e-board-e2e-prompt-batch
@@ -482,10 +549,31 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                (latest (car (last requests)))
                (diagnostics (plist-get (plist-get latest :payload) :diagnostics))
                (ordered-bodies (nreverse request-bodies))
-               (latest-body (car (last ordered-bodies)))
+               (first-body (plist-get (car ordered-bodies) :body))
+               (latest-body
+                (plist-get (car (last ordered-bodies)) :body))
+               (first-breakpoint
+                (cl-loop for item in (plist-get first-body :input)
+                         for block = (car (plist-get item :content))
+                         when (plist-get block :prompt_cache_breakpoint)
+                         return block))
+               (latest-dynamic
+                (cl-loop for item in (plist-get latest-body :input)
+                         for block = (car (plist-get item :content))
+                         when (and
+                               (equal (plist-get item :role) "developer")
+                               (string-match-p
+                                "live state two"
+                                (or (plist-get block :text) "")))
+                         return block))
+               (usage-events (e-live-e2e--activity-of-type
+                              harness session-id 'token-usage))
+               (first-usage (plist-get (car usage-events) :payload))
+               (latest-usage
+                (plist-get (car (last usage-events)) :payload))
                (tool-differences
                 (e-live-e2e--request-tool-differences
-                 (car ordered-bodies) latest-body)))
+                 first-body latest-body)))
           (unless (plist-member diagnostics :websocket-request-mode)
             (ert-skip "The configured live backend is not Responses WebSocket mode."))
           (ert-info ((format "WebSocket diagnostics: %S; tool differences: %S"
@@ -494,9 +582,36 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                         'incremental))
             (should (eq (plist-get diagnostics :previous-response-id-present) t))
             (should (eq (plist-get diagnostics :websocket-reused) t))
-            (should (= (plist-get diagnostics :input-message-count) 1))
-            (should (string-match-p "live state two"
-                                    (plist-get latest-body :instructions)))))))))
+            (should (equal (plist-get diagnostics :prompt-cache-mode)
+                           "explicit"))
+            (should (equal (plist-get diagnostics :prompt-layout-revision)
+                           e-openai-gpt56-prompt-layout-revision))
+            (should first-breakpoint)
+            (should (equal (plist-get first-breakpoint
+                                      :prompt_cache_breakpoint)
+                           '(:mode "explicit")))
+            (should (equal (plist-get latest-body :prompt_cache_options)
+                           '(:mode "explicit")))
+            (should (stringp (plist-get latest-body :previous_response_id)))
+            (should
+             (equal
+              (plist-get
+               (plist-get
+                (car (last
+                      (e-session-provider-anchors
+                       (e-harness-sessions harness) session-id)))
+                :metadata)
+               :prompt-layout-revision)
+              e-openai-gpt56-prompt-layout-revision))
+            (should latest-dynamic)
+            (should-not (plist-member latest-dynamic
+                                      :prompt_cache_breakpoint))
+            (should (> (or (plist-get first-usage
+                                      :cache-creation-input-tokens)
+                           0)
+                       0))
+            (should (> (or (plist-get latest-usage :cached-input-tokens) 0)
+                       0))))))))
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."

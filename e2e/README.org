@@ -73,23 +73,30 @@ The credentialed suite exercises the runtime against a real provider API and
 is not part of normal tests or CI:
 
 #+begin_src sh
-E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
-The default provider is the ChatGPT-backed Codex profile using the normal Codex
-auth file.  To use a token-auth OpenAI Responses profile instead:
+The Codex sample uses the normal Codex auth file and sends no project-derived
+layers, tools, or context.  The Anthropic gateway sample is selected with:
 
 #+begin_src sh
-E_E2E=1 E_E2E_PROVIDER=openai E_E2E_OPENAI_API_KEY="$OPENAI_API_KEY" eldev test -f e2e/e-live-e2e-test.el
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-anthropic.el \
+eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
 Useful environment variables:
 
-- =E_E2E_PROVIDER=: =codex= or =openai=; defaults to =codex=.
-- =E_E2E_MODEL=: model override for live requests.
-- =E_E2E_OPENAI_API_KEY=: bearer token for =E_E2E_PROVIDER=openai=.
-- =E_E2E_OPENAI_BASE_URL=: OpenAI-compatible base URL.
-- =E_E2E_TIMEOUT_SECONDS=: provider timeout override; defaults to =240=.
+- =E_E2E_CONFIG=: readable Elisp file that configures and registers the
+  =:chat-default= harness; required.
+- =E_E2E_TIMEOUT_SECONDS=: live turn timeout override; defaults to 30 seconds.
+
+The explicit-cache E2E runs only when the selected OpenAI Responses profile
+sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects
+the OpenAI API's explicit cache fields, so its sample deliberately leaves the
+capability disabled and that one provider-specific test skips.
 
 * Development bytecode smoke test
 

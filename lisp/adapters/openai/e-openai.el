@@ -283,28 +283,30 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
     (e-openai--truncate-diagnostic-string
      (prin1-to-string preview))))
 
-(defun e-openai--legacy-codex-response-store-profile-p (provider-id profile)
-  "Return non-nil when PROFILE is the old built-in unstored Codex default."
+(defun e-openai--builtin-codex-profile-p (provider-id profile)
+  "Return non-nil when PROFILE describes ChatGPT's built-in Codex endpoint."
   (and (eq provider-id 'codex)
        (equal (plist-get profile :name) "ChatGPT Codex")
        (equal (plist-get profile :base-url)
               (concat e-openai-codex-default-base-url "/codex"))
        (eq (plist-get profile :wire-api) 'responses)
        (eq (plist-get profile :responses-transport) 'websocket)
-       (eq (plist-get profile :response-store) :json-false)
-       (plist-get profile :continuation)
        (plist-get profile :requires-openai-auth)))
 
 (defun e-openai--normalize-model-providers (providers)
-  "Return PROVIDERS with obsolete built-in Codex store overrides removed."
+  "Return PROVIDERS with current built-in Codex wire requirements applied."
   (mapcar (lambda (entry)
             (let ((provider-id (car entry))
                   (profile (cdr entry)))
-              (if (e-openai--legacy-codex-response-store-profile-p
+              (if (e-openai--builtin-codex-profile-p
                    provider-id
                    profile)
-                  (cons provider-id
-                        (e-openai--plist-without profile :response-store))
+                  (cons
+                   provider-id
+                   (plist-put
+                    (plist-put (copy-sequence profile)
+                               :response-store :json-false)
+                    :prompt-cache-breakpoint-mode nil))
                 entry)))
           providers))
 
@@ -314,6 +316,8 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
      :base-url ,(concat e-openai-codex-default-base-url "/codex")
      :wire-api responses
      :responses-transport websocket
+     :response-store :json-false
+     :prompt-cache-breakpoint-mode nil
      :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
@@ -327,7 +331,9 @@ field, or non-nil to force it on.  Responses profiles can set
 `:responses-transport' to `http' or `websocket'.  WebSocket Responses requests
 store responses by default; set `:response-store' to explicitly override that
 value.  Responses profiles can opt into provider continuation anchors with
-`:continuation' non-nil."
+`:continuation' non-nil.  GPT-5.6 Responses profiles set
+`:prompt-cache-breakpoint-mode' to `explicit' when they accept explicit
+breakpoints and `prompt_cache_options', or leave it nil when unsupported."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -431,12 +437,6 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   "Return non-nil when OPTIONS describe a Responses WebSocket request."
   (eq (plist-get options :responses-transport) 'websocket))
 
-(defun e-openai--unstored-websocket-options-p (options)
-  "Return non-nil when OPTIONS describe an unstored WebSocket request."
-  (and (eq (plist-get options :responses-transport) 'websocket)
-       (plist-member options :response-store)
-       (eq (plist-get options :response-store) :json-false)))
-
 (defun e-openai--gpt56-or-later-p (model)
   "Return non-nil when MODEL names GPT-5.6 or a later numbered GPT model."
   (and (stringp model)
@@ -445,6 +445,43 @@ When PROVIDER is nil, use `e-openai-default-provider'."
              (minor (string-to-number (match-string 2 model))))
          (or (> major 5)
              (and (= major 5) (>= minor 6))))))
+
+(defconst e-openai-gpt56-prompt-layout-revision
+  "responses-explicit-cache-v1"
+  "Anchor revision for the GPT-5.6 explicit prompt-cache input layout.")
+
+(defun e-openai-codex--prompt-cache-breakpoint-mode (options)
+  "Return the provider-supported GPT-5.6 breakpoint mode from OPTIONS.
+Direct request-renderer callers default to `explicit' for compatibility; real
+provider requests always materialize this option from the provider profile."
+  (if (plist-member options :prompt-cache-breakpoint-mode)
+      (plist-get options :prompt-cache-breakpoint-mode)
+    'explicit))
+
+(defun e-openai-codex--stable-cache-segment-p (segment)
+  "Return non-nil when SEGMENT belongs to the stable prompt prefix."
+  (memq (plist-get segment :kind) '(static-prefix stable-context)))
+
+(defun e-openai-codex--stable-system-message-count (options)
+  "Return the number of stable system messages described by OPTIONS."
+  (cl-loop for segment in (plist-get options :segments)
+           when (e-openai-codex--stable-cache-segment-p segment)
+           sum (cl-count-if
+                (lambda (message)
+                  (eq (plist-get message :role) 'system))
+                (plist-get segment :messages))))
+
+(defun e-openai-codex--prompt-layout-revision (options)
+  "Return the provider-supported prompt layout revision for OPTIONS, or nil."
+  (let ((key (plist-get options :prompt-cache-key))
+        (mode (e-openai-codex--prompt-cache-breakpoint-mode options)))
+    (when (and (e-openai--gpt56-or-later-p
+                (plist-get options :model))
+               (eq mode 'explicit)
+               (stringp key)
+               (not (string-empty-p key))
+               (> (e-openai-codex--stable-system-message-count options) 0))
+      e-openai-gpt56-prompt-layout-revision)))
 
 (defun e-openai--profile-prompt-cache-retention-supported-p (profile model)
   "Return non-nil when PROFILE and MODEL accept `prompt_cache_retention'.
@@ -604,13 +641,22 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
           (signal 'e-openai-auth-invalid
                   '("Missing ChatGPT account id claim"))))))
 
-(defun e-openai-codex--message-content (role content)
-  "Return Responses content item for ROLE and CONTENT."
+(defun e-openai-codex--message-content
+    (role content &optional cache-breakpoint-p)
+  "Return Responses content item for ROLE and CONTENT.
+When CACHE-BREAKPOINT-P is non-nil, mark the input block as the end of the
+explicitly cacheable stable prefix."
   (let ((type (if (eq role 'assistant) "output_text" "input_text")))
-    (vector (list :type type :text (or content "")))))
+    (vector
+     (append
+      (list :type type :text (or content ""))
+      (when cache-breakpoint-p
+        (list :prompt_cache_breakpoint (list :mode "explicit")))))))
 
-(defun e-openai-codex--input-message (message)
-  "Map backend-neutral MESSAGE to a Responses input item."
+(defun e-openai-codex--input-message
+    (message &optional cache-breakpoint-p)
+  "Map backend-neutral MESSAGE to a Responses input item.
+CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
   (let ((role (plist-get message :role))
         (content (plist-get message :content)))
     (pcase role
@@ -629,8 +675,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                         (plist-get result :content)))))
       (_
        (list :type "message"
-             :role (symbol-name role)
-             :content (e-openai-codex--message-content role content))))))
+             :role (if (eq role 'system) "developer" (symbol-name role))
+             :content (e-openai-codex--message-content
+                       role content cache-breakpoint-p))))))
 
 (defun e-openai-codex--system-message-p (message)
   "Return non-nil when MESSAGE is a backend-neutral system message."
@@ -638,27 +685,37 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 
 (defun e-openai-codex--instructions (messages options)
   "Return top-level Codex instructions from MESSAGES and OPTIONS."
-  (string-join
-   (delq nil
-         (append
-          (list (or (plist-get options :instructions)
-                    "You are a helpful assistant."))
-          (mapcar (lambda (message)
-                    (plist-get message :content))
-                  (seq-filter #'e-openai-codex--system-message-p
-                              messages))))
-   "\n\n"))
+  (let ((base (or (plist-get options :instructions)
+                  "You are a helpful assistant.")))
+    (if (e-openai-codex--prompt-layout-revision options)
+        base
+      (string-join
+       (delq nil
+             (append
+              (list base)
+              (mapcar (lambda (message)
+                        (plist-get message :content))
+                      (seq-filter #'e-openai-codex--system-message-p
+                                  messages))))
+       "\n\n"))))
 
 (defun e-openai-codex--continuation-response-id (options)
   "Return previous Responses id from OPTIONS when continuation is enabled."
   (when (and (plist-get options :provider-continuation)
-             (not (e-openai--unstored-websocket-options-p options)))
+             ;; WebSocket mode retains the latest response in connection-local
+             ;; memory even with store=false.  HTTP continuation still needs a
+             ;; stored response.
+             (or (e-openai--websocket-request-p options)
+                 (not (eq (e-openai--response-store-value options)
+                          :json-false))))
     (let* ((anchor (plist-get options :provider-anchor))
            (metadata (plist-get anchor :metadata))
            (response-id (plist-get metadata :response-id)))
       (when (and (eq (plist-get anchor :provider-id) 'openai)
                  (stringp response-id)
-                 (not (string-empty-p response-id)))
+                 (not (string-empty-p response-id))
+                 (equal (plist-get metadata :prompt-layout-revision)
+                        (e-openai-codex--prompt-layout-revision options)))
         response-id))))
 
 (defun e-openai-codex--request-input-messages (messages options)
@@ -675,7 +732,28 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
          (source (if (and response-id (listp delta-messages))
                      (append delta-messages in-turn-messages)
                    messages)))
-    (seq-remove #'e-openai-codex--system-message-p source)))
+    (if (e-openai-codex--prompt-layout-revision options)
+        source
+      (seq-remove #'e-openai-codex--system-message-p source))))
+
+(defun e-openai-codex--input-items
+    (messages options continuation-response-id)
+  "Return Responses input items for MESSAGES under OPTIONS.
+CONTINUATION-RESPONSE-ID suppresses a new stable breakpoint because the
+retained response already carries the earlier explicit marker."
+  (let ((stable-left
+         (if (and (e-openai-codex--prompt-layout-revision options)
+                  (null continuation-response-id))
+             (e-openai-codex--stable-system-message-count options)
+           0))
+        items)
+    (dolist (message messages (vconcat (nreverse items)))
+      (let ((breakpoint-p nil))
+        (when (and (> stable-left 0)
+                   (e-openai-codex--system-message-p message))
+          (setq stable-left (1- stable-left))
+          (setq breakpoint-p (= stable-left 0)))
+        (push (e-openai-codex--input-message message breakpoint-p) items)))))
 
 (defun e-openai-codex--without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."
@@ -720,8 +798,8 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                 (list :instructions (e-openai-codex--instructions
                                      messages
                                      options)
-                      :input (vconcat (mapcar #'e-openai-codex--input-message
-                                              input-messages))
+                      :input (e-openai-codex--input-items
+                              input-messages options continuation-response-id)
                       :tool_choice "auto"
                       :parallel_tool_calls t))))
     (when tools
@@ -740,6 +818,12 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
             (append body
                     (list :prompt_cache_key
                           (plist-get options :prompt-cache-key)))))
+    (when (and (e-openai-codex--prompt-layout-revision options)
+               (eq (e-openai-codex--prompt-cache-breakpoint-mode options)
+                   'explicit))
+      (setq body
+            (append body
+                    (list :prompt_cache_options (list :mode "explicit")))))
     (when (plist-member options :prompt-cache-retention)
       (setq body
             (append body
@@ -782,6 +866,18 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
            (metadata (list :provider-continuation continuation-state
                            :responses-transport responses-transport
                            :diagnostics diagnostics)))
+      (when-let ((revision (e-openai-codex--prompt-layout-revision options)))
+        (setq diagnostics
+              (append diagnostics
+                      (list :prompt-cache-mode
+                            (symbol-name
+                             (e-openai-codex--prompt-cache-breakpoint-mode
+                              options))
+                            :prompt-layout-revision revision)))
+        (setq metadata (plist-put metadata :diagnostics diagnostics))
+        (setq metadata
+              (append metadata
+                      (list :openai-prompt-layout-revision revision))))
       (when (and (eq continuation-state 'used)
                  (stringp response-id))
         (setq metadata
@@ -1121,9 +1217,11 @@ condition list.  Return a cancellable `e-backend-request' handle."
    ((websocket-frame-payload frame))
    (t "")))
 
-(defun e-openai-codex--websocket-event-items (event emit-anchor)
+(defun e-openai-codex--websocket-event-items
+    (event emit-anchor &optional prompt-layout-revision)
   "Return backend-neutral items for WebSocket EVENT.
-When EMIT-ANCHOR is nil, completed response ids stay transport-local."
+When EMIT-ANCHOR is nil, completed response ids stay transport-local.
+PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
   (let* ((completed-event-p
           (member (plist-get event :type)
                   '("response.completed" "response.done")))
@@ -1134,7 +1232,8 @@ When EMIT-ANCHOR is nil, completed response ids stay transport-local."
              (plist-get response :usage))))
          (anchor-candidate-item
           (when (and emit-anchor completed-event-p)
-            (e-openai-codex--anchor-candidate-item response)))
+            (e-openai-codex--anchor-candidate-item
+             response prompt-layout-revision)))
          (event-item (e-openai-codex--event-item event)))
     (delq nil (list usage-item anchor-candidate-item event-item))))
 
@@ -1390,7 +1489,7 @@ CHANGED-PROPERTIES names incompatible top-level request properties."
 
 (cl-defun e-openai-codex--websocket-request-start
     (&key session url headers body-data full-body-data request-metadata
-          on-item on-complete on-error)
+          prompt-layout-revision on-item on-complete on-error)
   "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
 SESSION owns a connection reusable by compatible sequential requests.
 FULL-BODY-DATA is the safe request without provider continuation.
@@ -1584,8 +1683,11 @@ list.  Return a cancellable `e-backend-request' handle."
                         (completed-event-p
                          (member (plist-get event :type)
                                  '("response.completed" "response.done")))
-                        (emit-anchor
-                         (not (eq (plist-get body-data :store) :json-false))))
+                        ;; WebSocket responses are valid connection-local
+                        ;; anchors even with store=false.  If the connection is
+                        ;; later lost, previous_response_not_found already
+                        ;; triggers a complete replay.
+                        (emit-anchor t))
                    (arm-timeout)
                    (if (and incremental-p
                             (not retried-full)
@@ -1597,7 +1699,8 @@ list.  Return a cancellable `e-backend-request' handle."
                              (plist-get (plist-get event :response) :id)))
                      (dolist (item (e-openai-codex--websocket-event-items
                                     event
-                                    emit-anchor))
+                                    emit-anchor
+                                    prompt-layout-revision))
                        (emit-item item))
                      (when completed-event-p
                        (settle-complete))))
@@ -1732,6 +1835,9 @@ list.  Return a cancellable `e-backend-request' handle."
              :cached-input-tokens
              (e-openai-codex--number-or-nil
               (plist-get input-details :cached_tokens))
+             :cache-creation-input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get input-details :cache_write_tokens))
              :output-tokens
              (e-openai-codex--number-or-nil
               (plist-get usage :output_tokens))
@@ -1743,14 +1849,20 @@ list.  Return a cancellable `e-backend-request' handle."
               (plist-get usage :total_tokens)))))
       (list :type 'token-usage :usage normalized))))
 
-(defun e-openai-codex--anchor-candidate-item (response)
-  "Return provider anchor candidate item from completed RESPONSE."
+(defun e-openai-codex--anchor-candidate-item
+    (response &optional prompt-layout-revision)
+  "Return provider anchor candidate item from completed RESPONSE.
+PROMPT-LAYOUT-REVISION records the request layout carried by the response."
   (when-let ((response-id (and (consp response)
                                (plist-get response :id))))
     (when (stringp response-id)
       (list :type 'provider-anchor-candidate
             :provider-id 'openai
-            :metadata (list :response-id response-id)))))
+            :metadata
+            (append
+             (list :response-id response-id)
+             (when prompt-layout-revision
+               (list :prompt-layout-revision prompt-layout-revision)))))))
 
 (defun e-openai-codex--json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a JSON error response."
@@ -1850,8 +1962,10 @@ LIMIT defaults to 240 characters."
             :payload event))
      (t nil))))
 
-(defun e-openai-codex-parse-stream (stream-text)
-  "Parse Codex Responses STREAM-TEXT into backend-neutral items."
+(defun e-openai-codex-parse-stream
+    (stream-text &optional prompt-layout-revision)
+  "Parse Codex Responses STREAM-TEXT into backend-neutral items.
+PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
   (e-openai-codex--append-raw-response stream-text)
   (let ((items nil)
         (event-summaries nil)
@@ -1893,7 +2007,8 @@ LIMIT defaults to 240 characters."
                        (response (plist-get event :response))
                        (anchor-candidate-item
                         (when completed-event-p
-                          (e-openai-codex--anchor-candidate-item response)))
+                          (e-openai-codex--anchor-candidate-item
+                           response prompt-layout-revision)))
                        (usage-item
                         (when completed-event-p
                           (e-openai-codex--usage-item
@@ -1949,6 +2064,9 @@ LIMIT defaults to 240 characters."
              :cached-input-tokens
              (e-openai-codex--number-or-nil
               (plist-get prompt-details :cached_tokens))
+             :cache-creation-input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get prompt-details :cache_write_tokens))
              :output-tokens
              (e-openai-codex--number-or-nil
               (plist-get usage :completion_tokens))
@@ -2109,6 +2227,11 @@ OpenAI request and backend-neutral context."
                        (plist-put effective-options
                                   :responses-transport
                                   responses-transport))
+                 (setq effective-options
+                       (plist-put
+                        effective-options
+                        :prompt-cache-breakpoint-mode
+                        (plist-get profile :prompt-cache-breakpoint-mode)))
                  (when (plist-member profile :response-store)
                    (setq effective-options
                          (plist-put effective-options
@@ -2188,6 +2311,8 @@ OpenAI request and backend-neutral context."
        (list :provider provider
              :wire-api wire-api
              :responses-transport responses-transport
+             :prompt-layout-revision
+             (plist-get metadata :openai-prompt-layout-revision)
              :session-id session-id
              :url url
              :headers headers
@@ -2199,7 +2324,10 @@ OpenAI request and backend-neutral context."
 (defun e-openai--emit-response-items (response context on-item)
   "Parse RESPONSE for CONTEXT and emit backend-neutral items through ON-ITEM."
   (dolist (item (pcase (plist-get context :wire-api)
-                  ('responses (e-openai-codex-parse-stream response))
+                  ('responses
+                   (e-openai-codex-parse-stream
+                    response
+                    (plist-get context :prompt-layout-revision)))
                   ('chat-completion
                    (e-openai-chat-completion-parse-stream response))))
     (funcall on-item item)))
@@ -2264,6 +2392,8 @@ default when turn options do not include `:model'.  The provider profile's
                     :body-data (plist-get context :body-data)
                     :full-body-data (plist-get context :full-body-data)
                     :request-metadata (websocket-request-metadata context)
+                    :prompt-layout-revision
+                    (plist-get context :prompt-layout-revision)
                     :on-item on-item
                     :on-complete (lambda (_status)
                                    (setq done t))
@@ -2346,6 +2476,8 @@ default when turn options do not include `:model'.  The provider profile's
                       :body-data (plist-get context :body-data)
                       :full-body-data (plist-get context :full-body-data)
                       :request-metadata (websocket-request-metadata context)
+                      :prompt-layout-revision
+                      (plist-get context :prompt-layout-revision)
                       :on-item on-item
                       :on-complete on-done
                       :on-error on-error)))

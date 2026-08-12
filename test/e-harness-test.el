@@ -1393,6 +1393,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                      (:type token-usage
                       :usage (:input-tokens 202598
                               :cached-input-tokens 7552
+                              :cache-creation-input-tokens 4096
                               :output-tokens 419
                               :reasoning-output-tokens 139
                               :total-tokens 203017))
@@ -1409,6 +1410,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (let ((payload (plist-get usage-event :payload)))
         (should (equal (plist-get payload :input-tokens) 202598))
         (should (equal (plist-get payload :cached-input-tokens) 7552))
+        (should (equal (plist-get payload :cache-creation-input-tokens) 4096))
         (should (equal (plist-get payload :output-tokens) 419))
         (should (equal (plist-get payload :reasoning-output-tokens) 139))
         (should (equal (plist-get payload :total-tokens) 203017))

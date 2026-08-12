@@ -194,6 +194,194 @@
       :prompt_cache_key "cache-key"
       :prompt_cache_retention "24h"))))
 
+(ert-deftest e-openai-test-gpt56-marks-stable-context-cache-boundary ()
+  "GPT-5.6 caches only the stable system prefix in explicit mode."
+  (let* ((body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Static instructions.")
+                       (:role system :content "Stable project guidance.")
+                       (:role system :content "Current buffer state.")
+                       (:role user :content "hello"))
+           :options
+           '(:model "gpt-5.6-sol"
+             :instructions "Base instructions."
+             :prompt-cache-key "cache-key"
+             :segments ((:kind static-prefix
+                         :id static
+                         :messages ((:role system
+                                     :content "Static instructions.")))
+                        (:kind stable-context
+                         :id stable
+                         :messages ((:role system
+                                     :content "Stable project guidance.")))
+                        (:kind current-state
+                         :id dynamic
+                         :messages ((:role system
+                                     :content "Current buffer state.")))))))
+         (input (append (plist-get body :input) nil))
+         (static-block (aref (plist-get (nth 0 input) :content) 0))
+         (stable-block (aref (plist-get (nth 1 input) :content) 0))
+         (dynamic-block (aref (plist-get (nth 2 input) :content) 0)))
+    (should (equal (plist-get body :instructions) "Base instructions."))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                   '("developer" "developer" "developer" "user")))
+    (should-not (plist-member static-block :prompt_cache_breakpoint))
+    (should (equal (plist-get stable-block :prompt_cache_breakpoint)
+                   '(:mode "explicit")))
+    (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
+    (should (equal (plist-get body :prompt_cache_options)
+                   '(:mode "explicit")))
+    (should (equal (plist-get body :prompt_cache_key) "cache-key"))))
+
+(ert-deftest e-openai-test-gpt55-keeps-flattened-cache-prefix-shape ()
+  "Older models keep automatic caching and flattened system instructions."
+  (let ((body
+         (e-openai-codex-request-body
+          :messages '((:role system :content "Stable instructions.")
+                      (:role system :content "Dynamic state.")
+                      (:role user :content "hello"))
+          :options
+          '(:model "gpt-5.5"
+            :instructions "Base instructions."
+            :prompt-cache-key "cache-key"
+            :segments ((:kind static-prefix
+                        :messages ((:role system
+                                    :content "Stable instructions.")))
+                       (:kind current-state
+                        :messages ((:role system
+                                    :content "Dynamic state."))))))))
+    (should (equal (plist-get body :instructions)
+                   "Base instructions.\n\nStable instructions.\n\nDynamic state."))
+    (should (equal (length (plist-get body :input)) 1))
+    (should-not (plist-member body :prompt_cache_options))))
+
+(ert-deftest e-openai-test-gpt56-without-cache-key-keeps-flattened-shape ()
+  "GPT-5.6 does not select explicit mode without its stable routing key."
+  (let ((body
+         (e-openai-codex-request-body
+          :messages '((:role system :content "Stable instructions.")
+                      (:role system :content "Dynamic state.")
+                      (:role user :content "hello"))
+          :options
+          '(:model "gpt-5.6-sol"
+            :segments ((:kind static-prefix
+                        :messages ((:role system
+                                    :content "Stable instructions.")))
+                       (:kind current-state
+                        :messages ((:role system
+                                    :content "Dynamic state."))))))))
+    (should (string-match-p "Stable instructions"
+                            (plist-get body :instructions)))
+    (should (equal (length (plist-get body :input)) 1))
+    (should-not (plist-member body :prompt_cache_options))))
+
+(ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
+  "A matching layout anchor sends dynamic context without stable duplication."
+  (let* ((revision e-openai-gpt56-prompt-layout-revision)
+         (body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Stable instructions.")
+                       (:role system :content "Fresh dynamic state.")
+                       (:role user :content "old prompt")
+                       (:role assistant :content "old answer")
+                       (:role user :content "new prompt"))
+           :options
+           `(:model "gpt-5.6-sol"
+             :prompt-cache-key "cache-key"
+             :provider-continuation t
+             :provider-anchor
+             (:provider-id openai
+              :metadata (:response-id "resp-1"
+                         :prompt-layout-revision ,revision))
+             :provider-anchor-delta-messages
+             ((:role system :content "Fresh dynamic state.")
+              (:role user :content "new prompt"))
+             :segments ((:kind static-prefix
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :messages ((:role system
+                                     :content "Fresh dynamic state.")))))))
+         (input (append (plist-get body :input) nil)))
+    (should (equal (plist-get body :previous_response_id) "resp-1"))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                   '("developer" "user")))
+    (should (equal (plist-get
+                    (aref (plist-get (car input) :content) 0) :text)
+                   "Fresh dynamic state."))
+    (should-not (plist-member
+                 (aref (plist-get (car input) :content) 0)
+                 :prompt_cache_breakpoint))
+    (should (equal (plist-get body :prompt_cache_options)
+                   '(:mode "explicit")))))
+
+(ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
+  "The safe body for a failed continuation contains the stable marker."
+  (let* ((revision e-openai-gpt56-prompt-layout-revision)
+         (messages '((:role system :content "Stable instructions.")
+                     (:role system :content "Fresh dynamic state.")
+                     (:role user :content "new prompt")))
+         (options
+          `(:model "gpt-5.6-sol"
+            :prompt-cache-key "cache-key"
+            :provider-continuation t
+            :provider-anchor
+            (:provider-id openai
+             :metadata (:response-id "resp-1"
+                        :prompt-layout-revision ,revision))
+            :provider-anchor-delta-messages
+            ((:role system :content "Fresh dynamic state.")
+             (:role user :content "new prompt"))
+            :segments ((:kind static-prefix
+                        :messages ((:role system
+                                    :content "Stable instructions.")))
+                       (:kind current-state
+                        :messages ((:role system
+                                    :content "Fresh dynamic state."))))))
+         (incremental
+          (e-openai-codex-request-body
+           :messages messages :options options))
+         (full
+          (e-openai-codex-request-body
+           :messages messages
+           :options (e-openai-codex--without-provider-anchor options)))
+         (stable-block
+          (aref (plist-get (aref (plist-get full :input) 0) :content) 0)))
+    (should (equal (plist-get incremental :previous_response_id) "resp-1"))
+    (should-not (plist-member full :previous_response_id))
+    (should (equal (plist-get stable-block :prompt_cache_breakpoint)
+                   '(:mode "explicit")))))
+
+(ert-deftest e-openai-test-gpt56-invalidates-legacy-layout-anchor ()
+  "An anchor without the explicit-layout revision forces a safe full request."
+  (let* ((body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Stable instructions.")
+                       (:role system :content "Fresh dynamic state.")
+                       (:role user :content "new prompt"))
+           :options
+           '(:model "gpt-5.6-sol"
+             :prompt-cache-key "cache-key"
+             :provider-continuation t
+             :provider-anchor
+             (:provider-id openai :metadata (:response-id "legacy-resp"))
+             :provider-anchor-delta-messages
+             ((:role system :content "Fresh dynamic state.")
+              (:role user :content "new prompt"))
+             :segments ((:kind static-prefix
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :messages ((:role system
+                                     :content "Fresh dynamic state.")))))))
+         (input (append (plist-get body :input) nil))
+         (stable-block (aref (plist-get (car input) :content) 0)))
+    (should-not (plist-member body :previous_response_id))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                   '("developer" "developer" "user")))
+    (should (equal (plist-get stable-block :prompt_cache_breakpoint)
+                   '(:mode "explicit")))))
+
 (ert-deftest e-openai-test-request-body-uses-continuation-anchor ()
   "Continuation sends previous_response_id with fresh context and transcript delta."
   (should
@@ -338,8 +526,8 @@
     (should (eq (plist-get body :store) :json-false))
     (should-not (plist-member body :stream))))
 
-(ert-deftest e-openai-test-request-body-websocket-store-false-ignores-durable-anchor ()
-  "Unstored WebSocket requests do not use persisted provider anchors."
+(ert-deftest e-openai-test-request-body-websocket-store-false-uses-local-anchor ()
+  "Unstored WebSocket requests can use the active connection's response anchor."
   (let ((body (e-openai-codex-request-body
                :messages '((:role system :content "current instructions")
                            (:role user :content "old prompt")
@@ -354,15 +542,9 @@
                           :provider-anchor-delta-messages
                           ((:role user :content "new prompt"))))))
     (should (eq (plist-get body :store) :json-false))
-    (should-not (plist-member body :previous_response_id))
+    (should (equal (plist-get body :previous_response_id) "resp-1"))
     (should (equal (plist-get body :input)
                    [(:type "message"
-                     :role "user"
-                     :content [(:type "input_text" :text "old prompt")])
-                    (:type "message"
-                     :role "assistant"
-                     :content [(:type "output_text" :text "old answer")])
-                    (:type "message"
                      :role "user"
                      :content [(:type "input_text" :text "new prompt")])]))))
 
@@ -791,7 +973,7 @@
                      :provider-anchor-provider-id openai)))))
 
 (ert-deftest e-openai-test-default-harness-uses-codex-websocket-continuation ()
-  "The built-in Codex profile uses stored WebSocket continuation."
+  "The built-in Codex profile uses connection-local WebSocket continuation."
   (should (equal (e-harness-default-options
                   (e-openai-create-harness :request-function #'ignore))
                  '(:model "gpt-5.5"
@@ -799,8 +981,8 @@
                    :provider-continuation t
                    :provider-anchor-provider-id openai))))
 
-(ert-deftest e-openai-test-codex-profile-uses-implicit-websocket-store ()
-  "Codex WebSocket requests use the generic stored-response default implicitly."
+(ert-deftest e-openai-test-codex-profile-uses-required-unstored-websocket-mode ()
+  "Codex WebSocket requests explicitly use the backend-required store=false."
   (let* ((auth-file (make-temp-file "e-openai-auth" nil ".json"))
          (auth (json-encode
                 (list :tokens
@@ -814,25 +996,38 @@
                   (e-openai--request-context
                    :provider 'codex
                    :auth-file auth-file
-                   :messages '((:role user :content "hello"))
-                   :options nil))
+                   :messages '((:role system :content "stable instructions")
+                               (:role user :content "hello"))
+                   :options '(:model "gpt-5.6-sol"
+                              :prompt-cache-key "cache-key"
+                              :segments
+                              ((:kind stable-context
+                                :messages
+                                ((:role system
+                                  :content "stable instructions")))))))
                  (body (json-parse-string (plist-get context :body)
                                           :object-type 'plist
                                           :array-type 'list
                                           :null-object nil
                                           :false-object :json-false)))
             (should (eq (plist-get context :responses-transport) 'websocket))
-            (should-not (plist-member body :store))
+            (should (eq (plist-get body :store) :json-false))
             (should-not (plist-member body :stream))
+            (should-not (plist-member body :prompt_cache_options))
+            (should (equal (plist-get body :instructions)
+                           "You are a helpful assistant.\n\nstable instructions"))
+            (should (equal (mapcar (lambda (item) (plist-get item :role))
+                                   (plist-get body :input))
+                           '("user")))
             (should (eq (plist-get (plist-get (plist-get context :metadata)
                                               :diagnostics)
                                    :response-store)
-                        t))))
+                        :json-false))))
       (when (file-exists-p auth-file)
         (delete-file auth-file)))))
 
-(ert-deftest e-openai-test-normalizes-legacy-codex-response-store ()
-  "Reloaded legacy Codex defaults drop the obsolete store=false override."
+(ert-deftest e-openai-test-normalizes-builtin-codex-wire-requirements ()
+  "Reloaded built-in Codex profiles retain store=false and disable breakpoints."
   (should
    (equal
     (e-openai--normalize-model-providers
@@ -857,8 +1052,10 @@
        :base-url ,(concat e-openai-codex-default-base-url "/codex")
        :wire-api responses
        :responses-transport websocket
+       :response-store :json-false
        :continuation t
-       :requires-openai-auth t)
+       :requires-openai-auth t
+       :prompt-cache-breakpoint-mode nil)
       (custom-codex
        :name "Custom Codex"
        :base-url ,(concat e-openai-codex-default-base-url "/codex")
@@ -868,8 +1065,8 @@
        :continuation t
        :requires-openai-auth t)))))
 
-(ert-deftest e-openai-test-provider-profile-normalizes-legacy-codex-response-store ()
-  "Provider lookup repairs stale built-in Codex store overrides."
+(ert-deftest e-openai-test-provider-profile-normalizes-builtin-codex-requirements ()
+  "Provider lookup applies current built-in Codex cache and store constraints."
   (let ((e-openai-model-providers
          `((codex
             :name "ChatGPT Codex"
@@ -879,8 +1076,10 @@
             :response-store :json-false
             :continuation t
             :requires-openai-auth t))))
-    (should-not
-     (plist-member (e-openai-provider-profile 'codex) :response-store))))
+    (let ((profile (e-openai-provider-profile 'codex)))
+      (should (eq (plist-get profile :response-store) :json-false))
+      (should (plist-member profile :prompt-cache-breakpoint-mode))
+      (should-not (plist-get profile :prompt-cache-breakpoint-mode)))))
 
 (ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
   "Responses profiles do not use provider continuation unless explicitly enabled."
@@ -1031,11 +1230,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
    (equal
     (e-openai-codex-parse-stream
      "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\n\n\
-data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":202598,\"input_tokens_details\":{\"cached_tokens\":7552},\"output_tokens\":419,\"output_tokens_details\":{\"reasoning_tokens\":139},\"total_tokens\":203017}}}\n\n")
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":202598,\"input_tokens_details\":{\"cached_tokens\":7552,\"cache_write_tokens\":4096},\"output_tokens\":419,\"output_tokens_details\":{\"reasoning_tokens\":139},\"total_tokens\":203017}}}\n\n")
     '((:type assistant-message :content "ok")
       (:type token-usage
        :usage (:input-tokens 202598
                :cached-input-tokens 7552
+               :cache-creation-input-tokens 4096
                :output-tokens 419
                :reasoning-output-tokens 139
                :total-tokens 203017))
@@ -1050,6 +1250,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
     '((:type provider-anchor-candidate
        :provider-id openai
        :metadata (:response-id "resp-1"))
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-parse-completed-response-id-records-layout ()
+  "Responses anchors retain the prompt layout needed for safe continuation."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n"
+     e-openai-gpt56-prompt-layout-revision)
+    `((:type provider-anchor-candidate
+       :provider-id openai
+       :metadata (:response-id "resp-1"
+                  :prompt-layout-revision
+                  ,e-openai-gpt56-prompt-layout-revision))
       (:type done :reason stop)))))
 
 (ert-deftest e-openai-test-parse-identical-canonical-messages-are-preserved ()
@@ -1292,6 +1506,7 @@ data: [DONE]\n\n")
       (:type token-usage
        :usage (:input-tokens 3
                :cached-input-tokens nil
+               :cache-creation-input-tokens nil
                :output-tokens 2
                :reasoning-output-tokens nil
                :total-tokens 5))
@@ -2365,8 +2580,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should (e-backend-cancel-request request))
       (should (= close-count 1)))))
 
-(ert-deftest e-openai-test-websocket-store-false-full-replays-follow-up ()
-  "Unstored WebSocket follow-ups replay input without previous_response_id."
+(ert-deftest e-openai-test-websocket-store-false-without-anchor-full-replays ()
+  "Direct unstored WebSocket calls replay when no prior anchor is supplied."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -2446,10 +2661,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                            (:type "message"
                             :role "user"
                             :content ((:type "input_text" :text "two")))))))
-        (should-not (seq-some (lambda (item)
-                                (eq (plist-get item :type)
-                                    'provider-anchor-candidate))
-                              seen))))))
+        (should (seq-some (lambda (item)
+                            (eq (plist-get item :type)
+                                'provider-anchor-candidate))
+                          seen))))))
 
 (ert-deftest e-openai-test-backend-default-request-is-cancellable ()
   "The default OpenAI request path exposes a cancellable url-retrieve handle."

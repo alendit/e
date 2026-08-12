@@ -487,7 +487,8 @@
 (defun e-process-reporting--token-usage (value)
   "Return a narrow numeric extraction token usage schema from VALUE."
   (let (result)
-    (dolist (key '(:input-tokens :cached-input-tokens :output-tokens
+    (dolist (key '(:input-tokens :cached-input-tokens
+                   :cache-creation-input-tokens :output-tokens
                    :reasoning-output-tokens :total-tokens))
       (when-let ((number (plist-get value key)))
         (unless (numberp number)

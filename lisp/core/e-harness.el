@@ -1354,6 +1354,7 @@ Apply TRANSFORM when supplied."
   (let (projected)
     (dolist (key '(:model :reasoning-effort :effort :response-store
                    :prompt-cache-key-present :prompt-cache-retention-present
+                   :prompt-cache-mode :prompt-layout-revision
                    :provider-continuation :previous-response-id-present
                    :provider-anchor-present :input-message-count :tool-count
                    :responses-transport :max-tokens :prompt-cache
@@ -1396,7 +1397,8 @@ Apply TRANSFORM when supplied."
 (defun e-harness--token-usage-activity-projection (payload)
   "Return a narrow durable projection of token-usage PAYLOAD."
   (let (projected)
-    (dolist (key '(:input-tokens :cached-input-tokens :output-tokens
+    (dolist (key '(:input-tokens :cached-input-tokens
+                   :cache-creation-input-tokens :output-tokens
                    :reasoning-output-tokens :total-tokens
                    :provider-request-ordinal))
       (setq projected

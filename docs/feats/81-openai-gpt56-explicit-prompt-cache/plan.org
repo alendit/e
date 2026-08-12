@@ -1,0 +1,54 @@
+#+title: OpenAI GPT-5.6 Explicit Prompt Cache
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Goal
+
+Translate e's stable/dynamic context boundary into the GPT-5.6 Responses wire
+shape so a changing dynamic suffix neither invalidates the reusable prefix nor
+incurs repeated implicit cache writes.
+
+* Contract
+
+- The generic context segment list reaches backend adapters as request-local,
+  derived options; it is not persisted as session configuration.
+- GPT-5.6 and later use explicit caching only when the provider profile opts in
+  with =:prompt-cache-breakpoint-mode explicit=, a non-empty
+  =prompt_cache_key= is available, and at least one stable system segment exists.
+- A full request keeps base =instructions= request-local, serializes stable
+  system segments as developer input, and marks the final stable =input_text=
+  block with =prompt_cache_breakpoint: {mode: explicit}=.
+- Dynamic/current-state system segments follow the breakpoint as developer
+  input.  Older models and GPT-5.6 requests without an eligible cache key keep
+  the existing flattened =instructions= shape.
+- =prompt_cache_options.mode= is =explicit= whenever the explicit layout is
+  active.  The existing =prompt_cache_key= remains the routing key.
+- A continued request does not resend stable developer input.  Its retained
+  response carries the earlier breakpoint; the request sends current dynamic
+  context and transcript delta after it.
+- Provider anchors record a prompt-layout revision.  An anchor from the old
+  flattened layout cannot continue a request using the new explicit layout.
+- OpenAI =cache_write_tokens= maps to the existing provider-neutral
+  =cache-creation-input-tokens= usage field and crosses durable telemetry.
+- WebSocket fallback from an unresolved continuation sends the complete safe
+  body with the stable breakpoint restored.
+- ChatGPT Codex retains its required =store=false= shape and connection-local
+  continuation, but does not emit explicit cache fields while its endpoint
+  rejects both =prompt_cache_options= and =prompt_cache_breakpoint=.
+
+* Evidence
+
+Unit tests cover eligible and ineligible request shapes, breakpoint placement,
+legacy-anchor invalidation, continued dynamic context, full fallback, and usage
+mapping.  The isolated WebSocket continuation E2E proves the first and second
+wire requests across a changing dynamic provider.  Compilation and the complete
+ERT suite form the repository gate.
+
+Credentialed provider validation must inspect both =cached_tokens= and
+=cache_write_tokens= across repeated requests.  Local request-shape tests prove
+the contract but cannot by themselves claim a provider cache hit.  The current
+ChatGPT Codex endpoint cannot provide that proof because it rejects the fields;
+an opt-in OpenAI API provider remains required for the cache-counter E2E.

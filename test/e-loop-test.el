@@ -56,6 +56,41 @@
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))
     (should (member 'turn-finished (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-loop-test-passes-context-segments-to-backend-options ()
+  "Derived context segments reach adapters without becoming session state."
+  (let* ((segments '((:kind static-prefix
+                      :id stable
+                      :fingerprint "stable-fp"
+                      :messages ((:role system :content "stable")))
+                     (:kind current-state
+                      :id dynamic
+                      :fingerprint "dynamic-fp"
+                      :messages ((:role system :content "dynamic")))))
+         captured-options
+         (backend
+          (e-backend-create
+           :name "segment-capture"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages)
+              (setq captured-options options)
+              (funcall on-item '(:type assistant-message :content "done"))
+              (funcall on-item '(:type done :reason stop)))))))
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role system :content "stable")
+                 (:role system :content "dynamic")
+                 (:role user :content "hello"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "fake")
+     :segments segments
+     :on-event #'ignore
+     :append-message #'ignore)
+    (should (equal (plist-get captured-options :segments) segments))))
+
 (ert-deftest e-loop-test-sync-run-turn-rejects-hot-path ()
   "The synchronous run-turn wrapper cannot run inside marked hot paths."
   (let ((messages nil)

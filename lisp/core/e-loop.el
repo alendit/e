@@ -294,8 +294,15 @@ tool I/O, and turn settlement are callback-driven."
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
         ;; even when callers do not redundantly persist it in turn options.
-        (turn-options (plist-put (copy-sequence options)
-                                 :session-id session-id))
+        (turn-options
+         (let ((options (plist-put (copy-sequence options)
+                                   :session-id session-id)))
+           ;; Segment metadata is derived model context.  Adapters need it to
+           ;; translate the stable/dynamic boundary into provider cache
+           ;; controls, but it is not durable session configuration.
+           (if segments
+               (plist-put options :segments (copy-tree segments))
+             options)))
         (settled nil)
         (active-request nil)
         (provider-request-sequence 0)

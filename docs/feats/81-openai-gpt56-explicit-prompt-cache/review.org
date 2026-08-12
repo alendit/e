@@ -1,0 +1,184 @@
+#+title: Review: OpenAI GPT-5.6 Explicit Prompt Cache
+#+date: 2026-08-12
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+The adapter now translates e's stable/dynamic segment boundary into the
+documented GPT-5.6 explicit cache layout for provider profiles that declare
+support.  The implementation also corrects the built-in ChatGPT Codex profile:
+that endpoint requires =store=false= and can continue from the active socket's
+connection-local response ID, but currently rejects both explicit cache fields.
+
+The repository contract is implemented and deterministic tests pass.  A
+credentialed explicit-cache hit/write measurement remains unresolved because
+the available ChatGPT Codex endpoint is not a compatible provider.
+
+* Scope reviewed
+
+- generic segment propagation from =e-loop= into request-local backend options;
+- OpenAI Responses rendering, cache capability gating, anchor layout revision,
+  WebSocket full fallback, and usage parsing;
+- built-in Codex profile normalization and =store=false= local continuation;
+- durable cache-write token telemetry and process reporting;
+- deterministic unit/integration tests and synthetic credentialed E2E tests;
+- the OpenAI prompt-caching and WebSocket-mode documentation current on
+  2026-08-12.
+
+* Findings
+
+** Resolved High: model-name inference broke ChatGPT Codex
+
+*** Problem
+
+The first implementation enabled explicit fields for every model named GPT-5.6
+or later.  Credentialed synthetic probes returned =Unsupported parameter:
+prompt_cache_options= and =prompt_cache_breakpoint is not supported on this
+model= from ChatGPT's =gpt-5.6-sol= endpoint.
+
+*** Change
+
+Explicit rendering now additionally requires provider profile capability
+=:prompt-cache-breakpoint-mode explicit=.  The built-in Codex profile forces
+that capability off; compatible OpenAI API profiles can opt in.
+
+*** Evidence
+
+The Codex profile unit test supplies GPT-5.6, a cache key, and stable segments
+and proves the unsupported fields are absent and system guidance remains in the
+legacy flattened instructions shape.
+
+** Resolved High: built-in Codex store normalization violated the backend
+
+*** Problem
+
+The previous normalization removed configured =store=false=.  A credentialed
+HTTP diagnostic returned =Store must be set to false=, while the WebSocket
+closed or stalled under the stored request shape.
+
+*** Change
+
+The built-in profile now forces =store=false=.  WebSocket completed responses
+remain valid connection-local anchors; a lost socket or unresolved ID uses the
+existing complete replay path.
+
+*** Evidence
+
+The synthetic credentialed WebSocket basic-response test passed in 10.392603s.
+The two-turn =store=false= continuation test passed in 13.834208s and asserted
+one-message delta input, =previous_response_id=, socket reuse, and incremental
+request mode.  A preceding run safely selected full replay, demonstrating the
+fallback does not break the turn.
+
+** Resolved Medium: documented E2E timeout was ignored
+
+*** Problem
+
+=E_E2E_TIMEOUT_SECONDS= was documented but the board E2E wait helper always
+used its hard-coded 30-second default.
+
+*** Change
+
+The helper now parses the positive environment value when no explicit timeout
+argument is supplied.
+
+*** Evidence
+
+The credentialed test that initially timed out at exactly 30 seconds proceeded
+under the configured 180-second budget after the fix.
+
+* Plan coverage
+
+- Segment propagation: implemented without persisting derived segment data.
+- Explicit request shape: implemented and provider-gated.
+- Dynamic suffix after the marked stable developer block: implemented.
+- Continued and full-fallback layouts: implemented with revisioned anchors.
+- Cache write telemetry: implemented through durable activity and process
+  reporting.
+- Credentialed hit/write counters: test exists and requires an explicit-capable
+  provider; not runnable against current ChatGPT Codex.
+
+* Architecture review
+
+Provider support lives in the provider profile and OpenAI adapter, not generic
+context policy.  The loop exposes its already-derived segment list through
+request-local options.  Durable state stores only the response anchor and wire
+layout revision, never the segment cache.  Unsupported providers preserve their
+previous request layout.
+
+* Design self-check
+
+1. The package is safer and more observable even if work stops here: Codex is
+   live again and compatible providers can use the new layout.
+2. This moves toward provider adapters faithfully translating generic context
+   placement into provider-native cache controls.
+3. Provider feature availability is uncertain and remains a local profile
+   value; the stable segment contract and GPT-5.6 wire shape are explicit.
+4. =e-context= owns placement, =e-loop= owns request assembly, and =e-openai=
+   owns provider rendering and transport behavior.
+5. One optional profile field reduces coupling to model-name guesses.
+6. Generic policy does not depend on OpenAI request fields.
+7. Network and serialization side effects remain inside the adapter.
+8. Only an anchor layout revision is durable; segments and capability flags are
+   derived per request.
+9. The renderer adds one segment scan and avoids cache-write churn when enabled;
+   unsupported providers retain the old work.
+10. The profile capability names a real wire compatibility difference proven
+    by provider responses.
+11. Older models and unsupported GPT-5.6 endpoints preserve legacy shape.
+12. The obsolete normalization that removed =store=false= was replaced.
+13. Expected unresolved-response errors retry with a full request; unexpected
+    provider errors surface through normal backend failure.
+14. Renderer units, harness integration, WebSocket integration, and live probes
+    cover progressively wider boundaries.
+
+* Verification
+
+#+begin_src sh
+rtk eldev compile --warnings-as-errors
+rtk eldev test
+git diff --check
+#+end_src
+
+#+begin_example
+Compilation passed with warnings treated as errors.
+2080 tests completed with exit status 0.
+The diff has no whitespace errors.
+#+end_example
+
+#+begin_src sh
+rtk eldev test -f test/e-openai-test.el \
+  -f test/e-provider-continuation-integration-test.el
+#+end_src
+
+#+begin_example
+99 tests, 99 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+env E_E2E=1 E_E2E_TIMEOUT_SECONDS=180 \
+  E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  rtk eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-openai-codex-store-false-continues
+#+end_src
+
+#+begin_example
+1 test, 1 result as expected, 0 unexpected
+13.834208 sec
+#+end_example
+
+* Live reload
+
+The running Emacs was not reloaded.  Repository changes require a reload before
+interactive sessions use the corrected profile and renderer.
+
+* Unresolved
+
+Run =e-live-e2e-test-openai-gpt56-explicit-cache-continues= against a
+credentialed Responses provider that supports the documented explicit fields.
+Acceptance requires positive first-turn =cache_write_tokens= and positive
+second-turn =cached_tokens=; do not infer those counters from request shape.

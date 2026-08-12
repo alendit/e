@@ -78,6 +78,14 @@
       (sit-for 0.01))
     value))
 
+(defun e-board-e2e--timeout-seconds (&optional timeout)
+  "Return explicit TIMEOUT or the configured live E2E timeout in seconds."
+  (or timeout
+      (when-let ((configured (getenv "E_E2E_TIMEOUT_SECONDS")))
+        (let ((seconds (string-to-number configured)))
+          (when (> seconds 0) seconds)))
+      30.0))
+
 (defun e-board-e2e-prompt-async (harness session-id prompt)
   "Submit PROMPT board-first and return the resulting active turn id."
   (let ((message-id (e-chat-service-submit-session harness session-id prompt)))
@@ -114,7 +122,8 @@
 
 (defun e-board-e2e-wait-batch (harness session-id &optional timeout)
   "Run batch timers until HARNESS SESSION-ID settles, then return its entry."
-  (let* ((deadline (+ (float-time) (or timeout 30.0)))
+  (let* ((timeout (e-board-e2e--timeout-seconds timeout))
+         (deadline (+ (float-time) timeout))
          (entry (gethash session-id (e-harness-active-turns harness))))
     (unless entry
       (signal 'e-harness-no-active-turn (list session-id)))
@@ -125,7 +134,7 @@
                 (< (float-time) deadline))
       (sit-for 0.01))
     (when (eq (plist-get entry :status) 'running)
-      (error "E2E turn did not settle within %.1f seconds" (or timeout 30.0)))
+      (error "E2E turn did not settle within %.1f seconds" timeout))
     ;; The queue-drain timer can remove this exact settled entry from the
     ;; active-turn table while `sit-for' dispatches timers.  Keep using the
     ;; captured plist, just like `e-harness-wait-batch', and clear the slot only
