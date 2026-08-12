@@ -1,0 +1,11 @@
+#+title: e-chat-new Cannot Load e-annotations
+#+date: 2026-08-12
+
+The user reported that invoking =e-chat-new= from an Org buffer failed with:
+
+#+begin_example
+Cannot open load file: No such file or directory, e-annotations
+#+end_example
+
+The failure appeared after updating the local =e= checkout and restarting or
+otherwise using the Doom-installed package.

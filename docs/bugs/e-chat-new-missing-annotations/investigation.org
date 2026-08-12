@@ -1,0 +1,69 @@
+#+title: e-chat-new Cannot Load e-annotations Investigation
+#+date: 2026-08-12
+
+* Root cause
+
+The Doom Straight recipe for the local =e= package installed selected source
+directories into its generated build.  It did not include
+=lisp/layers/annotations/*.el= or several other nested layer directories.
+
+=e-chat-new= lazily creates the default harness.  Layer creation resolves the
+registered =annotations= layer by requiring =e-annotations=.  Doom removes
+checkout-only source directories from =load-path= after package initialization,
+so a lazily required feature must exist in the generated package build.
+
+* Source evidence
+
+- =e-default-chat-layer-ids= includes =annotations=.
+- The registered layer maps =annotations= to feature =e-annotations=.
+- =e-layer-create-registered= requires a registered layer's feature before
+  calling its factory.
+- =~/.doom.d/packages.el= omitted =lisp/layers/annotations/*.el= from the
+  local-package =:files= recipe.
+- The generated Doom build contained =e.el= and the older listed directories,
+  but no =e-annotations.el=.
+
+The recipe also omitted =agents=, =harness=, =web=, =org-canvas=,
+=project-local=, =goodnite=, =writing=, and =shells/modernchat=.  Those are the
+same lazy-package boundary and were added together so later commands do not
+depend on transient checkout load paths.
+
+* Live evidence
+
+A bounded read-only probe of the running Emacs returned:
+
+#+begin_example
+:e "/Users/dvorona/.config/emacs/.local/straight/build-30.2/e/e.el"
+:annotations nil
+:directory "/Users/dvorona/projects/elisp/e/"
+:annotations-source-on-load-path nil
+#+end_example
+
+This confirms that the entry point resolved, but neither the generated build
+nor the retained live =load-path= could resolve =e-annotations=.
+
+* Fix
+
+The local Doom package recipe now includes every existing nested =e= Lisp
+source directory.  Running =doom sync= rebuilt the generated Straight package
+artifact with =e-annotations.el= and the other lazy layer and shell features.
+
+* Verification
+
+- =doom sync= completed successfully and the rebuilt package contains
+  =e-annotations.el=.
+- A separately named, temporary Emacs daemon completed normal Doom startup and
+  invoked the actual =e-chat-new= command with an in-memory session store.  It
+  created an =e-chat-mode= buffer and loaded =e-annotations= from:
+
+  #+begin_example
+  /Users/dvorona/.config/emacs/.local/straight/build-30.2/e/e-annotations.el
+  #+end_example
+
+- The complete repository test suite passed: 2,087 expected passes, zero
+  unexpected results, and two environment-dependent skips out of 2,089 tests.
+
+* Live reload
+
+The running Emacs was inspected read-only and was not reloaded.  Restart Emacs
+to activate the synced Doom package profile.
