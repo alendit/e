@@ -107,10 +107,13 @@ sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects
 the OpenAI API's explicit cache fields, so its sample deliberately leaves the
 capability disabled and that one provider-specific test skips.  Its separate
 =store=false= E2E verifies segmented stable/dynamic developer input,
-connection-local continuation preparation, and safe full replay when the
-provider closes the socket.  Both first-party OpenAI profiles request encrypted
-reasoning output and retain it with its following assistant message or tool call
-so a stateless full replay preserves the provider's original item order.
+connection-local continuation, and whichever new-connection fallback the live
+provider happens to expose.  Deterministic provider-continuation integration
+coverage forces the stateless full-replay path, including a provider reasoning
+item whose optional summary is JSON null.  Both first-party OpenAI profiles
+request encrypted reasoning output and retain it with its following assistant
+message or tool call so a stateless full replay preserves the provider's
+original item order.
 
 * Development bytecode smoke test
 

@@ -412,7 +412,8 @@
 (ert-deftest e-openai-test-replays-encrypted-reasoning-before-carrier-message ()
   "Stateless replay restores opaque reasoning immediately before its output."
   (let* ((reasoning-item
-          '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext"))
+          '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext"
+            :summary nil))
          (body
           (e-openai-codex-request-body
            :messages
@@ -432,13 +433,19 @@
                    ["reasoning.encrypted_content"]))
     (should (equal (mapcar (lambda (item) (plist-get item :type)) input)
                    '("message" "reasoning" "message" "message")))
-    (should (equal (nth 1 input) reasoning-item))
+    (should (equal (nth 1 input)
+                   '(:type "reasoning" :id "rs-1"
+                     :encrypted_content "ciphertext")))
+    (should-not (plist-member (nth 1 input) :summary))
+    ;; Request normalization must not mutate the persisted replay record.
+    (should (plist-member reasoning-item :summary))
     (should (equal (plist-get (nth 2 input) :role) "assistant"))))
 
 (ert-deftest e-openai-test-replays-encrypted-reasoning-before-tool-call ()
   "Stateless replay restores opaque reasoning before its function call."
   (let* ((reasoning-item
-          '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext"))
+          '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext"
+            :summary [(:type "summary_text" :text "kept")]))
          (body
           (e-openai-codex-request-body
            :messages
@@ -1378,7 +1385,7 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
   (should
    (equal
     (e-openai-codex-parse-stream
-     "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"ciphertext\"}}\n\n")
+     "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"ciphertext\",\"summary\":null}}\n\n")
     '((:type provider-replay-item
        :provider-id openai
        :item (:type "reasoning"

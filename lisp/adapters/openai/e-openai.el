@@ -743,8 +743,19 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
              :content (e-openai-codex--message-content
                        role content cache-breakpoint-p))))))
 
+(defun e-openai-codex--normalize-replay-item (item)
+  "Return an input-safe copy of opaque OpenAI replay ITEM.
+OpenAI Responses output may represent an absent reasoning summary as JSON
+null, while Responses input accepts either a summary array or no field."
+  (let ((normalized (copy-tree item)))
+    (when (and (member (plist-get normalized :type) '("reasoning" reasoning))
+               (plist-member normalized :summary)
+               (null (plist-get normalized :summary)))
+      (cl-remf normalized :summary))
+    normalized))
+
 (defun e-openai-codex--message-replay-items (message)
-  "Return OpenAI opaque replay items attached to MESSAGE."
+  "Return input-safe OpenAI opaque replay items attached to MESSAGE."
   (let* ((role (plist-get message :role))
          (carrier (if (eq role 'tool-call)
                       (plist-get message :content)
@@ -752,7 +763,8 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
          (records (plist-get carrier :provider-replay-items)))
     (cl-loop for record in records
              when (member (plist-get record :provider-id) '(openai "openai"))
-             collect (copy-tree (plist-get record :item)))))
+             collect (e-openai-codex--normalize-replay-item
+                      (plist-get record :item)))))
 
 (defun e-openai-codex--system-message-p (message)
   "Return non-nil when MESSAGE is a backend-neutral system message."
@@ -2025,7 +2037,8 @@ LIMIT defaults to 240 characters."
             (plist-get event :item)))
       (list :type 'provider-replay-item
             :provider-id 'openai
-            :item (copy-tree (plist-get event :item))))
+            :item (e-openai-codex--normalize-replay-item
+                   (plist-get event :item))))
      ((and (equal type "response.output_item.done")
            (e-openai-codex--function-call-item-p (plist-get event :item)))
       (let ((item (plist-get event :item)))

@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-openai)
+(require 'e-session)
 (require 'e-tools)
 (load (expand-file-name
        "../e2e/e-board-e2e-support.el"
@@ -41,6 +42,76 @@
   (alist-get
    'text
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
+
+(ert-deftest e-provider-continuation-integration-test-null-summary-replays-safely ()
+  "Provider reasoning summary JSON null is omitted from next full replay."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+                process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-model-providers
+          '((replay-e2e
+             :name "Replay E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :response-store :json-false
+             :continuation nil
+             :include-encrypted-reasoning t
+             :requires-openai-auth nil)))
+         (call-count 0)
+         captured-body
+         (harness
+          (e-openai-create-harness
+           :provider 'replay-e2e
+           :model "gpt-test"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (cl-incf call-count)
+              (if (= call-count 1)
+                  (e-provider-continuation-integration--sse
+                   '((type . "response.output_item.done")
+                     (item . ((type . "reasoning")
+                              (id . "rs-provider")
+                              (encrypted_content . "ciphertext")
+                              (summary . nil))))
+                   '((type . "response.output_text.done")
+                     (text . "seed answer"))
+                   '((type . "response.completed")
+                     (response . ((id . "resp-seed")
+                                  (status . "completed")))))
+                (setq captured-body (json-read-from-string body))
+                (e-provider-continuation-integration--sse
+                 '((type . "response.output_text.done")
+                   (text . "replay accepted"))
+                 '((type . "response.completed")
+                   (response . ((id . "resp-replay")
+                                (status . "completed")))))))))))
+    (e-board-e2e-create-session harness :id "null-summary-replay")
+    (e-board-e2e-prompt-batch harness "null-summary-replay" "seed prompt")
+    (let* ((assistant
+            (seq-find (lambda (message)
+                        (eq (plist-get message :role) 'assistant))
+                      (e-harness-messages harness "null-summary-replay")))
+           (record
+            (car (plist-get (plist-get assistant :metadata)
+                            :provider-replay-items)))
+           (item (plist-get record :item)))
+      (should (equal (plist-get item :type) "reasoning"))
+      (should-not (plist-member item :summary)))
+    (e-board-e2e-prompt-batch harness "null-summary-replay" "continue")
+    (let* ((input (append (alist-get 'input captured-body) nil))
+           (reasoning
+            (seq-find (lambda (item)
+                        (equal (alist-get 'type item) "reasoning"))
+                      input)))
+      (should (= call-count 2))
+      (should reasoning)
+      (should (equal (alist-get 'encrypted_content reasoning) "ciphertext"))
+      (should-not (assq 'summary reasoning)))))
 
 (ert-deftest e-provider-continuation-integration-test-tool-followup-advances-anchor ()
   "An anchored tool turn advances to its response and sends only tool output."

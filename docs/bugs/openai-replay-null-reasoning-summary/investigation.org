@@ -1,0 +1,96 @@
+#+title: Investigation: OpenAI full replay sends a null reasoning summary
+#+startup: overview
+
+* Root cause
+
+OpenAI Responses can emit an encrypted reasoning output item with
+=summary: null=.  The output parser copied the provider item unchanged into the
+backend-neutral replay record.  When continuation was unavailable and the
+adapter built a stateless full request, it copied that record unchanged into
+=input=.  Responses input accepts a summary array or an omitted field, but not
+JSON null.
+
+This belongs to the OpenAI adapter: the harness intentionally treats provider
+replay items as opaque and cannot know which provider output fields are valid
+on that provider's input wire.
+
+* Evidence
+
+A metadata-only inspection of the reported session checkpoint found an
+encrypted reasoning item with a present =summary= key whose value type was JSON
+null.  No encrypted content or credentials were printed.  The rejected field
+path, =input[40].summary=, matches the adapter's full-replay construction.
+
+The prior tests missed the defect for three separate reasons:
+
+- request unit fixtures omitted =summary= rather than modeling provider null;
+- parser fixtures also omitted =summary=;
+- the live =store=false= E2E normally reuses its active WebSocket and therefore
+  exercises incremental continuation, not a forced stateless full replay.
+
+Graphical tests could not catch this provider-wire defect: they use fake
+backends and validate redisplay, focus, and window behavior rather than OpenAI
+request JSON.
+
+* Fix
+
+The OpenAI adapter now makes an input-safe copy of each opaque replay item.
+For reasoning items only, an explicitly null =summary= is omitted.  The same
+normalization runs when parsing new provider output and again when constructing
+request input, so current turns are clean and legacy in-memory session records
+remain replayable.  Non-null summary arrays and every other opaque field remain
+unchanged.
+
+* Regression coverage
+
+- The parser unit fixture now supplies =summary: null= and proves the retained
+  replay item omits it.
+- The request unit fixture starts with a legacy =:summary nil= replay record,
+  proves the encoded input omits the key, and proves normalization does not
+  mutate the source record.
+- A deterministic board-to-harness-to-OpenAI integration test emits the real
+  provider shape on turn one, stores it on the assistant carrier, forces a
+  stateless full replay on turn two, decodes the actual request JSON, and proves
+  encrypted reasoning remains present while =summary= is absent.
+- Live E2E documentation now distinguishes opportunistic provider continuation
+  behavior from the deterministic forced-full-replay regression.
+
+* Validation
+
+- The four focused parser, request, and cross-turn integration regressions pass.
+- Warning-as-error byte compilation passes.
+- The complete non-graphical suite passes all 2,090 tests with two optional
+  presentation skips and no unexpected results.
+- The running Emacs was inspected read-only and was not reloaded.  Reload =e=
+  or restart Emacs before retrying the affected session.
+
+* Design self-check
+
+1. The slice is independently useful because it makes affected current sessions
+   replayable and prevents the provider output shape from recurring.
+2. It moves toward provider-specific wire compatibility staying behind backend
+   adapters.
+3. The stable rule is that input cannot contain a null reasoning summary.  The
+   uncertain provider payload remains opaque except for that observed mismatch.
+4. The OpenAI adapter owns the output-to-input replay compatibility rule and has
+   one provider-wire reason to change.
+5. Coupling is unchanged outside the adapter; the harness keeps its narrow
+   opaque replay-item contract.
+6. No stable harness policy now depends on OpenAI request details.
+7. No new side effect was introduced; normalization operates on a copy at the
+   adapter boundary.
+8. No state was added.  Existing session replay data is copied and normalized
+   only for ingestion or request construction.
+9. The added work is one shallow predicate and, only for the bad shape, one
+   property removal per replay item.
+10. The abstraction is a concrete OpenAI output-to-input compatibility mapping,
+    not a shared provider interface.
+11. Legacy in-memory null-bearing records are supported without a migration;
+    valid summary arrays remain compatible.
+12. No legacy branch can be removed beyond replacing the raw copies with the
+    normalizer.
+13. The observed optional-field mismatch is handled locally; unrelated and
+    unexpected provider errors still surface unchanged.
+14. Unit tests prove both normalization boundaries, and the integration test
+    proves the complete provider-event-to-next-request path independently of a
+    live service.

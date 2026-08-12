@@ -438,7 +438,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
 (ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
-  "ChatGPT Codex prepares segmented continuation with a safe full fallback."
+  "ChatGPT Codex continues incrementally or uses a new-connection full request."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)

@@ -1,0 +1,14 @@
+#+title: OpenAI full replay sends a null reasoning summary
+#+startup: overview
+
+* Report
+
+An =e-chat= turn in the Grimoire daily session failed when the OpenAI backend
+submitted a stateless full replay.  The provider rejected the request with:
+
+#+begin_example
+Invalid type for 'input[40].summary': expected an array of objects, but got null instead.
+#+end_example
+
+The failure occurred after earlier turns had completed normally and retained
+encrypted OpenAI reasoning items for replay.
