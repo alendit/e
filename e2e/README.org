@@ -96,7 +96,10 @@ Useful environment variables:
 The explicit-cache E2E runs only when the selected OpenAI Responses profile
 sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects
 the OpenAI API's explicit cache fields, so its sample deliberately leaves the
-capability disabled and that one provider-specific test skips.
+capability disabled and that one provider-specific test skips.  Its separate
+=store=false= E2E verifies segmented stable/dynamic developer input,
+connection-local continuation preparation, and safe full replay when the
+provider closes the socket.
 
 * Development bytecode smoke test
 

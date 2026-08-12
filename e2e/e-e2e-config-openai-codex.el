@@ -10,8 +10,10 @@
 ;; Sample E_E2E_CONFIG file for GPT-5.6 on the Responses WebSocket transport.
 ;; It uses Codex-managed ChatGPT authentication and the backend-required
 ;; unstored response mode.  The current ChatGPT endpoint does not accept the
-;; OpenAI API's explicit cache fields, so the focused cache probe skips while
-;; the rest of the live suite verifies the supported request shape:
+;; OpenAI API's explicit cache fields.  The profile instead uses segmented
+;; developer input so continuation can carry stable context while re-emitting
+;; dynamic context.  The focused explicit-cache probe skips while the rest of
+;; the live suite verifies the supported request shape:
 ;;   E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 ;;     eldev test -f e2e/e-live-e2e-test.el \
 ;;     e-live-e2e-test-openai-gpt56-explicit-cache-continues
@@ -31,6 +33,7 @@
          :responses-transport websocket
          :response-store :json-false
          :prompt-cache-breakpoint-mode nil
+         :prompt-cache-segment-layout developer-input
          :continuation t
          :requires-openai-auth t))
 

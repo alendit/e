@@ -13,6 +13,9 @@ documented GPT-5.6 explicit cache layout for provider profiles that declare
 support.  The implementation also corrects the built-in ChatGPT Codex profile:
 that endpoint requires =store=false= and can continue from the active socket's
 connection-local response ID, but currently rejects both explicit cache fields.
+It therefore uses the same segment-aware developer input without breakpoint
+fields: stable context is carried by continuation and changed dynamic context
+is re-emitted.
 
 The repository contract is implemented and deterministic tests pass.  A
 credentialed explicit-cache hit/write measurement remains unresolved because
@@ -23,7 +26,8 @@ the available ChatGPT Codex endpoint is not a compatible provider.
 - generic segment propagation from =e-loop= into request-local backend options;
 - OpenAI Responses rendering, cache capability gating, anchor layout revision,
   WebSocket full fallback, and usage parsing;
-- built-in Codex profile normalization and =store=false= local continuation;
+- built-in Codex profile normalization, segmented context, and =store=false=
+  local continuation;
 - durable cache-write token telemetry and process reporting;
 - deterministic unit/integration tests and synthetic credentialed E2E tests;
 - the OpenAI prompt-caching and WebSocket-mode documentation current on
@@ -49,8 +53,8 @@ that capability off; compatible OpenAI API profiles can opt in.
 *** Evidence
 
 The Codex profile unit test supplies GPT-5.6, a cache key, and stable segments
-and proves the unsupported fields are absent and system guidance remains in the
-legacy flattened instructions shape.
+and proves the unsupported fields are absent while stable guidance remains a
+distinct developer input segment.
 
 ** Resolved High: built-in Codex store normalization violated the backend
 
@@ -69,10 +73,13 @@ existing complete replay path.
 *** Evidence
 
 The synthetic credentialed WebSocket basic-response test passed in 10.392603s.
-The two-turn =store=false= continuation test passed in 13.834208s and asserted
-one-message delta input, =previous_response_id=, socket reuse, and incremental
-request mode.  A preceding run safely selected full replay, demonstrating the
-fallback does not break the turn.
+The original two-turn =store=false= continuation test passed incrementally in
+13.834208s.  After segmenting ChatGPT context, the credentialed test passed in
+10.975508s and proved the endpoint accepts separate stable and dynamic
+developer input, the continuation candidate omits stable context, refreshed
+dynamic context is present, and no explicit-cache field is sent.  The endpoint
+closed its socket during that run, so transport correctly selected complete
+segmented replay; deterministic transport tests cover the warm-socket branch.
 
 ** Resolved Medium: documented E2E timeout was ignored
 
@@ -129,7 +136,8 @@ previous request layout.
    unsupported providers retain the old work.
 10. The profile capability names a real wire compatibility difference proven
     by provider responses.
-11. Older models and unsupported GPT-5.6 endpoints preserve legacy shape.
+11. Older models preserve the legacy shape.  ChatGPT GPT-5.6 uses segmented
+    input without unsupported breakpoint fields.
 12. The obsolete normalization that removed =store=false= was replaced.
 13. Expected unresolved-response errors retry with a full request; unexpected
     provider errors surface through normal backend failure.
@@ -146,7 +154,7 @@ git diff --check
 
 #+begin_example
 Compilation passed with warnings treated as errors.
-2080 tests completed with exit status 0.
+2081 tests completed: 2065 expected, 0 unexpected, 16 skipped.
 The diff has no whitespace errors.
 #+end_example
 
@@ -156,7 +164,7 @@ rtk eldev test -f test/e-openai-test.el \
 #+end_src
 
 #+begin_example
-99 tests, 99 results as expected, 0 unexpected
+100 tests, 100 results as expected, 0 unexpected
 #+end_example
 
 #+begin_src sh
@@ -168,7 +176,7 @@ env E_E2E=1 E_E2E_TIMEOUT_SECONDS=180 \
 
 #+begin_example
 1 test, 1 result as expected, 0 unexpected
-13.834208 sec
+10.975508 sec
 #+end_example
 
 * Live reload

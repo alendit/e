@@ -438,7 +438,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
 (ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
-  "ChatGPT Codex continues on its active socket while keeping store=false."
+  "ChatGPT Codex prepares segmented continuation with a safe full fallback."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
@@ -446,40 +446,91 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
     (unless (and (eq (plist-get profile :responses-transport) 'websocket)
                  (eq (plist-get profile :response-store) :json-false))
       (ert-skip "The configured provider is not an unstored Responses WebSocket.")))
-  (e-live-e2e--with-harness (harness session-id)
-    (let ((original-start
-           (symbol-function 'e-openai-codex--websocket-request-start))
-          request-bodies)
-      (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
-                 (lambda (&rest args)
-                   (push (copy-tree (plist-get args :body-data)) request-bodies)
-                   (apply original-start args))))
-        (e-board-e2e-prompt-batch
-         harness session-id
-         "Reply with exactly: LOCAL-CONTINUATION-ONE")
-        (e-board-e2e-prompt-batch
-         harness session-id
-         "Reply with exactly: LOCAL-CONTINUATION-TWO"))
-      (let* ((ordered-bodies (nreverse request-bodies))
-             (first-body (car ordered-bodies))
-             (second-body (car (last ordered-bodies)))
-             (requests (e-live-e2e--activity-of-type
-                        harness session-id 'provider-request-started))
-             (diagnostics
-              (plist-get (plist-get (car (last requests)) :payload)
-                         :diagnostics)))
-        (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
-          (should (eq (plist-get first-body :store) :json-false))
-          (should-not (plist-member first-body :previous_response_id))
-          (should (eq (plist-get second-body :store) :json-false))
-          (should (stringp (plist-get second-body :previous_response_id)))
-          (should-not (plist-member second-body :prompt_cache_options))
-          (should (= (length (plist-get second-body :input)) 1))
-          (should (eq (plist-get diagnostics :websocket-request-mode)
-                      'incremental))
-          (should (eq (plist-get diagnostics :websocket-reused) t))
-          (should (eq (plist-get diagnostics :previous-response-id-present)
-                      t)))))))
+  (let* ((current-state "subscription dynamic state one")
+         (provider
+          (e-context-provider-create
+           :name 'live-codex-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (layer
+          (e-layer-create
+           :id 'live-codex-segmented-context
+           :name "Live Codex Segmented Context"
+           :capabilities
+           (list
+            (e-capability-create
+             :id 'live-codex-segmented-context
+             :instructions "subscription stable instructions"
+             :context-providers (list provider))))))
+    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (let ((original-start
+             (symbol-function 'e-openai-codex--websocket-request-start))
+            request-bodies)
+        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+                   (lambda (&rest args)
+                     (push (copy-tree (plist-get args :body-data)) request-bodies)
+                     (apply original-start args))))
+          (e-board-e2e-prompt-batch
+           harness session-id
+           "Reply with exactly: LOCAL-CONTINUATION-ONE")
+          (setq current-state "subscription dynamic state two")
+          (e-board-e2e-prompt-batch
+           harness session-id
+           "Reply with exactly: LOCAL-CONTINUATION-TWO"))
+        (let* ((ordered-bodies (nreverse request-bodies))
+               (first-body (car ordered-bodies))
+               (second-body (car (last ordered-bodies)))
+               (first-input (append (plist-get first-body :input) nil))
+               (second-input (append (plist-get second-body :input) nil))
+               (requests (e-live-e2e--activity-of-type
+                          harness session-id 'provider-request-started))
+               (diagnostics
+                (plist-get (plist-get (car (last requests)) :payload)
+                           :diagnostics)))
+          (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
+            (should (eq (plist-get first-body :store) :json-false))
+            (should-not (plist-member first-body :previous_response_id))
+            (should (eq (plist-get second-body :store) :json-false))
+            (should (stringp (plist-get second-body :previous_response_id)))
+            (should-not (plist-member second-body :prompt_cache_options))
+            (should (equal (mapcar (lambda (item) (plist-get item :role))
+                                   first-input)
+                           '("developer" "developer" "user")))
+            (should (equal (mapcar (lambda (item) (plist-get item :role))
+                                   second-input)
+                           '("developer" "user")))
+            (should-not
+             (seq-find
+              (lambda (item)
+                (string-match-p
+                 "subscription stable instructions"
+                 (or (plist-get (aref (plist-get item :content) 0) :text) "")))
+              second-input))
+            (should
+             (seq-find
+              (lambda (item)
+                (string-match-p
+                 "subscription dynamic state two"
+                 (or (plist-get (aref (plist-get item :content) 0) :text) "")))
+              second-input))
+            (should (equal (plist-get diagnostics :prompt-cache-mode)
+                           "implicit-segmented"))
+            (pcase (plist-get diagnostics :websocket-request-mode)
+              ('incremental
+               (should (eq (plist-get diagnostics :websocket-reused) t))
+               (should (eq
+                        (plist-get diagnostics :previous-response-id-present)
+                        t)))
+              ('full
+               (should-not (plist-get diagnostics :websocket-reused))
+               (should-not
+                (plist-get diagnostics :previous-response-id-present))
+               (should (eq (plist-get diagnostics :websocket-fallback-reason)
+                           'new-connection)))
+              (other
+               (ert-fail (format "Unexpected WebSocket request mode: %S"
+                                 other))))))))))
 
 (ert-deftest e-live-e2e-test-openai-gpt56-explicit-cache-continues ()
   "A live GPT-5.6 follow-up retains the breakpoint and sends fresh state."

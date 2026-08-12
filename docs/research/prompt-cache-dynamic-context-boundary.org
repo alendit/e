@@ -27,7 +27,7 @@ both reduces input size and leaves earlier stable material unchanged.
 |---------+----------------------+------------------------------------|
 | OpenAI, GPT-5.5 and earlier | All system segments are flattened into one =instructions= string, in placement order; =prompt_cache_key= is sent. | Automatic longest-prefix matching can reuse the unchanged stable prefix once it is long enough to be cacheable. |
 | OpenAI, GPT-5.6 and later, explicit-capable profile | Stable system segments become developer input with an explicit breakpoint; dynamic developer input follows it and the request uses explicit mode. | The unchanged stable prefix remains reusable without writing the changing suffix. |
-| ChatGPT Codex, =gpt-5.6-sol= | The flattened legacy shape remains because the endpoint currently rejects the explicit API fields. | Dynamic-context changes can still reduce implicit cache reuse; connection-local continuation avoids replay while its WebSocket remains warm. |
+| ChatGPT Codex, =gpt-5.6-sol= | Stable and dynamic system segments become separate developer input without explicit cache fields. | Connection-local continuation carries the stable segment and re-emits only changed dynamic context; a new socket safely replays the complete segmented input. |
 | Anthropic Messages | System segments remain blocks; =cache_control= is attached to the final static/stable block before dynamic context. | The unchanged stable prefix remains behind an explicit cache breakpoint, so later dynamic blocks do not move that boundary. |
 
 The OpenAI GPT-5.6 behavior is documented in [[https://developers.openai.com/api/docs/guides/prompt-caching][Prompt caching]].
@@ -61,15 +61,18 @@ Responses provider opts in with =:prompt-cache-breakpoint-mode explicit=.
 Credentialed probes on 2026-08-12 established that ChatGPT's Codex endpoint
 requires =store=false=, rejects =prompt_cache_options= as unsupported, and
 reports =prompt_cache_breakpoint= unsupported for =gpt-5.6-sol=.  The built-in
-Codex profile therefore keeps the legacy flattened cache shape while using
-connection-local =previous_response_id= continuation.  This avoids breaking
-the primary backend while leaving the documented GPT-5.6 API shape available
-to compatible provider profiles.
+Codex profile therefore uses segmented developer input without breakpoints and
+connection-local =previous_response_id= continuation.  Stable guidance is sent
+once on a warm socket while changed dynamic context is re-emitted.  A new or
+provider-closed socket gets complete replay.  This optimizes the primary
+backend without sending unsupported fields while leaving the documented
+explicit GPT-5.6 API shape available to compatible provider profiles.
 
 * Conclusion
 
 The generic placement model is sound, and the voice tell list belongs in
 =dynamic-context=.  Anthropic and explicit-capable OpenAI GPT-5.6 profiles turn
 the boundary into a provider breakpoint.  OpenAI's existing ordering remains
-useful for GPT-5.5 and earlier.  ChatGPT Codex still needs endpoint support
-before e can safely enable the GPT-5.6 explicit shape there.
+useful for GPT-5.5 and earlier.  ChatGPT Codex uses the same generic segment
+boundary for continuation, but still needs endpoint support before e can
+safely enable explicit cache writes there.

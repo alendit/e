@@ -36,8 +36,11 @@ incurs repeated implicit cache writes.
 - WebSocket fallback from an unresolved continuation sends the complete safe
   body with the stable breakpoint restored.
 - ChatGPT Codex retains its required =store=false= shape and connection-local
-  continuation, but does not emit explicit cache fields while its endpoint
-  rejects both =prompt_cache_options= and =prompt_cache_breakpoint=.
+  continuation.  It uses the segment-aware developer-input layout without
+  emitting explicit cache fields while its endpoint rejects both
+  =prompt_cache_options= and =prompt_cache_breakpoint=.  A warm continuation
+  carries stable context and sends refreshed dynamic context; reconnect falls
+  back to complete segmented replay.
 
 * Evidence
 

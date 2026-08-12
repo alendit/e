@@ -315,6 +315,48 @@
     (should (equal (plist-get body :prompt_cache_options)
                    '(:mode "explicit")))))
 
+(ert-deftest e-openai-test-gpt56-segmented-continuation-needs-no-breakpoint ()
+  "A segmented implicit profile carries stable context without unsupported fields."
+  (let* ((revision e-openai-gpt56-segmented-layout-revision)
+         (body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Stable instructions.")
+                       (:role system :content "Fresh dynamic state.")
+                       (:role user :content "old prompt")
+                       (:role assistant :content "old answer")
+                       (:role user :content "new prompt"))
+           :options
+           `(:model "gpt-5.6-sol"
+             :prompt-cache-key "cache-key"
+             :prompt-cache-breakpoint-mode nil
+             :prompt-cache-segment-layout developer-input
+             :provider-continuation t
+             :responses-transport websocket
+             :response-store :json-false
+             :provider-anchor
+             (:provider-id openai
+              :metadata (:response-id "resp-1"
+                         :prompt-layout-revision ,revision))
+             :provider-anchor-delta-messages
+             ((:role system :content "Fresh dynamic state.")
+              (:role user :content "new prompt"))
+             :segments ((:kind stable-context
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :messages ((:role system
+                                     :content "Fresh dynamic state.")))))))
+         (input (append (plist-get body :input) nil))
+         (dynamic-block (aref (plist-get (car input) :content) 0)))
+    (should (equal (plist-get body :instructions)
+                   "You are a helpful assistant."))
+    (should (equal (plist-get body :previous_response_id) "resp-1"))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                   '("developer" "user")))
+    (should (equal (plist-get dynamic-block :text) "Fresh dynamic state."))
+    (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
+    (should-not (plist-member body :prompt_cache_options))))
+
 (ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
   "The safe body for a failed continuation contains the stable marker."
   (let* ((revision e-openai-gpt56-prompt-layout-revision)
@@ -1015,10 +1057,21 @@
             (should-not (plist-member body :stream))
             (should-not (plist-member body :prompt_cache_options))
             (should (equal (plist-get body :instructions)
-                           "You are a helpful assistant.\n\nstable instructions"))
+                           "You are a helpful assistant."))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    (plist-get body :input))
-                           '("user")))
+                           '("developer" "user")))
+            (should-not
+             (plist-member
+              (car (plist-get (car (plist-get body :input)) :content))
+              :prompt_cache_breakpoint))
+            (should (equal (plist-get context :prompt-layout-revision)
+                           e-openai-gpt56-segmented-layout-revision))
+            (should (equal
+                     (plist-get
+                      (plist-get (plist-get context :metadata) :diagnostics)
+                      :prompt-cache-mode)
+                     "implicit-segmented"))
             (should (eq (plist-get (plist-get (plist-get context :metadata)
                                               :diagnostics)
                                    :response-store)
@@ -1055,7 +1108,8 @@
        :response-store :json-false
        :continuation t
        :requires-openai-auth t
-       :prompt-cache-breakpoint-mode nil)
+       :prompt-cache-breakpoint-mode nil
+       :prompt-cache-segment-layout developer-input)
       (custom-codex
        :name "Custom Codex"
        :base-url ,(concat e-openai-codex-default-base-url "/codex")
@@ -1079,7 +1133,9 @@
     (let ((profile (e-openai-provider-profile 'codex)))
       (should (eq (plist-get profile :response-store) :json-false))
       (should (plist-member profile :prompt-cache-breakpoint-mode))
-      (should-not (plist-get profile :prompt-cache-breakpoint-mode)))))
+      (should-not (plist-get profile :prompt-cache-breakpoint-mode))
+      (should (eq (plist-get profile :prompt-cache-segment-layout)
+                  'developer-input)))))
 
 (ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
   "Responses profiles do not use provider continuation unless explicitly enabled."

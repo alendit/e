@@ -304,9 +304,11 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
                   (cons
                    provider-id
                    (plist-put
-                    (plist-put (copy-sequence profile)
-                               :response-store :json-false)
-                    :prompt-cache-breakpoint-mode nil))
+                    (plist-put
+                     (plist-put (copy-sequence profile)
+                                :response-store :json-false)
+                     :prompt-cache-breakpoint-mode nil)
+                    :prompt-cache-segment-layout 'developer-input))
                 entry)))
           providers))
 
@@ -318,6 +320,7 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
      :responses-transport websocket
      :response-store :json-false
      :prompt-cache-breakpoint-mode nil
+     :prompt-cache-segment-layout developer-input
      :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
@@ -333,7 +336,10 @@ store responses by default; set `:response-store' to explicitly override that
 value.  Responses profiles can opt into provider continuation anchors with
 `:continuation' non-nil.  GPT-5.6 Responses profiles set
 `:prompt-cache-breakpoint-mode' to `explicit' when they accept explicit
-breakpoints and `prompt_cache_options', or leave it nil when unsupported."
+breakpoints and `prompt_cache_options', or leave it nil when unsupported.
+Profiles can independently set `:prompt-cache-segment-layout' to
+`developer-input' when system segments should remain distinct even without an
+explicit breakpoint."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -450,6 +456,10 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   "responses-explicit-cache-v1"
   "Anchor revision for the GPT-5.6 explicit prompt-cache input layout.")
 
+(defconst e-openai-gpt56-segmented-layout-revision
+  "responses-segmented-context-v1"
+  "Anchor revision for GPT-5.6 segmented input without explicit caching.")
+
 (defun e-openai-codex--prompt-cache-breakpoint-mode (options)
   "Return the provider-supported GPT-5.6 breakpoint mode from OPTIONS.
 Direct request-renderer callers default to `explicit' for compatibility; real
@@ -471,17 +481,30 @@ provider requests always materialize this option from the provider profile."
                   (eq (plist-get message :role) 'system))
                 (plist-get segment :messages))))
 
+(defun e-openai-codex--segmented-prompt-layout-p (options)
+  "Return non-nil when OPTIONS request distinct system input segments."
+  (or (eq (e-openai-codex--prompt-cache-breakpoint-mode options) 'explicit)
+      (eq (plist-get options :prompt-cache-segment-layout) 'developer-input)))
+
 (defun e-openai-codex--prompt-layout-revision (options)
   "Return the provider-supported prompt layout revision for OPTIONS, or nil."
   (let ((key (plist-get options :prompt-cache-key))
         (mode (e-openai-codex--prompt-cache-breakpoint-mode options)))
     (when (and (e-openai--gpt56-or-later-p
                 (plist-get options :model))
-               (eq mode 'explicit)
+               (e-openai-codex--segmented-prompt-layout-p options)
                (stringp key)
                (not (string-empty-p key))
                (> (e-openai-codex--stable-system-message-count options) 0))
-      e-openai-gpt56-prompt-layout-revision)))
+      (if (eq mode 'explicit)
+          e-openai-gpt56-prompt-layout-revision
+        e-openai-gpt56-segmented-layout-revision))))
+
+(defun e-openai-codex--prompt-cache-mode-label (options)
+  "Return the diagnostic cache mode label for segmented OPTIONS."
+  (if (eq (e-openai-codex--prompt-cache-breakpoint-mode options) 'explicit)
+      "explicit"
+    "implicit-segmented"))
 
 (defun e-openai--profile-prompt-cache-retention-supported-p (profile model)
   "Return non-nil when PROFILE and MODEL accept `prompt_cache_retention'.
@@ -739,10 +762,12 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
 (defun e-openai-codex--input-items
     (messages options continuation-response-id)
   "Return Responses input items for MESSAGES under OPTIONS.
-CONTINUATION-RESPONSE-ID suppresses a new stable breakpoint because the
-retained response already carries the earlier explicit marker."
+CONTINUATION-RESPONSE-ID suppresses a new explicit breakpoint because the
+retained response already carries the stable segment and its earlier marker."
   (let ((stable-left
          (if (and (e-openai-codex--prompt-layout-revision options)
+                  (eq (e-openai-codex--prompt-cache-breakpoint-mode options)
+                      'explicit)
                   (null continuation-response-id))
              (e-openai-codex--stable-system-message-count options)
            0))
@@ -870,9 +895,7 @@ retained response already carries the earlier explicit marker."
         (setq diagnostics
               (append diagnostics
                       (list :prompt-cache-mode
-                            (symbol-name
-                             (e-openai-codex--prompt-cache-breakpoint-mode
-                              options))
+                            (e-openai-codex--prompt-cache-mode-label options)
                             :prompt-layout-revision revision)))
         (setq metadata (plist-put metadata :diagnostics diagnostics))
         (setq metadata
@@ -2232,6 +2255,11 @@ OpenAI request and backend-neutral context."
                         effective-options
                         :prompt-cache-breakpoint-mode
                         (plist-get profile :prompt-cache-breakpoint-mode)))
+                 (setq effective-options
+                       (plist-put
+                        effective-options
+                        :prompt-cache-segment-layout
+                        (plist-get profile :prompt-cache-segment-layout)))
                  (when (plist-member profile :response-store)
                    (setq effective-options
                          (plist-put effective-options
