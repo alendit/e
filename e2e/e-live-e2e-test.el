@@ -490,8 +490,12 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                            :diagnostics)))
           (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
             (should (eq (plist-get first-body :store) :json-false))
+            (should (equal (plist-get first-body :include)
+                           ["reasoning.encrypted_content"]))
             (should-not (plist-member first-body :previous_response_id))
             (should (eq (plist-get second-body :store) :json-false))
+            (should (equal (plist-get second-body :include)
+                           ["reasoning.encrypted_content"]))
             (should (stringp (plist-get second-body :previous_response_id)))
             (should-not (plist-member second-body :prompt_cache_options))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
@@ -636,13 +640,15 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
             (should (equal (plist-get diagnostics :prompt-cache-mode)
                            "explicit"))
             (should (equal (plist-get diagnostics :prompt-layout-revision)
-                           e-openai-gpt56-prompt-layout-revision))
+                           e-openai-gpt56-explicit-cache-layout-revision))
             (should first-breakpoint)
             (should (equal (plist-get first-breakpoint
                                       :prompt_cache_breakpoint)
                            '(:mode "explicit")))
             (should (equal (plist-get latest-body :prompt_cache_options)
                            '(:mode "explicit")))
+            (should (equal (plist-get latest-body :include)
+                           ["reasoning.encrypted_content"]))
             (should (stringp (plist-get latest-body :previous_response_id)))
             (should
              (equal
@@ -653,7 +659,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                        (e-harness-sessions harness) session-id)))
                 :metadata)
                :prompt-layout-revision)
-              e-openai-gpt56-prompt-layout-revision))
+              e-openai-gpt56-explicit-cache-layout-revision))
             (should latest-dynamic)
             (should-not (plist-member latest-dynamic
                                       :prompt_cache_breakpoint))

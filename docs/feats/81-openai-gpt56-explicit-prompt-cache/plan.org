@@ -41,14 +41,26 @@ incurs repeated implicit cache writes.
   =prompt_cache_options= and =prompt_cache_breakpoint=.  A warm continuation
   carries stable context and sends refreshed dynamic context; reconnect falls
   back to complete segmented replay.
+- =openai= is the canonical first-party API profile.  It shares WebSocket,
+  =store=false=, segmented context, continuation, fallback, and response parsing
+  with ChatGPT Codex; only endpoint/authentication and explicit-cache capability
+  differ.
+- Segmented developer input is a Responses context-layout concern named
+  =:responses-context-layout=, independent of =:prompt-cache-breakpoint-mode=.
+- Both first-party profiles request =reasoning.encrypted_content=.  Opaque
+  reasoning items are attached to the assistant message or tool call they
+  precede and restored in that order during stateless full replay.
+- A cross-profile contract test removes only explicit breakpoint fields and
+  proves the remaining ChatGPT and API request bodies are identical.
 
 * Evidence
 
 Unit tests cover eligible and ineligible request shapes, breakpoint placement,
-legacy-anchor invalidation, continued dynamic context, full fallback, and usage
-mapping.  The isolated WebSocket continuation E2E proves the first and second
-wire requests across a changing dynamic provider.  Compilation and the complete
-ERT suite form the repository gate.
+legacy-anchor invalidation, cross-profile equivalence, encrypted reasoning
+attachment/replay, continued dynamic context, full fallback, and usage mapping.
+The isolated WebSocket continuation E2E proves the first and second wire
+requests across a changing dynamic provider.  Compilation and the complete ERT
+suite form the repository gate.
 
 Credentialed provider validation must inspect both =cached_tokens= and
 =cache_write_tokens= across repeated requests.  Local request-shape tests prove

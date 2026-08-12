@@ -68,6 +68,14 @@ provider-closed socket gets complete replay.  This optimizes the primary
 backend without sending unsupported fields while leaving the documented
 explicit GPT-5.6 API shape available to compatible provider profiles.
 
+The canonical =openai= profile now makes that API shape a checked-in default:
+GPT-5.6, Responses WebSocket, =store=false=, segmented developer input, explicit
+breakpoints, =OPENAI_API_KEY= authentication, and encrypted-reasoning replay.
+ChatGPT and API bodies are rendered by the same code and a contract test proves
+they remain identical after removing the API-only explicit cache fields.  The
+provider-neutral layout setting is =:responses-context-layout=; cache mode is a
+separate provider capability.
+
 * Conclusion
 
 The generic placement model is sound, and the voice tell list belongs in

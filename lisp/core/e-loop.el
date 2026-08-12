@@ -356,6 +356,7 @@ tool I/O, and turn settlement are callback-driven."
                   (token-usage nil)
                   (done-reason nil)
                   (provider-anchor-candidate nil)
+                  (pending-provider-replay-items nil)
                   (provider-followup-messages nil)
                   (provider-request nil)
                   (provider-request-id nil)
@@ -602,7 +603,18 @@ tool I/O, and turn settlement are callback-driven."
                               (e-loop--emit :on-event on-event
                                             :type 'reasoning-raw-delta
                                             :payload item))
+                             ('provider-replay-item
+                              (setq pending-provider-replay-items
+                                    (append pending-provider-replay-items
+                                            (list (copy-tree item)))))
                              ('tool-call
+                              (when pending-provider-replay-items
+                                (setq item (copy-sequence item))
+                                (plist-put
+                                 item
+                                 :provider-replay-items
+                                 pending-provider-replay-items)
+                                (setq pending-provider-replay-items nil))
                               (enqueue-tool-call item))
                              ('token-usage
                               (setq token-usage
@@ -715,7 +727,11 @@ tool I/O, and turn settlement are callback-driven."
                                                    (fail '(e-loop-empty-output)))
                                                (let ((message
                                                       (e-loop--assistant-message
-                                                       (response-text))))
+                                                       (response-text)
+                                                       (when pending-provider-replay-items
+                                                         (list
+                                                          :provider-replay-items
+                                                          pending-provider-replay-items)))))
                                                  (setq turn-messages
                                                        (append turn-messages
                                                                (list message)))

@@ -79,7 +79,16 @@ eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
 The Codex sample uses the normal Codex auth file and sends no project-derived
-layers, tools, or context.  The Anthropic gateway sample is selected with:
+layers, tools, or context.  The canonical first-party API profile is selected
+with =OPENAI_API_KEY= and:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
+eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+The Anthropic gateway sample is selected with:
 
 #+begin_src sh
 E_E2E=1 \
@@ -99,7 +108,9 @@ the OpenAI API's explicit cache fields, so its sample deliberately leaves the
 capability disabled and that one provider-specific test skips.  Its separate
 =store=false= E2E verifies segmented stable/dynamic developer input,
 connection-local continuation preparation, and safe full replay when the
-provider closes the socket.
+provider closes the socket.  Both first-party OpenAI profiles request encrypted
+reasoning output and retain it with its following assistant message or tool call
+so a stateless full replay preserves the provider's original item order.
 
 * Development bytecode smoke test
 

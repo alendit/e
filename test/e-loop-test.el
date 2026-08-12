@@ -56,6 +56,83 @@
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))
     (should (member 'turn-finished (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-loop-test-attaches-provider-replay-items-to-assistant-message ()
+  "Opaque provider replay items persist with the output they precede."
+  (let* ((replay-item
+          '(:type provider-replay-item
+            :provider-id openai
+            :item (:type "reasoning" :encrypted_content "ciphertext")))
+         (backend (e-backend-fake-create
+                   :items (list replay-item
+                                '(:type assistant-message :content "hello")
+                                '(:type done :reason stop))))
+         messages)
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "fake")
+     :on-event #'ignore
+     :append-message (lambda (message) (push message messages)))
+    (let ((assistant (car messages)))
+      (should (eq (plist-get assistant :role) 'assistant))
+      (should (equal
+               (plist-get (plist-get assistant :metadata)
+                          :provider-replay-items)
+               (list replay-item))))))
+
+(ert-deftest e-loop-test-attaches-provider-replay-items-to-tool-call ()
+  "Opaque provider replay items persist before their following tool call."
+  (let* ((calls 0)
+         (replay-item
+          '(:type provider-replay-item
+            :provider-id openai
+            :item (:type "reasoning" :encrypted_content "ciphertext")))
+         (backend
+          (e-backend-create
+           :name "provider-replay-tool"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item replay-item)
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-1"
+                               :name "echo"
+                               :arguments (:text "hi")))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         messages)
+    (e-tools-test-register tools
+                           :name "echo"
+                           :description "Echo text."
+                           :handler (lambda (arguments)
+                                      (plist-get arguments :text)))
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options '(:model "fake")
+     :on-event #'ignore
+     :append-message (lambda (message)
+                       (setq messages (append messages (list message)))))
+    (let* ((tool-message
+            (seq-find (lambda (message)
+                        (eq (plist-get message :role) 'tool-call))
+                      messages))
+           (tool-call (plist-get tool-message :content)))
+      (should (equal (plist-get tool-call :provider-replay-items)
+                     (list replay-item))))))
+
 (ert-deftest e-loop-test-passes-context-segments-to-backend-options ()
   "Derived context segments reach adapters without becoming session state."
   (let* ((segments '((:kind static-prefix

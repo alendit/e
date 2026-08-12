@@ -33,7 +33,8 @@
          :responses-transport websocket
          :response-store :json-false
          :prompt-cache-breakpoint-mode nil
-         :prompt-cache-segment-layout developer-input
+         :responses-context-layout developer-input
+         :include-encrypted-reasoning t
          :continuation t
          :requires-openai-auth t))
 

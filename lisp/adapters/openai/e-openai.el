@@ -54,6 +54,10 @@
   "https://chatgpt.com/backend-api"
   "Default base URL for ChatGPT-backed Codex Responses access.")
 
+(defconst e-openai-api-default-base-url
+  "https://api.openai.com/v1"
+  "Default base URL for first-party OpenAI API access.")
+
 (defconst e-openai-codex-account-claim
   "https://api.openai.com/auth"
   "JWT claim namespace containing the ChatGPT account id.")
@@ -293,24 +297,46 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
        (eq (plist-get profile :responses-transport) 'websocket)
        (plist-get profile :requires-openai-auth)))
 
+(defun e-openai--builtin-openai-profile ()
+  "Return the canonical first-party OpenAI API provider profile."
+  (list :name "OpenAI API"
+        :base-url e-openai-api-default-base-url
+        :wire-api 'responses
+        :responses-transport 'websocket
+        :response-store :json-false
+        :responses-context-layout 'developer-input
+        :prompt-cache-breakpoint-mode 'explicit
+        :include-encrypted-reasoning t
+        :continuation t
+        :requires-openai-auth nil
+        :env-key "OPENAI_API_KEY"
+        :default-model "gpt-5.6"))
+
 (defun e-openai--normalize-model-providers (providers)
-  "Return PROVIDERS with current built-in Codex wire requirements applied."
-  (mapcar (lambda (entry)
-            (let ((provider-id (car entry))
-                  (profile (cdr entry)))
-              (if (e-openai--builtin-codex-profile-p
-                   provider-id
-                   profile)
-                  (cons
-                   provider-id
-                   (plist-put
-                    (plist-put
-                     (plist-put (copy-sequence profile)
-                                :response-store :json-false)
-                     :prompt-cache-breakpoint-mode nil)
-                    :prompt-cache-segment-layout 'developer-input))
-                entry)))
-          providers))
+  "Return PROVIDERS with current built-in OpenAI requirements applied."
+  (let ((normalized
+         (mapcar (lambda (entry)
+                   (let ((provider-id (car entry))
+                         (profile (cdr entry)))
+                     (if (e-openai--builtin-codex-profile-p
+                          provider-id
+                          profile)
+                         (cons
+                          provider-id
+                          (plist-put
+                           (plist-put
+                            (plist-put
+                             (plist-put (copy-sequence profile)
+                                        :response-store :json-false)
+                             :prompt-cache-breakpoint-mode nil)
+                            :responses-context-layout 'developer-input)
+                           :include-encrypted-reasoning t))
+                       entry)))
+                 providers)))
+    (if (assq 'openai normalized)
+        normalized
+      (append normalized
+              (list (cons 'openai (e-openai--builtin-openai-profile)))))))
 
 (defcustom e-openai-model-providers
   `((codex
@@ -320,9 +346,23 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
      :responses-transport websocket
      :response-store :json-false
      :prompt-cache-breakpoint-mode nil
-     :prompt-cache-segment-layout developer-input
+     :responses-context-layout developer-input
+     :include-encrypted-reasoning t
      :continuation t
-     :requires-openai-auth t))
+     :requires-openai-auth t)
+    (openai
+     :name "OpenAI API"
+     :base-url ,e-openai-api-default-base-url
+     :wire-api responses
+     :responses-transport websocket
+     :response-store :json-false
+     :responses-context-layout developer-input
+     :prompt-cache-breakpoint-mode explicit
+     :include-encrypted-reasoning t
+     :continuation t
+     :requires-openai-auth nil
+     :env-key "OPENAI_API_KEY"
+     :default-model "gpt-5.6"))
   "OpenAI-like model provider profiles keyed by provider symbol.
 
 Each profile is plist data.  `:wire-api' supports `responses' and
@@ -337,9 +377,10 @@ value.  Responses profiles can opt into provider continuation anchors with
 `:continuation' non-nil.  GPT-5.6 Responses profiles set
 `:prompt-cache-breakpoint-mode' to `explicit' when they accept explicit
 breakpoints and `prompt_cache_options', or leave it nil when unsupported.
-Profiles can independently set `:prompt-cache-segment-layout' to
+Profiles can independently set `:responses-context-layout' to
 `developer-input' when system segments should remain distinct even without an
-explicit breakpoint."
+explicit breakpoint.  Set `:include-encrypted-reasoning' when a provider
+supports returning stateless reasoning items for complete replay."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -452,11 +493,11 @@ When PROVIDER is nil, use `e-openai-default-provider'."
          (or (> major 5)
              (and (= major 5) (>= minor 6))))))
 
-(defconst e-openai-gpt56-prompt-layout-revision
+(defconst e-openai-gpt56-explicit-cache-layout-revision
   "responses-explicit-cache-v1"
   "Anchor revision for the GPT-5.6 explicit prompt-cache input layout.")
 
-(defconst e-openai-gpt56-segmented-layout-revision
+(defconst e-openai-gpt56-segmented-context-layout-revision
   "responses-segmented-context-v1"
   "Anchor revision for GPT-5.6 segmented input without explicit caching.")
 
@@ -484,7 +525,7 @@ provider requests always materialize this option from the provider profile."
 (defun e-openai-codex--segmented-prompt-layout-p (options)
   "Return non-nil when OPTIONS request distinct system input segments."
   (or (eq (e-openai-codex--prompt-cache-breakpoint-mode options) 'explicit)
-      (eq (plist-get options :prompt-cache-segment-layout) 'developer-input)))
+      (eq (plist-get options :responses-context-layout) 'developer-input)))
 
 (defun e-openai-codex--prompt-layout-revision (options)
   "Return the provider-supported prompt layout revision for OPTIONS, or nil."
@@ -497,8 +538,8 @@ provider requests always materialize this option from the provider profile."
                (not (string-empty-p key))
                (> (e-openai-codex--stable-system-message-count options) 0))
       (if (eq mode 'explicit)
-          e-openai-gpt56-prompt-layout-revision
-        e-openai-gpt56-segmented-layout-revision))))
+          e-openai-gpt56-explicit-cache-layout-revision
+        e-openai-gpt56-segmented-context-layout-revision))))
 
 (defun e-openai-codex--prompt-cache-mode-label (options)
   "Return the diagnostic cache mode label for segmented OPTIONS."
@@ -702,6 +743,17 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
              :content (e-openai-codex--message-content
                        role content cache-breakpoint-p))))))
 
+(defun e-openai-codex--message-replay-items (message)
+  "Return OpenAI opaque replay items attached to MESSAGE."
+  (let* ((role (plist-get message :role))
+         (carrier (if (eq role 'tool-call)
+                      (plist-get message :content)
+                    (plist-get message :metadata)))
+         (records (plist-get carrier :provider-replay-items)))
+    (cl-loop for record in records
+             when (member (plist-get record :provider-id) '(openai "openai"))
+             collect (copy-tree (plist-get record :item)))))
+
 (defun e-openai-codex--system-message-p (message)
   "Return non-nil when MESSAGE is a backend-neutral system message."
   (eq (plist-get message :role) 'system))
@@ -778,6 +830,8 @@ retained response already carries the stable segment and its earlier marker."
                    (e-openai-codex--system-message-p message))
           (setq stable-left (1- stable-left))
           (setq breakpoint-p (= stable-left 0)))
+        (dolist (replay-item (e-openai-codex--message-replay-items message))
+          (push replay-item items))
         (push (e-openai-codex--input-message message breakpoint-p) items)))))
 
 (defun e-openai-codex--without-provider-anchor (options)
@@ -833,6 +887,10 @@ retained response already carries the stable segment and its earlier marker."
       (setq body (append body (list :text (list :verbosity text-verbosity)))))
     (when reasoning
       (setq body (append body (list :reasoning reasoning))))
+    (when (plist-get options :include-encrypted-reasoning)
+      (setq body
+            (append body
+                    (list :include ["reasoning.encrypted_content"]))))
     (when continuation-response-id
       (setq body
             (append body
@@ -1785,6 +1843,12 @@ list.  Return a cancellable `e-backend-request' handle."
        (member (plist-get item :type)
                '("function_call" "tool_call" function_call tool_call))))
 
+(defun e-openai-codex--encrypted-reasoning-item-p (item)
+  "Return non-nil when ITEM is replayable encrypted OpenAI reasoning."
+  (and (listp item)
+       (member (plist-get item :type) '("reasoning" reasoning))
+       (stringp (plist-get item :encrypted_content))))
+
 (defun e-openai-codex--parse-function-arguments (arguments)
   "Parse JSON ARGUMENTS from a Responses function call."
   (cond
@@ -1956,6 +2020,12 @@ LIMIT defaults to 240 characters."
             :stream-kind 'raw
             :content (or (plist-get event :delta)
                          (plist-get event :text))))
+     ((and (equal type "response.output_item.done")
+           (e-openai-codex--encrypted-reasoning-item-p
+            (plist-get event :item)))
+      (list :type 'provider-replay-item
+            :provider-id 'openai
+            :item (copy-tree (plist-get event :item))))
      ((and (equal type "response.output_item.done")
            (e-openai-codex--function-call-item-p (plist-get event :item)))
       (let ((item (plist-get event :item)))
@@ -2258,8 +2328,13 @@ OpenAI request and backend-neutral context."
                  (setq effective-options
                        (plist-put
                         effective-options
-                        :prompt-cache-segment-layout
-                        (plist-get profile :prompt-cache-segment-layout)))
+                        :responses-context-layout
+                        (plist-get profile :responses-context-layout)))
+                 (setq effective-options
+                       (plist-put
+                        effective-options
+                        :include-encrypted-reasoning
+                        (plist-get profile :include-encrypted-reasoning)))
                  (when (plist-member profile :response-store)
                    (setq effective-options
                          (plist-put effective-options

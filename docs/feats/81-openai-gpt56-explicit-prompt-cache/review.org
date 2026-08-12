@@ -21,6 +21,12 @@ The repository contract is implemented and deterministic tests pass.  A
 credentialed explicit-cache hit/write measurement remains unresolved because
 the available ChatGPT Codex endpoint is not a compatible provider.
 
+The follow-up alignment slice adds a canonical =openai= API profile and makes
+the shared contract executable rather than conventional.  ChatGPT and API use
+one segmented-context renderer, WebSocket continuation/fallback path, and
+stateless encrypted-reasoning replay path.  Endpoint/authentication and the two
+explicit cache fields are the only intended request differences.
+
 * Scope reviewed
 
 - generic segment propagation from =e-loop= into request-local backend options;
@@ -28,6 +34,9 @@ the available ChatGPT Codex endpoint is not a compatible provider.
   WebSocket full fallback, and usage parsing;
 - built-in Codex profile normalization, segmented context, and =store=false=
   local continuation;
+- canonical first-party API profile and cross-profile body equivalence;
+- encrypted reasoning attachment to assistant/tool-call transcript carriers and
+  ordered replay during full stateless requests;
 - durable cache-write token telemetry and process reporting;
 - deterministic unit/integration tests and synthetic credentialed E2E tests;
 - the OpenAI prompt-caching and WebSocket-mode documentation current on
@@ -98,6 +107,50 @@ argument is supplied.
 The credentialed test that initially timed out at exactly 30 seconds proceeded
 under the configured 180-second budget after the fix.
 
+** Resolved Medium: ChatGPT/API parity was not enforced
+
+*** Problem
+
+The adapter already shared most rendering and transport code, but only ChatGPT
+had a built-in provider profile.  API profiles were local configuration, and
+segmentation was named as a prompt-cache layout even though both providers need
+the same Responses context layout.
+
+*** Change
+
+The built-in =openai= profile selects the first-party API endpoint,
+=OPENAI_API_KEY=, GPT-5.6, WebSocket =store=false=, segmented developer input,
+explicit breakpoints, continuation, and encrypted reasoning.  The shared layout
+field is now =:responses-context-layout=.  A provider contract test normalizes
+away only =prompt_cache_options= and =prompt_cache_breakpoint= and requires the
+remaining ChatGPT/API bodies to be equal.
+
+*** Evidence
+
+Focused adapter tests prove the canonical profile values and structural request
+equivalence.
+
+** Resolved Medium: stateless replay discarded encrypted reasoning
+
+*** Problem
+
+Both first-party profiles use =store=false=.  Full replay reconstructed visible
+messages and tool traffic but did not request or preserve encrypted reasoning
+items returned by Responses.
+
+*** Change
+
+Both profiles request =reasoning.encrypted_content=.  The adapter emits opaque
+replay items; the provider-neutral loop attaches them to the assistant message
+or tool call they immediately precede.  The common Responses renderer restores
+those items in their original position only for OpenAI.
+
+*** Evidence
+
+Parser, loop, assistant replay, and tool-call replay tests cover the complete
+deterministic path without exposing encrypted content as transcript text or
+provider diagnostics.
+
 * Plan coverage
 
 - Segment propagation: implemented without persisting derived segment data.
@@ -107,14 +160,17 @@ under the configured 180-second budget after the fix.
 - Cache write telemetry: implemented through durable activity and process
   reporting.
 - Credentialed hit/write counters: test exists and requires an explicit-capable
-  provider; not runnable against current ChatGPT Codex.
+  provider; the new =e-e2e-config-openai-api.el= selects the canonical profile
+  when =OPENAI_API_KEY= is available and remains intentionally unrunnable
+  against current ChatGPT Codex.
 
 * Architecture review
 
 Provider support lives in the provider profile and OpenAI adapter, not generic
 context policy.  The loop exposes its already-derived segment list through
-request-local options.  Durable state stores only the response anchor and wire
-layout revision, never the segment cache.  Unsupported providers preserve their
+request-local options.  Durable state stores the response anchor, wire layout
+revision, and opaque encrypted reasoning attached to its transcript carrier;
+it never stores a derived segment cache.  Unsupported providers preserve their
 previous request layout.
 
 * Design self-check
@@ -130,8 +186,10 @@ previous request layout.
 5. One optional profile field reduces coupling to model-name guesses.
 6. Generic policy does not depend on OpenAI request fields.
 7. Network and serialization side effects remain inside the adapter.
-8. Only an anchor layout revision is durable; segments and capability flags are
-   derived per request.
+8. Anchor layout revision and opaque stateless replay items are durable;
+   segments and capability flags remain derived per request.  Replay items live
+   on their smallest correct transcript carrier rather than in adapter-global
+   or session-global cache state.
 9. The renderer adds one segment scan and avoids cache-write churn when enabled;
    unsupported providers retain the old work.
 10. The profile capability names a real wire compatibility difference proven
@@ -154,17 +212,18 @@ git diff --check
 
 #+begin_example
 Compilation passed with warnings treated as errors.
-2081 tests completed: 2065 expected, 0 unexpected, 16 skipped.
+2088 tests completed: 2072 expected, 0 unexpected, 16 skipped.
 The diff has no whitespace errors.
 #+end_example
 
 #+begin_src sh
 rtk eldev test -f test/e-openai-test.el \
+  -f test/e-loop-test.el \
   -f test/e-provider-continuation-integration-test.el
 #+end_src
 
 #+begin_example
-100 tests, 100 results as expected, 0 unexpected
+137 tests, 137 results as expected, 0 unexpected
 #+end_example
 
 #+begin_src sh
@@ -176,8 +235,13 @@ env E_E2E=1 E_E2E_TIMEOUT_SECONDS=180 \
 
 #+begin_example
 1 test, 1 result as expected, 0 unexpected
-10.975508 sec
+30.817972 sec
 #+end_example
+
+This credentialed ChatGPT subscription run accepted
+=include: ["reasoning.encrypted_content"]= and completed the second turn with an
+incremental connection-local =previous_response_id= request.  The canonical API
+profile's cache-counter E2E was not run because =OPENAI_API_KEY= was absent.
 
 * Live reload
 
