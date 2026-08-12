@@ -7,3 +7,4 @@ ui/modernchat/pkg/
 .e/perf-runs/
 .e/perf-baselines/
 ui/modernchat/target/
+.opencode
