@@ -26,6 +26,9 @@ incurs repeated implicit cache writes.
   the existing flattened =instructions= shape.
 - =prompt_cache_options.mode= is =explicit= whenever the explicit layout is
   active.  The existing =prompt_cache_key= remains the routing key.
+- Harness-derived routing keys retain the model, project-root, effective-layer,
+  and tool-set identity in one versioned digest and never exceed the provider's
+  64-character limit.
 - A continued request does not resend stable developer input.  Its retained
   response carries the earlier breakpoint; the request sends current dynamic
   context and transcript delta after it.
@@ -66,4 +69,5 @@ Credentialed provider validation must inspect both =cached_tokens= and
 =cache_write_tokens= across repeated requests.  Local request-shape tests prove
 the contract but cannot by themselves claim a provider cache hit.  The current
 ChatGPT Codex endpoint cannot provide that proof because it rejects the fields;
-an opt-in OpenAI API provider remains required for the cache-counter E2E.
+an opt-in OpenAI-compatible provider remains required for the cache-counter
+E2E.

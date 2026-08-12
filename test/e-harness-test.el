@@ -3907,6 +3907,49 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (should (equal (plist-get options :reasoning-effort) "medium"))
         (should-not (plist-get options :tools))))))
 
+(ert-deftest e-harness-test-derived-prompt-cache-key-fits-provider-limit ()
+  "Derived prompt cache keys preserve identity within the provider limit."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((harness
+            (e-harness-create
+             :backend (e-backend-fake-create :items nil)
+             :default-options '(:model "gpt-5.6"
+                                :prompt-cache-default t)))
+           (session-id "session-1")
+           (other-root-session-id "session-2"))
+      (e-harness-create-session
+       harness
+       :id session-id
+       :metadata '(:project-root "/tmp/cache-project"))
+      (e-harness-create-session
+       harness
+       :id other-root-session-id
+       :metadata '(:project-root "/tmp/other-cache-project"))
+      (let* ((options (e-harness-turn-options harness session-id))
+             (key (plist-get options :prompt-cache-key))
+             (other-root-key
+              (plist-get
+               (e-harness-turn-options harness other-root-session-id)
+               :prompt-cache-key))
+             (other-model-key
+              (e-harness--derived-prompt-cache-key
+               harness session-id
+               (plist-put (copy-sequence options) :model "gpt-5.7")))
+             (other-tools-key
+              (e-harness--derived-prompt-cache-key
+               harness session-id
+               (plist-put (copy-sequence options)
+                          :tools
+                          '((:name "different-tool"))))))
+        (should (string-match-p "\\`e:pcctx[0-9]+:[[:xdigit:]]+\\'" key))
+        (should (= (length key) e-harness-prompt-cache-key-max-length))
+        (should (equal key
+                       (e-harness--derived-prompt-cache-key
+                        harness session-id options)))
+        (should-not (equal key other-root-key))
+        (should-not (equal key other-model-key))
+        (should-not (equal key other-tools-key))))))
+
 (ert-deftest e-harness-test-provider-diagnostics-retain-websocket-routing ()
   "Durable provider diagnostics explain WebSocket continuation routing."
   (let ((projected

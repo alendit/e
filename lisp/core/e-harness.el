@@ -1915,8 +1915,11 @@ materializing tool definitions.  Presentation code uses it for status text."
       (cl-remf options :reasoning-effort))
     (e-harness--set-session-options harness session-id options)))
 
-(defconst e-harness-prompt-cache-key-version "pcctx1"
+(defconst e-harness-prompt-cache-key-version "pcctx2"
   "Version marker for derived prompt cache keys.")
+
+(defconst e-harness-prompt-cache-key-max-length 64
+  "Maximum length of an OpenAI-compatible prompt cache key.")
 
 (defun e-harness--prompt-cache-hash (value length)
   "Return a deterministic LENGTH-character hash for VALUE."
@@ -1932,21 +1935,21 @@ materializing tool definitions.  Presentation code uses it for status text."
 The active tool set participates in the key so mid-session tool activation
 \(e.g. MCP progressive disclosure) does not silently reuse a cache prefix
 built without those tools."
-  (format "e:%s:%s:%s:%s:%s"
-          e-harness-prompt-cache-key-version
-          (e-harness--prompt-cache-hash (plist-get options :model) 8)
-          (e-harness--prompt-cache-hash
-           (e-harness-project-root harness session-id)
-           16)
-          (e-harness--prompt-cache-hash
-           (e-harness-effective-layer-ids harness session-id)
-           16)
-          (e-harness--prompt-cache-hash
-           (mapcar (lambda (tool) (plist-get tool :name))
-                   (or (plist-get options :tools)
-                       (e-tools-definitions
-                        (e-harness-tools harness session-id))))
-           16)))
+  (let* ((prefix (format "e:%s:" e-harness-prompt-cache-key-version))
+         (identity
+          (list :model (plist-get options :model)
+                :project-root (e-harness-project-root harness session-id)
+                :layer-ids
+                (e-harness-effective-layer-ids harness session-id)
+                :tool-names
+                (mapcar (lambda (tool) (plist-get tool :name))
+                        (or (plist-get options :tools)
+                            (e-tools-definitions
+                             (e-harness-tools harness session-id)))))))
+    (concat prefix
+            (e-harness--prompt-cache-hash
+             identity
+             (- e-harness-prompt-cache-key-max-length (length prefix))))))
 
 (defun e-harness--apply-prompt-cache-defaults (harness session-id options)
   "Apply opt-in prompt cache defaults to OPTIONS."

@@ -18,8 +18,10 @@ fields: stable context is carried by continuation and changed dynamic context
 is re-emitted.
 
 The repository contract is implemented and deterministic tests pass.  A
-credentialed explicit-cache hit/write measurement remains unresolved because
-the available ChatGPT Codex endpoint is not a compatible provider.
+credentialed stateless Engineering AI Model Gateway run now supplies the
+provider-side cache proof that ChatGPT Codex cannot: the first turn reported
+positive cache-write tokens and the second reported positive cached-input
+tokens.
 
 The follow-up alignment slice adds a canonical =openai= API profile and makes
 the shared contract executable rather than conventional.  ChatGPT and API use
@@ -43,6 +45,29 @@ explicit cache fields are the only intended request differences.
   2026-08-12.
 
 * Findings
+
+** Resolved High: derived cache keys exceeded the provider limit
+
+*** Problem
+
+The harness-derived cache key encoded four separately delimited hashes.  Its
+fixed 68-character shape caused the live gateway to reject otherwise valid
+explicit-cache requests because =prompt_cache_key= accepts at most 64
+characters.
+
+*** Change
+
+The derivation version is now =pcctx2=.  It hashes the same model, project root,
+effective layer ids, and active tool names as one identity and uses the
+remaining characters after the versioned prefix, producing a deterministic
+64-character key without weakening the routing boundary.
+
+*** Evidence
+
+The focused regression first failed against the old 68-character key, then
+passed after the derivation change.  It also proves that model, project root,
+and tool-set changes produce different keys.  The credentialed gateway probe
+accepted the derived key and completed both cache-counter turns.
 
 ** Resolved High: model-name inference broke ChatGPT Codex
 
@@ -151,6 +176,32 @@ Parser, loop, assistant replay, and tool-call replay tests cover the complete
 deterministic path without exposing encrypted content as transcript text or
 provider diagnostics.
 
+** Resolved Medium: the Doom gateway profile lagged the adapter contract
+
+*** Problem
+
+The external Doom profile still configured the removed
+=:prompt-cache-retention nil= option, did not declare segmented developer input
+or explicit-cache support, and left =:prompt-cache-default= disabled on the
+default harness.  It therefore could not exercise the cache behavior delivered
+by this feature.
+
+*** Change
+
+The source =config.org= and tangled =config.el= now select
+=:responses-context-layout developer-input=,
+=:prompt-cache-breakpoint-mode explicit=, and
+=:include-encrypted-reasoning t=.  The default parent harness enables derived
+cache keys.  Child harness factories remain policy-neutral because spawned
+sessions already inherit the parent cache policy.
+
+*** Evidence
+
+An isolated batch evaluation of the actual Doom =after! e-default-harnesses=
+block proved the registered profile values, harness default, and 64-character
+derived key.  The live gateway accepted the same complete profile and returned
+both required cache counters.
+
 * Plan coverage
 
 - Segment propagation: implemented without persisting derived segment data.
@@ -159,10 +210,10 @@ provider diagnostics.
 - Continued and full-fallback layouts: implemented with revisioned anchors.
 - Cache write telemetry: implemented through durable activity and process
   reporting.
-- Credentialed hit/write counters: test exists and requires an explicit-capable
-  provider; the new =e-e2e-config-openai-api.el= selects the canonical profile
-  when =OPENAI_API_KEY= is available and remains intentionally unrunnable
-  against current ChatGPT Codex.
+- Credentialed hit/write counters: proven through a context-free Engineering AI
+  Model Gateway profile using the same explicit cache and stateless replay
+  contract.  The canonical =e-e2e-config-openai-api.el= remains available for
+  direct first-party validation when =OPENAI_API_KEY= is present.
 
 * Architecture review
 
@@ -205,15 +256,25 @@ previous request layout.
 * Verification
 
 #+begin_src sh
-rtk eldev compile --warnings-as-errors
-rtk eldev test
+eldev compile --warnings-as-errors
+eldev test
 git diff --check
 #+end_src
 
 #+begin_example
 Compilation passed with warnings treated as errors.
-2088 tests completed: 2072 expected, 0 unexpected, 16 skipped.
+2089 tests completed: 2087 expected, 0 unexpected, 2 skipped.
 The diff has no whitespace errors.
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-harness-test.el \
+  -f test/e-provider-continuation-integration-test.el \
+  -f test/e-subagent-runner-test.el
+#+end_src
+
+#+begin_example
+157 tests, 157 results as expected, 0 unexpected
 #+end_example
 
 #+begin_src sh
@@ -243,6 +304,28 @@ This credentialed ChatGPT subscription run accepted
 incremental connection-local =previous_response_id= request.  The canonical API
 profile's cache-counter E2E was not run because =OPENAI_API_KEY= was absent.
 
+A second credentialed run used a temporary context-free provider config that
+mirrored the Doom Engineering AI Model Gateway profile: HTTP Responses,
+=store=false=, no continuation, segmented developer input, explicit cache
+breakpoints, encrypted reasoning, and default derived cache keys.
+
+#+begin_src sh
+E_E2E=1 E_E2E_TIMEOUT_SECONDS=180 \
+  E_E2E_CONFIG=/tmp/e-e2e-config-eng-ai-gateway.el \
+  eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-eng-ai-gateway-explicit-cache-counters
+#+end_src
+
+#+begin_example
+1 test, 1 result as expected, 0 unexpected
+3.887438 sec
+#+end_example
+
+The test asserted a 64-character derived key, positive first-turn
+=cache_write_tokens=, and positive second-turn =cached_tokens=.  Successful
+completion also proved that the gateway accepts
+=include: ["reasoning.encrypted_content"]= in this stateless shape.
+
 * Live reload
 
 The running Emacs was not reloaded.  Repository changes require a reload before
@@ -250,7 +333,6 @@ interactive sessions use the corrected profile and renderer.
 
 * Unresolved
 
-Run =e-live-e2e-test-openai-gpt56-explicit-cache-continues= against a
-credentialed Responses provider that supports the documented explicit fields.
-Acceptance requires positive first-turn =cache_write_tokens= and positive
-second-turn =cached_tokens=; do not infer those counters from request shape.
+Direct first-party OpenAI validation remains optional when =OPENAI_API_KEY= is
+available.  The required provider-side cache-write/cache-hit evidence is now
+present from the compatible gateway rather than inferred from request shape.
