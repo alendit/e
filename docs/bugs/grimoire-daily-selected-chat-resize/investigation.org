@@ -1,0 +1,82 @@
+#+title: Investigation: Grimoire daily fails from a selected chat composer
+#+startup: overview
+
+* Root cause
+
+=grimoire-topic--display-doc-and-chat= treated =selected-window= as an ordinary
+layout parent.
+It calculated the daily document's 2:1 split from that window's height and then
+called =split-window= directly.
+
+An =e-chat= composer is a five-line constituent of an atomic transcript and
+composer surface.
+Emacs redirects a split of an atomic constituent to the complete atomic root,
+but Grimoire had already calculated a four-line size from the small composer.
+Applying that constituent-sized split to the complete surface failed inside
+=split-window-internal= with =Resizing old window failed=.
+
+* Evidence
+
+A bounded read-only probe of the reported live frame found exactly two windows:
+
+#+begin_example
+:selected-mode e-chat-composer-mode
+:selected-height 5
+:selected-edges (0 80 388 85)
+:atom-root-edges (0 1 388 85)
+#+end_example
+
+An isolated native graphical regression selected a composed chat's input pane
+and called =grimoire-topic--display-doc-and-chat=.
+Before the fix it reproduced the exact condition with this relevant backtrace:
+
+#+begin_example
+split-window-internal(... 602 below ...)
+split-window(... 4 below nil)
+split-window(... 4 below)
+grimoire-topic--display-doc-and-chat(...)
+error: Resizing old window failed
+#+end_example
+
+* Fix
+
+The Grimoire presentation shell now normalizes the selected layout target
+before constructing its document/chat split.
+For an atomic selected surface it creates an ordinary sibling beside the atomic
+root, deletes that root as one unit, and lets the sibling expand into the same
+space.
+The existing 2:1 document/chat layout then operates on one normal live window.
+
+This behavior remains presentation-owned in Grimoire.
+It does not change the =e= harness, session, Org Canvas, or backend contracts.
+
+* Validation
+
+- The permanent native graphical regression passes and proves all of the
+  following: the old chat surface is removed from the layout, the daily
+  document and new chat are visible, the new composer is focused, and an
+  unrelated sibling window remains intact.
+- All seven Grimoire topic-session tests pass.
+- Warning-as-error project-local compilation passes for all 22 Elisp files.
+- The complete non-graphical Grimoire test set ran 79 tests: 78 passed and one
+  unrelated existing Graphify process-shape expectation failed because the
+  implementation reports =/bin/zsh= while that test expects =graphify=.
+
+* Live state
+
+The running Emacs was inspected read-only and was not reloaded.
+Reload the Grimoire project-local layer or restart Emacs before retrying the
+command.
+
+* Design self-check
+
+The work stops at a useful complete behavior: invoking a Grimoire document
+shell from another atomic chat surface is now safe.
+It moves toward presentation shells that replace composed UI as a unit without
+leaking window-tree details into harness or session policy.
+The only new state is transient Emacs window structure; it remains owned by the
+Grimoire presentation function and is rebuilt on each display.
+The helper uses standard atomic-window operations, preserves sibling windows,
+adds no compatibility path, and lets unexpected split/delete failures surface.
+The native graphical regression isolates the window contract from provider and
+session behavior.

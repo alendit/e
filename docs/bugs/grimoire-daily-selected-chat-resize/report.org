@@ -1,0 +1,14 @@
+#+title: Grimoire daily fails from a selected chat composer
+#+startup: overview
+
+* Report
+
+The user invoked =grimoire-daily= while an existing composed =e-chat= input
+pane was selected.
+
+The existing chat remained visible, the daily document did not open, and Emacs
+reported:
+
+#+begin_example
+Resizing old window failed
+#+end_example
