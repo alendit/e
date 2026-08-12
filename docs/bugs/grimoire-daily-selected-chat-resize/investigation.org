@@ -40,22 +40,32 @@ error: Resizing old window failed
 
 * Fix
 
-The Grimoire presentation shell now normalizes the selected layout target
-before constructing its document/chat split.
-For an atomic selected surface it creates an ordinary sibling beside the atomic
-root, deletes that root as one unit, and lets the sibling expand into the same
-space.
-The existing 2:1 document/chat layout then operates on one normal live window.
+The =e= presentation layer now exposes =e-window-surface-replace=.
+It accepts a window without knowing which shell created it and returns one
+ordinary window occupying that window's complete native surface.
+For an atomic surface it creates a sibling beside the atom root, deletes the
+root as one unit, and lets the sibling expand into the vacated space.
 
-This behavior remains presentation-owned in Grimoire.
-It does not change the =e= harness, session, Org Canvas, or backend contracts.
+Grimoire now calls that public presentation API before constructing its 2:1
+document/chat layout.
+Its production code has no atomic-window or =e-chat= surface knowledge.
+The chat shell continues to own how transcript and composer are composed; the
+generic display boundary owns how another shell replaces any composed surface.
+No harness, session, Org Canvas, or backend contract changed.
 
 * Validation
 
-- The permanent native graphical regression passes and proves all of the
+- An =e=-owned native graphical test builds a synthetic atomic surface with no
+  chat dependency and proves it is replaced as one unit, its unrelated sibling
+  survives, and the returned ordinary window can be proportionally split.
+- The Grimoire native graphical integration regression passes and proves all of the
   following: the old chat surface is removed from the layout, the daily
   document and new chat are visible, the new composer is focused, and an
   unrelated sibling window remains intact.
+- The complete =e= graphical matrix passes 15 tests, including the generic
+  surface contract.
+- The complete =e= non-graphical suite passes all 2,089 tests with two optional
+  skips, and warning-as-error byte compilation passes.
 - All seven Grimoire topic-session tests pass.
 - Warning-as-error project-local compilation passes for all 22 Elisp files.
 - The complete non-graphical Grimoire test set ran 79 tests: 78 passed and one
@@ -70,13 +80,28 @@ command.
 
 * Design self-check
 
-The work stops at a useful complete behavior: invoking a Grimoire document
-shell from another atomic chat surface is now safe.
-It moves toward presentation shells that replace composed UI as a unit without
-leaking window-tree details into harness or session policy.
-The only new state is transient Emacs window structure; it remains owned by the
-Grimoire presentation function and is rebuilt on each display.
-The helper uses standard atomic-window operations, preserves sibling windows,
-adds no compatibility path, and lets unexpected split/delete failures surface.
-The native graphical regression isolates the window contract from provider and
-session behavior.
+1. The work is useful alone: every =e= presentation shell can replace a native
+   composed surface without depending on its producer.
+2. It moves toward shells composing through shared presentation contracts while
+   keeping their internal buffer/window structure private.
+3. Native atomic-window handling is stable Emacs behavior; the caller's layout
+   remains local and independently changeable.
+4. =e-window-surfaces= owns the cross-shell native surface transition.  Chat
+   still owns transcript/composer composition and Grimoire owns its 2:1 layout.
+5. Coupling is reduced because Grimoire no longer knows that chat uses atoms.
+   The public interface accepts one optional window and returns one window.
+6. No stable policy depends on a concrete shell, provider, or project layer.
+7. The split/delete side effects remain at the presentation edge.
+8. The only state mutation is transient Emacs window structure; there is no
+   cache or durable state.
+9. Replacing an atom performs one split and one delete, both constant-size
+   structural operations already required by the transition.
+10. A native window surface is a real substitutable contract: ordinary and
+    atomic surfaces both yield one ordinary layout target.
+11. Ordinary-window behavior is preserved; obsolete Grimoire-specific atom
+    handling was removed rather than retained as a fallback.
+12. The project-local surface helper is removed.
+13. A dead input window is rejected explicitly; unexpected Emacs split/delete
+    failures surface unchanged.
+14. The synthetic graphical contract proves the generic behavior without chat,
+    while the Grimoire integration test proves the real consumer path.

@@ -111,6 +111,7 @@ Test processes may bind this to nil while placing source first in
   (require 'e-project-local)
   (require 'e-default-harnesses)
   (require 'e-shells)
+  (require 'e-window-surfaces)
   (require 'e-layers-shell)
   (require 'e-context-status)
   (require 'e-workspaces)
