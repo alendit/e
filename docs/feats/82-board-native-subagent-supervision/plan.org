@@ -201,12 +201,66 @@ The current prompt-driven daily flow, exact-output commit action, and busy-sessi
 
 * Implementation slices
 
-1. *Progress plumbing*: map bounded child events to =e-work-progress= and verify coalesced board =work-progress= activities.
-2. *Observation surface*: expose latest progress and age through normalized records and pending =await= results.
-3. *Supervision guidance*: update the compact instructions, skill, and dynamic active-child context so a timeout always triggers a decision.
-4. *Intervention audit*: add optional reasons and board facts for steer, interrupt, and shutdown.
-5. *Shell support*: show runtime and last activity, mark soft staleness, and add steer and progress-peek commands.
-6. *Verification*: add focused runner, await, board-runtime, action, context-provider, and graphical shell tests.
+Each slice is one commit.  A later slice may depend only on the named earlier slices.
+The live path remains useful without the durable path.  The durable path reuses board facts and session-backed board journals rather than making a second watchdog or polling store.
+A deadline records evidence or changes a durable group projection.  Wall-clock duration alone never cancels a child, task, or run.
+
+1. *Child progress spine* [live foundation]
+   - Own =lisp/layers/agents/e-subagent-runner.el= and =lisp/layers/agents/e-subagent-registry.el=.
+   - Give each direct child turn a monotonic, bounded progress event at turn, provider, tool, action, steering, and terminal boundaries.  Map nonterminal events to the enrolled child's =e-work-progress= handle.  Store only the latest snapshot, sequence, =:started-at=, and =:last-activity-at= in the normalized registry record.
+   - Do not copy a transcript, reasoning delta, or tool result into progress.  Keep terminal settlement on the existing =e-work= finish, fail, and cancel path.
+   - Test gate: focused ERT in =test/e-subagent-runner-test.el= and =test/e-subagents-test.el= proves monotonic bounded snapshots, no reasoning-delta fan-out, and unchanged structured-report precedence.
+
+2. *Board and await evidence* [depends on 1]
+   - Own =lisp/core/e-board-runtime.el= and =lisp/core/e-await-tool.el=.
+   - Preserve the runtime's latest-value activity mailbox.  Publish child progress as coalesced =work-progress= board activity with work and child provenance.  Add the latest bounded progress snapshot, sequence, and computed age to every pending await result, including a timeout result.
+   - Keep await timeout nonterminal.  It must neither cancel the work handle nor alter a child's lifecycle state.
+   - Test gate: focused ERT in =test/e-board-runtime-test.el= and =test/e-await-tool-test.el= proves coalescing, per-reference timeout evidence, bounded payloads, and no auto-cancel.
+
+3. *Explicit live supervision controls* [depends on 1]
+   - Own =lisp/layers/agents/e-subagent-actions.el= and =lisp/layers/agents/e-subagents.el=.
+   - Add optional =:reason= to =steer=, =interrupt=, and =shutdown=.  Record =:last-intervention= in the live record.  Publish one idempotent board fact for each intervention with parent and child session identity, action, and bounded reason.  Do not inject a reason into a child except as part of an explicit steer prompt.
+   - Add active-child context and skill guidance for the checkpoint sequence: compare progress; re-await only after progress or a credible declared operation; inspect; steer once; then explicitly interrupt and choose resume or replacement.  State that time alone never authorizes cancellation.
+   - Test gate: focused ERT in =test/e-subagents-test.el= and =test/e-subagent-runner-test.el= proves action schemas, fact provenance, context wording, and explicit-only interruption.
+
+4. *Live operator view* [depends on 1 and 3]
+   - Own =lisp/shells/e-subagents-shell.el=.
+   - Add runtime, last activity, and latest progress columns; mark two unchanged checkpoints as soft-stale without changing =running=.  Add =s= for steer with optional reason and =p= for bounded progress plus transcript-tail inspection.  Refresh from registry notifications only.
+   - Test gate: focused ERT in =test/e-subagents-shell-test.el= proves columns, warning state, commands, and notification-driven refresh.  Run the focused graphical selector when the final presentation changes require redisplay proof.
+
+5. *Durable report and manifest contract* [durable foundation; may start after 1]
+   - Add =lisp/core/e-board-orchestration.el= and =test/e-board-orchestration-test.el=.  Keep board message validation and idempotent fact publication in =lisp/core/e-board.el=.
+   - Define versioned, bounded board facts for a run manifest, task attempt, terminal report, conflict, and continuation claim.  A manifest names =run-id=, task keys, required or optional policy, accepted attempt rules, deadline policy, and continuation destination.  A report names =run-id=, task key, attempt, terminal status, summary, declared outputs, and bounded error data.
+   - Reduce facts into an idempotent group projection.  Duplicate matching reports are no-ops.  A conflicting report remains visible and blocks a successful terminal projection.  A deadline is a projection fact only; it never cancels work.
+   - Test gate: focused ERT proves schema budgets, fact idempotency, required/optional completion, accepted-attempt selection, conflict visibility, and deadline-without-cancellation.
+
+6. *Durable dispatch and authoritative reports* [depends on 5]
+   - Own =lisp/layers/agents/e-subagent-runner.el=, =lisp/layers/agents/e-subagent-registry.el=, and new =lisp/layers/agents/e-board-orchestration-actions.el=.  Extend =test/e-subagent-runner-test.el=, =test/e-subagents-test.el=, and =test/e-board-orchestration-test.el=.
+   - Carry =run-id=, task key, and attempt in spawned-child lineage.  Make structured child reports publish the durable terminal-report fact before the local registry settles.  The report action must be able to resolve its durable assignment from the active board/session context, not from a process-local registry alone.
+   - Retain the registry as the live direct-child view.  It is not the replay authority.  A child that ends without an explicit structured report gets one bounded synthesized terminal report under the same idempotency key.
+   - Test gate: focused ERT proves report-before-settle ordering, exactly one terminal fact across callback retries, restart-independent report lookup, and preserved compact local results.
+
+7. *Task-queue bridge* [depends on 5 and 6]
+   - Own =lisp/core/e-task-queue.el= and new =lisp/layers/agents/e-board-orchestration-actions.el=.  Extend =test/e-task-queue-test.el= and =test/e-board-orchestration-test.el=.
+   - Add a bridge that persists run/task/attempt metadata in the existing durable task record, dispatches only the manifest's selected attempt, and turns queue terminal state into the same report protocol.  Rehydrated queued work may resume through the queue's existing dispatcher, but a restored =running= record must reconcile its durable assignment before it is retried or classified missing.
+   - Keep queue retry policy distinct from group accepted-attempt policy.  The group chooses one accepted report; it does not start or cancel work because a clock elapsed.
+   - Test gate: focused ERT proves metadata survives queue save/load, duplicate dispatch does not create a second accepted attempt, queue retry yields a new attempt, and terminal queue outcomes converge on one group projection.
+
+8. *Restore and exactly-once continuation* [depends on 5 through 7]
+   - Own =lisp/core/e-chat-service.el= and =lisp/core/e-board-orchestration.el=.  Extend =test/e-chat-service-test.el= and =test/e-board-orchestration-test.el=.
+   - During board binding restoration, replay persisted board facts into orchestration projections before exposing a missing-child or missing-run result.  Reattach live observers after replay.  A continuation claim contains its stable publication key and changes once from pending to published; replay and concurrent terminal facts must reuse that key.
+   - Queue one reconciliation input only when the group first reaches its terminal projection.  A failed publication remains observable and retryable with the same key.  Restart must not issue a second reconciliation turn.
+   - Test gate: focused ERT proves restart between report and continuation, restart after publication acknowledgement, duplicate report replay, failed-publication retry, and the explicit =not-restored-yet= versus =missing= distinction.
+
+9. *Run observation surface* [depends on 8]
+   - Own =lisp/layers/agents/e-board-orchestration-actions.el= and new =lisp/shells/e-board-runs-shell.el=.  Add =test/e-board-orchestration-actions-test.el= and =test/e-board-runs-shell-test.el=.
+   - Expose a bounded run projection with manifest, task states, accepted reports, conflicts, deadline evidence, and continuation state.  Let shells subscribe to projection changes rather than polling sessions.  Keep direct-child supervision in the subagents shell and durable run status in the run shell.
+   - Test gate: focused ERT proves bounded reads, projection subscription updates, conflict display, and no session polling.
+
+10. *End-to-end regression gate* [depends on 2 through 9]
+    - Run the focused ERT files named above, then the board, chat-service, subagent, await, task-queue, and persistence suites together.  Run =git diff --check= before each commit.
+    - Add one restart fixture that dispatches required and optional work, ends the coordinator turn, restores from the board journal and task queue, accepts one report per task, and emits exactly one reconciliation input.  Add one long-operation fixture that crosses multiple supervision windows without automatic cancellation.
+    - The final gate proves both stopping points: live supervision works without durable orchestration, and durable orchestration completes after restart without an active parent await.
 
 * Acceptance criteria
 
