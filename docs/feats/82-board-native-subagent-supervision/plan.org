@@ -139,6 +139,66 @@ The shell updates from registry progress notifications and does not poll child s
 These defaults guide the parent but do not encode correctness policy in the runtime.
 The runtime supplies evidence and controls; the parent decides whether the evidence justifies waiting, steering, interruption, resumption, or replacement.
 
+* Relationship to durable daily orchestration
+
+The August 7 Grimoire daily proposed a broader board-driven daily workflow.
+That design dispatches workers, ends the initiating turn, waits through durable board state, and queues exactly one reconciliation turn after the required tasks settle.
+This plan solves the live-supervision part of that design, but it does not by itself make the workflow restart-safe or self-continuing.
+
+** Capabilities already present
+
+- Board identity and board messages are persisted with sessions and restored into a board after restart.
+- Participants can receive queued inputs, so a reconciliation request can start a later coordinator turn.
+- Subagents provide spawn, status, bounded transcript reads, steering, interruption, resumption, shutdown, and structured reports.
+- Every subagent has a board-enrolled =e-work= handle, and =await= can aggregate those handles while the process remains live.
+- The task queue provides durable bounded-concurrency work with persisted task status and outputs.
+- Board producer bindings publish lifecycle facts and inputs without requiring an open chat buffer.
+
+** Missing e capabilities
+
+*** Durable structured subagent reports
+
+Subagent lifecycle facts currently persist status and identity, while authoritative structured report summaries and outputs remain in the process-local subagent registry.
+The board needs a bounded terminal report fact containing run ID, task key, attempt, terminal status, summary, declared outputs, and error details.
+Replay must recover the report without rebuilding the in-memory subagent registry.
+
+*** Durable completion groups
+
+The current board aggregation used by =await= watches live =e-work= IDs and replies to one active invocation.
+Its subscription and work handles are process-local and are not a restart-safe run manifest.
+The runtime needs a durable group record containing expected task keys, required or optional policy, accepted attempts, deadline policy, and terminal projection.
+Duplicate matching reports must be idempotent, while conflicting reports must fail visibly.
+
+*** Exactly-once queued continuation
+
+=e= can queue input to a participant, but no durable controller currently says, “when this group first becomes terminal, publish this continuation exactly once.”
+The completion group needs an =on-complete= destination and a persisted publication key that fences replay and restart duplicates.
+
+*** Restart reconstruction
+
+Board IDs and message history restore today, but completion subscriptions, subagent registry records, and producer authority are process-local.
+The runtime needs a restoration pass that rebuilds active group projections and controller subscriptions before callers classify a coordinator or child as missing.
+It must distinguish “not restored yet” from “definitively missing.”
+
+*** Run-aware observation
+
+Current subagent and task-queue views expose individual records.
+The board needs a bounded run view that returns the manifest, task states, accepted reports, conflicts, deadline state, and continuation state.
+Shells should subscribe to those projections instead of polling sessions.
+
+** Grimoire work after e supplies the primitives
+
+The remaining pieces belong in Grimoire rather than the generic runtime:
+
+- build the daily task manifest and artifact allowlist;
+- choose required and optional task policy;
+- dispatch one run and store its run reference;
+- reconcile only accepted report artifacts;
+- finalize only declared durable paths;
+- prevent a cron tick and foreground refresh from creating two active runs for the same daily.
+
+The current prompt-driven daily flow, exact-output commit action, and busy-session guard are useful fallbacks but do not satisfy this durable workflow contract.
+
 * Implementation slices
 
 1. *Progress plumbing*: map bounded child events to =e-work-progress= and verify coalesced board =work-progress= activities.
