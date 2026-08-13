@@ -708,3 +708,49 @@ report is child-side and must not be on the parent surface."
 (provide 'e-subagent-runner-test)
 
 ;;; e-subagent-runner-test.el ends here
+
+(ert-deftest e-subagent-runner-test-progress-snapshots-are-monotonic-and-bounded ()
+  "Child progress retains only the latest bounded snapshot on its work handle."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (work-handle (e-subagent-registry-work-handle registry subagent-id))
+             (first (plist-get record :progress)))
+        (should (= (plist-get first :sequence) 1))
+        (e-subagent--record-progress registry subagent-id work-handle 'tool-finished)
+        (let* ((updated (e-subagent-registry-get registry subagent-id))
+               (progress (plist-get updated :progress)))
+          (should (= (plist-get updated :progress-sequence) 2))
+          (should (eq (plist-get progress :event) 'tool-finished))
+          (should (equal (plist-get progress :summary) "Finished tool"))
+          (should (numberp (plist-get updated :started-at)))
+          (should (numberp (plist-get updated :last-activity-at))))))))
+
+(ert-deftest e-subagent-runner-test-direct-runner-ignores-reasoning-deltas ()
+  "The direct runner maps meaningful lifecycle events but not reasoning deltas."
+  (let (subscriber progress-events)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (_harness _session callback)
+                 (setq subscriber callback)
+                 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (_harness _session _prompt)
+                 (funcall subscriber '(:type reasoning-delta :payload (:content "hidden")))
+                 (funcall subscriber '(:type tool-started :payload (:result "hidden")))
+                 (funcall subscriber '(:type tool-finished :payload (:result "hidden")))
+                 (funcall subscriber '(:type turn-finished :payload nil))))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       nil "child" "go" nil (lambda (&rest _) nil)
+       (lambda (event) (push event progress-events)))
+      (should (equal (nreverse progress-events)
+                     '(tool-started tool-finished turn-finished))))))

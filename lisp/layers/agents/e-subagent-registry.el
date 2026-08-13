@@ -23,6 +23,9 @@
   "Functions run with a registry after any subagent record changes.
 List buffers hook onto this to track live subagent status.")
 
+(defconst e-subagent-registry-max-progress-summary-length 240
+  "Maximum width of the live progress summary retained for one child.")
+
 (cl-defstruct (e-subagent-registry
                (:constructor e-subagent-registry-create))
   (records (make-hash-table :test 'equal))
@@ -72,7 +75,12 @@ List buffers hook onto this to track live subagent status.")
           :label (plist-get record :label)
           :result-summary (plist-get record :result-summary)
           :outputs (plist-get record :outputs)
-          :error (plist-get record :error))))
+          :error (plist-get record :error)
+          :started-at (plist-get record :started-at)
+          :last-activity-at (plist-get record :last-activity-at)
+          :progress-sequence (plist-get record :progress-sequence)
+          :progress (copy-tree (plist-get record :progress))
+          :last-intervention (copy-tree (plist-get record :last-intervention)))))
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
@@ -104,6 +112,11 @@ internally so steer/read reach the child session on its own harness."
                        :error nil
                        :cancel nil
                        :created-at (float-time)
+                       :started-at nil
+                       :last-activity-at nil
+                       :progress-sequence 0
+                       :progress nil
+                       :last-intervention nil
                        :finished-at nil)))
     (puthash subagent-id record (e-subagent-registry-records registry))
     (setf (e-subagent-registry-order registry)
@@ -114,14 +127,43 @@ internally so steer/read reach the child session on its own harness."
 
 (defun e-subagent-registry-update (registry subagent-id &rest fields)
   "Apply FIELDS to SUBAGENT-ID's record in REGISTRY and return normalized form."
-  (let ((record (e-subagent-registry--record registry subagent-id)))
+  (let ((record (e-subagent-registry--record registry subagent-id))
+        (status-changed (plist-member fields :status)))
     (while fields
       (let ((key (pop fields)))
         (when fields
           (plist-put record key (pop fields)))))
-    (e-subagent-registry--publish-change record)
+    (when status-changed
+      (e-subagent-registry--publish-change record))
     (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
+
+(defun e-subagent-registry-record-progress (registry subagent-id event summary)
+  "Record one bounded progress EVENT and SUMMARY for SUBAGENT-ID.
+Only the latest snapshot stays in the registry.  The returned snapshot is safe
+to publish through the child work handle; transcript and tool result data stay
+in the child session."
+  (unless (symbolp event)
+    (signal 'wrong-type-argument (list 'symbolp event)))
+  (unless (stringp summary)
+    (signal 'wrong-type-argument (list 'stringp summary)))
+  (let* ((record (e-subagent-registry--record registry subagent-id))
+         (at (float-time))
+         (sequence (1+ (or (plist-get record :progress-sequence) 0)))
+         (snapshot
+          (list :subagent-id subagent-id
+                :sequence sequence
+                :event event
+                :summary (truncate-string-to-width
+                          summary e-subagent-registry-max-progress-summary-length
+                          nil nil "...")
+                :at at)))
+    (plist-put record :started-at (or (plist-get record :started-at) at))
+    (plist-put record :last-activity-at at)
+    (plist-put record :progress-sequence sequence)
+    (plist-put record :progress snapshot)
+    (e-subagent-registry--notify registry)
+    (copy-tree snapshot)))
 
 (defun e-subagent-registry-get (registry subagent-id)
   "Return the normalized record for SUBAGENT-ID in REGISTRY."

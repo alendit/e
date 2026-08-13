@@ -160,7 +160,7 @@ an explicit child harness or session policy always wins."
        child-harness child-session-id child-options))))
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
-                                               seed-messages on-settle)
+                                               seed-messages on-settle &optional on-progress)
   "Seed and start one non-blocking child turn, settling through ON-SETTLE.
 Returns a handle plist carrying a `:cancel' function that aborts the child's
 active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
@@ -173,6 +173,12 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
           (status &rest args)
           (unless settled
             (setq settled t)
+            (when on-progress
+              (funcall on-progress
+                       (pcase status
+                         ('done 'turn-finished)
+                         ('failed 'turn-failed)
+                         ('cancelled 'turn-cancelled))))
             (when subscription
               (e-chat-service-unsubscribe subscription))
             (apply on-settle status args))))
@@ -185,6 +191,11 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                            (content (plist-get message :content)))
                  (setq last-assistant content))
                (pcase (plist-get event :type)
+                 ((or 'provider-request-started 'provider-request-finished
+                      'tool-started 'tool-finished 'action-started
+                      'action-finished 'action-failed)
+                  (when on-progress
+                    (funcall on-progress (plist-get event :type))))
                  ('turn-finished
                   (finish 'done
                           :summary last-assistant))
@@ -205,6 +216,30 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
               (ignore-errors
                 (e-chat-service-abort-session
                  child-harness child-session-id)))))))
+
+(defun e-subagent--progress-summary (event)
+  "Return a bounded human-readable progress summary for child EVENT."
+  (pcase event
+    ('turn-started "Started child turn")
+    ('provider-request-started "Started provider request")
+    ('provider-request-finished "Finished provider request")
+    ('tool-started "Started tool")
+    ('tool-finished "Finished tool")
+    ('action-started "Started action")
+    ((or 'action-finished 'action-failed) "Finished action")
+    ('turn-steered "Steered child turn")
+    ('turn-finished "Finished child turn")
+    ('turn-failed "Child turn failed")
+    ('turn-cancelled "Child turn cancelled")
+    (_ (format "%s" event))))
+
+(defun e-subagent--record-progress (registry subagent-id work-handle event)
+  "Publish bounded child EVENT progress through WORK-HANDLE and REGISTRY."
+  (let ((snapshot
+         (e-subagent-registry-record-progress
+          registry subagent-id event (e-subagent--progress-summary event))))
+    (e-work-progress work-handle snapshot)
+    snapshot))
 
 (defun e-subagent--work-spec ()
   "Return the cooperative work spec that wraps a spawned child turn.
@@ -275,13 +310,30 @@ existing child session)."
       (funcall enroll work-handle nil))
     (e-work-start-prepared work-handle)
     (e-subagent-registry-update registry subagent-id :work-handle work-handle)
+    (e-subagent--record-progress registry subagent-id work-handle 'turn-started)
     (let ((handle
-           (funcall runner
-                    child-harness session-id prompt seed-messages
-                    (lambda (status &rest args)
-                      (e-subagent--settle-work-handle work-handle status args)
-                      (apply #'e-subagent--settle
-                             registry subagent-id status args)))))
+           (if (eq runner #'e-subagent-direct-runner)
+               (funcall runner
+                        child-harness session-id prompt seed-messages
+                        (lambda (status &rest args)
+                          (e-subagent--settle-work-handle work-handle status args)
+                          (apply #'e-subagent--settle
+                                 registry subagent-id status args))
+                        (lambda (event)
+                          (e-subagent--record-progress
+                           registry subagent-id work-handle event)))
+             (funcall runner
+                      child-harness session-id prompt seed-messages
+                      (lambda (status &rest args)
+                        (e-subagent--record-progress
+                         registry subagent-id work-handle
+                         (pcase status
+                           ('done 'turn-finished)
+                           ('failed 'turn-failed)
+                           ('cancelled 'turn-cancelled)))
+                        (e-subagent--settle-work-handle work-handle status args)
+                        (apply #'e-subagent--settle
+                               registry subagent-id status args))))))
       (when (and (listp handle) (functionp (plist-get handle :cancel)))
         (e-subagent-registry-update registry subagent-id
                                     :cancel (plist-get handle :cancel)))
