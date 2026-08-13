@@ -15,7 +15,7 @@ The body shown in the failed turn is SSE, not non-stream text.  It contains a
 streaming event reference describes =response.created= as an initial event and
 the completed, incomplete, and failed variants as terminal outcomes:
 
-https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta?lang=curl
+https://developers.openai.com/api/reference/resources/responses/streaming-events
 
 The defect crossed two adapter boundaries:
 
@@ -69,26 +69,66 @@ The added coverage proves:
 - a first truncated Responses attempt followed by a successful second attempt
   settles the same harness turn exactly once without persisting partial output.
 
+* Follow-Up Protocol Error Audit
+
+The complete OpenAI HTTP error path was then audited against the official
+Responses and Chat Completions streaming-event contracts.  The audit reproduced
+and fixed these sibling gaps:
+
+- an official top-level Responses =error= event was ignored and then mislabeled
+  as premature termination;
+- an SSE event cut in the middle of JSON escaped as =json-end-of-file= instead
+  of becoming the same retryable premature-stream failure;
+- valid CRLF-delimited SSE framing was not accepted by either HTTP parser;
+- HTTP status and numeric =Retry-After= metadata were discarded, so an empty
+  429 or generic 5xx body could evade retry policy;
+- =response.failed= and ordinary JSON error bodies discarded the provider's
+  =server_error= code from the user-visible error used by retry policy;
+- valid refusal output was discarded by both Responses and Chat Completions;
+- an empty successful body and a non-stream Chat Completions body fell through
+  to the generic empty-output path.
+
+The fixes remain at the OpenAI adapter's HTTP settlement and event-mapping
+boundaries.  HTTP status is authoritative for 4xx and 5xx responses; unexpected
+malformed JSON still signals rather than being broadly swallowed.  Only an SSE
+body cut at end-of-input is classified as premature.  The common harness learns
+only the provider-neutral transient code =server_error=.
+
+The ChatGPT subscription request path remains the Responses WebSocket adapter.
+Its request shape, continuation behavior, and transport were not changed.  It
+shares only the corrected provider-event mapping.  Chat Completions keeps its
+own request and parser path and now has explicit regression coverage for the
+common complete-HTTP boundary.
+
+The official Responses event reference establishes =response.created= as
+nonterminal, documents =response.completed=, =response.failed=, and
+=response.incomplete= terminal events, and defines the top-level =error= event:
+
+https://developers.openai.com/api/reference/resources/responses/streaming-events
+
+The Chat Completions streaming reference documents streamed refusal deltas and
+terminal =finish_reason= values:
+
+https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
+
 This is a provider protocol behavior, not graphical presentation behavior, so
 the regression belongs in adapter/harness ERT rather than the graphical visual
 suite.
 
 * Validation
 
-- Red proof: all four new regressions failed against the pre-fix adapter.
-- Green proof: all four new regressions pass with the fix.
-- OpenAI adapter and provider-continuation matrix: 110/110 passed, including
-  the ChatGPT WebSocket cases.
-- Full repository suite on clean =457dad6f= plus this patch: 2,111 tests,
-  2,109 expected passes, zero unexpected results, and two environment-dependent
+- Red proof: the original four premature-stream regressions and all seven
+  newly reproduced protocol cases failed before their corresponding fixes.
+- Focused error-path matrix: 12/12 passed.
+- OpenAI adapter and provider-continuation matrix: 114/114 passed, including
+  the ChatGPT WebSocket and Chat Completions cases.
+- Full repository suite on clean =4d125544= plus this patch: 2,121 tests,
+  2,119 expected passes, zero unexpected results, and two environment-dependent
   skips.
 - Credentialed Engineering AI Gateway HTTP Responses E2E:
   =e-live-e2e-test-basic-assistant-response= passed.
-- Forced byte compilation of =lisp/adapters/openai/e-openai.el= with warnings
-  as errors passed.
-- The repository-wide warnings-as-errors compile remains blocked by the
-  pre-existing unused lexical variable =registry= in
-  =lisp/layers/agents/e-subagents.el=; the changed adapter compiles cleanly.
+- Forced warnings-as-errors byte compilation of
+  =lisp/adapters/openai/e-openai.el= and =lisp/core/e-harness.el= passed.
 
 * Architecture Self-Check
 

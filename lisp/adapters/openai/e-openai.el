@@ -1159,8 +1159,17 @@ profiles."
                   (e-openai-codex--http-header-bytes (cdr header))))
           headers))
 
+(cl-defstruct
+    (e-openai--http-response
+     (:constructor e-openai--http-response-create))
+  body
+  status
+  retry-after)
+
 (cl-defun e-openai-codex--http-request (&key url headers body)
-  "POST BODY to URL with HEADERS and return response text."
+  "POST BODY to URL with HEADERS and return its complete response.
+Successful responses are returned as body text.  HTTP errors carry their body,
+status, and retry metadata in an `e-openai--http-response'."
   (e-openai--reject-sync-in-hot-path 'e-openai-codex--http-request)
   (let ((response nil)
         (failure nil)
@@ -1185,8 +1194,46 @@ profiles."
   "Return response body text from url.el BUFFER."
   (with-current-buffer buffer
     (goto-char (point-min))
-    (re-search-forward "\n\n" nil 'move)
+    (re-search-forward "\r?\n\r?\n" nil 'move)
     (buffer-substring-no-properties (point) (point-max))))
+
+(defun e-openai-codex--http-response-status (callback-status)
+  "Return numeric HTTP status from the current buffer or CALLBACK-STATUS."
+  (or (and (boundp 'url-http-response-status)
+           (numberp url-http-response-status)
+           url-http-response-status)
+      (let* ((url-error (plist-get callback-status :error))
+             (http-tail (and (listp url-error) (memq 'http url-error))))
+        (and (numberp (cadr http-tail)) (cadr http-tail)))))
+
+(defun e-openai-codex--http-response-header (name)
+  "Return response header NAME from the current url.el buffer, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search t)
+          (limit (or (and (re-search-forward "\r?\n\r?\n" nil t)
+                          (match-beginning 0))
+                     (point-max))))
+      (goto-char (point-min))
+      (when (re-search-forward
+             (format "^%s:[ \t]*\\([^\r\n]*\\)" (regexp-quote name))
+             limit t)
+        (string-trim (match-string-no-properties 1))))))
+
+(defun e-openai-codex--http-retry-after ()
+  "Return a numeric Retry-After response delay from the current buffer."
+  (when-let ((value (e-openai-codex--http-response-header "Retry-After")))
+    (when (string-match-p "\\`[0-9]+\\(?:\\.[0-9]+\\)?\\'" value)
+      (string-to-number value))))
+
+(defun e-openai-codex--http-response (body callback-status)
+  "Return BODY with HTTP metadata from CALLBACK-STATUS when material."
+  (let ((status (e-openai-codex--http-response-status callback-status))
+        (retry-after (e-openai-codex--http-retry-after)))
+    (if (and (numberp status) (>= status 400))
+        (e-openai--http-response-create
+         :body body :status status :retry-after retry-after)
+      body)))
 
 (defun e-openai-codex--url-metadata (url)
   "Return sanitized diagnostic metadata for URL."
@@ -1218,8 +1265,9 @@ it?\" prompt that stalls a headless agent."
 (cl-defun e-openai-codex--http-request-start
     (&key url headers body on-complete on-error)
   "POST BODY to URL with HEADERS asynchronously.
-ON-COMPLETE receives the response body text.  ON-ERROR receives an Emacs
-condition list.  Return a cancellable `e-backend-request' handle."
+ON-COMPLETE receives body text or a structured HTTP error response.  ON-ERROR
+receives an Emacs condition list.  Return a cancellable `e-backend-request'
+handle."
   (let ((url-request-method "POST")
         (url-request-extra-headers (e-openai-codex--http-header-list headers))
         (url-request-data (encode-coding-string body 'utf-8))
@@ -1251,26 +1299,27 @@ condition list.  Return a cancellable `e-backend-request' handle."
              (let ((buffer (current-buffer)))
                (unwind-protect
                    (condition-case err
-                       (let ((url-error (plist-get status :error)))
+                       (let* ((url-error (plist-get status :error))
+                              (response-text
+                               (e-openai-codex--http-response-text buffer))
+                              (response
+                               (e-openai-codex--http-response
+                                response-text status)))
                          (if url-error
-                             (let ((response-text
-                                    (e-openai-codex--http-response-text
-                                     buffer)))
-                               (if (not (string-empty-p
-                                         (string-trim response-text)))
+                             (if (or (e-openai--http-response-p response)
+                                     (not (string-empty-p
+                                           (string-trim response-text))))
                                    (when on-complete
-                                     (funcall on-complete response-text))
-                                 (when on-error
-                                   (funcall
-                                    on-error
-                                    (list 'error
-                                          (e-format-safe
-                                           "OpenAI request failed: %S"
-                                           url-error))))))
+                                     (funcall on-complete response))
+                               (when on-error
+                                 (funcall
+                                  on-error
+                                  (list 'error
+                                        (e-format-safe
+                                         "OpenAI request failed: %S"
+                                         url-error)))))
                            (when on-complete
-                             (funcall
-                              on-complete
-                              (e-openai-codex--http-response-text buffer)))))
+                             (funcall on-complete response))))
                      (error
                       (when on-error
                         (funcall on-error err))))
@@ -1881,8 +1930,9 @@ list.  Return a cancellable `e-backend-request' handle."
    (delq nil
          (mapcar
           (lambda (part)
-            (when (member (plist-get part :type) '("output_text" "text"))
-              (plist-get part :text)))
+            (pcase (plist-get part :type)
+              ((or "output_text" "text") (plist-get part :text))
+              ("refusal" (plist-get part :refusal))))
           (e-openai-codex--sequence-list content)))
    ""))
 
@@ -1906,14 +1956,19 @@ list.  Return a cancellable `e-backend-request' handle."
   "Return a readable error message for a Responses failure EVENT."
   (let* ((response (plist-get event :response))
          (error (or (plist-get response :error)
-                    (plist-get event :error))))
-    (or (and (listp error)
-             (when-let ((message (plist-get error :message)))
-               (and (stringp message)
-                    (e-openai--bounded-diagnostic-text message))))
-        (and (stringp error)
-             (e-openai--bounded-diagnostic-text error))
-        (e-openai--bounded-diagnostic-string event))))
+                    (plist-get event :error)))
+         (code (or (and (listp error) (plist-get error :code))
+                   (plist-get event :code)))
+         (message
+          (or (and (listp error) (plist-get error :message))
+              (and (stringp error) error)
+              (plist-get event :message))))
+    (if (stringp message)
+        (let ((message (e-openai--bounded-diagnostic-text message)))
+          (if (stringp code)
+              (format "%s: %s" code message)
+            message))
+      (e-openai--bounded-diagnostic-string event))))
 
 (defun e-openai-codex--number-or-nil (value)
   "Return VALUE when it is numeric, otherwise nil."
@@ -1968,13 +2023,18 @@ PROMPT-LAYOUT-REVISION records the request layout carried by the response."
     (let* ((payload (e-openai-codex--parse-json stream-text))
            (error (plist-get payload :error))
            (detail (plist-get payload :detail))
+           (code (and (listp error)
+                      (or (plist-get error :code)
+                          (plist-get error :type))))
            (message (cond
                      ((listp error) (plist-get error :message))
                      ((stringp error) error)
                      ((stringp detail) detail))))
       (when message
         (list :type 'backend-error
-              :content message
+              :content (if (stringp code)
+                           (format "%s: %s" code message)
+                         message)
               :payload payload)))))
 
 (defun e-openai-codex--text-preview (text &optional limit)
@@ -1995,19 +2055,26 @@ LIMIT defaults to 240 characters."
    (replace-regexp-in-string "<[^>]+>" " " (or html ""))
    limit))
 
-(defun e-openai-codex--non-stream-error-item (stream-text)
-  "Return a backend error item for non-empty non-SSE STREAM-TEXT."
-  (let* ((trimmed (string-trim-left (or stream-text "")))
+(defun e-openai-codex--non-stream-error-item (stream-text &optional wire-api)
+  "Return a backend error item for non-empty non-SSE STREAM-TEXT.
+WIRE-API identifies the expected OpenAI streaming protocol."
+  (let* ((raw (or stream-text ""))
+         (trimmed (string-trim-left raw))
          (html (string-prefix-p "<" trimmed))
          (preview (if html
                       (e-openai-codex--html-text-preview stream-text)
                     (e-openai-codex--text-preview stream-text)))
          (kind (if html 'html 'text)))
-    (when (not (string-empty-p preview))
+    (unless (string-empty-p (string-trim raw))
       (list :type 'backend-error
-            :content (format "Provider returned %s instead of a Responses stream: %s"
+            :content (format "Provider returned %s instead of a %s stream: %s"
                              (if html "HTML" "non-stream text")
-                             preview)
+                             (if (eq wire-api 'chat-completion)
+                                 "Chat Completions"
+                               "Responses")
+                             (if (string-empty-p preview)
+                                 "(no text content)"
+                               preview))
             :payload (list :response-kind kind
                            :preview preview)))))
 
@@ -2015,6 +2082,14 @@ LIMIT defaults to 240 characters."
   "Return non-nil when TEXT contains at least one SSE data field."
   (and (stringp text)
        (string-match-p "\\(?:\\`\\|\n\\)data:" text)))
+
+(defun e-openai--sse-chunks (text)
+  "Return SSE event chunks from TEXT with LF or CRLF framing."
+  (split-string text "\r?\n\r?\n" t))
+
+(defun e-openai--sse-lines (chunk)
+  "Return lines from SSE CHUNK with LF or CRLF framing."
+  (split-string chunk "\r?\n"))
 
 (defun e-openai-codex--incomplete-reason (event)
   "Return the backend-neutral terminal reason for incomplete EVENT."
@@ -2038,6 +2113,12 @@ LIMIT defaults to 240 characters."
      ((equal type "response.output_text.done")
       (list :type 'assistant-message
             :content (plist-get event :text)))
+     ((equal type "response.refusal.delta")
+      (list :type 'assistant-delta
+            :content (plist-get event :delta)))
+     ((equal type "response.refusal.done")
+      (list :type 'assistant-message
+            :content (plist-get event :refusal)))
      ((equal type "response.reasoning_summary_text.delta")
       (list :type 'reasoning-delta
             :stream-kind 'summary
@@ -2083,6 +2164,10 @@ LIMIT defaults to 240 characters."
       (list :type 'backend-error
             :content (e-openai-codex--response-error-message event)
             :payload event))
+     ((equal type "error")
+      (list :type 'backend-error
+            :content (e-openai-codex--response-error-message event)
+            :payload event))
      (t nil))))
 
 (defun e-openai-codex-parse-stream
@@ -2114,9 +2199,9 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
              (push item items))
             (_
              (push item items)))))
-      (dolist (chunk (split-string stream-text "\n\n" t))
+      (dolist (chunk (e-openai--sse-chunks stream-text))
         (let ((data-lines nil))
-          (dolist (line (split-string chunk "\n"))
+          (dolist (line (e-openai--sse-lines chunk))
             (when (string-prefix-p "data:" line)
               (push (string-trim (substring line 5)) data-lines)))
           (when data-lines
@@ -2167,7 +2252,8 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
 
 (defun e-openai-chat-completion--delta-content (delta)
   "Return text content from Chat Completions DELTA."
-  (let ((content (plist-get delta :content)))
+  (let ((content (or (plist-get delta :content)
+                     (plist-get delta :refusal))))
     (when (stringp content) content)))
 
 (defun e-openai-chat-completion--delta-tool-calls (delta)
@@ -2263,9 +2349,9 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
                             (e-openai-codex--parse-function-arguments
                              arguments))
                       items))))))
-      (dolist (chunk (split-string stream-text "\n\n" t))
+      (dolist (chunk (e-openai--sse-chunks stream-text))
         (let ((data-lines nil))
-          (dolist (line (split-string chunk "\n"))
+          (dolist (line (e-openai--sse-lines chunk))
             (when (string-prefix-p "data:" line)
               (push (string-trim (substring line 5)) data-lines)))
           (when data-lines
@@ -2464,24 +2550,87 @@ OpenAI request and backend-neutral context."
                   "Chat Completions"))
         :payload (list :response-kind 'sse :wire-api wire-api)))
 
+(defun e-openai--response-body-text (response)
+  "Return body text from string or structured HTTP RESPONSE."
+  (if (e-openai--http-response-p response)
+      (e-openai--http-response-body response)
+    response))
+
+(defun e-openai--http-response-error-details (response)
+  "Return backend error details carried by structured HTTP RESPONSE."
+  (when (e-openai--http-response-p response)
+    (append
+     (when-let ((status (e-openai--http-response-status response)))
+       (list :status status))
+     (when-let ((retry-after (e-openai--http-response-retry-after response)))
+       (list :retry-after retry-after)))))
+
+(defun e-openai--http-error-status-p (response)
+  "Return non-nil when structured HTTP RESPONSE has an error status."
+  (and (e-openai--http-response-p response)
+       (numberp (e-openai--http-response-status response))
+       (>= (e-openai--http-response-status response) 400)))
+
+(defun e-openai--http-error-item (response items)
+  "Return one backend error for HTTP RESPONSE, preserving parsed ITEMS."
+  (let* ((body (e-openai--response-body-text response))
+         (details (e-openai--http-response-error-details response))
+         (parsed (seq-find (lambda (item)
+                             (eq (plist-get item :type) 'backend-error))
+                           items))
+         (item
+          (or (and parsed (copy-tree parsed))
+              (let ((preview (e-openai-codex--text-preview body)))
+                (list
+                 :type 'backend-error
+                 :content
+                 (if (string-empty-p preview)
+                     (format "OpenAI HTTP request failed with status %s"
+                             (e-openai--http-response-status response))
+                   (format "OpenAI HTTP request failed with status %s: %s"
+                           (e-openai--http-response-status response)
+                           preview)))))))
+    (plist-put item :payload
+               (append details (copy-tree (plist-get item :payload))))
+    item))
+
+(defun e-openai--terminal-response-item-p (item)
+  "Return non-nil when ITEM settles a complete provider response."
+  (memq (plist-get item :type) '(done backend-error)))
+
 (defun e-openai--complete-response-items (response context)
   "Parse complete HTTP RESPONSE for CONTEXT and validate stream settlement."
   (let* ((wire-api (plist-get context :wire-api))
-         (items
-          (pcase wire-api
-            ('responses
-             (e-openai-codex-parse-stream
-              response
-              (plist-get context :prompt-layout-revision)))
-            ('chat-completion
-             (e-openai-chat-completion-parse-stream response)))))
-    (if (and (e-openai--sse-response-p response)
-             (not (seq-some
-                   (lambda (item)
-                     (memq (plist-get item :type) '(done backend-error)))
-                   items)))
-        (list (e-openai--premature-stream-error-item wire-api))
-      items)))
+         (body (e-openai--response-body-text response))
+         items
+         parse-error)
+    (condition-case err
+        (setq items
+              (pcase wire-api
+                ('responses
+                 (e-openai-codex-parse-stream
+                  body
+                  (plist-get context :prompt-layout-revision)))
+                ('chat-completion
+                 (e-openai-chat-completion-parse-stream body))))
+      (json-error (setq parse-error err)))
+    (cond
+     ((e-openai--http-error-status-p response)
+      (list (e-openai--http-error-item response items)))
+     ((and parse-error
+           (eq (car parse-error) 'json-end-of-file)
+           (e-openai--sse-response-p body))
+      (list (e-openai--premature-stream-error-item wire-api)))
+     (parse-error
+      (signal (car parse-error) (cdr parse-error)))
+     ((seq-some #'e-openai--terminal-response-item-p items)
+      items)
+     ((string-empty-p (string-trim (or body "")))
+      (list (e-openai--premature-stream-error-item wire-api)))
+     ((e-openai--sse-response-p body)
+      (list (e-openai--premature-stream-error-item wire-api)))
+     (t
+      (list (e-openai-codex--non-stream-error-item body wire-api))))))
 
 (defun e-openai--emit-response-items (response context on-item)
   "Parse complete RESPONSE for CONTEXT and emit items through ON-ITEM."

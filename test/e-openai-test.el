@@ -1383,6 +1383,91 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
      "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n")
     '((:type done :reason length)))))
 
+(ert-deftest e-openai-test-parse-top-level-error-event ()
+  "Official top-level Responses error events remain provider errors."
+  (let* ((items
+          (e-openai-codex-parse-stream
+           "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"Generation failed\",\"param\":null}\n\n"))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (equal (plist-get item :content)
+                   "server_error: Generation failed"))
+    (should (equal (plist-get (plist-get item :payload) :code)
+                   "server_error"))))
+
+(ert-deftest e-openai-test-complete-http-response-classifies-truncated-json ()
+  "An SSE event cut mid-JSON is a retryable premature stream."
+  (dolist (case
+           '((responses
+              . "data: {\"type\":\"response.output_text.delta\",\"delta\":\"cut")
+             (chat-completion
+              . "data: {\"choices\":[{\"delta\":{\"content\":\"cut")))
+    (let* ((wire-api (car case))
+           (items (e-openai--complete-response-items
+                   (cdr case) (list :wire-api wire-api)))
+           (item (car items)))
+      (should (= (length items) 1))
+      (should (eq (plist-get item :type) 'backend-error))
+      (should (string-match-p "premature"
+                              (downcase (plist-get item :content)))))))
+
+(ert-deftest e-openai-test-complete-http-response-classifies-empty-body ()
+  "An empty successful HTTP body is a retryable premature stream."
+  (dolist (wire-api '(responses chat-completion))
+    (let* ((items (e-openai--complete-response-items
+                   "" (list :wire-api wire-api)))
+           (item (car items)))
+      (should (= (length items) 1))
+      (should (eq (plist-get item :type) 'backend-error))
+      (should (string-match-p "premature"
+                              (downcase (plist-get item :content)))))))
+
+(ert-deftest e-openai-test-chat-completion-classifies-non-stream-body ()
+  "Chat Completions preserves an unexpected gateway body as an error."
+  (let* ((items (e-openai--complete-response-items
+                 "<html><body>upstream unavailable</body></html>"
+                 '(:wire-api chat-completion)))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (string-match-p "Chat Completions stream"
+                            (plist-get item :content)))
+    (should (eq (plist-get (plist-get item :payload) :response-kind)
+                'html))))
+
+(ert-deftest e-openai-test-parsers-accept-crlf-sse-framing ()
+  "Both HTTP wire APIs accept standard CRLF-delimited SSE events."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\r\n\r\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\r\n\r\n")
+    '((:type assistant-message :content "ok")
+      (:type done :reason stop))))
+  (should
+   (equal
+    (e-openai-chat-completion-parse-stream
+     "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\r\n\r\ndata: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\r\n\r\n")
+    '((:type assistant-delta :content "ok")
+      (:type assistant-message :content "ok")
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-refusals-remain-assistant-output ()
+  "Provider refusals settle as visible assistant output on both wire APIs."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.refusal.done\",\"refusal\":\"I cannot help with that.\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+    '((:type assistant-message :content "I cannot help with that.")
+      (:type done :reason stop))))
+  (should
+   (equal
+    (e-openai-chat-completion-parse-stream
+     "data: {\"choices\":[{\"delta\":{\"refusal\":\"I cannot help with that.\"},\"index\":0}]}\n\ndata: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n")
+    '((:type assistant-delta :content "I cannot help with that.")
+      (:type assistant-message :content "I cannot help with that.")
+      (:type done :reason stop)))))
+
 (ert-deftest e-openai-test-complete-http-response-rejects-premature-sse ()
   "A completed HTTP body without a terminal event is a retryable failure."
   (dolist (wire-api '(responses chat-completion))
@@ -1446,6 +1531,54 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should-not (seq-find (lambda (event)
                             (eq (plist-get event :type) 'turn-failed))
                           events))
+    (should
+     (equal (plist-get (car (last (e-harness-messages harness "session-1")))
+                       :content)
+            "recovered"))))
+
+(ert-deftest e-openai-test-http-server-error-retries-with-status-metadata ()
+  "A generic HTTP 5xx body retries using preserved transport metadata."
+  (let* ((process-environment
+          (cons "OPENAI_HTTP_ERROR_TEST_KEY=test-token" process-environment))
+         (e-harness-retry-initial-backoff-seconds 0.01)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.01)
+         (e-harness-retry-max-elapsed-seconds 1.0)
+         (e-openai-model-providers
+          '((http-error-test
+             :name "HTTP Error Responses Test"
+             :base-url "https://example.test/v1"
+             :env-key "OPENAI_HTTP_ERROR_TEST_KEY"
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth nil)))
+         (attempts 0)
+         (events nil)
+         (harness
+          (e-openai-create-harness
+           :provider 'http-error-test
+           :model "test-model"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers body)
+              (cl-incf attempts)
+              (if (= attempts 1)
+                  (e-openai--http-response-create
+                   :status 503
+                   :retry-after 0.01
+                   :body "{\"error\":{\"message\":\"Generation failed\"}}")
+                "data: {\"type\":\"response.output_text.done\",\"text\":\"recovered\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait-batch harness "session-1" 2.0)))
+      (should (eq (plist-get settled :status) 'done)))
+    (should (= attempts 2))
+    (should (= 1 (seq-count (lambda (event)
+                              (eq (plist-get event :type) 'turn-retrying))
+                            events)))
     (should
      (equal (plist-get (car (last (e-harness-messages harness "session-1")))
                        :content)
@@ -1646,9 +1779,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (e-openai-codex-parse-stream
      "{\"error\":{\"message\":\"Invalid schema\",\"type\":\"invalid_request_error\"}}")
     '((:type backend-error
-      :content "Invalid schema"
+      :content "invalid_request_error: Invalid schema"
       :payload (:error (:message "Invalid schema"
                        :type "invalid_request_error")))))))
+
+(ert-deftest e-openai-test-parse-json-server-error-is-retryable ()
+  "A non-stream JSON server error keeps the code used by retry policy."
+  (let* ((item
+          (car
+           (e-openai-codex-parse-stream
+            "{\"error\":{\"message\":\"Generation failed\",\"code\":\"server_error\"}}")))
+         (content (plist-get item :content)))
+    (should (equal content "server_error: Generation failed"))
+    (should (e-harness--retryable-error-p content (plist-get item :payload)))))
 
 (ert-deftest e-openai-test-parse-html-error-response ()
   "HTML provider error responses become explicit backend error items."
@@ -1675,7 +1818,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (item (car items)))
     (should (equal (plist-get item :type) 'backend-error))
     (should (equal (plist-get item :content)
-                   "Your input exceeds the context window of this model."))
+                   (concat "context_length_exceeded: "
+                           "Your input exceeds the context window of this model.")))
     (should (equal (plist-get (plist-get item :payload) :type)
                    "response.failed"))
     (should (equal (plist-get
@@ -1684,6 +1828,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                      :error)
                     :code)
                    "context_length_exceeded"))))
+
+(ert-deftest e-openai-test-response-failed-server-error-is-retryable ()
+  "Official Responses server_error failures retain their retryable code."
+  (let* ((item
+          (car
+           (e-openai-codex-parse-stream
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The model failed to generate a response.\"}}}\n\n")))
+         (content (plist-get item :content)))
+    (should (equal content
+                   "server_error: The model failed to generate a response."))
+    (should (e-harness--retryable-error-p content (plist-get item :payload)))))
 
 (ert-deftest e-openai-test-response-error-message-bounds-large-message ()
   "Responses failure message text is capped before becoming diagnostics."
@@ -1988,15 +2143,16 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                      '(e-openai-backend-stream openai-stream))))))
 
 (ert-deftest e-openai-test-default-http-request-start-returns-error-body ()
-  "HTTP error responses with bodies continue through backend parsing."
+  "HTTP error bodies retain status metadata through backend parsing."
   (cl-letf (((symbol-function 'url-retrieve)
              (lambda (_url callback &rest _args)
                (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
                  (with-current-buffer buffer
-                   (insert "HTTP/1.1 400 Bad Request\n\n"
-                           "{\"error\":{\"message\":\"Invalid request\"}}"))
+                   (setq-local url-http-response-status 503)
+                   (insert "HTTP/1.1 503 Service Unavailable\n\n"
+                           "{\"error\":{\"message\":\"Generation failed\"}}"))
                  (with-current-buffer buffer
-                   (funcall callback '(:error (error http 400))))
+                   (funcall callback '(:error (error http 503))))
                  buffer))))
     (let (response error)
       (e-openai-codex--http-request-start
@@ -2006,11 +2162,42 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
        :on-complete (lambda (value) (setq response value))
        :on-error (lambda (err) (setq error err)))
       (should-not error)
-      (should (equal response
-                     "{\"error\":{\"message\":\"Invalid request\"}}"))
-      (should (equal (plist-get (car (e-openai-codex-parse-stream response))
-                                :content)
-                     "Invalid request")))))
+      (should (e-openai--http-response-p response))
+      (let* ((item (car (e-openai--complete-response-items
+                         response '(:wire-api responses))))
+             (payload (plist-get item :payload)))
+        (should (equal (plist-get item :content) "Generation failed"))
+        (should (= (plist-get payload :status) 503))
+        (should (e-harness--retryable-error-p
+                 (plist-get item :content) payload))))))
+
+(ert-deftest e-openai-test-default-http-request-preserves-empty-rate-limit ()
+  "An empty HTTP 429 body retains status and Retry-After for the harness."
+  (cl-letf (((symbol-function 'url-retrieve)
+             (lambda (_url callback &rest _args)
+               (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
+                 (with-current-buffer buffer
+                   (setq-local url-http-response-status 429)
+                   (insert "HTTP/1.1 429 Too Many Requests\nRetry-After: 7\n\n"))
+                 (with-current-buffer buffer
+                   (funcall callback '(:error (error http 429))))
+                 buffer))))
+    (let (response error)
+      (e-openai-codex--http-request-start
+       :url "https://example.test/codex/responses"
+       :headers '(("Authorization" . "Bearer test"))
+       :body "{}"
+       :on-complete (lambda (value) (setq response value))
+       :on-error (lambda (err) (setq error err)))
+      (should-not error)
+      (let* ((item (car (e-openai--complete-response-items
+                         response '(:wire-api responses))))
+             (payload (plist-get item :payload)))
+        (should (eq (plist-get item :type) 'backend-error))
+        (should (= (plist-get payload :status) 429))
+        (should (= (plist-get payload :retry-after) 7))
+        (should (e-harness--retryable-error-p
+                 (plist-get item :content) payload))))))
 
 (ert-deftest e-openai-test-default-http-request-start-normalizes-header-bytes ()
   "Multibyte ASCII headers must not make a Unicode request body invalid."

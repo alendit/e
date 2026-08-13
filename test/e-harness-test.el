@@ -668,6 +668,7 @@ prompt rides the metadata channel and its value may replay as a string."
   ;; even when the human-readable message does not name it.
   (should (e-harness--retryable-error-p "overloaded_error: Overloaded" nil))
   (should (e-harness--retryable-error-p "rate_limit_error: slow down" nil))
+  (should (e-harness--retryable-error-p "server_error: Generation failed" nil))
   ;; Transport resets before/while the stream starts.
   (should (e-harness--retryable-error-p
            (concat "Provider returned non-stream text instead of a Messages "

@@ -1039,6 +1039,7 @@ hints entirely."
     "overloaded_error"
     "api_error"
     "internal_server_error"
+    "server_error"
     "service unavailable"
     "bad gateway"
     "gateway time"
@@ -1053,17 +1054,16 @@ hints entirely."
     "broken pipe"
     "premature")
   "Lower-cased substrings marking a transient, retryable backend error.
-These cover rate limiting, provider overload (HTTP 529 / `overloaded_error'),
-and transport-level failures such as the Envoy \"upstream connect error or
-disconnect/reset before headers\" body returned when a connection is reset
-before the Messages stream starts.")
+These cover rate limiting, provider server/overload errors, and transport-level
+failures such as the Envoy \"upstream connect error or disconnect/reset before
+headers\" body returned when a connection is reset before a stream starts.")
 
 (defun e-harness--retryable-status-p (status)
   "Return non-nil when HTTP STATUS marks a transient, retryable failure.
 408 (request timeout), 409 (conflict), 429 (rate limit), and every 5xx server
 error (500, 502, 503, 504, the 529 Anthropic overload code) are retryable, in
-line with the Anthropic SDK retry policy.  4xx client errors other than 408/409
-are genuine faults and are not retried."
+line with provider retry guidance.  Other 4xx client errors are genuine faults
+and are not retried."
   (and (numberp status)
        (or (= status 408)
            (= status 409)
@@ -1073,9 +1073,9 @@ are genuine faults and are not retried."
 (defun e-harness--retryable-error-p (message details)
   "Return non-nil when a backend error (MESSAGE, DETAILS) should be retried.
 Retryable errors are transient: rate limiting (HTTP 429), provider overload
-\(HTTP 529 / `overloaded_error'), and transport resets that drop the connection
-before or during the Messages stream.  Genuine faults (HTTP 500, malformed
-requests) are not retried."
+or server errors, and transport resets that drop the connection before or
+during a stream.  Malformed requests and other genuine client faults are not
+retried."
   (let ((text (downcase (or message ""))))
     (or (string-match-p "\\(^\\|[^0-9]\\)429\\([^0-9]\\|$\\)" (or message ""))
         (string-match-p "\\(^\\|[^0-9]\\)529\\([^0-9]\\|$\\)" (or message ""))
