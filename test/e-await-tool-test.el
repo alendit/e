@@ -239,3 +239,30 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
 (provide 'e-await-tool-test)
 
 ;;; e-await-tool-test.el ends here
+
+(ert-deftest e-await-tool-test-timeout-includes-progress-without-cancelling ()
+  "A timed-out await exposes pending evidence and leaves the work live."
+  (let ((handle (e-await-tool-test--pending-handle)))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "a" handle))
+          (e-work-progress handle
+                           '(:subagent-id "sub_000001" :sequence 7
+                             :event tool-finished :summary "Finished focused ERT"
+                             :at 0.0))
+          (let* ((registry (e-tools-registry-create))
+                 result)
+            (e-await-tool-register registry)
+            (e-tools-start
+             registry
+             '(:id "c" :name "await" :arguments (:refs ["fake:a"] :timeout 0.05))
+             :on-done (lambda (value) (setq result value)))
+            (sleep-for 0.2)
+            (let ((entry (car (plist-get (plist-get result :content) :results))))
+              (should (eq (plist-get (plist-get result :content) :reason) 'timed-out))
+              (should (= (plist-get entry :progress-sequence) 7))
+              (should (equal (plist-get (plist-get entry :progress) :summary)
+                             "Finished focused ERT"))
+              (should (numberp (plist-get entry :progress-age-seconds)))
+              (should (memq (plist-get (e-work-status handle) :state)
+                            '(started progress))))))
+      (e-work-cancel handle))))

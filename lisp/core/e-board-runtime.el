@@ -948,7 +948,12 @@ work activity remains a diagnostic snapshot of its arbitrary payload."
                :activity-kind (or (plist-get mailbox :activity-kind)
                                   'work-progress)
                :tags (copy-tree (plist-get mailbox :tags))
-               :attributes (list :work-id work-id)
+               :attributes
+               (append (list :work-id work-id)
+                       (when-let ((subagent-id
+                                   (plist-get (plist-get mailbox :payload)
+                                              :subagent-id)))
+                         (list :subagent-id subagent-id)))
                :content
                (e-board-runtime--activity-content
                 (or (plist-get mailbox :activity-kind) 'work-progress)

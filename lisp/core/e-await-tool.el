@@ -73,6 +73,7 @@ inlines a transcript; detail stays behind the target subsystem's own reads."
   (let* ((status (e-work-status handle))
          (state (plist-get status :state)))
     (list :state state
+          :progress (plist-get status :progress)
           :result (plist-get status :result)
           :error (plist-get status :error))))
 
@@ -131,18 +132,29 @@ never serializes or walks an unbounded result on the Emacs main thread."
 (defun e-await-tool--result-entry (ref handle)
   "Return the report entry for REF backed by HANDLE."
   (let* ((snapshot (e-await-tool--handle-status handle))
+         (state (plist-get snapshot :state))
+         (pending (memq state '(started progress)))
+         (progress (plist-get snapshot :progress))
          (result (plist-get snapshot :result))
          (summary (and (listp result) (plist-get result :summary)))
          (outputs (and (listp result) (plist-get result :outputs))))
-    (list :ref ref
-          :state (plist-get snapshot :state)
-          ;; Surface a subsystem-normalized summary/outputs when the work result
-          ;; carries them; otherwise expose the raw result under :result.
-          :summary (e-await-tool--inline-or-reference summary ref)
-          :outputs (e-await-tool--inline-or-reference outputs ref)
-          :result (e-await-tool--inline-or-reference result ref)
-          :error (e-await-tool--inline-or-reference
-                  (plist-get snapshot :error) ref))))
+    (append
+     (list :ref ref
+           :state state
+           ;; Surface a subsystem-normalized summary/outputs when the work result
+           ;; carries them; otherwise expose the raw result under :result.
+           :summary (e-await-tool--inline-or-reference summary ref)
+           :outputs (e-await-tool--inline-or-reference outputs ref)
+           :result (e-await-tool--inline-or-reference result ref)
+           :error (e-await-tool--inline-or-reference
+                   (plist-get snapshot :error) ref))
+     (when pending
+       (list :progress (e-await-tool--inline-or-reference progress ref)
+             :progress-sequence (and (listp progress)
+                                     (plist-get progress :sequence))
+             :progress-age-seconds
+             (let ((at (and (listp progress) (plist-get progress :at))))
+               (and (numberp at) (max 0.0 (- (float-time) at)))))))))
 
 (defun e-await-tool--report (mode reason pairs)
   "Return the compact await report for MODE, REASON, and frozen PAIRS."

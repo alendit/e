@@ -2433,3 +2433,40 @@ Tests that explicitly provide `:requester' retain that exact requester."
 (provide 'e-board-runtime-test)
 
 ;;; e-board-runtime-test.el ends here
+
+(ert-deftest e-board-runtime-test-work-progress-preserves-subagent-provenance ()
+  "A child work update reaches the board as coalesced work-progress activity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "subagent" :execution 'cooperative :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred))
+                      nil :context '(:session-id "session" :turn-id "turn")))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (unwind-protect
+            (progn
+              (funcall enroll handle nil)
+              (e-work-start-prepared handle)
+              (e-work-progress handle
+                               '(:subagent-id "sub_000001" :sequence 3
+                                 :event tool-finished :summary "Finished tool" :at 1.0))
+              (e-work-progress handle
+                               '(:subagent-id "sub_000001" :sequence 4
+                                 :event action-started :summary "Started action" :at 2.0))
+              (e-board-runtime--drain-activity-mailboxes)
+              (let ((message (car (last (e-board-messages
+                                         (e-board-registry-board-source-board board))))))
+                (should (eq (e-board-message-activity-kind message) 'work-progress))
+                (should (equal (plist-get (e-board-message-attributes message)
+                                          :work-id)
+                               (e-work-handle-id handle)))
+                (should (equal (plist-get (e-board-message-attributes message)
+                                          :subagent-id)
+                               "sub_000001"))
+                (should (string-match-p "action-started"
+                                        (e-board-message-content message)))))
+          (e-work-cancel handle))))))
