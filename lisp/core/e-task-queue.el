@@ -107,6 +107,15 @@ original task), `:session-id' (the failed session to reference), and `:error'.")
 Each function is called with the queue.  Intended for observation (shells,
 tests); handlers must not mutate the queue.")
 
+(defvar e-task-queue-terminal-functions nil
+  "Abnormal hook run after one task reaches a terminal queue state.
+Each function receives QUEUE and the normalized terminal task record.  Queue
+retry remains queue policy: this hook runs only after retries are exhausted.")
+
+(defvar e-task-queue-rehydrate-functions nil
+  "Abnormal hook run for a durable record before a restored queue dispatches.
+Each function receives QUEUE, the live RECORD, and its persisted status.")
+
 (defvar e-task-queue--unsettled-write-count 0)
 (defvar e-task-queue--failed-write-count 0)
 (defvar e-task-queue--unsettled-generation 0)
@@ -401,6 +410,14 @@ non-nil when a retry was armed.  The original prompt is preserved in
       (plist-put record :started-at nil)
       (plist-put record :finished-at nil)
       (plist-put record :handle nil)
+      ;; A bridged retry is a fresh durable attempt.  The group can still
+      ;; select a different accepted attempt without changing queue policy.
+      (when-let ((run-id (plist-get (plist-get record :metadata) :board-run-id)))
+        (ignore run-id)
+        (let ((metadata (copy-tree (plist-get record :metadata))))
+          (plist-put metadata :board-attempt
+                     (1+ (or (plist-get metadata :board-attempt) 0)))
+          (plist-put record :metadata metadata)))
       ;; Keep the failing error visible until the retry starts; the display
       ;; still shows the last failure reason while the task waits to re-run.
       t)))
@@ -437,7 +454,9 @@ QUEUE after a real transition."
        (t
         (plist-put record :status status)
         (plist-put record :finished-at (e-task-queue--timestamp))
-        (e-task-queue--settle-work-handle record status)))
+        (e-task-queue--settle-work-handle record status)
+        (run-hook-with-args 'e-task-queue-terminal-functions
+                            queue (e-task-queue--normalize record))))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))))
 
@@ -864,11 +883,12 @@ task mutation without the core knowing about disk on its hot path."
 
 (add-hook 'e-task-queue-change-functions #'e-task-queue--persist-on-change)
 
-(defun e-task-queue--load-record (durable)
+(defun e-task-queue--load-record (queue durable)
   "Return a live internal record from a DURABLE persisted record.
 A task that was `running' at shutdown could not have survived its turn, so it
 is normalized to `queued' for a best-effort re-run."
-  (let ((record (copy-sequence durable)))
+  (let ((record (copy-sequence durable))
+        (persisted-status (plist-get durable :status)))
     (when (eq (plist-get record :status) 'running)
       (setq record (plist-put record :status 'queued))
       (setq record (plist-put record :started-at nil))
@@ -878,6 +898,7 @@ is normalized to `queued' for a best-effort re-run."
     (setq record
           (plist-put record :work-handle
                      (e-task-queue--work-handle-for-status record)))
+    (run-hook-with-args 'e-task-queue-rehydrate-functions queue record persisted-status)
     record))
 
 (defun e-task-queue-load (queue)
@@ -895,7 +916,7 @@ load unchanged.  A queue with no directory or no records file is left empty."
       (setf (e-task-queue-order queue) (plist-get state :order))
       (setf (e-task-queue-sequence queue) (or (plist-get state :sequence) 0))
       (dolist (durable (plist-get state :records))
-        (let ((record (e-task-queue--load-record durable)))
+        (let ((record (e-task-queue--load-record queue durable)))
           (puthash (plist-get record :task-id) record
                    (e-task-queue-records queue))))
       (e-task-queue--notify queue)

@@ -22,6 +22,8 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-queue)
+(require 'e-board-orchestration)
+(require 'e-board-orchestration-actions)
 
 (defmacro e-task-queue-test--with-instances (&rest body)
   "Run BODY with isolated harness and harness-instance registries."
@@ -722,3 +724,74 @@ without one there is nothing to analyze, so the task terminates."
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here
+
+(defun e-task-queue-test--orchestration-manifest (board &optional attempt)
+  "Publish a one-task manifest selecting ATTEMPT to BOARD."
+  (e-board-orchestration-publish-fact
+   board
+   (list :version 1 :type 'manifest :idempotency-key "manifest"
+         :payload (list :run-id "run-1"
+                        :tasks (list (list :task-key "task" :required t
+                                           :accepted-attempt (or attempt 0)))
+                        :deadline '(:kind none)))))
+
+(ert-deftest e-task-queue-test-orchestration-bridge-is-idempotent ()
+  "One selected manifest attempt maps to one durable queue task and report."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((board (e-board-create :id "queue-orchestration"))
+           (recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create :runner (e-task-queue-test--fake-runner recorder))))
+      (e-task-queue-test--orchestration-manifest board)
+      (let* ((first (e-board-orchestration-actions-dispatch-queue-task
+                     queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
+             (again (e-board-orchestration-actions-dispatch-queue-task
+                     queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
+             (settle (plist-get (car (e-task-queue-test--recorder-calls recorder)) :settle)))
+        (should (equal (plist-get first :task-id) (plist-get again :task-id)))
+        (should (equal (plist-get (plist-get first :metadata) :board-run-id) "run-1"))
+        (funcall settle :status 'done :outputs '((:kind text :value "ok")))
+        (let ((projection (e-board-orchestration-project-board board)))
+          (should (eq (plist-get projection :terminal-status) 'done))
+          (should (= (length (plist-get projection :reports)) 1)))))))
+
+(ert-deftest e-task-queue-test-orchestration-retry-uses-new-attempt ()
+  "Queue retry changes durable attempt metadata without changing the manifest."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((board (e-board-create :id "queue-retry"))
+           (recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create :max-retries 1
+                                       :runner (e-task-queue-test--fake-runner-with-session recorder))))
+      (e-task-queue-test--orchestration-manifest board)
+      (let* ((record (e-board-orchestration-actions-dispatch-queue-task
+                      queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
+             (first-settle (plist-get (car (e-task-queue-test--recorder-calls recorder)) :settle)))
+        (funcall first-settle :status 'failed :error "retry")
+        (let ((retried (e-task-queue-get queue (plist-get record :task-id))))
+          (should (eq (plist-get retried :status) 'running))
+          (should (= (plist-get (plist-get retried :metadata) :board-attempt) 1)))))))
+
+(ert-deftest e-task-queue-test-orchestration-metadata-survives-save-load ()
+  "Durable queue snapshots retain run, task, and attempt bridge metadata."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let ((dir (make-temp-file "e-task-queue-orchestration" t)))
+      (unwind-protect
+          (let* ((recorder (make-e-task-queue-test--recorder))
+                 (queue (e-task-queue-create
+                         :directory dir :runner (e-task-queue-test--fake-runner recorder)))
+                 (task (e-task-queue-enqueue
+                        queue :prompt "do" :metadata '(:board-run-id "run-1"
+                                                        :board-task-key "task"
+                                                        :board-attempt 0)))
+                 (task-id (plist-get task :task-id)))
+            (e-task-queue-test--await-durable queue)
+            (let ((reloaded (e-task-queue-create
+                             :directory dir :runner (e-task-queue-test--fake-runner recorder))))
+              (e-task-queue-load reloaded)
+              (should (equal (plist-get (plist-get (e-task-queue-get reloaded task-id)
+                                                  :metadata)
+                                        :board-task-key)
+                             "task"))))
+        (delete-directory dir t)))))
