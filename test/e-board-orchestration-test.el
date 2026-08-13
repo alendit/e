@@ -87,3 +87,43 @@
     (should (plist-get (plist-get projection :deadline) :expired))
     (should (eq (plist-get task :state) 'pending))
     (should-not (plist-get projection :terminal-status))))
+
+(ert-deftest e-board-orchestration-test-run-projection-waits-for-restoration ()
+  "A run is not missing until its board journal has replayed."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-orchestration--restoration-states (make-hash-table :test 'equal))
+        (board (e-board-create :id "restoring-run")))
+    (e-board-orchestration-mark-restoring board)
+    (should (eq (plist-get (e-board-orchestration-run-projection board "run-1") :state)
+                'not-restored-yet))
+    (e-board-orchestration-mark-restored board)
+    (should (eq (plist-get (e-board-orchestration-run-projection board "run-1") :state)
+                'missing))))
+
+(ert-deftest e-board-orchestration-test-replay-keeps-one-continuation-publication ()
+  "Duplicate report replay retains the manifest publication key and acknowledgement."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (board (e-board-create :id "continuation-replay")))
+    (e-board-orchestration-publish-fact
+     board
+     (e-board-orchestration-test--fact
+      'manifest "manifest-1"
+      '(:run-id "run-1"
+        :tasks ((:task-key "task" :required t :accepted-attempt 0))
+        :continuation (:session-id "coordinator" :prompt "reconcile"
+                       :publication-key "publication-1"))))
+    (let ((report (e-board-orchestration-test--fact
+                   'terminal-report "report-1"
+                   '(:run-id "run-1" :task-key "task" :attempt 0 :status done
+                     :summary "done" :outputs []))))
+      (e-board-orchestration-publish-fact board report)
+      (e-board-orchestration-publish-fact board report))
+    (e-board-orchestration-publish-fact
+     board
+     (e-board-orchestration-test--fact
+      'continuation-claim "publication-1:published"
+      '(:run-id "run-1" :publication-key "publication-1" :status published)))
+    (let ((projection (e-board-orchestration-run-projection board "run-1")))
+      (should (eq (plist-get projection :terminal-status) 'done))
+      (should (eq (plist-get (plist-get projection :continuation) :state) 'published))
+      (should (= (length (plist-get projection :reports)) 1)))))

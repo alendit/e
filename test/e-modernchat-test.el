@@ -848,3 +848,53 @@ messages so the transcript reads as one clean answer."
 (provide 'e-modernchat-test)
 
 ;;; e-modernchat-test.el ends here
+
+(ert-deftest e-chat-service-test-continuation-retry-reuses-one-input-key ()
+  "A failed publication retry cannot queue a second reconciliation turn."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal)))
+    (let* ((runtime-board (e-board-registry-create :id "continuation-board" :principal "test"))
+           (board (e-board-registry-board-source-board runtime-board))
+           (binding (e-chat-service--binding-create :harness 'test :board runtime-board))
+           (queued nil)
+           (attempts 0))
+      (e-board-orchestration-publish-fact
+       board
+       '(:version 1 :type manifest :idempotency-key "manifest"
+         :payload (:run-id "run-1"
+                   :tasks ((:task-key "task" :required t :accepted-attempt 0))
+                   :continuation (:session-id "coordinator" :prompt "reconcile"
+                                  :publication-key "publication-1"))))
+      (e-board-orchestration-publish-fact
+       board
+       '(:version 1 :type terminal-report :idempotency-key "report"
+         :payload (:run-id "run-1" :task-key "task" :attempt 0 :status done
+                   :summary "done" :outputs [])))
+      (cl-letf (((symbol-function 'e-chat-service-queue-session)
+                 (lambda (_harness _session-id _prompt &rest arguments)
+                   (push (plist-get arguments :source-input-key) queued)
+                   (setq attempts (1+ attempts))
+                   (if (= attempts 1)
+                       (error "publication interrupted")
+                     "continuation-message"))))
+        ;; This call models recovery after a restart that found the terminal
+        ;; report but no continuation acknowledgement.
+        (e-chat-service--reconcile-board-continuation binding)
+        (should (eq (plist-get (plist-get (e-board-orchestration-run-projection
+                                           board "run-1")
+                                          :continuation)
+                               :state)
+                    'failed))
+        (e-chat-service--reconcile-board-continuation binding)
+        ;; A later restart finds the published acknowledgement and does not
+        ;; submit another input.
+        (e-chat-service--reconcile-board-continuation binding))
+      (should (= attempts 2))
+      (should (equal (car queued) (cadr queued)))
+      (should (eq (plist-get (plist-get (e-board-orchestration-run-projection
+                                         board "run-1")
+                                        :continuation)
+                             :state)
+                  'published)))))
