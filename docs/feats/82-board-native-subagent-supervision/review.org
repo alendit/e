@@ -1,0 +1,104 @@
+#+title: Review: Board-Native Subagent Supervision
+#+author: e implementation
+#+date: 2026-08-13
+#+startup: overview
+
+* Status
+
+Blocked.
+
+The implementation range through =feacbdc7= covers the nine planned implementation slices, but the complete ERT gate fails in the durable structured-report path.
+Plan 82 and =docs/feats/index.org= remain unchanged because validation did not pass and the implementation has unresolved gaps.
+
+* Scope reviewed
+
+- Plan 82 and its implementation commits =8dc130ec=, =b922a3c3=, =5e6e4ae8=, =608f1c2d=, =3e164402=, =457dad6f=, =ec45b4de=, =37a19983=, =0d1a6fd6=, and =feacbdc7=.
+- The child-progress, await, subagent control, durable orchestration, task-queue bridge, continuation, and run-observation source and focused ERT files.
+- The complete Eldev ERT suite, repository compilation, and whitespace checks.
+
+* What looks good
+
+- The live path keeps bounded child progress on the existing board-enrolled work handle and adds that evidence to timed-out =await= results without automatic cancellation.
+- The durable reducer separates fact validation and replayable projection from dispatch and cancellation.
+- The task queue carries run/task/attempt metadata, and the run shell renders bounded board projections rather than reading child sessions.
+
+* Verification performed during this review pass
+
+- =eldev test= ran 2,135 tests in 31.180231 seconds: 2,131 expected, 2 failed, and 2 skipped.
+- =eldev compile= completed successfully.  It emitted one non-fatal docstring-width warning in =e-subagent-spawn=.
+- =git diff --check= and =git diff --check 8dc130ec^..feacbdc7= passed.
+
+* Findings
+
+** TODO High: Durable terminal reports fail when no manifest fact is present
+
+*** Expected
+
+Slice 6 requires a structured child report to publish its durable terminal fact before local settlement, and it requires report lookup to work from persisted child-session assignment data rather than the live registry.
+The focused tests added in =ec45b4de= exercise that direct report path with a spawned child carrying =run-1/review/0= assignment metadata.
+
+*** Observed
+
+Both =e-subagent-runner-test-durable-report-precedes-local-settlement= and =e-subagent-runner-test-durable-assignment-survives-registry-loss= fail in the complete suite with =e-board-orchestration-invalid-fact :manifest missing=.
+=e-board-orchestration-actions--notify-projection= advises every successful =e-board-orchestration-publish-fact= call and immediately requests a run projection.
+For a terminal-report fact with no manifest on that board, =e-board-orchestration-run-projection= invokes the reducer, and the reducer rejects the absent manifest.
+
+*** Why this blocks acceptance
+
+The durable report publication path throws instead of publishing the report and preserving the local child outcome.
+It breaks both the report-before-settlement contract and restart-independent report lookup covered by slice 6.
+
+*** Smallest corrective direction
+
+Make the projection notification path tolerate an orphan or not-yet-visible report without changing fact publication semantics, or require and validate the manifest before a child may receive durable assignment metadata.
+Retain the direct-report tests and add coverage for the selected policy.
+
+*** Evidence
+
+The failures occur in =test/e-subagent-runner-test.el:801= and =test/e-subagent-runner-test.el:829= during =eldev test=.
+The failing call path is =e-board-orchestration-actions--notify-projection= at =lisp/layers/agents/e-board-orchestration-actions.el:219= through =e-board-orchestration-run-projection=.
+
+** TODO High: The final end-to-end fixtures from slice 10 are absent
+
+*** Expected
+
+Slice 10 requires one restart fixture that dispatches required and optional work, restores the board journal and task queue, accepts one report per task, and emits exactly one reconciliation input.
+It also requires one long-operation fixture that crosses multiple supervision windows without automatic cancellation.
+
+*** Observed
+
+The new orchestration tests cover isolated reducer, queue, continuation, and view cases.
+No test in the named final suites combines required and optional queued work, restore, report acceptance, and one continuation input.
+No test names or exercises a long operation crossing multiple supervision windows.
+
+*** Why this blocks acceptance
+
+The feature's two stopping points are live supervision without durable orchestration and durable orchestration after restart without a parent await.
+The final gate does not yet prove either complete workflow as the plan requires.
+
+*** Smallest corrective direction
+
+Add the two slice-10 fixtures before re-running the full suite.
+Keep them batch-only and deterministic; they do not require a live Emacs reload.
+
+* Plan coverage
+
+- Slices 1 through 4: source and focused tests implement live progress, checkpoint evidence, explicit controls, and shell observations.
+- Slices 5 through 9: source and focused tests implement fact reduction, reports, queue bridge, continuation handling, and bounded run observation.
+- Slice 10: the requested suite and whitespace checks ran, but the suite fails and its two required end-to-end fixtures are missing.
+
+* Architecture review
+
+The design correctly keeps progress and durable orchestration on the board path instead of creating a polling watchdog.
+The global projection-notification advice assumes every published durable fact already has a reducible manifest.
+That assumption conflicts with the direct report action and must be made explicit or removed.
+
+* Live reload
+
+No live reload or live Emacs probe was run.
+The user explicitly requested batch-only final verification, and the runtime in the running Emacs remains unchanged.
+
+* Unresolved
+
+- Durable terminal-report publication must stop failing for the exercised assignment path.
+- The slice-10 restart and long-operation fixtures must be added and pass.
