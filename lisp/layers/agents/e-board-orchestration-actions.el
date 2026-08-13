@@ -69,10 +69,6 @@ Return nil for ordinary children without a durable assignment."
          board assignment 'done :summary summary :outputs outputs
          :author (list :session-id session-id))))))
 
-(provide 'e-board-orchestration-actions)
-
-;;; e-board-orchestration-actions.el ends here
-
 (defvar e-board-orchestration-actions--queue-boards (make-hash-table :test 'equal)
   "Live core boards keyed by queue task id for durable bridge callbacks.")
 
@@ -154,3 +150,141 @@ metadata but never alter the manifest's accepted-attempt selection."
            board (e-board-orchestration-actions--queue-assignment record)
            (plist-get record :status))
           record))))
+
+(defconst e-board-orchestration-actions-run-limit 32
+  "Maximum durable runs returned by one observation action.")
+
+(defconst e-board-orchestration-actions-task-limit 64
+  "Maximum tasks, reports, and conflicts retained in one run observation.")
+
+(defvar e-board-orchestration-actions-projection-change-functions nil
+  "Functions called after a durable run projection changes.
+Each function receives the core board, run id, and bounded projection.  This
+notification path observes board facts and never reads child sessions.")
+
+(defun e-board-orchestration-actions--take (items limit)
+  "Return at most LIMIT ITEMS as a fresh list."
+  (cl-subseq items 0 (min (length items) limit)))
+
+(defun e-board-orchestration-actions--bounded-items (items limit)
+  "Return ITEMS clipped to LIMIT with truncation evidence."
+  (let ((items (or items nil)))
+    (list :items (copy-tree (e-board-orchestration-actions--take items limit))
+          :truncated (> (length items) limit))))
+
+(defun e-board-orchestration-actions--bounded-projection (projection)
+  "Return the bounded observation form of durable run PROJECTION."
+  (if (memq (plist-get projection :state) '(missing not-restored-yet))
+      (copy-tree projection)
+    (let* ((tasks (e-board-orchestration-actions--bounded-items
+                   (plist-get projection :tasks) e-board-orchestration-actions-task-limit))
+           (reports (e-board-orchestration-actions--bounded-items
+                     (delq nil (mapcar (lambda (task)
+                                         (plist-get task :accepted-report))
+                                       (plist-get projection :tasks)))
+                     e-board-orchestration-actions-task-limit))
+           (conflicts (e-board-orchestration-actions--bounded-items
+                       (plist-get projection :conflicts) e-board-orchestration-actions-task-limit))
+           (manifest (copy-tree (plist-get projection :manifest))))
+      (plist-put manifest :tasks (plist-get tasks :items))
+      (append
+       (list :run-id (plist-get projection :run-id)
+             :manifest manifest
+             :tasks (plist-get tasks :items)
+             :accepted-reports (plist-get reports :items)
+             :conflicts (plist-get conflicts :items)
+             :deadline (copy-tree (plist-get projection :deadline))
+             :continuation (copy-tree (plist-get projection :continuation))
+             :terminal-status (plist-get projection :terminal-status))
+       (when (plist-get tasks :truncated) (list :tasks-truncated t))
+       (when (plist-get reports :truncated) (list :accepted-reports-truncated t))
+       (when (plist-get conflicts :truncated) (list :conflicts-truncated t))))))
+
+(defun e-board-orchestration-actions-run-projection (board run-id &optional now)
+  "Return BOARD's bounded durable observation projection for RUN-ID."
+  (e-board-orchestration-actions--bounded-projection
+   (e-board-orchestration-run-projection
+    (e-board-orchestration-actions--source-board board) run-id now)))
+
+(defun e-board-orchestration-actions-list-runs (board &optional now)
+  "Return bounded durable run projections visible on BOARD."
+  (let* ((board (e-board-orchestration-actions--source-board board))
+         (run-ids (e-board-orchestration-actions--take
+                   (e-board-orchestration-run-ids board)
+                   e-board-orchestration-actions-run-limit)))
+    (mapcar (lambda (run-id)
+              (e-board-orchestration-actions-run-projection board run-id now))
+            run-ids)))
+
+(defun e-board-orchestration-actions--notify-projection (original board fact &rest arguments)
+  "Publish a bounded projection update when ORIGINAL posts durable FACT."
+  (let ((publication (apply original board fact arguments)))
+    (when (eq (e-board-publication-status publication) 'posted)
+      (let* ((board (e-board-orchestration-actions--source-board board))
+             (run-id (plist-get (plist-get fact :payload) :run-id)))
+        (run-hook-with-args 'e-board-orchestration-actions-projection-change-functions
+                            board run-id
+                            (e-board-orchestration-actions-run-projection board run-id))))
+    publication))
+
+(unless (advice-member-p #'e-board-orchestration-actions--notify-projection
+                         'e-board-orchestration-publish-fact)
+  (advice-add 'e-board-orchestration-publish-fact :around
+              #'e-board-orchestration-actions--notify-projection))
+
+(defun e-board-orchestration-actions--context-board (context)
+  "Return CONTEXT's core board, creating its binding when needed."
+  (let ((harness (plist-get context :harness))
+        (session-id (plist-get context :session-id)))
+    (unless (and harness session-id)
+      (signal 'wrong-type-argument (list 'e-board-context context)))
+    (e-board-orchestration-actions--source-board
+     (e-chat-service-binding-board
+      (e-chat-service-ensure-binding harness session-id)))))
+
+(defun e-board-orchestration-actions--run-id (arguments)
+  "Return the required run id from action ARGUMENTS."
+  (let ((run-id (plist-get arguments :run-id)))
+    (unless (stringp run-id)
+      (signal 'wrong-type-argument (list 'stringp :run-id)))
+    run-id))
+
+(defun e-board-orchestration-actions--status (context arguments)
+  "Return CONTEXT board's bounded projection for the requested run."
+  (e-board-orchestration-actions-run-projection
+   (e-board-orchestration-actions--context-board context)
+   (e-board-orchestration-actions--run-id arguments)))
+
+(defun e-board-orchestration-actions--list (context _arguments)
+  "Return bounded durable run projections for CONTEXT's board."
+  (e-board-orchestration-actions-list-runs
+   (e-board-orchestration-actions--context-board context)))
+
+(defconst e-board-orchestration-actions--run-id-parameters
+  '(:type "object"
+    :properties
+    (:run-id (:type "string" :description "Durable board run id from its manifest."))
+    :required ["run-id"])
+  "Action parameters for one durable run lookup.")
+
+(defun e-board-orchestration-actions--action (handler parameters)
+  "Return one cheap durable run observation action for HANDLER."
+  (e-action-cheap-create
+   :owner 'subagents
+   :parameters parameters
+   :runner (lambda (arguments context)
+             (funcall handler context arguments))))
+
+(defun e-board-orchestration-actions-parent-alist ()
+  "Return parent actions that expose durable board run observations."
+  (list :list-runs
+        (e-board-orchestration-actions--action
+         #'e-board-orchestration-actions--list nil)
+        :run-status
+        (e-board-orchestration-actions--action
+         #'e-board-orchestration-actions--status
+         e-board-orchestration-actions--run-id-parameters)))
+
+(provide 'e-board-orchestration-actions)
+
+;;; e-board-orchestration-actions.el ends here

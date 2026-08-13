@@ -25,6 +25,7 @@
 (require 'e-skills)
 (require 'e-store)
 (require 'e-subagent-actions)
+(require 'e-board-orchestration-actions)
 (require 'e-subagent-registry)
 (require 'e-waitable)
 
@@ -50,6 +51,8 @@
      ""
      "- `spawn`: input `(:type STRING :prompt STRING :seed-messages ARRAY :label STRING :schedule STRING)`. Creates a fresh child session on the type's harness, seeds it (prompt only by default; `:seed-messages` appends explicit context first), records lineage, and starts a non-blocking run. Returns a subagent record immediately. `:schedule` is `direct` (default) or `queue`."
      "- `list`: returns compact records for the current session's direct children, newest-first."
+     "- `list-runs`: returns bounded durable run projections from this session's board."
+     "- `run-status`: input `(:run-id STRING)`. Returns one bounded durable run projection with task states, reports, conflicts, deadline evidence, and continuation state."
      "- `status`: input `(:subagent-id STRING)`. Returns one full record."
      "- `read`: input `(:subagent-id STRING :raw BOOLEAN :limit INTEGER)`. Default returns the compact result summary plus structured outputs. With `:raw t`, returns a bounded transcript excerpt (last `:limit` messages, default 20) plus the child's `session://` URI, so you can pull detail on demand without the transcript entering your context."
      "- `steer`: input `(:subagent-id STRING :prompt STRING :reason STRING)`. Steers the child's running turn in place. `:reason` is bounded audit data and reaches the child only through `:prompt`."
@@ -208,7 +211,8 @@ process-wide registry).  A session enables this to spawn and manage children."
    :instructions e-subagents-instructions
    :context-providers (list (e-subagents-types-provider registry))
    :resources (list #'e-subagents--register-reference-resources)
-   :actions (e-subagent-actions-parent-alist registry)
+   :actions (append (e-subagent-actions-parent-alist registry)
+                    (e-board-orchestration-actions-parent-alist))
    :skills (list (e-skill-spec-create
                   :name "subagents"
                   :description "Spawn, observe, steer, and shut down child subagent sessions."
