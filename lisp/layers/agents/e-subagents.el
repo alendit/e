@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'seq)
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness-instances)
@@ -28,7 +29,7 @@
 (require 'e-waitable)
 
 (defconst e-subagents-instructions
-  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
+  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Await timeouts are supervision checkpoints: use progress evidence before waiting again, steering, or explicitly interrupting. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
   "Compact model-facing instructions for the subagents capability.")
 
 (defconst e-subagents-child-instructions
@@ -51,11 +52,11 @@
      "- `list`: returns compact records for the current session's direct children, newest-first."
      "- `status`: input `(:subagent-id STRING)`. Returns one full record."
      "- `read`: input `(:subagent-id STRING :raw BOOLEAN :limit INTEGER)`. Default returns the compact result summary plus structured outputs. With `:raw t`, returns a bounded transcript excerpt (last `:limit` messages, default 20) plus the child's `session://` URI, so you can pull detail on demand without the transcript entering your context."
-     "- `steer`: input `(:subagent-id STRING :prompt STRING)`. Steers the child's running turn in place."
+     "- `steer`: input `(:subagent-id STRING :prompt STRING :reason STRING)`. Steers the child's running turn in place. `:reason` is bounded audit data and reaches the child only through `:prompt`."
      "- `send`: input `(:subagent-id STRING :prompt STRING)`. Queues a follow-up turn to the child."
      "- `resume`: input `(:subagent-id STRING :prompt STRING)`. Recovers a child whose turn ended in `failed` or `cancelled` while its session stayed live (e.g. a transient backend error): starts one more turn on the existing child session, keeping its accumulated context instead of respawning. `:prompt` is optional and defaults to a minimal continue. Refuses a child that was deliberately `shutdown` -- respawn that instead."
-     "- `interrupt`: input `(:subagent-id STRING)`. Aborts the child's active turn, leaving the record inspectable."
-     "- `shutdown`: input `(:subagent-id STRING)`. Interrupts if running and marks the record terminal. A shut-down child is not resumable."
+     "- `interrupt`: input `(:subagent-id STRING :reason STRING)`. Explicitly aborts the child's active turn, leaving the record inspectable. `:reason` is audit data only."
+     "- `shutdown`: input `(:subagent-id STRING :reason STRING)`. Explicitly interrupts if running and marks the record terminal. A shut-down child is not resumable. `:reason` is audit data only."
      "- `configure-type`: input `(:type STRING :enable-layers ARRAY :disable-layers ARRAY :layer-config ALIST)`. Turns individual capabilities on or off for a spawnable type's shared harness. `layer-config` maps a capability id to its option plist, the generic way to pass or overwrite a layer's configuration -- e.g. `((agents-std-context :skills-include (\"writing\")))` to allow only the `writing` skill, or `:skills-exclude` to deny a few. Because children of a type share one harness, this configures the type, not a single child; call it before spawning."
      "- `report` (child-side): input `(:outputs ARRAY :summary STRING)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`."
      ""
@@ -70,7 +71,9 @@
      ""
      "## Waiting for children"
      ""
-     "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 120)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires, then returns each child's status, summary, and outputs. Use `any` when useful parent work can consume the first result while other children continue; use `all` only when synthesis genuinely requires every result. On timeout it lists the pending references so you can await again. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
+     "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 90)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires. Use `any` when useful parent work can consume the first result while other children continue; use `all` only when synthesis genuinely requires every result."
+     ""
+     "A timeout is a supervision checkpoint, not a terminal error. Compare each pending child's progress sequence and age with the prior checkpoint. Re-await only when progress advanced or a declared long operation remains credible. When progress is unchanged, inspect with `status` or bounded `read :raw t`, then steer once with one concrete next action. If the post-steer checkpoint is still unchanged, explicitly `interrupt` and choose `resume` only for a transient failed or cancelled turn with useful context; otherwise spawn a fresh, narrower child. Time alone never authorizes cancellation. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
    "\n")
   "Skill body documenting the subagents action contract.")
 
@@ -95,20 +98,61 @@ e://subagents/refs/types.md."
       (mapcar #'e-subagents--type-line instances))
      "\n")))
 
-(defun e-subagents--context-messages ()
-  "Return context messages describing spawnable subagent types."
-  (when-let ((block (e-subagents--context-block)))
-    (list (list :role 'system :content block))))
+(defun e-subagents--runtime-label (record now)
+  "Return a short runtime label for RECORD at NOW."
+  (if-let ((started-at (plist-get record :started-at)))
+      (format "%.0fs" (max 0.0 (- now started-at)))
+    "not started"))
 
-(defun e-subagents-types-provider ()
-  "Return a context provider listing spawnable subagent types by visibility."
-  (e-context-provider-create
-   :name 'subagents-types
-   :priority 210
-   :build (cl-function
-           (lambda (&key harness session-id turn-id context-purpose)
-             (ignore harness session-id turn-id context-purpose)
-             (e-subagents--context-messages)))))
+(defun e-subagents--active-children-context (registry parent-session-id)
+  "Return bounded supervision evidence for PARENT-SESSION-ID's live children."
+  (let ((records (seq-filter (lambda (record)
+                               (memq (plist-get record :status)
+                                     '(queued running blocked)))
+                             (e-subagent-registry-list registry parent-session-id))))
+    (when records
+      (let ((now (float-time)))
+        (string-join
+         (append
+          (list "Active child supervision.  Await timeouts are checkpoints: compare progress, inspect unchanged work, steer once, then explicitly interrupt and choose resume or replacement.  Time alone never authorizes cancellation.")
+          (mapcar
+           (lambda (record)
+             (let* ((progress (plist-get record :progress))
+                    (last-activity (plist-get record :last-activity-at))
+                    (age (if last-activity
+                             (format "%.0fs" (max 0.0 (- now last-activity)))
+                           "none")))
+               (format "- %s: %s; runtime %s; last progress %s ago; progress %s"
+                       (plist-get record :subagent-id)
+                       (plist-get record :status)
+                       (e-subagents--runtime-label record now)
+                       age
+                       (format "#%s %s"
+                               (or (plist-get record :progress-sequence) 0)
+                               (or (plist-get progress :summary) "none")))))
+           (seq-take records 16)))
+         "\n")))))
+
+(defun e-subagents--context-messages (&optional registry session-id)
+  "Return context messages describing types and active direct children."
+  (let ((registry (or registry e-subagent-actions-default-registry))
+        (blocks (delq nil (list (e-subagents--context-block)
+                                (and session-id
+                                     (e-subagents--active-children-context
+                                      registry session-id))))))
+    (when blocks
+      (list (list :role 'system :content (string-join blocks "\n\n"))))))
+
+(defun e-subagents-types-provider (&optional registry)
+  "Return a context provider listing types and live supervision evidence."
+  (let ((registry (or registry e-subagent-actions-default-registry)))
+    (e-context-provider-create
+     :name 'subagents-types
+     :priority 210
+     :build (cl-function
+             (lambda (&key harness session-id turn-id context-purpose)
+               (ignore harness turn-id context-purpose)
+               (e-subagents--context-messages registry session-id))))))
 
 (defun e-subagents--catalog-entry (instance)
   "Return the full-catalog markdown entry for subagent INSTANCE."
@@ -162,7 +206,7 @@ process-wide registry).  A session enables this to spawn and manage children."
    :name "Subagents"
    :instruction-priority 235
    :instructions e-subagents-instructions
-   :context-providers (list (e-subagents-types-provider))
+   :context-providers (list (e-subagents-types-provider registry))
    :resources (list #'e-subagents--register-reference-resources)
    :actions (e-subagent-actions-parent-alist registry)
    :skills (list (e-skill-spec-create

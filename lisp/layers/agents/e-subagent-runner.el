@@ -57,6 +57,9 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 (defvar e-subagent--producer-bindings (make-hash-table :test 'equal)
   "Live board producer bindings keyed by parent harness/session identity.")
 
+(defconst e-subagent-max-intervention-reason-length 240
+  "Maximum width of the audit reason retained for one intervention.")
+
 (defconst e-subagent--inherited-prompt-cache-options
   '(:prompt-cache-default :prompt-cache-retention)
   "Prompt-cache policy options inherited by child sessions when unspecified.")
@@ -193,7 +196,7 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                (pcase (plist-get event :type)
                  ((or 'provider-request-started 'provider-request-finished
                       'tool-started 'tool-finished 'action-started
-                      'action-finished 'action-failed)
+                      'action-finished 'action-failed 'turn-steered)
                   (when on-progress
                     (funcall on-progress (plist-get event :type))))
                  ('turn-finished
@@ -530,24 +533,51 @@ not a tracked child."
      :outputs outputs
      :result-summary summary)))
 
-(defun e-subagent-interrupt (registry subagent-id)
+(defun e-subagent--record-intervention (registry subagent-id action reason)
+  "Record and publish one ACTION intervention for SUBAGENT-ID with REASON."
+  (when (and reason (not (stringp reason)))
+    (signal 'wrong-type-argument (list 'stringp reason)))
+  (let* ((record (e-subagent-registry-get registry subagent-id))
+         (bounded-reason
+          (and reason (truncate-string-to-width
+                       reason e-subagent-max-intervention-reason-length nil nil "...")))
+         (intervention (list :action action :reason bounded-reason :at (float-time))))
+    (e-subagent-registry-update registry subagent-id :last-intervention intervention)
+    (e-board-runtime-producer-publish-fact
+     (e-subagent--producer-binding
+      (e-subagent-registry-parent-harness registry subagent-id)
+      (plist-get record :parent-session-id))
+     :tags (list 'intervention action)
+     :attributes (list :subagent-id subagent-id
+                       :action action
+                       :reason bounded-reason
+                       :parent-session-id (plist-get record :parent-session-id)
+                       :session-id (plist-get record :session-id))
+     :content (format "Subagent %s %s%s"
+                      subagent-id action
+                      (if bounded-reason (format ": %s" bounded-reason) "")))
+    (e-subagent-registry-get registry subagent-id)))
+
+(defun e-subagent-interrupt (registry subagent-id &optional reason)
   "Abort SUBAGENT-ID's active child turn, leaving the record inspectable.
-Return the normalized record."
+REASON is bounded audit data and never reaches the child.  Return the
+normalized record."
   (when-let ((cancel (e-subagent-registry-cancel-function registry subagent-id)))
     (funcall cancel))
   (e-subagent--settle registry subagent-id 'cancelled)
-  (e-subagent-registry-get registry subagent-id))
+  (e-subagent--record-intervention registry subagent-id 'interrupt reason))
 
-(defun e-subagent-shutdown (registry subagent-id)
-  "Interrupt SUBAGENT-ID if running and mark its record terminally shut down.
-Unlike a transient failure, shutdown is a deliberate terminal intent, so the
-record is flagged `:shutdown' and `e-subagent-resume' refuses it.  Return the
-normalized record."
-  (e-subagent-interrupt registry subagent-id)
+(defun e-subagent-shutdown (registry subagent-id &optional reason)
+  "Interrupt SUBAGENT-ID and mark it terminally shut down.
+REASON is bounded audit data and never reaches the child.  Unlike a transient
+failure, shutdown is deliberate, so `e-subagent-resume' refuses it."
+  (when-let ((cancel (e-subagent-registry-cancel-function registry subagent-id)))
+    (funcall cancel))
+  (e-subagent--settle registry subagent-id 'cancelled)
   (e-subagent-registry-update registry subagent-id :shutdown t)
-  (e-subagent-registry-get registry subagent-id))
+  (e-subagent--record-intervention registry subagent-id 'shutdown reason))
 
-(defun e-subagent-steer (registry subagent-id prompt)
+(defun e-subagent-steer (registry subagent-id prompt &optional reason)
   "Steer SUBAGENT-ID's running child turn with PROMPT.
 Steers the active turn in place through the child harness so the parent can
 communicate mid-flight.  Return the normalized record."
@@ -557,7 +587,7 @@ communicate mid-flight.  Return the normalized record."
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
     (e-chat-service-steer-session harness session-id prompt)
-    (e-subagent-registry-get registry subagent-id)))
+    (e-subagent--record-intervention registry subagent-id 'steer reason)))
 
 (defun e-subagent-send (registry subagent-id prompt)
   "Queue a follow-up PROMPT to SUBAGENT-ID's child session.

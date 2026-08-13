@@ -125,3 +125,20 @@
 (provide 'e-subagents-test)
 
 ;;; e-subagents-test.el ends here
+
+(ert-deftest e-subagents-test-active-child-context-includes-supervision-evidence ()
+  "Direct children add a checkpoint instruction and bounded live evidence."
+  (let* ((registry (e-subagent-registry-create))
+         (records (e-subagent-registry-records registry))
+         (record '(:subagent-id "sub_000001" :status running
+                   :parent-session-id "parent" :started-at 0.0
+                   :last-activity-at 0.0 :progress-sequence 4
+                   :progress (:sequence 4 :summary "Finished focused ERT"))))
+    (puthash "sub_000001" record records)
+    (setf (e-subagent-registry-order registry) '("sub_000001"))
+    (let ((content (plist-get (car (e-subagents--context-messages registry "parent"))
+                              :content)))
+      (should (string-match-p "Await timeouts are checkpoints" content))
+      (should (string-match-p "sub_000001: running" content))
+      (should (string-match-p "Finished focused ERT" content))
+      (should (string-match-p "Time alone never authorizes cancellation" content)))))

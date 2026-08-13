@@ -78,7 +78,8 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
   "Steer a running subagent's active turn in REGISTRY."
   (e-subagent-steer registry
                     (e-subagent-actions--subagent-id arguments)
-                    (plist-get arguments :prompt)))
+                    (plist-get arguments :prompt)
+                    (plist-get arguments :reason)))
 
 (defun e-subagent-actions--send (registry _context arguments)
   "Queue a follow-up prompt to a subagent in REGISTRY."
@@ -95,12 +96,14 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
 (defun e-subagent-actions--interrupt (registry _context arguments)
   "Interrupt a subagent in REGISTRY."
   (e-subagent-interrupt registry
-                        (e-subagent-actions--subagent-id arguments)))
+                        (e-subagent-actions--subagent-id arguments)
+                        (plist-get arguments :reason)))
 
 (defun e-subagent-actions--shutdown (registry _context arguments)
   "Shut down a subagent in REGISTRY."
   (e-subagent-shutdown registry
-                       (e-subagent-actions--subagent-id arguments)))
+                       (e-subagent-actions--subagent-id arguments)
+                       (plist-get arguments :reason)))
 
 (defun e-subagent-actions--configure-type (_registry _context arguments)
   "Configure a spawnable type's shared harness from ARGUMENTS."
@@ -182,9 +185,36 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
       :description "Subagent id returned by spawn.")
      :prompt
      (:type "string"
-      :description "Prompt to steer into the running turn or queue as a follow-up."))
+      :description "Prompt to steer into the running turn or queue as a follow-up.")
+     :reason
+     (:type "string"
+      :description "Optional bounded audit reason; it is not sent to the child."))
     :required ["subagent-id" "prompt"])
   "Action parameters for steer and send.")
+
+(defconst e-subagent-actions--send-parameters
+  '(:type "object"
+    :properties
+    (:subagent-id
+     (:type "string"
+      :description "Subagent id returned by spawn.")
+     :prompt
+     (:type "string"
+      :description "Prompt to queue as a follow-up turn."))
+    :required ["subagent-id" "prompt"])
+  "Action parameters for send.")
+
+(defconst e-subagent-actions--intervention-parameters
+  '(:type "object"
+    :properties
+    (:subagent-id
+     (:type "string"
+      :description "Subagent id returned by spawn.")
+     :reason
+     (:type "string"
+      :description "Optional bounded audit reason; it is not sent to the child."))
+    :required ["subagent-id"])
+  "Action parameters for interrupt and shutdown.")
 
 (defconst e-subagent-actions--resume-parameters
   '(:type "object"
@@ -257,7 +287,7 @@ configure-type.  The child-side `report' is not here; see
      :send
      (e-subagent-actions--action
       registry #'e-subagent-actions--send
-      e-subagent-actions--steer-parameters)
+      e-subagent-actions--send-parameters)
      :resume
      (e-subagent-actions--action
       registry #'e-subagent-actions--resume
@@ -265,11 +295,11 @@ configure-type.  The child-side `report' is not here; see
      :interrupt
      (e-subagent-actions--action
       registry #'e-subagent-actions--interrupt
-      e-subagent-actions--subagent-id-parameters)
+      e-subagent-actions--intervention-parameters)
      :shutdown
      (e-subagent-actions--action
       registry #'e-subagent-actions--shutdown
-      e-subagent-actions--subagent-id-parameters)
+      e-subagent-actions--intervention-parameters)
      :configure-type
      (e-subagent-actions--action
       registry #'e-subagent-actions--configure-type

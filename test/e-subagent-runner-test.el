@@ -754,3 +754,46 @@ report is child-side and must not be on the parent surface."
        (lambda (event) (push event progress-events)))
       (should (equal (nreverse progress-events)
                      '(tool-started tool-finished turn-finished))))))
+
+(ert-deftest e-subagent-runner-test-interventions-publish-provenance-and-stay-explicit ()
+  "Steer, interrupt, and shutdown retain bounded audit facts without auto-cancel."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1" :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (reason (make-string 300 ?r)))
+        (cl-letf (((symbol-function 'e-chat-service-steer-session)
+                   (lambda (_harness _session prompt &rest _)
+                     (should (equal prompt "Run one focused test.")))))
+          (e-subagent-steer registry subagent-id "Run one focused test." reason))
+        (let ((intervention (plist-get (e-subagent-registry-get registry subagent-id)
+                                       :last-intervention)))
+          (should (eq (plist-get intervention :action) 'steer))
+          (should (<= (string-width (plist-get intervention :reason)) 240)))
+        (e-board-runtime-drain-producers)
+        (let* ((binding (e-chat-service-binding parent "parent-1"))
+               (messages (e-board-messages
+                          (e-board-registry-board-source-board
+                           (e-chat-service-binding-board binding))))
+               (fact (car (last (cl-remove-if-not
+                                 (lambda (message)
+                                   (member 'intervention (e-board-message-tags message)))
+                                 messages)))))
+          (should (equal (plist-get (e-board-message-attributes fact) :subagent-id)
+                         subagent-id))
+          (should (equal (plist-get (e-board-message-attributes fact)
+                                    :parent-session-id)
+                         "parent-1"))
+          (should (equal (plist-get (e-board-message-attributes fact) :action)
+                         'steer)))
+        ;; The child remains running until an explicit intervention changes it.
+        (should (eq (plist-get (e-subagent-registry-get registry subagent-id) :status)
+                    'running))
+        (e-subagent-interrupt registry subagent-id "No progress after steer.")
+        (should (eq (plist-get (e-subagent-registry-get registry subagent-id) :status)
+                    'cancelled))))))
