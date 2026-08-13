@@ -29,11 +29,24 @@
 (defconst e-subagents-shell-buffer-name "*e-subagents*"
   "Name of the subagents list buffer.")
 
+(defconst e-subagents-shell-progress-buffer-name "*e-subagent-progress*"
+  "Name of the bounded subagent progress inspection buffer.")
+
+(defcustom e-subagents-shell-soft-stale-checkpoints 2
+  "Unchanged progress checkpoints required before the shell warns.
+This is an observation threshold, not a lifecycle transition or cancellation
+policy."
+  :type 'integer
+  :group 'e)
+
 (defvar-local e-subagents-shell--registry nil
   "Subagent registry backing the current list buffer.")
 
 (defvar-local e-subagents-shell--parent-session-id nil
   "Parent session id whose children the current list buffer shows.")
+
+(defvar-local e-subagents-shell--progress-checkpoints nil
+  "Latest progress sequence and unchanged count keyed by subagent id.")
 
 (defun e-subagents-shell--status-label (status)
   "Return a short display label for subagent STATUS."
@@ -46,19 +59,53 @@
     ('cancelled "cancelled")
     (_ (format "%s" status))))
 
+(defun e-subagents-shell--age-label (at now)
+  "Return a compact age label for AT relative to NOW."
+  (if (numberp at)
+      (format "%.0fs" (max 0.0 (- now at)))
+    "-"))
+
+(defun e-subagents-shell--stale-p (record)
+  "Update and return the soft-stale observation for RECORD."
+  (let* ((subagent-id (plist-get record :subagent-id))
+         (sequence (plist-get record :progress-sequence))
+         (previous (gethash subagent-id e-subagents-shell--progress-checkpoints))
+         (unchanged (if (and previous (equal sequence (plist-get previous :sequence)))
+                        (1+ (plist-get previous :unchanged))
+                      1)))
+    (puthash subagent-id
+             (list :sequence sequence :unchanged unchanged)
+             e-subagents-shell--progress-checkpoints)
+    (and (eq (plist-get record :status) 'running)
+         (>= unchanged e-subagents-shell-soft-stale-checkpoints))))
+
 (defun e-subagents-shell--entry (record)
   "Return a `tabulated-list' entry for subagent RECORD."
-  (list (plist-get record :subagent-id)
-        (vector (or (plist-get record :label)
-                    (format "%s" (plist-get record :type)))
-                (format "%s" (plist-get record :type))
-                (e-subagents-shell--status-label (plist-get record :status))
-                (or (plist-get record :result-summary) "")
-                (number-to-string (length (plist-get record :outputs))))))
+  (let* ((now (float-time))
+         (stale (e-subagents-shell--stale-p record))
+         (progress (plist-get record :progress))
+         (status (e-subagents-shell--status-label (plist-get record :status))))
+    (list (plist-get record :subagent-id)
+          (vector (or (plist-get record :label)
+                      (format "%s" (plist-get record :type)))
+                  (format "%s" (plist-get record :type))
+                  (if stale (propertize status 'face 'font-lock-warning-face) status)
+                  (e-subagents-shell--age-label (plist-get record :started-at) now)
+                  (e-subagents-shell--age-label
+                   (plist-get record :last-activity-at) now)
+                  (if progress
+                      (format "#%s %s"
+                              (or (plist-get progress :sequence) 0)
+                              (or (plist-get progress :summary) ""))
+                    "-")
+                  (or (plist-get record :result-summary) "")
+                  (number-to-string (length (plist-get record :outputs)))))))
 
 (defconst e-subagents-shell--hint-bindings
   '(("RET" . "open chat")
     ("g" . "refresh")
+    ("s" . "steer")
+    ("p" . "progress")
     ("i" . "interrupt")
     ("k" . "shutdown"))
   "Ordered key hints shown in the subagents list footer.")
@@ -99,6 +146,36 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
   (or (tabulated-list-get-id)
       (user-error "No subagent on this line")))
 
+(defun e-subagents-shell-steer ()
+  "Steer the child at point with a prompt and optional audit reason."
+  (interactive)
+  (let* ((subagent-id (e-subagents-shell--subagent-id-at-point))
+         (prompt (read-string "Steer prompt: "))
+         (reason (read-string "Reason (optional): ")))
+    (when (string-empty-p (string-trim prompt))
+      (user-error "Steer prompt cannot be empty"))
+    (e-subagent-steer e-subagents-shell--registry subagent-id prompt
+                      (unless (string-empty-p (string-trim reason)) reason))
+    (e-subagents-shell--refresh)))
+
+(defun e-subagents-shell-progress ()
+  "Show the child at point's latest progress and bounded transcript tail."
+  (interactive)
+  (let* ((subagent-id (e-subagents-shell--subagent-id-at-point))
+         (record (e-subagent-registry-get e-subagents-shell--registry subagent-id))
+         (tail (e-subagent-raw-read e-subagents-shell--registry subagent-id 10))
+         (workspace (e-buffer-ensure-workspace (current-buffer)))
+         (buffer (get-buffer-create e-subagents-shell-progress-buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Subagent: %s\nStatus: %s\nProgress: %S\n\nTranscript tail:\n%S\n"
+                        subagent-id (plist-get record :status)
+                        (plist-get record :progress) tail))
+        (special-mode))
+      (e-buffer-set-workspace buffer workspace))
+    (e-workspace-pop-to-buffer buffer)))
+
 (defun e-subagents-shell-interrupt ()
   "Interrupt the subagent on the current row."
   (interactive)
@@ -132,6 +209,8 @@ live chat with the child."
 
 (defvar e-subagents-shell-mode-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "s") #'e-subagents-shell-steer)
+    (define-key map (kbd "p") #'e-subagents-shell-progress)
     (define-key map (kbd "i") #'e-subagents-shell-interrupt)
     (define-key map (kbd "k") #'e-subagents-shell-shutdown)
     (define-key map (kbd "RET") #'e-subagents-shell-open-chat)
@@ -145,6 +224,9 @@ live chat with the child."
         [("Label" 28 nil)
          ("Type" 16 t)
          ("Status" 12 t)
+         ("Runtime" 10 t)
+         ("Last activity" 14 t)
+         ("Progress" 32 nil)
          ("Result" 40 nil)
          ("Outputs" 8 nil)])
   (setq tabulated-list-padding 1)
@@ -171,6 +253,7 @@ when non-nil, scopes the list to that parent's direct children."
         (e-subagents-shell-mode))
       (setq e-subagents-shell--registry registry)
       (setq e-subagents-shell--parent-session-id parent-session-id)
+      (setq e-subagents-shell--progress-checkpoints (make-hash-table :test 'equal))
       (e-subagents-shell--refresh))
     (add-hook 'e-subagent-registry-change-functions
               #'e-subagents-shell--refresh-buffers)
