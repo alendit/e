@@ -94,6 +94,17 @@ neither source specifies a directory."
                lines)))
           (nreverse lines))))))
 
+(defun e-graphical-test-screenshot--visible-lines-y (window)
+  "Return the first captured text row's pixel Y offset in WINDOW.
+`e-graphical-test-screenshot--visible-lines' starts with buffer text at
+`window-start'.  Redisplay can place that text below a display-only prefix,
+such as a window-scoped overlay `before-string', so the diagnostic renderer
+must retain its actual vertical position instead of assuming row zero."
+  (when-let* ((position (posn-at-point (window-start window) window))
+              (xy (posn-x-y position))
+              (y (cdr xy)))
+    (max 0 y)))
+
 (defun e-graphical-test-screenshot--mode-line (window)
   "Return WINDOW's rendered mode-line text without properties."
   (with-current-buffer (window-buffer window)
@@ -159,6 +170,8 @@ neither source specifies a directory."
        :hscroll (window-hscroll window)
        :vscroll (window-vscroll window t)
        :mode-line (e-graphical-test-screenshot--mode-line window)
+       :visible-lines-y
+       (e-graphical-test-screenshot--visible-lines-y window)
        :visible-lines (e-graphical-test-screenshot--visible-lines window)))
     (window-list frame 'nomini))))
 
@@ -183,10 +196,14 @@ neither source specifies a directory."
                    (`(,body-left ,body-top ,body-right ,body-bottom)
                     (plist-get window :body-pixel-edges))
                    (selected (plist-get window :selected))
+                   (visible-lines-y
+                    (or (plist-get window :visible-lines-y) 0))
                    (line-width
                     (max 1 (/ (max 1 (- body-right body-left 8)) char-width)))
                    (line-count
-                    (max 0 (/ (max 0 (- body-bottom body-top)) char-height))))
+                    (max 0
+                         (/ (max 0 (- body-bottom body-top visible-lines-y))
+                            char-height))))
         (svg-rectangle
          svg left top (max 1 (- right left)) (max 1 (- bottom top))
          :fill-color default-bg
@@ -200,7 +217,8 @@ neither source specifies a directory."
           svg
           (truncate-string-to-width line line-width nil nil "…")
           :x (+ body-left 4)
-          :y (+ body-top (* index char-height) (floor (* char-height 0.8)))
+          :y (+ body-top visible-lines-y (* index char-height)
+                (floor (* char-height 0.8)))
           :fill default-fg
           :font-family "monospace"
           :font-size char-height))
@@ -235,9 +253,10 @@ neither source specifies a directory."
 
 (defun e-graphical-test-capture-state (label &optional directory frame)
   "Capture LABEL for FRAME into DIRECTORY and return its artifact plist.
-The result contains `:svg' and `:state' paths.  DIRECTORY defaults to
-`E_GRAPHICAL_E2E_SCREENSHOT_DIR'.  Signal an error when no output directory was
-configured, so explicit debug captures cannot silently vanish."
+The result contains `:svg' and `:state' paths plus the captured `:state-data'.
+DIRECTORY defaults to `E_GRAPHICAL_E2E_SCREENSHOT_DIR'.  Signal an error when
+no output directory was configured, so explicit debug captures cannot silently
+vanish."
   (let* ((directory
           (or (e-graphical-test-screenshot-directory directory)
               (error "Set %s or pass a screenshot directory"
@@ -254,7 +273,7 @@ configured, so explicit debug captures cannot silently vanish."
       (insert "\n"))
     (push (list :svg svg-path :state-data state)
           e-graphical-test-screenshot--pending)
-    (list :svg svg-path :state state-path)))
+    (list :svg svg-path :state state-path :state-data state)))
 
 (defun e-graphical-test-capture-transition (label function &optional directory)
   "Capture LABEL before and after calling FUNCTION.

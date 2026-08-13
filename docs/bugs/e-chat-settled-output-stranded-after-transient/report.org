@@ -1,0 +1,18 @@
+#+title: e-chat Settled Output Stranded After Transient Collapse
+#+startup: overview
+
+* Report
+
+After a long agent turn finishes, the chat transcript can leave the final
+assistant answer around the middle of the output pane with a large empty area
+below it.  The composer remains at the bottom and the turn reports =done=, but
+the transcript no longer presents the latest output at its intended bottom
+position.
+
+The reported Grimoire daily turn had 63 tool calls before settlement, making
+the live activity region substantially taller than the final answer and
+activity summary that replaced it.
+
+Expected behavior: a transcript that was following live output before the
+terminal render continues to follow the settled answer.  A transcript that the
+user explicitly scrolled upward remains at that scrollback position.

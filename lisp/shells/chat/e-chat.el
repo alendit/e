@@ -8301,16 +8301,19 @@ separate dimmed representation instead."
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-failed
-     (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
-     (e-chat--set-status "error")
-     (e-chat--render-turn-failure
-      (plist-get event :turn-id)
-      (plist-get event :created-at)
-      (plist-get event :payload)
-      t))
+     (let ((output-tail-windows (e-chat--capture-output-tail-windows)))
+       (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
+       (e-chat--set-status "error")
+       (e-chat--render-turn-failure
+        (plist-get event :turn-id)
+        (plist-get event :created-at)
+        (plist-get event :payload)
+        t)
+       (e-chat--restore-output-tail-windows output-tail-windows)))
     ('turn-cancelled
      (let* ((turn-id (plist-get event :turn-id))
-            (created-at (plist-get event :created-at)))
+            (created-at (plist-get event :created-at))
+            (output-tail-windows (e-chat--capture-output-tail-windows)))
        (e-chat--set-turn-time turn-id :ended-at created-at)
        (e-chat--settle-open-thinking turn-id created-at 'cancelled)
        (e-chat--cancel-pending-activity-redraw turn-id)
@@ -8326,7 +8329,8 @@ separate dimmed representation instead."
          ;; Persist the activity summary (duration, tool-call count) below the
          ;; cancellation, matching the failed-turn path.  No-op when the turn
          ;; did no provider work.
-         (e-chat--finalize-turn-display turn-id))))
+         (e-chat--finalize-turn-display turn-id))
+       (e-chat--restore-output-tail-windows output-tail-windows)))
     ('compaction-started
      (let ((payload (plist-get event :payload)))
        (e-chat--set-status "compacting")
@@ -8388,8 +8392,10 @@ separate dimmed representation instead."
          ;; activity is driven only by current durable activity events.
          nil)
         (t
-         (let ((assistant-p (eq (plist-get message :role) 'assistant))
-               (turn-id (plist-get event :turn-id)))
+         (let* ((assistant-p (eq (plist-get message :role) 'assistant))
+                (turn-id (plist-get event :turn-id))
+                (output-tail-windows
+                 (and assistant-p (e-chat--capture-output-tail-windows))))
            (when assistant-p
              (e-chat--set-turn-time turn-id
                                     :ended-at
@@ -8405,7 +8411,8 @@ separate dimmed representation instead."
              ;; than board transcript activity.  The projected assistant
              ;; output is the successful-turn boundary where live board-native
              ;; chats can refresh that settled context fill.
-             (e-chat--refresh-mode-line-status t))
+             (e-chat--refresh-mode-line-status t)
+             (e-chat--restore-output-tail-windows output-tail-windows))
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)

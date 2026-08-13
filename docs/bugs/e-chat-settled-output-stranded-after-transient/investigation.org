@@ -1,0 +1,111 @@
+#+title: e-chat Settled Output Stranded After Transient Collapse Investigation
+#+startup: overview
+
+* Evidence
+
+A bounded read-only probe of the reported live Grimoire transcript found:
+
+- the transcript body was 318 pixels high;
+- its visible output tail was only 105 pixels from the top;
+- the per-window follow state was still =:follow t=;
+- the saved follow-state window start was 21517, while the settled transcript's
+  new =point-max= was only 15406;
+- there was no running-status region or bottom-alignment spacer left.
+
+This proves the user had not unpinned the transcript.  The saved viewport came
+from the much taller pre-settlement activity region and became invalid when
+that region was replaced by the short durable answer and summary.  The running
+Emacs was inspected read-only and was not reloaded or mutated.
+
+* Root cause
+
+Active-status redraws already capture and restore following transcript windows
+around each replacement.  Successful terminal rendering did not have an
+equivalent outer transaction: it stopped progress, deleted the transient
+activity, inserted the durable assistant answer, and rendered the settled
+summary without reapplying the still-valid follow intent after the complete
+shape change.  Failed and cancelled terminal paths performed the same kind of
+contraction.
+
+The previous graphical coverage exercised streaming growth and short active
+output.  It did not create a transient taller than the transcript pane and
+then collapse it into a short final answer.  Its generated SVG also enumerated
+buffer lines from =window-start= but ignored the visual Y offset contributed by
+the window-scoped bottom-alignment overlay, so an artifact could depict text at
+the top even when native redisplay placed it correctly.
+
+* Fix
+
+- Terminal success, failure, and cancellation rendering now capture only
+  transcript windows physically positioned at the old output tail before any
+  contraction and restore those windows to the new output tail after the whole
+  terminal representation is complete.
+- The existing capture rule deliberately excludes a viewport away from the
+  tail, so explicit user scrollback is not moved.
+- The graphical screenshot state now records the actual pixel Y offset of the
+  first captured buffer line.  Its SVG renderer applies that offset, preserving
+  display-only prefixes such as the chat's window-scoped top spacer.
+
+* Regression coverage
+
+- =e-chat-behavior-test-settled-output-follows-after-tall-transient= renders a
+  100-line activity transient, settles it to a short answer, and asserts the
+  native output tail remains within eight text rows of the window bottom.
+- The same test captures an inspectable settled artifact and asserts that its
+  screenshot model contains the nonzero visual line offset used by the bottom
+  spacer.
+- =e-chat-behavior-test-settlement-preserves-user-scrollback= settles a second
+  turn while the transcript is explicitly scrolled into durable history and
+  proves both =window-start= and the off-tail viewport are retained.
+- Existing short-output and stream unpin/repin graphical tests now assert the
+  final settled viewport too, rather than stopping before terminal rendering.
+
+* Validation
+
+- Pre-fix graphical reproduction: failed with =tail-y=42= in a
+  =body-pixels=1134= transcript, stale follow =:window-start 283=, and no
+  spacer.
+- Focused terminal-settlement graphical set: 4 tests passed, 0 unexpected.
+- Visual inspection of the generated PNG shows the short durable answer and
+  summary aligned at the bottom; the scrollback PNG remains on durable rows
+  100--139 while the new answer stays below the viewport.
+- =eldev compile --warnings-as-errors=: passed.
+- =eldev test=: 2,092 tests, 2,090 expected passes, 0 unexpected, and 2
+  optional skips.  A sandboxed run first proved the other 2,085 tests but
+  blocked five local-network fixtures; the unrestricted rerun passed all five.
+- Full graphical E2E suite: 17 tests passed, 0 unexpected.
+- =git diff --check=: passed.
+
+* Architecture self-check
+
+1. This slice independently fixes a visible terminal-state failure and closes
+   the regression gap that allowed it.
+2. It moves toward a presentation shell with one consistent pinned-output
+   contract across active and terminal turn states.
+3. Window geometry is variable and remains local to the shell.  The stable
+   decision---restore only viewports physically following the old tail---uses
+   existing narrow helpers.
+4. The chat presentation owns the behavior because it owns transcript
+   mutation, window follow intent, and bottom alignment.
+5. Coupling is reduced across render phases: terminal event handlers use the
+   existing transcript-window contract and add no harness or backend knowledge.
+6. No stable harness, session, provider, or capability code depends on
+   graphical presentation state.
+7. Window and overlay side effects stay at the outer presentation boundary.
+8. No durable state is added.  Captured window lists live only for one terminal
+   render call; screenshot Y offsets live only in test artifacts.
+9. Each terminal event scans the small set of windows showing one transcript
+   and performs at most one window-height visual motion per following window.
+10. The existing capture/restore helpers represent the real pinned-output
+    contract and require no new interface or speculative abstraction.
+11. Both composed and legacy chat surfaces retain their existing behavior;
+    only viewports already at the tail are repositioned.
+12. No compatibility shim or obsolete rendering path was added.  The earlier
+    streaming-only assertions were strengthened instead of duplicated as a
+    workaround.
+13. Dead or nonmatching windows are expected and ignored by the established
+    restore helper.  Unexpected rendering and geometry failures continue to
+    surface as test or event errors.
+14. The tall-contraction graphical test proves the core visual behavior; the
+    separate scrollback test proves the negative contract without a live
+    provider or the user's Emacs.

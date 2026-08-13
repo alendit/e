@@ -75,13 +75,24 @@ identity, so every settled transition resolves the current pair from them."
       (substring-no-properties
        (format-mode-line mode-line-format nil window buffer)))))
 
+(defun e-chat-behavior-test--set-frame-size (width height)
+  "Resize the selected frame to WIDTH by HEIGHT and await native settlement."
+  (set-frame-size (selected-frame) width height)
+  ;; NS applies the requested size asynchronously and may clamp it to the
+  ;; off-screen display.  Cross two native event-loop/redisplay boundaries so
+  ;; a previous test's deferred restore cannot resize the next fixture after
+  ;; its bottom spacer has already been calculated.
+  (sit-for 0.05)
+  (redisplay t)
+  (sit-for 0.05)
+  (redisplay t))
+
 (defun e-chat-behavior-test--open-surface (&optional external-window)
   "Open a public chat surface, optionally beside EXTERNAL-WINDOW.
 Return a plist containing its stream, harness, transcript, and visible windows."
   (e-board-e2e-reset-runtime)
   (delete-other-windows)
-  (set-frame-size (selected-frame) 140 48)
-  (redisplay t)
+  (e-chat-behavior-test--set-frame-size 140 48)
   (let* ((stream (e-graphical-test-stream-create))
          (harness
           (e-harness-create
@@ -120,8 +131,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
     (kill-buffer outside))
   (when (window-configuration-p configuration)
     (set-window-configuration configuration))
-  (set-frame-size (selected-frame) (car frame-size) (cdr frame-size))
-  (redisplay t))
+  (e-chat-behavior-test--set-frame-size (car frame-size) (cdr frame-size)))
 
 (defun e-chat-behavior-test--submit (fixture prompt)
   "Type and submit PROMPT through FIXTURE's composer command loop."
@@ -270,37 +280,59 @@ Return a plist containing its stream, harness, transcript, and visible windows."
 (defun e-chat-behavior-test--assert-tail-near-bottom (fixture)
   "Assert that FIXTURE's visible transcript tail is near its window bottom."
   (let ((transcript (plist-get fixture :transcript))
-        (window (car (e-chat-behavior-test--fixture-windows fixture))))
-    (with-current-buffer transcript
-      (redisplay t)
-      (let* ((tail (point-max))
-             (tail-y (e-graphical-test-tail-y window tail))
-             (body-pixels (window-body-height window t))
-             (line-pixels (frame-char-height))
-             (spacer
-              (cl-find-if
-               (lambda (overlay)
-                 (eq (overlay-get
-                      overlay e-chat--output-bottom-spacer-property)
-                     window))
-               (e-chat--output-bottom-spacer-overlays)))
-             (spacer-lines
-              (and spacer
-                   (length (overlay-get spacer 'before-string)))))
-        (ert-info ((format
-                    "tail-y=%S body-pixels=%S line-pixels=%S body-lines=%S screen-lines=%S spacer-lines=%S start=%S end=%S point=%S follow=%S output=%S bounds=%S"
-                    tail-y body-pixels line-pixels
-                    (window-body-height window)
-                    (count-screen-lines (point-min) tail nil window)
-                    spacer-lines
-                    (window-start window) (window-end window t)
-                    (window-point window)
-                    (e-chat--window-output-follow-state window)
-                    (e-chat--output-follow-position)
-                    (e-chat--running-status-bounds)))
-          (should (pos-visible-in-window-p tail window t))
-          (should (integerp tail-y))
-          (should (>= tail-y (- body-pixels (* 8 line-pixels)))))))))
+        snapshot)
+    (condition-case err
+        (e-graphical-test-wait-until
+         (lambda ()
+           (redisplay t)
+           (when-let ((windows
+                       (e-chat-behavior-test--surface-windows transcript)))
+             (let ((window (car windows)))
+               (with-current-buffer transcript
+                 (let* ((tail (point-max))
+                        (tail-y (e-graphical-test-tail-y window tail))
+                        (body-pixels (window-body-height window t))
+                        (line-pixels (frame-char-height))
+                        (spacer
+                         (cl-find-if
+                          (lambda (overlay)
+                            (eq (overlay-get
+                                 overlay
+                                 e-chat--output-bottom-spacer-property)
+                                window))
+                          (e-chat--output-bottom-spacer-overlays))))
+                   (setq snapshot
+                         (list
+                          :tail-y tail-y
+                          :body-pixels body-pixels
+                          :line-pixels line-pixels
+                          :body-lines (window-body-height window)
+                          :screen-lines
+                          (count-screen-lines (point-min) tail nil window)
+                          :spacer-lines
+                          (and spacer
+                               (length (overlay-get spacer 'before-string)))
+                          :start (window-start window)
+                          :end (window-end window t)
+                          :point (window-point window)
+                          :follow (e-chat--window-output-follow-state window)
+                          :output (e-chat--output-follow-position)
+                          :bounds (e-chat--running-status-bounds)))
+                   (and (eq (window-buffer window) transcript)
+                        (pos-visible-in-window-p tail window t)
+                        (integerp tail-y)
+                        (>= tail-y
+                            (- body-pixels (* 8 line-pixels)))))))))
+         2.0 "transcript tail near window bottom")
+      (error
+       (ert-fail
+        (format "%s\nlast graphical tail state: %S"
+                (error-message-string err) snapshot))))))
+
+(defun e-chat-behavior-test--capture-state (label)
+  "Capture graphical LABEL when screenshot artifacts are enabled."
+  (when (e-graphical-test-screenshot-enabled-p)
+    (e-graphical-test-capture-state label)))
 
 (ert-deftest e-chat-behavior-test-zz-debug-screenshots-capture-state-and-transition ()
   "Debug snapshots expose a visual state and a before/after transition pair."
@@ -471,7 +503,8 @@ Return a plist containing its stream, harness, transcript, and visible windows."
              :content "first graphical progress")
            "first graphical progress")
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
-          (should (eq (selected-window) (plist-get fixture :composer-window)))
+          (should (eq (selected-window)
+                      (cdr (e-chat-behavior-test--fixture-windows fixture))))
           (e-graphical-test-type-text "draft survives")
           (e-chat-behavior-test--emit
            fixture
@@ -486,7 +519,10 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                      (buffer-substring-no-properties
                       (point-min) (point-max)))))
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
-          (e-chat-behavior-test--finish fixture "short graphical answer"))
+          (e-chat-behavior-test--finish fixture "short graphical answer")
+          (e-chat-behavior-test--capture-state
+           "short-output-after-settlement")
+          (e-chat-behavior-test--assert-tail-near-bottom fixture))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-reasoning-renders-content-not-payload ()
@@ -504,8 +540,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
            '(:type reasoning-delta :stream-kind summary
              :content "clean graphical reasoning")
            "clean graphical reasoning")
-          (let ((transcript (plist-get fixture :transcript))
-                (window (plist-get fixture :transcript-window)))
+          (let* ((transcript (plist-get fixture :transcript))
+                 (window
+                  (car (e-chat-behavior-test--fixture-windows fixture))))
             (with-current-buffer transcript
               (goto-char (point-min))
               (should (search-forward "clean graphical reasoning" nil t))
@@ -514,8 +551,51 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                                           (buffer-string)))
               (should-not (string-match-p ":stream-kind summary"
                                           (buffer-string)))))
-          (should (eq (selected-window) (plist-get fixture :composer-window)))
+          (should
+           (eq (selected-window)
+               (cdr (e-chat-behavior-test--fixture-windows fixture))))
           (e-chat-behavior-test--finish fixture "reasoned graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-settled-output-follows-after-tall-transient ()
+  "Settling a tall transient keeps the much shorter durable answer at bottom."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 120)
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "tall transient prompt")
+          (e-chat-behavior-test--emit
+           fixture
+           (list :type 'reasoning-delta
+                 :stream-kind 'summary
+                 :content
+                 (mapconcat
+                  (lambda (number) (format "r%03d" number))
+                  (number-sequence 1 100) "\n"))
+           "r100")
+          (e-chat-behavior-test--assert-tail-near-bottom fixture)
+          (e-chat-behavior-test--finish fixture "short settled answer")
+          (when-let ((artifact
+                      (e-chat-behavior-test--capture-state
+                       "settled-output-after-tall-transient")))
+            (let* ((state (plist-get artifact :state-data))
+                   (transcript-name
+                    (buffer-name (plist-get fixture :transcript)))
+                   (window-state
+                    (cl-find-if
+                     (lambda (entry)
+                       (equal (plist-get entry :buffer) transcript-name))
+                     (plist-get state :windows))))
+              (should window-state)
+              ;; The generated SVG must preserve the window-scoped top spacer
+              ;; that visually places this short transcript at the bottom.
+              (should (> (or (plist-get window-state :visible-lines-y) 0)
+                         0))))
+          (e-chat-behavior-test--assert-tail-near-bottom fixture))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-focused-composer-shows-model-context-fill ()
@@ -621,8 +701,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
            "stream update one")
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (let* ((transcript (plist-get fixture :transcript))
-                 (window (plist-get fixture :transcript-window)))
-            (select-window (plist-get fixture :composer-window))
+                 (windows (e-chat-behavior-test--fixture-windows fixture))
+                 (window (car windows)))
+            (select-window (cdr windows))
             (e-graphical-test-send-keys "C-M-S-v")
             (let ((scrolled-start (window-start window)))
               (with-current-buffer transcript
@@ -648,7 +729,44 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (e-chat-behavior-test--assert-tail-near-bottom fixture)
             (should (eq (selected-window)
                         (plist-get fixture :composer-window))))
-          (e-chat-behavior-test--finish fixture "stream graphical answer"))
+          (e-chat-behavior-test--finish fixture "stream graphical answer")
+          (e-chat-behavior-test--capture-state
+           "settled-output-after-long-history")
+          (e-chat-behavior-test--assert-tail-near-bottom fixture))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-settlement-preserves-user-scrollback ()
+  "A terminal render does not move a transcript the user explicitly unpinned."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "durable history prompt")
+          (e-chat-behavior-test--finish
+           fixture
+           (mapconcat (lambda (number) (format "durable row %03d" number))
+                      (number-sequence 1 400) "\n"))
+          (e-chat-behavior-test--submit fixture "scrollback prompt")
+          (e-chat-behavior-test--emit
+           fixture '(:type reasoning-delta :content "terminal update")
+           "terminal update")
+          (let* ((transcript (plist-get fixture :transcript))
+                 (windows (e-chat-behavior-test--fixture-windows fixture))
+                 (window (car windows)))
+            (select-window (cdr windows))
+            (e-graphical-test-send-keys "C-M-S-v")
+            (let ((scrolled-start (window-start window)))
+              (with-current-buffer transcript
+                (should (< (window-end window t) (point-max))))
+              (e-chat-behavior-test--finish fixture "settled below scrollback")
+              (should (= (window-start window) scrolled-start))
+              (with-current-buffer transcript
+                (should (< (window-end window t) (point-max))))
+              (e-chat-behavior-test--capture-state
+               "settlement-preserved-user-scrollback"))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-large-transcript-minibuffer-keeps-provider-responsive ()
