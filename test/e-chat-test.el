@@ -5499,6 +5499,27 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (should (eq (selected-window) composer-window))
               (should (eq (window-buffer (selected-window)) composer))
               (should (>= (window-end transcript-window t) old-tail))
+              ;; A command that moves the paired transcript toward older
+              ;; output must unpin it even when the old tail remains visible.
+              ;; Model that direction at the pre/post-command boundary; the
+              ;; graphical test drives the real one-line scroll command.
+              (set-window-parameter
+               transcript-window e-chat--output-follow-command-window-parameter
+               (list :buffer buffer
+                     :window-start (1+ (window-start transcript-window))))
+              (cl-letf (((symbol-function 'e-chat--window-reaches-output-p)
+                         (lambda (_window _tail) t)))
+                (with-current-buffer composer
+                  (e-chat--post-command)))
+              (should-not
+               (plist-get
+                (e-chat--window-output-follow-state transcript-window)
+                :follow))
+              (should-not
+               (window-parameter
+                transcript-window
+                e-chat--output-follow-command-window-parameter))
+              (e-chat--set-window-output-follow-state transcript-window t)
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
                               :session-id e-chat-session-id

@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-active-output-follow-snap-gap/ | e-chat active output follow snap and bottom gap |
 | Closed | e-chat-settled-output-stranded-after-transient/ | e-chat settled output stranded after transient collapse |
 | Closed | project-local-layer-enable-poisons-harness/ | Project-local layer enable poisons the chat harness |
 | Closed | openai-replay-null-reasoning-summary/ | OpenAI full replay sends a null reasoning summary |

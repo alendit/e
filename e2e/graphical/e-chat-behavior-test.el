@@ -322,7 +322,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                         (pos-visible-in-window-p tail window t)
                         (integerp tail-y)
                         (>= tail-y
-                            (- body-pixels (* 8 line-pixels)))))))))
+                            (- body-pixels (* 3 line-pixels)))))))))
          2.0 "transcript tail near window bottom")
       (error
        (ert-fail
@@ -699,28 +699,39 @@ Return a plist containing its stream, harness, transcript, and visible windows."
           (e-chat-behavior-test--emit
            fixture '(:type reasoning-delta :content "stream update one")
            "stream update one")
-          (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (let* ((transcript (plist-get fixture :transcript))
                  (windows (e-chat-behavior-test--fixture-windows fixture))
                  (window (car windows)))
+            (with-current-buffer transcript
+              (should
+               (pos-visible-in-window-p
+                (e-chat--output-follow-position) window t)))
             (select-window (cdr windows))
-            (e-graphical-test-send-keys "C-M-S-v")
-            (let ((scrolled-start (window-start window)))
+            (let ((following-start (window-start window))
+                  (old-tail
+                   (with-current-buffer transcript
+                     (e-chat--output-follow-position))))
+              ;; A one-line move toward older output is deliberate scrollback
+              ;; even while the old tail remains visible in the viewport.
+              (e-graphical-test-send-keys "C-u 1 C-M-S-v")
+              (should (< (window-start window) following-start))
               (with-current-buffer transcript
-                (should (< (window-end window t) (point-max))))
+                (should (>= (window-end window t) old-tail))
+                (should-not
+                 (plist-get (e-chat--window-output-follow-state window)
+                            :follow))))
+            (let ((scrolled-start (window-start window)))
               (e-chat-behavior-test--emit
                fixture '(:type reasoning-delta :content " stream update two")
                "stream update two")
               (should (= (window-start window) scrolled-start))
               (should (eq (selected-window)
                           (plist-get fixture :composer-window))))
-            (let ((remaining 80))
-              (while (and (> remaining 0)
-                          (with-current-buffer transcript
-                            (< (window-end window t) (point-max))))
-                (setq remaining (1- remaining))
-                (e-graphical-test-send-keys "C-M-v"))
-              (should (> remaining 0)))
+            (e-graphical-test-send-keys "C-u 1 C-M-v")
+            (with-current-buffer transcript
+              (should
+               (plist-get (e-chat--window-output-follow-state window)
+                          :follow)))
             (e-chat-behavior-test--emit
              fixture '(:type reasoning-delta :content " stream update three")
              "stream update three")

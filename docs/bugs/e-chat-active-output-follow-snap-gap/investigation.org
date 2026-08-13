@@ -1,0 +1,117 @@
+#+title: e-chat Active Output Follow Snap and Bottom Gap Investigation
+#+startup: overview
+
+* Evidence
+
+A bounded read-only probe of the reported live Grimoire transcript found:
+
+- the transcript window had =:follow t= while its composer was selected;
+- =window-point= and the active output position were both at =point-max=;
+- the transcript body was 325 pixels high, but the visible tail Y coordinate
+  was only 211 pixels from the top;
+- the active region occupied 21 rendered lines and no bottom spacer was in
+  use.
+
+This proves that the transcript still considered itself pinned, while its
+current follow geometry left roughly eight text rows below the newest output.
+The running Emacs was inspected read-only and was not reloaded or mutated.
+
+The focused graphical reproduction then moved the paired transcript one line
+toward older output with =C-u 1 C-M-S-v=.  The old tail remained visible, but
+the pre-fix follow state incorrectly remained =:follow t=.  A separate
+long-transcript assertion measured a roughly seven-row bottom gap.
+
+* Root cause
+
+The post-command follow refresh inferred intent only from final geometry.  If
+a small upward scroll left the old tail visible, the physical-tail predicate
+returned true and overwrote the deliberate scrollback with =:follow t=.  The
+next provider redraw therefore snapped the transcript back.
+
+The follow placement also used a target that intentionally reserved six text
+rows below the output position.  With the output position at =point-max= and
+variable-height activity rows, native redisplay left the newest visible line
+roughly seven or eight rows above the pane bottom.
+
+The prior graphical test used a full-page upward scroll.  That removed the
+tail from view, so it proved only the obvious off-tail case and missed the
+ambiguous partial-scroll boundary.  Its bottom assertion allowed an eight-row
+gap, exactly large enough to accept the bad placement.
+
+* Fix
+
+- Both transcript and composer command loops capture the paired transcript's
+  =window-start= before each user command.
+- Post-command handling compares that start with the resulting viewport.
+  Movement toward older output unpins immediately, regardless of whether the
+  old tail is still visible.  Movement toward newer output repins only when the
+  viewport physically reaches the current tail.  An unchanged viewport keeps
+  its existing intent.
+- The one-command snapshot is window-local, cleared at the post-command
+  boundary, and never persisted.
+- Long-transcript follow placement now targets two rows of bottom headroom.
+  Short-transcript spacer calculation retains its independent redisplay
+  safety allowance for =point-max= and variable-height rows.
+
+* Regression coverage
+
+- The graphical stream test now performs a real one-line upward scroll from
+  the composer, proves that the old tail remains visible while follow becomes
+  false, emits another provider update, and proves the viewport does not snap.
+- The same test scrolls one line back toward newer output, proves the viewport
+  repins at the tail, emits another update, and checks the new tail placement.
+- The shared native-geometry assertion now requires the tail within three text
+  rows of the pane bottom instead of accepting eight.
+- The batch viewport test independently models the pre/post-command direction
+  boundary and proves that movement toward older output wins over a true
+  physical-tail predicate.
+
+* Validation
+
+- Pre-fix focused graphical reproduction: the one-line scroll retained
+  =:follow t= and the bottom placement exceeded the new three-row bound.
+- Focused batch viewport tests: 2 passed, 0 unexpected.
+- Focused graphical viewport and settlement set: 4 passed, 0 unexpected.
+- Visual inspection of the generated PNG artifacts shows deliberate partial
+  scrollback held in place and the settled output near the bottom edge.
+- =eldev compile --warnings-as-errors=: passed.
+- =eldev test -f test/e-chat-test.el=: 342 tests, 341 expected passes, 0
+  unexpected, and 1 optional skip.
+- =eldev test=: 2,098 tests, 2,096 expected passes, 0 unexpected, and 2
+  optional skips.  The sandboxed run first reached the local-network fixtures
+  but could not bind their server sockets; the unrestricted rerun passed them.
+- Full graphical E2E suite: 17 tests passed, 0 unexpected.
+- =git diff --check=: passed.
+
+* Architecture self-check
+
+1. This slice is useful independently: it restores reliable scrollback and
+   correct live-tail placement while closing the exact regression gap.
+2. It moves toward one explicit presentation-owned follow contract across
+   transcript focus, composer focus, streaming, and settlement.
+3. User scroll direction is stable behavior.  Redisplay geometry remains a
+   local, reversible presentation concern rather than a new abstraction.
+4. The chat presentation owns the behavior because it owns the transcript
+   windows, command loop, viewport intent, and output placement.
+5. Coupling is unchanged outside the shell.  The only new state is a narrow
+   one-command window parameter consumed by the existing follow refresh.
+6. No harness, session, backend, provider, capability, or tool dependency now
+   points toward graphical presentation state.
+7. Window movement and redisplay-dependent predicates remain at the shell
+   boundary; core agent policy gains no side effects.
+8. The command snapshot belongs to one window for one command and is cleared
+   immediately.  It is derived, high-churn state and is not persisted.
+9. Each command adds constant-time window-parameter reads and integer
+   comparisons.  The physical-tail check is skipped for upward movement.
+10. The existing follow-state helper remains the real contract.  No shared
+    interface or speculative strategy was introduced.
+11. Both composed and legacy transcript modes install the same capture hook;
+    provider and ChatGPT/OpenAI backend behavior is untouched.
+12. No compatibility shim or fallback rendering path was added.  The overly
+    permissive visual assertion and obsolete six-row long-output target were
+    removed.
+13. Missing or dead paired windows remain expected no-ops.  Unexpected command
+    loop, rendering, and geometry errors continue to surface.
+14. A batch test proves intent resolution without graphical redisplay.  A
+    native graphical test separately proves real key commands, viewport
+    movement, streaming updates, and pixel geometry.

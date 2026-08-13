@@ -851,6 +851,10 @@ must remain selected for response navigation."
 This is an internal rollout seam.  Batch tests bind it when they need to
 exercise the production surface; it is not a user-facing compatibility mode.")
 
+(defconst e-chat--output-follow-command-window-parameter
+  'e-chat-output-follow-command-state
+  "Window parameter holding the viewport captured before one user command.")
+
 (defcustom e-chat-composer-window-min-height 5
   "Minimum height of an e chat composer window.
 
@@ -1474,6 +1478,8 @@ and / expands available prompts."
   (add-hook 'after-change-functions
             #'e-chat--surface-mark-composer-layout-dirty nil t)
   (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
+  (add-hook 'pre-command-hook
+            #'e-chat--capture-selected-output-follow-command nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (e-chat--ensure-window-selection-hook))
 
@@ -1505,6 +1511,8 @@ cycle."
             #'e-chat--mark-composer-scroll-needed nil t)
   (add-hook 'after-change-functions
             #'e-chat--surface-mark-composer-layout-dirty nil t)
+  (add-hook 'pre-command-hook
+            #'e-chat--capture-selected-output-follow-command nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
   (add-hook 'post-command-hook #'e-chat--surface-composer-post-command nil t)
   (add-hook 'kill-buffer-hook #'e-chat--surface-composer-killed nil t))
@@ -2829,19 +2837,53 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
   (when-let* ((surface (e-chat--selected-chat-surface))
               (transcript (car surface))
               (window (cdr surface)))
-    (with-current-buffer transcript
-      (when (e-chat--running-status-bounds)
-        (let ((state (e-chat--window-output-follow-state window)))
-          ;; Composer typing is also a post-command boundary.  Recompute only
-          ;; when the paired transcript actually moved, so ordinary input does
-          ;; not force a redisplay check on every keystroke.
-          (when (or (null state)
-                    (not (equal (plist-get state :window-start)
-                                (window-start window))))
-            (e-chat--set-window-output-follow-state
-             window
-             (e-chat--window-reaches-output-p
-              window (e-chat--output-follow-position)))))))))
+    (let ((command-state
+           (window-parameter
+            window e-chat--output-follow-command-window-parameter)))
+      (unwind-protect
+          (with-current-buffer transcript
+            (when (e-chat--running-status-bounds)
+              (let* ((state (e-chat--window-output-follow-state window))
+                     (current-start (window-start window))
+                     (command-start
+                      (and (eq (plist-get command-state :buffer) transcript)
+                           (plist-get command-state :window-start))))
+                (cond
+                 ;; Moving toward older output is explicit scrollback even
+                 ;; while a small movement leaves the live tail visible.
+                 ((and (integer-or-marker-p command-start)
+                       (< current-start command-start))
+                  (e-chat--set-window-output-follow-state window nil))
+                 ;; Moving toward newer output repins only after the viewport
+                 ;; physically reaches the tail.  An unchanged viewport (for
+                 ;; example composer typing after a resize) keeps its intent.
+                 ((and (integer-or-marker-p command-start)
+                       (> current-start command-start))
+                  (e-chat--set-window-output-follow-state
+                   window
+                   (e-chat--window-reaches-output-p
+                    window (e-chat--output-follow-position))))
+                 ;; Preserve the old fallback for callers outside a command
+                 ;; loop, including host viewport restoration.
+                 ((and (null command-start)
+                       (or (null state)
+                           (not (equal (plist-get state :window-start)
+                                       current-start))))
+                  (e-chat--set-window-output-follow-state
+                   window
+                   (e-chat--window-reaches-output-p
+                    window (e-chat--output-follow-position))))))))
+        (set-window-parameter
+         window e-chat--output-follow-command-window-parameter nil)))))
+
+(defun e-chat--capture-selected-output-follow-command ()
+  "Capture the selected transcript viewport before a user command."
+  (when-let* ((surface (e-chat--selected-chat-surface))
+              (transcript (car surface))
+              (window (cdr surface)))
+    (set-window-parameter
+     window e-chat--output-follow-command-window-parameter
+     (list :buffer transcript :window-start (window-start window)))))
 
 (defun e-chat--post-command ()
   "Maintain composer and transcript viewport invariants after commands."
@@ -5732,7 +5774,7 @@ live output, and a user reading older output must retain that scrollback."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
     (e-chat--clear-output-bottom-spacer window)
-    (let* ((target-motion (- 6 (window-body-height window)))
+    (let* ((target-motion (- 2 (window-body-height window)))
            (motion-and-start
             (save-excursion
               (goto-char position)
@@ -5745,7 +5787,12 @@ live output, and a user reading older output must retain that scrollback."
            (motion (car motion-and-start))
            (start (cdr motion-and-start))
            (spacer-lines
-            (max 0 (- (abs target-motion) (abs motion)))))
+            ;; Short transcripts need extra headroom for point-max and
+            ;; variable-height rendered rows.  Long transcripts reach the
+            ;; two-row target directly and therefore need no spacer.
+            (max 0
+                 (- (abs (- 6 (window-body-height window)))
+                    (abs motion)))))
       (e-chat--set-output-bottom-spacer window spacer-lines)
       (set-window-point window position)
       (set-window-start window start)

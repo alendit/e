@@ -1,0 +1,17 @@
+#+title: e-chat Active Output Follow Snap and Bottom Gap
+#+startup: overview
+
+* Report
+
+During an active Grimoire daily turn, scrolling the transcript slightly toward
+older output from the composer does not reliably hold that scrollback.  The
+next provider update can snap the transcript back to live output even when the
+user deliberately moved it.
+
+When the transcript does follow live output, the newest activity can also land
+around the middle of the output pane instead of near its bottom edge.
+
+Expected behavior: any command that moves the paired transcript toward older
+output unpins it immediately, including a small move that leaves the previous
+tail visible.  Moving back toward newer output repins only after reaching the
+tail.  A pinned transcript places its newest output near the pane bottom.
