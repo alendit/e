@@ -1,0 +1,166 @@
+#+title: Board-Native Subagent Supervision
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+The parent agent remains responsible for every child until the child reaches a terminal state or the parent deliberately replaces it.
+The runtime must make progress, staleness, steering, interruption, and replacement visible through the board instead of relying on blind waits or an external watchdog.
+
+* Current gap
+
+- Subagents already support =list=, =status=, bounded =read=, =steer=, =send=, =resume=, =interrupt=, and =shutdown= actions.
+- Each child already has a board-enrolled =e-work= handle, and =await= already uses board work aggregation when the parent board is available.
+- The registry already publishes lifecycle changes such as =queued=, =running=, and terminal states to the parent board.
+- The child runner does not currently turn meaningful child events into =e-work= progress.
+- An =await= timeout reports that work is pending but omits the work handle's progress snapshot.
+- The parent guidance tells the model to await again after a timeout, which encourages repeated waiting without inspection or intervention.
+
+* User-visible behavior
+
+1. After spawning children, the parent waits in bounded supervision windows instead of issuing one long wait.
+2. A completed child returns its compact report as today.
+3. A timeout returns the latest progress event, its sequence, and its age for every pending child.
+4. If progress advanced during the window, the parent may await another window without reading the transcript.
+5. If progress did not advance, the parent calls =status= or a bounded =read :raw t= to diagnose the child.
+6. The parent uses =steer= to narrow the next action when the child is wandering, repeating work, waiting on the wrong condition, or carrying too much scope.
+7. If one post-steer window produces no meaningful progress, the parent interrupts the turn.
+8. The parent uses =resume= only for a transient failed or cancelled turn whose accumulated context remains useful.
+9. The parent spawns a fresh, narrower child when the plan or context is the likely cause of the stall.
+10. The parent reports an intervention in its reasoning updates only when the intervention changes the plan, scope, or expected completion path.
+
+Wall-clock duration alone never kills a child.
+A known long-running build, query, or network request remains healthy while its declared timeout and observed activity still support waiting.
+
+* Board-native architecture
+
+** Progress publication
+
+The direct runner maps meaningful child-session events into bounded progress payloads:
+
+#+begin_src emacs-lisp
+(:subagent-id "sub_000123"
+ :sequence 7
+ :event tool-finished
+ :summary "Finished the focused ERT run"
+ :at 1786605600.0)
+#+end_src
+
+Meaningful progress events include turn start, provider request start or finish, tool and action start or finish, and steering.
+Terminal settlement stays on the existing =e-work= finish, fail, or cancel path.
+Reasoning-token deltas do not become separate progress events.
+The payload contains only a bounded summary and identifiers; it never copies tool results or the child transcript into the parent.
+
+The runner calls =e-work-progress= on the child's existing work handle.
+Board enrollment already routes =e-work= progress through the board runtime's bounded activity mailbox and publishes a coalesced =work-progress= activity.
+This reuses the board's ordering, provenance, aggregation, and presentation path instead of adding a timer-owned status channel.
+
+** Live state
+
+The normalized subagent record gains:
+
+- =:started-at=
+- =:last-activity-at=
+- =:progress-sequence=
+- =:progress=
+- =:last-intervention=
+
+The registry records only the latest bounded progress snapshot.
+The board keeps the ordered activity and intervention trail for the live process.
+The full child transcript remains behind =session://= and bounded =read= calls.
+
+** Supervision checkpoints
+
+The existing board-backed =await= aggregation remains the waiting primitive.
+The await result adds =:progress= and =:progress-age-seconds= to each pending result.
+A timeout becomes a supervision checkpoint, not a terminal error and not an instruction to wait again blindly.
+
+The parent capability adds a dynamic context block when direct children are active.
+The block lists each child, status, runtime, last-progress age, and latest bounded progress summary.
+It also states the supervision rule: inspect unchanged progress, steer once with a concrete next action, then interrupt and choose resume or replacement if the child remains stuck.
+
+** Interventions
+
+=steer= accepts an optional =:reason= alongside the prompt.
+=interrupt= and =shutdown= accept the same optional reason.
+Each intervention publishes a board fact with the subagent id, action, reason, parent session, and child session.
+The reason is audit data and is not injected into the child unless it is also part of the steering prompt.
+
+* Action surface
+
+No separate =monitor= action is needed.
+The existing surface is sufficient once progress is visible:
+
+- =await= waits for any or all children and returns board-backed progress on timeout.
+- =list= gives one batch snapshot for the parent's children.
+- =status= inspects one normalized child record.
+- =read :raw t= reads a bounded transcript tail only when progress evidence is insufficient.
+- =steer= changes the active turn in place.
+- =interrupt= stops an unproductive active turn without discarding the record.
+- =resume= recovers a transient failed or cancelled turn with useful context.
+- =spawn= starts a clean replacement when the prior plan or context is suspect.
+- =shutdown= records deliberate terminal intent.
+
+The capability skill and compact parent instructions must require this sequence after every timeout:
+
+1. Compare the progress sequence and age with the prior checkpoint.
+2. Re-await only when progress advanced or a known long operation remains credible.
+3. Inspect with =status= or bounded =read= when progress is unchanged.
+4. Steer with one concrete next action when the child can still recover.
+5. Interrupt and choose =resume= or a fresh spawn when the post-steer checkpoint is unchanged.
+
+* Shell presentation
+
+The subagents list adds =Runtime=, =Last activity=, and =Progress= columns.
+A child with unchanged progress across the configured soft-stale window gets a warning face, not a new lifecycle state.
+Staleness is an observation; =running= remains the runtime state.
+
+The shell adds:
+
+- =s= to steer with a prompt and optional reason;
+- =p= to show the bounded latest progress and transcript tail;
+- the existing =i= and =k= controls for interrupt and shutdown;
+- board message details for progress and intervention provenance.
+
+The shell updates from registry progress notifications and does not poll child sessions.
+
+* Defaults and policy
+
+- Default supervision window: 90 seconds.
+- Soft-stale signal: two consecutive checkpoints with the same progress sequence.
+- Escalation: inspect, then steer once.
+- Hard intervention: one unchanged checkpoint after steering.
+- Automatic cancellation: never.
+- Per-task prompts may declare a longer expected operation and timeout.
+
+These defaults guide the parent but do not encode correctness policy in the runtime.
+The runtime supplies evidence and controls; the parent decides whether the evidence justifies waiting, steering, interruption, resumption, or replacement.
+
+* Implementation slices
+
+1. *Progress plumbing*: map bounded child events to =e-work-progress= and verify coalesced board =work-progress= activities.
+2. *Observation surface*: expose latest progress and age through normalized records and pending =await= results.
+3. *Supervision guidance*: update the compact instructions, skill, and dynamic active-child context so a timeout always triggers a decision.
+4. *Intervention audit*: add optional reasons and board facts for steer, interrupt, and shutdown.
+5. *Shell support*: show runtime and last activity, mark soft staleness, and add steer and progress-peek commands.
+6. *Verification*: add focused runner, await, board-runtime, action, context-provider, and graphical shell tests.
+
+* Acceptance criteria
+
+- A running child that starts and finishes tools produces bounded progress activities on the parent board.
+- A timed-out =await= result shows the child's latest progress and its age without exposing transcript or tool-result payloads.
+- A parent starting a new turn with active children sees a compact supervision block and the intervention policy.
+- Unchanged progress leads the instructed parent to inspect and potentially steer rather than re-await blindly.
+- Steering, interruption, resumption, replacement, and shutdown remain explicit parent decisions.
+- Progress activity is coalesced and does not flood the board or the chat transcript.
+- Existing terminal results, structured reports, shared =tmp://= lineage, and full-transcript isolation remain unchanged.
+- The subagents shell can display and act on progress without polling.
+
+* Decision
+
+Use the existing board-enrolled =e-work= handle as the progress spine.
+Keep intervention policy with the parent agent.
+Do not add an autonomous stall killer or a parallel monitoring store.

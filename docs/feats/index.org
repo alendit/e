@@ -92,3 +92,4 @@ Status values for coding agents:
 | 79 | Planned     | 79-session-workspace/                       | Session Context Resources                             |
 | 80 | Done        | 80-voice-adjustment-gradual-discovery/       | Voice Adjustment Gradual Discovery                    |
 | 81 | In-review   | 81-openai-gpt56-explicit-prompt-cache/       | OpenAI GPT-5.6 Explicit Prompt Cache                   |
+| 82 | Planned     | 82-board-native-subagent-supervision/         | Board-Native Subagent Supervision                     |
