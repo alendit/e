@@ -87,6 +87,28 @@
                        "run-1"))
         (should (= (length (e-actions-call 'runs :list-runs nil context)) 1))))))
 
+(ert-deftest e-board-orchestration-actions-test-replays-report-after-manifest-arrives ()
+  "A validated report may precede its manifest without losing later projection."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (board (e-board-create :id "run-actions-report-first"))
+        observed)
+    (let ((e-board-orchestration-actions-projection-change-functions
+           (list (lambda (_board _run-id projection) (push projection observed)))))
+      (e-board-orchestration-actions-test--publish
+       board
+       (e-board-orchestration-actions-test--fact
+        'terminal-report "report"
+        '(:run-id "run-1" :task-key "task" :attempt 0 :status done
+          :summary "done" :outputs [])))
+      (should-not observed)
+      (e-board-orchestration-actions-test--publish
+       board
+       (e-board-orchestration-actions-test--manifest
+        '((:task-key "task" :required t :accepted-attempt 0))))
+      (should (= (length observed) 1))
+      (should (eq (plist-get (car observed) :terminal-status) 'done))
+      (should (= (length (plist-get (car observed) :accepted-reports)) 1)))))
+
 (provide 'e-board-orchestration-actions-test)
 
 ;;; e-board-orchestration-actions-test.el ends here

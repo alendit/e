@@ -266,3 +266,43 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
               (should (memq (plist-get (e-work-status handle) :state)
                             '(started progress))))))
       (e-work-cancel handle))))
+
+(ert-deftest e-await-tool-test-long-operation-crosses-supervision-windows-without-cancellation ()
+  "Each timed-out supervision window leaves a progressing operation live."
+  (let ((handle (e-await-tool-test--pending-handle)))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "long" handle))
+          (cl-labels ((window ()
+                        (let ((registry (e-tools-registry-create))
+                              callback result)
+                          (e-await-tool-register registry)
+                          (e-tools-start
+                           registry
+                           '(:id "window" :name "await"
+                             :arguments (:refs ["fake:long"] :timeout 90))
+                           :context
+                           (list :board-subscribe-aggregation
+                                 (lambda (_handles _mode _timeout settle &optional _context)
+                                   (setq callback settle)
+                                   (lambda () t)))
+                           :on-done (lambda (value) (setq result value)))
+                          (funcall callback 'timed-out)
+                          result)))
+            (e-work-progress handle
+                             '(:subagent-id "sub_000001" :sequence 1
+                               :event tool-started :summary "Started long build" :at 0.0))
+            (let ((first (window)))
+              (should (eq (plist-get (plist-get first :content) :reason) 'timed-out))
+              (should (= (plist-get (car (plist-get (plist-get first :content) :results))
+                                    :progress-sequence)
+                         1)))
+            (e-work-progress handle
+                             '(:subagent-id "sub_000001" :sequence 2
+                               :event tool-finished :summary "Finished build phase" :at 1.0))
+            (let ((second (window)))
+              (should (eq (plist-get (plist-get second :content) :reason) 'timed-out))
+              (should (= (plist-get (car (plist-get (plist-get second :content) :results))
+                                    :progress-sequence)
+                         2)))
+            (should (memq (plist-get (e-work-status handle) :state) '(started progress)))))
+      (e-work-cancel handle))))

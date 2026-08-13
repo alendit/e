@@ -221,10 +221,16 @@ notification path observes board facts and never reads child sessions.")
   (let ((publication (apply original board fact arguments)))
     (when (eq (e-board-publication-status publication) 'posted)
       (let* ((board (e-board-orchestration-actions--source-board board))
-             (run-id (plist-get (plist-get fact :payload) :run-id)))
-        (run-hook-with-args 'e-board-orchestration-actions-projection-change-functions
-                            board run-id
-                            (e-board-orchestration-actions-run-projection board run-id))))
+             (payload (plist-get fact :payload))
+             (run-id (plist-get payload :run-id))
+             (report-before-manifest
+              (and (eq (plist-get fact :type) 'terminal-report)
+                   (not (member run-id (e-board-orchestration-run-ids board))))))
+        ;; The persisted report is replayed when its manifest becomes visible.
+        (unless report-before-manifest
+          (run-hook-with-args 'e-board-orchestration-actions-projection-change-functions
+                              board run-id
+                              (e-board-orchestration-actions-run-projection board run-id)))))
     publication))
 
 (unless (advice-member-p #'e-board-orchestration-actions--notify-projection
