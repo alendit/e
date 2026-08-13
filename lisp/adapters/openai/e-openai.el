@@ -2011,6 +2011,23 @@ LIMIT defaults to 240 characters."
             :payload (list :response-kind kind
                            :preview preview)))))
 
+(defun e-openai--sse-response-p (text)
+  "Return non-nil when TEXT contains at least one SSE data field."
+  (and (stringp text)
+       (string-match-p "\\(?:\\`\\|\n\\)data:" text)))
+
+(defun e-openai-codex--incomplete-reason (event)
+  "Return the backend-neutral terminal reason for incomplete EVENT."
+  (let ((reason (plist-get
+                 (plist-get (plist-get event :response) :incomplete_details)
+                 :reason)))
+    (cond
+     ((member reason '("max_output_tokens" "max_tokens")) 'length)
+     ((equal reason "content_filter") 'content-filter)
+     ((stringp reason)
+      (intern (replace-regexp-in-string "_" "-" reason)))
+     (t 'incomplete))))
+
 (defun e-openai-codex--event-item (event)
   "Map parsed Responses EVENT to one backend-neutral item, or nil."
   (let ((type (plist-get event :type)))
@@ -2060,6 +2077,8 @@ LIMIT defaults to 240 characters."
             :source 'content-part))
      ((member type '("response.completed" "response.done"))
       (list :type 'done :reason 'stop))
+     ((equal type "response.incomplete")
+      (list :type 'done :reason (e-openai-codex--incomplete-reason event)))
      ((equal type "response.failed")
       (list :type 'backend-error
             :content (e-openai-codex--response-error-message event)
@@ -2131,7 +2150,7 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
     (unless items
       (when-let ((error-item (e-openai-codex--json-error-item stream-text)))
         (push error-item items)))
-    (unless items
+    (unless (or items (e-openai--sse-response-p stream-text))
       (when-let ((error-item
                   (e-openai-codex--non-stream-error-item stream-text)))
         (push error-item items)))
@@ -2435,15 +2454,38 @@ OpenAI request and backend-neutral context."
              :full-body-data full-body-data
              :body body)))))
 
+(defun e-openai--premature-stream-error-item (wire-api)
+  "Return a retryable premature-stream error item for WIRE-API."
+  (list :type 'backend-error
+        :content
+        (format "%s stream ended prematurely before a terminal event"
+                (if (eq wire-api 'responses)
+                    "Responses"
+                  "Chat Completions"))
+        :payload (list :response-kind 'sse :wire-api wire-api)))
+
+(defun e-openai--complete-response-items (response context)
+  "Parse complete HTTP RESPONSE for CONTEXT and validate stream settlement."
+  (let* ((wire-api (plist-get context :wire-api))
+         (items
+          (pcase wire-api
+            ('responses
+             (e-openai-codex-parse-stream
+              response
+              (plist-get context :prompt-layout-revision)))
+            ('chat-completion
+             (e-openai-chat-completion-parse-stream response)))))
+    (if (and (e-openai--sse-response-p response)
+             (not (seq-some
+                   (lambda (item)
+                     (memq (plist-get item :type) '(done backend-error)))
+                   items)))
+        (list (e-openai--premature-stream-error-item wire-api))
+      items)))
+
 (defun e-openai--emit-response-items (response context on-item)
-  "Parse RESPONSE for CONTEXT and emit backend-neutral items through ON-ITEM."
-  (dolist (item (pcase (plist-get context :wire-api)
-                  ('responses
-                   (e-openai-codex-parse-stream
-                    response
-                    (plist-get context :prompt-layout-revision)))
-                  ('chat-completion
-                   (e-openai-chat-completion-parse-stream response))))
+  "Parse complete RESPONSE for CONTEXT and emit items through ON-ITEM."
+  (dolist (item (e-openai--complete-response-items response context))
     (funcall on-item item)))
 
 (cl-defun e-openai-backend-create

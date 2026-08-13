@@ -1369,6 +1369,88 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
       (:type assistant-message :content "hello")
       (:type done :reason stop)))))
 
+(ert-deftest e-openai-test-parse-created-only-sse-is-not-non-stream-text ()
+  "A valid Responses start event is not mislabeled as a non-stream body."
+  (should-not
+   (e-openai-codex-parse-stream
+    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"status\":\"in_progress\"}}\n\n")))
+
+(ert-deftest e-openai-test-parse-incomplete-response-is-terminal ()
+  "Official Responses incomplete events retain their terminal reason."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n")
+    '((:type done :reason length)))))
+
+(ert-deftest e-openai-test-complete-http-response-rejects-premature-sse ()
+  "A completed HTTP body without a terminal event is a retryable failure."
+  (dolist (wire-api '(responses chat-completion))
+    (let (items)
+      (e-openai--emit-response-items
+       (if (eq wire-api 'responses)
+           "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"status\":\"in_progress\"}}\n\n"
+         "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"index\":0}]}\n\n")
+       (list :wire-api wire-api)
+       (lambda (item) (push item items)))
+      (should (= (length items) 1))
+      (let ((item (car items)))
+        (should (eq (plist-get item :type) 'backend-error))
+        (should (string-match-p "premature"
+                                (downcase (plist-get item :content))))
+        (should (eq (plist-get (plist-get item :payload) :wire-api)
+                    wire-api))
+        (should (eq (plist-get (plist-get item :payload) :response-kind)
+                    'sse))))))
+
+(ert-deftest e-openai-test-premature-http-responses-stream-retries ()
+  "A truncated Responses HTTP attempt retries instead of failing the turn."
+  (let* ((process-environment
+          (cons "OPENAI_PREMATURE_TEST_KEY=test-token" process-environment))
+         (e-harness-retry-initial-backoff-seconds 0.01)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.01)
+         (e-harness-retry-max-elapsed-seconds 1.0)
+         (e-openai-model-providers
+          '((premature-test
+             :name "Premature Responses Test"
+             :base-url "https://example.test/v1"
+             :env-key "OPENAI_PREMATURE_TEST_KEY"
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth nil)))
+         (attempts 0)
+         (events nil)
+         (harness
+          (e-openai-create-harness
+           :provider 'premature-test
+           :model "test-model"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers body)
+              (cl-incf attempts)
+              (if (= attempts 1)
+                  "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"status\":\"in_progress\"}}\n\n"
+                "data: {\"type\":\"response.output_text.done\",\"text\":\"recovered\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))))
+    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait-batch harness "session-1" 2.0)))
+      (should (eq (plist-get settled :status) 'done)))
+    (should (= attempts 2))
+    (should (= 1 (seq-count (lambda (event)
+                              (eq (plist-get event :type) 'turn-retrying))
+                            events)))
+    (should-not (seq-find (lambda (event)
+                            (eq (plist-get event :type) 'turn-failed))
+                          events))
+    (should
+     (equal (plist-get (car (last (e-harness-messages harness "session-1")))
+                       :content)
+            "recovered"))))
+
 (ert-deftest e-openai-test-parse-function-call-event ()
   "Responses function calls become backend-neutral tool calls."
   (should

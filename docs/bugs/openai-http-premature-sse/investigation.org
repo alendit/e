@@ -1,0 +1,121 @@
+#+title: OpenAI HTTP Responses Stream Ends Before Terminal Event Investigation
+#+startup: overview
+
+* Investigation
+
+A bounded read-only probe of the running Emacs identified the affected buffer
+as =*e-chat:Grimoire: Daily 2026-08-13*=, session
+=20260813T075414-6f5cc807b04a=.  Its backend was =eng-ai-gateway-gpt= with
+model =gpt-5.6-sol= and the HTTP Responses transport.  The running Emacs was
+not reloaded or mutated.
+
+The body shown in the failed turn is SSE, not non-stream text.  It contains a
+=response.created= event but no terminal =response.completed=,
+=response.incomplete=, or =response.failed= event.  The official Responses
+streaming event reference describes =response.created= as an initial event and
+the completed, incomplete, and failed variants as terminal outcomes:
+
+https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta?lang=curl
+
+The defect crossed two adapter boundaries:
+
+- =e-openai-codex-parse-stream= correctly ignored =response.created= because it
+  has no backend-neutral content, but then treated the absence of mapped items
+  as proof that the raw body was not SSE.
+- =e-openai--emit-response-items= parsed a complete HTTP response without
+  verifying that the SSE stream had reached a terminal event.
+
+That produced the misleading non-stream error.  Because that message did not
+identify a premature transport end, the harness did not classify it as a
+retryable provider failure and immediately failed the turn.
+
+* Fix
+
+The fragment parser now recognizes valid SSE even when every event in a
+fragment is intentionally ignored.  It also maps the official
+=response.incomplete= terminal event to a backend-neutral done reason.
+
+Terminal validation lives at the complete HTTP-response boundary.  A Responses
+or Chat Completions SSE body that reaches HTTP completion without either a
+=done= item or a terminal backend error is replaced with one explicit
+=backend-error=:
+
+#+begin_example
+Responses stream ended prematurely before a terminal event
+#+end_example
+
+The harness's existing bounded retry policy recognizes =premature=, so a
+truncated attempt is retried.  Partial assistant or tool items from that attempt
+are discarded before they can mutate the turn, making the retry safe.
+
+The ChatGPT subscription path uses the separate Responses WebSocket request
+implementation and is unchanged.  Chat Completions retains its existing parser
+and request shape; only complete HTTP settlement is checked through the common
+boundary.
+
+* Test Gap
+
+Existing parser tests exercised content, tools, usage, normal completion, and
+provider errors.  They did not cover a syntactically valid SSE response that
+ended after a nonterminal event.  Existing live E2E tests exercise provider
+success and cannot deterministically make an intermediary truncate a stream.
+
+The added coverage proves:
+
+- a created-only Responses fragment is not mislabeled as non-stream text;
+- =response.incomplete= is terminal and preserves the length reason;
+- completed HTTP Responses and Chat Completions bodies without a terminal event
+  become retryable premature-stream errors;
+- a first truncated Responses attempt followed by a successful second attempt
+  settles the same harness turn exactly once without persisting partial output.
+
+This is a provider protocol behavior, not graphical presentation behavior, so
+the regression belongs in adapter/harness ERT rather than the graphical visual
+suite.
+
+* Validation
+
+- Red proof: all four new regressions failed against the pre-fix adapter.
+- Green proof: all four new regressions pass with the fix.
+- OpenAI adapter and provider-continuation matrix: 110/110 passed, including
+  the ChatGPT WebSocket cases.
+- Full repository suite on clean =457dad6f= plus this patch: 2,111 tests,
+  2,109 expected passes, zero unexpected results, and two environment-dependent
+  skips.
+- Credentialed Engineering AI Gateway HTTP Responses E2E:
+  =e-live-e2e-test-basic-assistant-response= passed.
+- Forced byte compilation of =lisp/adapters/openai/e-openai.el= with warnings
+  as errors passed.
+- The repository-wide warnings-as-errors compile remains blocked by the
+  pre-existing unused lexical variable =registry= in
+  =lisp/layers/agents/e-subagents.el=; the changed adapter compiles cleanly.
+
+* Architecture Self-Check
+
+1. This slice converts an immediate, misleading turn failure into a correctly
+   classified and retryable provider failure.
+2. It moves toward provider-specific protocol handling behind generic backend
+   items and harness retry policy.
+3. The uncertain intermediary behavior stays local to complete HTTP response
+   validation; fragment parsing and WebSocket transport remain independent.
+4. The OpenAI adapter owns SSE completeness because it owns the provider wire
+   protocol.  The harness continues to own retry orchestration.
+5. Coupling is reduced by emitting existing backend-neutral error items rather
+   than teaching the harness Responses event names.
+6. No stable core policy now depends on an OpenAI transport implementation.
+7. HTTP settlement validation remains at the adapter edge where the complete
+   side effect result is available.
+8. No durable state is added.  Validation uses only one completed response and
+   produces ordinary transient backend items.
+9. The check is one linear scan over already parsed response items and is
+   negligible beside parsing and network latency.
+10. The common HTTP boundary requires the same real contract from Responses and
+    Chat Completions: a terminal item before transport completion.
+11. Both supported OpenAI wire APIs are covered.  The ChatGPT WebSocket path is
+    intentionally unchanged.
+12. The incorrect non-stream fallback for valid, ignored SSE fragments is
+    removed; no compatibility hack is retained.
+13. Expected premature termination becomes an explicit retryable backend error;
+    malformed and unexpected parser errors still surface.
+14. Parser, complete-response, harness-retry, full-suite, and credentialed live
+    tests prove the behavior at successively wider boundaries.

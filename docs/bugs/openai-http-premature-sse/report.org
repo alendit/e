@@ -1,0 +1,15 @@
+#+title: OpenAI HTTP Responses Stream Ends Before Terminal Event
+#+startup: overview
+
+* Report
+
+The user reported that the latest Grimoire daily session failed after 40 tool
+calls.  The visible error said that the provider returned non-stream text, but
+the displayed response body began with a valid Responses server-sent event:
+
+#+begin_example
+data: {"type":"response.created","response":{"id":"resp_..." ...}}
+#+end_example
+
+The affected session used the Engineering AI Model Gateway GPT profile over the
+HTTP Responses transport.
