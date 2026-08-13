@@ -797,3 +797,59 @@ report is child-side and must not be on the parent surface."
         (e-subagent-interrupt registry subagent-id "No progress after steer.")
         (should (eq (plist-get (e-subagent-registry-get registry subagent-id) :status)
                     'cancelled))))))
+
+(ert-deftest e-subagent-runner-test-durable-report-precedes-local-settlement ()
+  "A structured durable report is published once before the registry settles."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1" :type :reviewer :prompt "go"
+                      :run-id "run-1" :task-key "review" :attempt 0
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (child-session-id (plist-get record :session-id))
+             (settle (plist-get (car captured) :on-settle))
+             (board (e-board-registry-board-source-board
+                     (e-chat-service-binding-board
+                      (e-chat-service-ensure-binding parent "parent-1")))))
+        (e-subagent-report registry child-session-id [] "reported")
+        (should (eq (plist-get (e-subagent-registry-get registry
+                                                        (plist-get record :subagent-id))
+                               :status)
+                    'running))
+        (funcall settle 'done :summary "later final")
+        (let ((reports (delq nil (mapcar #'e-board-orchestration-fact-from-message
+                                         (e-board-messages board)))))
+          (should (= (length reports) 1))
+          (should (equal (plist-get (plist-get (car reports) :payload) :summary)
+                         "reported")))))))
+
+(ert-deftest e-subagent-runner-test-durable-assignment-survives-registry-loss ()
+  "A child context resolves its report assignment from session metadata alone."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1" :type :reviewer :prompt "go"
+                      :run-id "run-1" :task-key "review" :attempt 0
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (child (e-subagent-registry-child-harness registry
+                                                        (plist-get record :subagent-id)))
+             (session-id (plist-get record :session-id))
+             (board (e-board-registry-board-source-board
+                     (e-chat-service-binding-board
+                      (e-chat-service-ensure-binding child session-id)))))
+        (should (e-board-orchestration-actions-report-from-context
+                 (list :harness child :session-id session-id)
+                 :summary "durable" :outputs []))
+        (let ((report (e-board-orchestration-fact-from-message
+                       (cl-find-if (lambda (message)
+                                     (e-board-orchestration-fact-from-message message))
+                                   (e-board-messages board)))))
+          ;; The fact is directly readable without the process-local registry.
+          (should (equal (plist-get (plist-get report :payload) :task-key)
+                         "review")))))))

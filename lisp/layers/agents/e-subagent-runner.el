@@ -26,6 +26,7 @@
 (require 'e-session)
 (require 'e-subagent-registry)
 (require 'e-work)
+(require 'e-board-orchestration-actions)
 
 (define-error 'e-subagent-error "e subagent error")
 (define-error 'e-subagent-unknown-type
@@ -115,7 +116,7 @@ the parent applies is never clobbered."
     harness))
 
 (defun e-subagent--child-metadata
-    (instance parent-harness parent-session-id lineage-id label)
+    (instance parent-harness parent-session-id lineage-id label &optional assignment)
   "Return durable child metadata for INSTANCE under a parent lineage.
 Inherit the parent's project root so repository AGENTS.md files and
 =.agents/skills= are available to the child from its first turn."
@@ -129,8 +130,13 @@ Inherit the parent's project root so repository AGENTS.md files and
      (when project-root (list :project-root project-root))
      (when role (list :subagent-role (symbol-name role)))
      (when (and (stringp label) (not (string-empty-p label)))
-       (list :subagent-label label)))))
+       (list :subagent-label label))
+     (when assignment
+       (list :board-run-id (plist-get assignment :run-id)
+             :board-task-key (plist-get assignment :task-key)
+             :board-attempt (plist-get assignment :attempt)))))
 
+)
 (defun e-subagent--seed-child (child-harness child-session-id seed-messages)
   "Append SEED-MESSAGES to CHILD-SESSION-ID's own store in CHILD-HARNESS.
 Each seed is a backend-neutral message plist; the parent chooses exactly what to
@@ -272,6 +278,27 @@ finished result carries the compact summary and outputs."
                                       "Subagent turn failed"))))
       ('cancelled (e-work-cancel handle)))))
 
+(defun e-subagent--durable-assignment (record)
+  "Return RECORD's persisted orchestration assignment, or nil."
+  (when-let ((run-id (plist-get record :run-id)))
+    (list :run-id run-id
+          :task-key (plist-get record :task-key)
+          :attempt (plist-get record :attempt))))
+
+(defun e-subagent--publish-terminal-report (registry subagent-id status args)
+  "Publish SUBAGENT-ID's terminal fact before its local registry settlement."
+  (let* ((record (e-subagent-registry--record registry subagent-id))
+         (assignment (e-subagent--durable-assignment record)))
+    (when (and assignment (not (plist-get record :durable-terminal-published)))
+      (let ((binding (plist-get record :producer-binding)))
+        (e-board-orchestration-actions-publish-terminal
+         (e-board-runtime-producer-binding-board binding) assignment status
+         :summary (or (plist-get args :summary) (plist-get record :result-summary) "")
+         :outputs (or (plist-get args :outputs) (plist-get record :outputs) [])
+         :error (plist-get args :error)
+         :author (list :session-id (plist-get record :session-id)))
+        (plist-put record :durable-terminal-published t)))))
+
 (defun e-subagent--settle (registry subagent-id status &rest args)
   "Settle SUBAGENT-ID in REGISTRY to STATUS with ARGS.
 A child-reported structured result is authoritative: once reported, later
@@ -279,6 +306,7 @@ chatter never overwrites the recorded summary or outputs.  A terminal record is
 never resurrected."
   (when (memq (e-subagent-registry-status registry subagent-id)
               '(queued running blocked))
+    (e-subagent--publish-terminal-report registry subagent-id status args)
     (let ((reported (e-subagent-registry-reported-p registry subagent-id))
           (fields (list :status status :finished-at (float-time))))
       (unless reported
@@ -344,11 +372,12 @@ existing child session)."
 
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
-              &key type prompt seed-messages label schedule runner)
+              &key type prompt seed-messages label schedule runner run-id task-key attempt)
   "Spawn a subagent of TYPE under a parent lineage and return its record.
 REGISTRY tracks the child.  PARENT-HARNESS and PARENT-SESSION-ID identify the
 spawning session, whose lineage the child inherits so they share one tmp root.
-PROMPT is the child's task.  SEED-MESSAGES are optional explicit context
+PROMPT is the child's task.  RUN-ID, TASK-KEY, and ATTEMPT optionally bind the
+child to one durable orchestration assignment.  SEED-MESSAGES are optional explicit context
 messages.  LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
 `queue'.  RUNNER overrides the default direct-turn runner for tests; it is
 called as (CHILD-HARNESS CHILD-SESSION-ID PROMPT SEED-MESSAGES ON-SETTLE) and
@@ -362,8 +391,12 @@ returns a handle plist carrying `:cancel'."
           (e-chat-service-ensure-binding parent-harness parent-session-id))
          (parent-board (e-chat-service-binding-board parent-binding))
          (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
+         (assignment (and run-id (list :run-id run-id :task-key task-key :attempt attempt)))
+         (_ (when (or run-id task-key attempt)
+              (unless (and (stringp run-id) (stringp task-key) (integerp attempt) (>= attempt 0))
+                (signal 'wrong-type-argument (list 'e-board-orchestration-assignment assignment)))))
          (metadata (e-subagent--child-metadata
-                    instance parent-harness parent-session-id lineage-id label))
+                    instance parent-harness parent-session-id lineage-id label assignment))
          (child-session
           (e-chat-service-create-participant
            parent-board child-harness :metadata metadata
@@ -383,7 +416,8 @@ returns a handle plist carrying `:cancel'."
                   :schedule schedule
                   :child-harness child-harness
                   :parent-harness parent-harness
-                  :producer-binding producer-binding))
+                  :producer-binding producer-binding
+                  :run-id run-id :task-key task-key :attempt attempt))
          (subagent-id (plist-get record :subagent-id)))
     (e-subagent--inherit-prompt-cache-policy
      parent-harness parent-session-id child-harness child-session-id)
@@ -527,6 +561,8 @@ cannot overwrite it.  Return the normalized record, or nil when SESSION-ID is
 not a tracked child."
   (when-let* ((record (e-subagent-registry-find-by-session registry session-id))
               (subagent-id (plist-get record :subagent-id)))
+    (e-subagent--publish-terminal-report
+     registry subagent-id 'done (list :summary summary :outputs outputs))
     (e-subagent-registry-update
      registry subagent-id
      :reported t

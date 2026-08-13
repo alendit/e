@@ -20,6 +20,7 @@
 (require 'e-capabilities)
 (require 'e-subagent-registry)
 (require 'e-subagent-runner)
+(require 'e-board-orchestration-actions)
 
 (defvar e-subagent-actions-default-registry (e-subagent-registry-create)
   "Process-wide default subagent registry shared by the capability.")
@@ -115,6 +116,8 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
 
 (defun e-subagent-actions--report (registry context arguments)
   "Record a child-reported structured result for CONTEXT's own session."
+  (e-board-orchestration-actions-report-from-context
+   context :outputs (plist-get arguments :outputs) :summary (plist-get arguments :summary))
   (or (e-subagent-report
        registry
        (plist-get context :session-id)

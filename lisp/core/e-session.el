@@ -225,6 +225,21 @@
      :state-class session-config
      :lifetime durable
      :indexed t)
+    (:board-run-id
+     :owner board-orchestration
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:board-task-key
+     :owner board-orchestration
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:board-attempt
+     :owner board-orchestration
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
     (:mcp-active
      :owner mcp
      :state-class capability-state

@@ -80,11 +80,14 @@ List buffers hook onto this to track live subagent status.")
           :last-activity-at (plist-get record :last-activity-at)
           :progress-sequence (plist-get record :progress-sequence)
           :progress (copy-tree (plist-get record :progress))
-          :last-intervention (copy-tree (plist-get record :last-intervention)))))
+          :last-intervention (copy-tree (plist-get record :last-intervention))
+          :run-id (plist-get record :run-id)
+          :task-key (plist-get record :task-key)
+          :attempt (plist-get record :attempt))))
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness parent-harness producer-binding)
+              child-harness parent-harness producer-binding run-id task-key attempt)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
@@ -104,6 +107,10 @@ internally so steer/read reach the child session on its own harness."
                        :child-harness child-harness
                        :parent-harness parent-harness
                        :producer-binding producer-binding
+                       :run-id run-id
+                       :task-key task-key
+                       :attempt attempt
+                       :durable-terminal-published nil
                        :work-handle nil
                        :result-summary nil
                        :outputs nil
