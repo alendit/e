@@ -10795,6 +10795,35 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-open-reuses-live-session-buffer-without-reattach ()
+  "Opening an already-live session leaves its projection and viewport intact."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         buffer
+         (attach-count 0))
+    (unwind-protect
+        (progn
+          (e-chat-test--create-session store :id "live-reopen"
+                            :metadata '(:name "Live reopen"))
+          (e-chat-test--seed-board-log-from-private-fixture
+           harness "live-reopen")
+          (setq buffer (e-chat-open-session harness "live-reopen"))
+          (cl-letf (((symbol-function 'e-chat--attach-buffer)
+                     (lambda (&rest _arguments)
+                       (cl-incf attach-count))))
+            (should (eq buffer
+                        (e-chat-open-session harness "live-reopen")))
+            (should (= attach-count 0))
+            (with-current-buffer buffer
+              (e-chat--unsubscribe))
+            (should (eq buffer
+                        (e-chat-open-session harness "live-reopen")))
+            (should (= attach-count 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-open-loaded-session-replay-remains-bounded ()
   "Loaded-session replay never backfills omitted transcript history."
   (let* ((store (e-session-store-create))

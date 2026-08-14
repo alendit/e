@@ -218,6 +218,7 @@
                (:conc-name e-board-))
   id id-function next-seq events events-tail messages messages-tail message-count
   message-table message-seq-table message-index-table event-message-count
+  message-kind-newest-table message-kind-tag-newest-table
   participants subscriptions subscriptions-tail subscription-count
   subscription-index-table subscription-id-table
   processing-chains-internal processing-chains-tail-internal processing-chain-table-internal
@@ -384,6 +385,8 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :message-table (make-hash-table :test 'equal)
                   :message-seq-table (make-hash-table :test 'eql)
                   :message-index-table (make-hash-table :test 'eql)
+                  :message-kind-newest-table (make-hash-table :test 'eq)
+                  :message-kind-tag-newest-table (make-hash-table :test 'equal)
                   :event-message-count
                   (let ((table (make-hash-table :test 'eql)))
                     (puthash 0 0 table)
@@ -773,6 +776,57 @@ at which point that page requires a fresh snapshot."
 (defun e-board-message (board message-id)
   "Return BOARD message MESSAGE-ID, or nil when it is not retained."
   (gethash message-id (e-board-message-table board)))
+
+(cl-defun e-board-observer-recent-messages
+    (board observer-id &key kinds (limit 32) before-seq)
+  "Return OBSERVER-ID's newest matching BOARD messages in ascending order.
+KINDS narrows the snapshot to specific message kinds.  LIMIT bounds returned
+matches independently of other message kinds, and BEFORE-SEQ excludes messages
+at or after that sequence without advancing either observer cursor."
+  (unless (and (listp kinds) kinds (cl-every #'symbolp kinds))
+    (signal 'wrong-type-argument (list 'list-of-symbols-p kinds)))
+  (unless (and (integerp limit) (> limit 0))
+    (signal 'wrong-type-argument (list 'plusp limit)))
+  (when before-seq
+    (unless (and (integerp before-seq) (>= before-seq 0))
+      (signal 'wrong-type-argument (list 'natnump before-seq))))
+  (let* ((observer (or (e-board-observer board observer-id)
+                       (signal 'e-board-observer-missing (list observer-id))))
+         (selector (e-board-observer-selector observer))
+         (required-tags (or (plist-get selector :tags-all)
+                            (plist-get selector :tags)))
+         (index-tag (car required-tags))
+         (streams
+          (delq nil
+                (mapcar
+                 (lambda (kind)
+                   (when-let ((messages
+                               (gethash
+                                (if index-tag (cons kind index-tag) kind)
+                                (if index-tag
+                                    (e-board-message-kind-tag-newest-table board)
+                                  (e-board-message-kind-newest-table board)))))
+                     (list messages)))
+                 kinds)))
+         (match-count 0)
+         matches)
+    ;; Each source list is newest-first.  Merge their heads so inspecting one
+    ;; category never requires walking unrelated board-message kinds.
+    (while (and streams (< match-count limit))
+      (let ((newest-stream
+             (car (sort (copy-sequence streams)
+                        (lambda (left right)
+                          (> (e-board-message-seq (caar left))
+                             (e-board-message-seq (caar right))))))))
+        (let ((message (pop (car newest-stream))))
+          (unless (car newest-stream)
+            (setq streams (delq newest-stream streams)))
+          (when (and (or (not before-seq)
+                         (< (e-board-message-seq message) before-seq))
+                     (e-board--observer-matches-p board observer message))
+            (cl-incf match-count)
+            (push message matches)))))
+    (nreverse matches)))
 
 (defun e-board-participant (board participant-id)
   "Return BOARD participant PARTICIPANT-ID, or nil."
@@ -2820,6 +2874,12 @@ cannot rewrite retained board state."
            :routing-state (and (eq kind 'input) 'routing))))
     (puthash id message (e-board-message-table board))
     (puthash (e-board-message-seq message) message (e-board-message-seq-table board))
+    (push message
+          (gethash kind (e-board-message-kind-newest-table board)))
+    (dolist (tag frozen-tags)
+      (push message
+            (gethash (cons kind tag)
+                     (e-board-message-kind-tag-newest-table board))))
     (let* ((index (cl-incf (e-board-message-count board)))
            (cell (list message)))
       (if (e-board-messages-tail board)

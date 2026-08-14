@@ -1,0 +1,14 @@
+#+title: Live Session Switch Blanks a Noisy Transcript
+#+startup: overview
+
+* Report
+
+Switching back to the previous Grimoire daily chat showed an almost empty
+transcript and reported =Args out of range: 3001=.  The session had completed
+successfully before the switch and its durable conversation still existed in
+the board journal.
+
+Expected behavior: switching to an already-open session reuses its live chat
+surface without rebuilding it.  Opening the same session after restart must
+reconstruct a bounded conversation snapshot even when later board activity or
+facts greatly outnumber user and assistant messages.

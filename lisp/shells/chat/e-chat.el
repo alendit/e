@@ -5774,28 +5774,33 @@ live output, and a user reading older output must retain that scrollback."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
     (e-chat--clear-output-bottom-spacer window)
+    ;; Give `vertical-motion' a fresh origin when POSITION lies beyond the old
+    ;; viewport.  Without this provisional start it can reuse the stale display
+    ;; matrix and incorrectly report that a long transcript begins at point-min.
+    (set-window-start window position t)
     (let* ((target-motion (- 2 (window-body-height window)))
            (motion-and-start
             (save-excursion
               (goto-char position)
-              ;; `vertical-motion' accounts for visual wrapping.  Keeping a
-              ;; A small margin keeps point-max and display-only rows inside
-              ;; the matrix even when the short transcript ends on an empty
-              ;; line, while keeping current activity close to the bottom.
               (let ((motion (vertical-motion target-motion window)))
                 (cons motion (point)))))
            (motion (car motion-and-start))
            (start (cdr motion-and-start))
+           (short-p (> motion target-motion))
            (spacer-lines
-            ;; Short transcripts need extra headroom for point-max and
-            ;; variable-height rendered rows.  Long transcripts reach the
-            ;; two-row target directly and therefore need no spacer.
-            (max 0
-                 (- (abs (- 6 (window-body-height window)))
-                    (abs motion)))))
+            (if short-p
+                (max 0
+                     (- (abs (- 4 (window-body-height window)))
+                        (abs motion)))
+              0)))
       (e-chat--set-output-bottom-spacer window spacer-lines)
-      (set-window-point window position)
-      (set-window-start window start)
+      (if short-p
+          (progn
+            (set-window-point window position)
+            (set-window-start window (point-min)))
+        (progn
+          (set-window-point window position)
+          (set-window-start window start t)))
       (e-chat--set-window-output-follow-state window t))))
 
 (defun e-chat--capture-output-tail-windows ()
@@ -5805,6 +5810,17 @@ live output, and a user reading older output must retain that scrollback."
      (lambda (window)
        (and (e-chat--window-reaches-output-p window tail)
             (>= (window-point window) tail)))
+     (e-chat--transcript-windows))))
+
+(defun e-chat--capture-live-output-follow-windows ()
+  "Return transcript windows following the current live output boundary.
+Unlike full projection replacement, an incremental terminal event must retain
+the explicit window-local follow decision across transient status removal."
+  (let ((tail (e-chat--output-follow-position))
+        (bounds (e-chat--running-status-bounds)))
+    (cl-remove-if-not
+     (lambda (window)
+       (e-chat--window-follows-output-p window tail bounds))
      (e-chat--transcript-windows))))
 
 (defun e-chat--restore-output-tail-windows (windows)
@@ -8348,7 +8364,8 @@ separate dimmed representation instead."
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-failed
-     (let ((output-tail-windows (e-chat--capture-output-tail-windows)))
+     (let ((output-tail-windows
+            (e-chat--capture-live-output-follow-windows)))
        (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
        (e-chat--set-status "error")
        (e-chat--render-turn-failure
@@ -8360,7 +8377,8 @@ separate dimmed representation instead."
     ('turn-cancelled
      (let* ((turn-id (plist-get event :turn-id))
             (created-at (plist-get event :created-at))
-            (output-tail-windows (e-chat--capture-output-tail-windows)))
+            (output-tail-windows
+             (e-chat--capture-live-output-follow-windows)))
        (e-chat--set-turn-time turn-id :ended-at created-at)
        (e-chat--settle-open-thinking turn-id created-at 'cancelled)
        (e-chat--cancel-pending-activity-redraw turn-id)
@@ -8442,7 +8460,8 @@ separate dimmed representation instead."
          (let* ((assistant-p (eq (plist-get message :role) 'assistant))
                 (turn-id (plist-get event :turn-id))
                 (output-tail-windows
-                 (and assistant-p (e-chat--capture-output-tail-windows))))
+                 (and assistant-p
+                      (e-chat--capture-live-output-follow-windows))))
            (when assistant-p
              (e-chat--set-turn-time turn-id
                                     :ended-at
@@ -8746,6 +8765,19 @@ service snapshot when supplied."
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
 
+(defun e-chat--live-session-buffer-p
+    (buffer harness session-id instance-id)
+  "Return non-nil when BUFFER is already live for the requested session."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'e-chat-mode)
+              (eq e-chat-harness harness)
+              (equal e-chat-session-id session-id)
+              (eq e-chat-harness-instance-id instance-id)
+              (e-chat-service-subscription-p e-chat--event-subscription)
+              (e-chat-service-subscription-active-p
+               e-chat--event-subscription)))))
+
 (cl-defun e-chat-open (&key harness session-id new-session instance-id)
   "Attach and return an e chat buffer.
 HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
@@ -8770,8 +8802,10 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                       (e-chat--session-buffer-name
                        chat-harness
                        chat-session-id)))))
-    (e-chat--attach-buffer
-     buffer chat-harness chat-session-id chat-instance-id)
+    (unless (e-chat--live-session-buffer-p
+             buffer chat-harness chat-session-id chat-instance-id)
+      (e-chat--attach-buffer
+       buffer chat-harness chat-session-id chat-instance-id))
     (e-chat--prune-duplicate-session-buffers
      buffer chat-session-id chat-harness chat-instance-id)
     buffer))

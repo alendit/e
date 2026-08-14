@@ -43,7 +43,7 @@
   "Maximum presentation subscribers admitted to one chat binding.")
 
 (defconst e-chat-service-projection-capacity 256
-  "Maximum immutable board events retained by one chat presentation binding.")
+  "Maximum immutable board events retained per chat projection category.")
 
 (defcustom e-chat-service-idle-close-delay 300
   "Seconds without a presentation client before an idle board closes."
@@ -55,7 +55,11 @@
   harness session-id board client requester attachment observer subscribers
   observer-drain-scheduled pending-input-head pending-input-tail turn-map
   input-sequence default-tags default-to idle-close-timer
-  projection-ring projection-head projection-count projection-seen)
+  message-projection activity-projection)
+
+(cl-defstruct (e-chat-service-projection
+               (:constructor e-chat-service--projection-create))
+  ring head count seen)
 
 (cl-defstruct (e-chat-service-subscription
                (:constructor e-chat-service--subscription-create))
@@ -264,12 +268,15 @@ input publication and the acknowledgement fact."
     (e-harness-reset harness session-id)
     (e-session-clear-board-messages store session-id)
     (dolist (current (gethash board-id e-chat-service--board-bindings))
-      (fillarray (e-chat-service-binding-projection-ring current) nil)
-      (clrhash (e-chat-service-binding-projection-seen current))
+      (dolist (projection
+               (list (e-chat-service-binding-message-projection current)
+                     (e-chat-service-binding-activity-projection current)))
+        (fillarray (e-chat-service-projection-ring projection) nil)
+        (clrhash (e-chat-service-projection-seen projection))
+        (setf (e-chat-service-projection-head projection) 0
+              (e-chat-service-projection-count projection) 0))
       (clrhash (e-chat-service-binding-turn-map current))
-      (setf (e-chat-service-binding-projection-head current) 0
-            (e-chat-service-binding-projection-count current) 0
-            (e-chat-service-binding-pending-input-head current) nil
+      (setf (e-chat-service-binding-pending-input-head current) nil
             (e-chat-service-binding-pending-input-tail current) nil))
     binding))
 
@@ -411,15 +418,29 @@ input publication and the acknowledgement fact."
              :payload (list :message-id (e-board-message-id message)
                             :content (e-board-message-content message))))))))
 
+(defun e-chat-service--make-projection ()
+  "Return one empty fixed-capacity presentation projection."
+  (e-chat-service--projection-create
+   :ring (make-vector e-chat-service-projection-capacity nil)
+   :head 0 :count 0 :seen (make-hash-table :test 'equal)))
+
+(defun e-chat-service--event-projection (binding event)
+  "Return BINDING projection that owns EVENT, or nil for non-presentation facts."
+  (pcase (plist-get event :type)
+    ('message-added (e-chat-service-binding-message-projection binding))
+    ('board-fact nil)
+    (_ (e-chat-service-binding-activity-projection binding))))
+
 (defun e-chat-service--projection-record (binding event)
-  "Retain one deduplicated immutable board EVENT in BINDING's fixed ring."
-  (when event
+  "Retain immutable board EVENT in BINDING's category-specific fixed ring."
+  (when-let ((projection (and event
+                              (e-chat-service--event-projection binding event))))
     (let* ((message-id (plist-get event :message-id))
-           (seen (e-chat-service-binding-projection-seen binding)))
+           (seen (e-chat-service-projection-seen projection)))
       (unless (gethash message-id seen)
-        (let* ((ring (e-chat-service-binding-projection-ring binding))
-               (head (e-chat-service-binding-projection-head binding))
-               (count (e-chat-service-binding-projection-count binding))
+        (let* ((ring (e-chat-service-projection-ring projection))
+               (head (e-chat-service-projection-head projection))
+               (count (e-chat-service-projection-count projection))
                (index (mod (+ head count) e-chat-service-projection-capacity)))
           (when (= count e-chat-service-projection-capacity)
             (when-let ((evicted (aref ring head)))
@@ -429,20 +450,31 @@ input publication and the acknowledgement fact."
                              e-chat-service-projection-capacity)))
           (aset ring index (copy-tree event))
           (puthash message-id t seen)
-          (setf (e-chat-service-binding-projection-head binding) head
-                (e-chat-service-binding-projection-count binding)
+          (setf (e-chat-service-projection-head projection) head
+                (e-chat-service-projection-count projection)
                 (min e-chat-service-projection-capacity (1+ count))))))))
 
-(defun e-chat-service--projection-events (binding)
-  "Return BINDING's retained board events in board sequence order."
-  (let ((ring (e-chat-service-binding-projection-ring binding))
-        (head (e-chat-service-binding-projection-head binding))
-        (count (e-chat-service-binding-projection-count binding)))
+(defun e-chat-service--projection-category-events (projection)
+  "Return PROJECTION events in board sequence order."
+  (let ((ring (e-chat-service-projection-ring projection))
+        (head (e-chat-service-projection-head projection))
+        (count (e-chat-service-projection-count projection)))
     (cl-loop for offset from 0 below count
              collect
              (copy-tree
               (aref ring (mod (+ head offset)
                               e-chat-service-projection-capacity))))))
+
+(defun e-chat-service--projection-events (binding)
+  "Return BINDING's independently bounded events in board sequence order."
+  (sort
+   (append
+    (e-chat-service--projection-category-events
+     (e-chat-service-binding-message-projection binding))
+    (e-chat-service--projection-category-events
+     (e-chat-service-binding-activity-projection binding)))
+   (lambda (left right)
+     (< (plist-get left :board-seq) (plist-get right :board-seq)))))
 
 (defun e-chat-service--events-messages (events)
   "Return copied durable messages represented by board EVENTS."
@@ -462,22 +494,39 @@ input publication and the acknowledgement fact."
                       (copy-tree event))
               activities)))))
 
-(defun e-chat-service--seed-binding-projection (binding)
-  "Seed BINDING from one bounded reverse-history observer page."
+(defun e-chat-service--snapshot-events (binding before-seq)
+  "Return independently bounded presentation events before BEFORE-SEQ."
   (let* ((board (e-chat-service-binding-board binding))
-         (client (e-chat-service-binding-client binding))
          (observer (e-chat-service-binding-observer binding))
-         (page (e-board-registry-prepare-observer-history-page
-                board (e-board-registry-client-id client)
-                (e-board-observer-id observer)
-                :limit e-chat-service-projection-capacity)))
-    (dolist (message (plist-get page :messages))
-      (e-chat-service--projection-record
-       binding (e-chat-service--message-event binding message)))
-    (when-let ((receipt (plist-get page :receipt)))
-      (e-board-registry-accept-observer-history-page
-       board (e-board-registry-client-id client)
-       (e-board-observer-id observer) receipt))))
+         (source (e-board-registry-board-source-board board))
+         events)
+    (dolist (message
+             (append
+              (e-board-observer-recent-messages
+               source (e-board-observer-id observer)
+               :kinds '(input output)
+               :limit e-chat-service-projection-capacity
+               :before-seq before-seq)
+              (e-board-observer-recent-messages
+               source (e-board-observer-id observer)
+               :kinds '(activity)
+               :limit e-chat-service-projection-capacity
+               :before-seq before-seq)))
+      (when-let ((event (e-chat-service--message-event binding message)))
+        (push event events)))
+    (sort events
+          (lambda (left right)
+            (< (plist-get left :board-seq) (plist-get right :board-seq))))))
+
+(defun e-chat-service--seed-binding-projection (binding)
+  "Seed BINDING from independently bounded board message categories."
+  (dolist (event
+           (e-chat-service--snapshot-events
+            binding
+            (1+ (e-board-next-seq
+                 (e-board-registry-board-source-board
+                  (e-chat-service-binding-board binding))))))
+    (e-chat-service--projection-record binding event)))
 
 (defun e-chat-service--notify-subscribers (binding message)
   "Deliver MESSAGE from BINDING to each current shell subscriber."
@@ -606,8 +655,7 @@ input publication and the acknowledgement fact."
                (observer (e-board-registry-install-observer
                           board (e-board-registry-client-id client)
                           observer-selector
-                          :start-seq snapshot-cursor
-                          :history-before-seq (1+ snapshot-cursor)))
+                          :start-seq snapshot-cursor))
                (binding
                 (e-chat-service--binding-create
                  :harness harness :session-id session-id :board board
@@ -615,10 +663,8 @@ input publication and the acknowledgement fact."
                  :observer observer :subscribers nil
                  :turn-map (make-hash-table :test 'equal) :input-sequence 0
                  :default-tags (copy-tree default-tags) :default-to default-to
-                 :projection-ring (make-vector
-                                   e-chat-service-projection-capacity nil)
-                 :projection-head 0 :projection-count 0
-                 :projection-seen (make-hash-table :test 'equal))))
+                 :message-projection (e-chat-service--make-projection)
+                 :activity-projection (e-chat-service--make-projection))))
           (puthash session-id binding (e-chat-service--harness-bindings harness))
           (puthash (e-board-registry-board-id board)
                    (cons binding
@@ -867,22 +913,8 @@ FUNCTION."
          (subscription
           (e-chat-service--subscribe
            harness session-id function
-           :start-seq cursor :history-before-seq (1+ cursor)))
-         (client (e-chat-service-subscription-client subscription))
-         (observer (e-chat-service-subscription-observer subscription))
-         (page (e-board-registry-prepare-observer-history-page
-                board (e-board-registry-client-id client)
-                (e-board-observer-id observer)
-                :limit e-chat-service-projection-capacity))
-         events)
-    (dolist (message (plist-get page :messages))
-      (when-let ((event (e-chat-service--message-event binding message)))
-        (push event events)))
-    (setq events (nreverse events))
-    (when-let ((receipt (plist-get page :receipt)))
-      (e-board-registry-accept-observer-history-page
-       board (e-board-registry-client-id client)
-       (e-board-observer-id observer) receipt))
+           :start-seq cursor))
+         (events (e-chat-service--snapshot-events binding (1+ cursor))))
     (e-chat-service--view-create
      :cursor cursor
      :messages (e-chat-service--events-messages events)

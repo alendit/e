@@ -886,6 +886,65 @@ Return a plist containing its stream, harness, transcript, and visible windows."
       (set-window-configuration configuration)
       (redisplay t))))
 
+(ert-deftest e-chat-behavior-test-session-switch-after-noisy-tail-is-visible ()
+  "Switching to a long live chat after noisy history keeps visible state."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "show the durable answer")
+          (e-chat-behavior-test--finish
+           fixture
+           (mapconcat
+            (lambda (index)
+              (format "durable answer line %04d with plain text" index))
+            (number-sequence 1 100) "\n"))
+          (let ((transcript (plist-get fixture :transcript))
+                (window (car (e-chat-behavior-test--fixture-windows fixture))))
+            (with-current-buffer transcript
+              (e-chat--show-latest-output window)))
+          (redisplay t)
+          (e-chat-behavior-test--assert-tail-near-bottom fixture)
+          (let* ((harness (plist-get fixture :harness))
+                 (session-id (plist-get fixture :session-id))
+                 (transcript (plist-get fixture :transcript))
+                 (binding (e-chat-service-binding harness session-id))
+                 (board (e-board-registry-board-source-board
+                         (e-chat-service-binding-board binding))))
+            (should (> (with-current-buffer transcript (point-max)) 3001))
+            (e-chat-behavior-test--assert-tail-near-bottom fixture)
+            (e-chat-behavior-test--capture-state
+             "session-switch-before-noisy-tail")
+            ;; Import a restored historical tail directly.  The retained facts
+            ;; reproduce category starvation without repainting synthetic
+            ;; activity records or enqueuing live observer wakes.
+            (setf (e-board-message-notification-function board) nil)
+            (dotimes (index (+ e-chat-service-projection-capacity 5))
+              (e-board-import-message
+               board
+               (list :kind 'fact
+                     :id (format "reattach-fact-%03d" index)
+                     :tags '(main)
+                     :content (format "progress %d" index)
+                     :source-fact-key (list 'test 1 (1+ index)))))
+            (e-chat-open-session harness session-id t)
+            (redisplay t)
+            (let* ((windows (e-chat-behavior-test--surface-windows transcript))
+                   (window (car windows)))
+              (should windows)
+              (with-current-buffer transcript
+                (should (string-match-p "durable answer line 0100"
+                                        (buffer-string)))
+                (should (<= (window-point window) (point-max)))
+                (should (<= (window-start window) (point-max)))))
+            (e-chat-behavior-test--assert-tail-near-bottom fixture)
+            (e-chat-behavior-test--capture-state
+             "session-switch-after-noisy-tail")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (provide 'e-chat-behavior-test)
 
 ;;; e-chat-behavior-test.el ends here

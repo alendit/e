@@ -1742,6 +1742,30 @@
         (should (= (length (plist-get history :messages)) 3))
         (should (= (e-board-observer-next-index observer) 0))))))
 
+(ert-deftest e-board-test-observer-recent-messages-bounds-kinds-independently ()
+  "A recent snapshot finds matching kinds without unrelated tail starvation."
+  (let ((board (e-board-create)))
+    (e-board-observer-subscribe
+     board "client" '(:tags (main)) :id "recent" :start-seq 0)
+    (e-board-post-output
+     board :id "main-output" :author "test" :tags '(main)
+     :content "durable main answer" :source-output-key '(test 1 1))
+    (e-board-post-output
+     board :id "other-output" :author "test" :tags '(subagent)
+     :content "not in the main view" :source-output-key '(test 1 2))
+    (dotimes (index 20)
+      (e-board-post-activity
+       board :id (format "recent-activity-%02d" index)
+       :author "participant:test" :subject-participant-id "test"
+       :source-turn-id "turn" :activity-kind 'work-progress
+       :tags '(main) :source-activity-key (list 'test 1 (1+ index))))
+    (let ((messages
+           (e-board-observer-recent-messages
+            board "recent" :kinds '(input output) :limit 1
+            :before-seq (1+ (e-board-next-seq board)))))
+      (should (equal (mapcar #'e-board-message-id messages)
+                     '("main-output"))))))
+
 (provide 'e-board-test)
 
 ;;; e-board-test.el ends here

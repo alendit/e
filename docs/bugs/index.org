@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-live-session-switch-projection-starvation/ | Live session switch blanks a noisy transcript |
 | Closed | openai-http-premature-sse/ | OpenAI HTTP Responses stream ends before terminal event |
 | Closed | e-chat-active-output-follow-snap-gap/ | e-chat active output follow snap and bottom gap |
 | Closed | e-chat-settled-output-stranded-after-transient/ | e-chat settled output stranded after transient collapse |

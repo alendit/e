@@ -1,0 +1,120 @@
+#+title: Live Session Switch Blanks a Noisy Transcript Investigation
+#+startup: overview
+
+* Evidence
+
+A bounded read-only inspection of the reported session found 653 durable
+messages and 7,234 journal records, including 1,819 activity records and 4,728
+board-message records.  The chat service snapshot exposed only two messages,
+and the reused transcript buffer had contracted to 144 characters while a
+window still referred to a position around 3,001.  The running Emacs was not
+reloaded or changed.
+
+The journal therefore retained the conversation; the blank surface was a
+presentation projection failure, not lost session data.
+
+* Root cause
+
+The service reconstructed chat state from one reverse board-history page with
+a shared limit of 256 records.  A sufficiently noisy activity/fact tail could
+consume the whole page before any durable input or output was reached.  The
+single in-memory projection ring had the same cross-category starvation
+property.
+
+=e-chat-open= also reattached and destructively rebuilt an already-live session
+buffer on every switch.  That work was unnecessary because its active service
+subscription already kept the projection current.  When the starved snapshot
+replaced the old transcript, the buffer shrank underneath saved window state,
+surfacing the out-of-range position.
+
+The previous graphical coverage tested streaming, settlement, scrollback, and
+workspace restoration independently.  It did not combine a transcript longer
+than position 3,001, a history tail larger than the service bound, and a public
+switch back to the same live session.
+
+* Fix
+
+- The board maintains derived newest-first indexes by message kind and by
+  kind/tag.  A bounded observer snapshot can now request conversation and
+  activity categories without scanning unrelated records.
+- Chat bindings retain independent fixed-capacity message and activity
+  projections.  Board facts do not occupy presentation capacity.
+- Initial and subscription snapshots query bounded input/output and activity
+  categories separately, then merge by board sequence.  Live cursors still
+  start at one exact high-water mark, so snapshot and future delivery do not
+  overlap.
+- =e-chat-open= reuses a matching buffer only while its service subscription is
+  active.  A stale or unsubscribed buffer still follows the normal reattachment
+  path.
+- Output-follow positioning refreshes the target window's visual-motion origin
+  before walking backward through wrapped rows.  Terminal rendering preserves
+  the explicit live-follow decision across transient contraction while leaving
+  user scrollback unpinned.
+
+No Doom-specific or provider-specific workaround was added.
+
+* Regression coverage
+
+- =e-board-test-observer-recent-messages-bounds-kinds-independently= proves a
+  noisy unrelated kind cannot consume the requested conversation bound.
+- =e-chat-service-test-activity-tail-cannot-starve-message-snapshot= proves an
+  activity tail larger than the category capacity retains the durable answer
+  and independently bounds activity.
+- =e-chat-test-open-reuses-live-session-buffer-without-reattach= proves a live
+  subscription prevents destructive attachment while a retired subscription
+  still rebuilds.
+- =e-chat-behavior-test-session-switch-after-noisy-tail-is-visible= creates a
+  transcript beyond character 3,001, appends more historical facts than the
+  projection capacity, switches through the public open path, and asserts the
+  final answer, valid window positions, and bottom-aligned tail.  Its captured
+  PNG shows answer lines 0067--0100 and the turn footer at the bottom.
+
+* Validation
+
+- Focused board/service/chat tests: 4 passed, 0 unexpected.
+- Focused session-switch graphical test: 1 passed, 0 unexpected; generated PNG
+  inspected visually.
+- Existing short-output, tall-transient settlement, and stream unpin/repin
+  graphical tests: 3 passed, 0 unexpected.
+- Relevant byte compilation with warnings as errors: passed.
+- =eldev test -f test/e-chat-test.el=: 343 tests, 342 expected passes, 0
+  unexpected, and 1 optional markdown skip.
+- =eldev test=: 2,141 tests, 2,134 expected passes, 5 sandbox-blocked localhost
+  fixture failures, and 2 optional skips.  The five MCP/OpenAI network-process
+  fixtures all passed in an unrestricted focused rerun, leaving no unresolved
+  test failure.
+- Full graphical E2E suite: 18 tests passed, 0 unexpected.
+- =git diff --check=: passed.
+
+* Architecture self-check
+
+1. This slice preserves existing conversations and removes an unnecessary
+   destructive switch path, so it is useful independently.
+2. It moves toward board-owned bounded observation and presentation-owned
+   buffer reuse, with provider behavior remaining behind adapters.
+3. Category capacities are stable policy; index choice is derived and local.
+   No speculative provider or shell abstraction was introduced.
+4. The board owns message indexes, the chat service owns projection policy, and
+   the shell owns live-buffer and viewport behavior.
+5. Coupling is reduced: the shell no longer rebuilds a live service projection,
+   and the service consumes one narrow board snapshot operation.
+6. Dependencies continue from the chat service toward the stable board API;
+   core policy does not depend on Emacs windows or provider adapters.
+7. All buffer, focus, and window side effects remain in the chat shell.
+8. The new indexes are process-local derived board state.  Projection rings
+   remain binding-local and bounded; no new durable state is added.
+9. Append cost grows by one kind entry plus one entry per immutable tag.
+   Snapshot cost is bounded by relevant categories instead of total journal
+   noise; viewport following performs one bounded visual-motion pass.
+10. The observer snapshot contract is real and substitutable: selectors still
+    determine visibility, while kinds and limit only bound retrieval.
+11. Existing loaded/stale buffers still reattach.  Live subscribed buffers now
+    preserve the compatibility behavior users expected from switching.
+12. The generic reverse-history dependency and shared projection ring were
+    removed; no fallback or compatibility shim remains.
+13. Invalid selectors and bounds still signal.  Missing observers and stale
+    subscriptions remain loud; unexpected projection and rendering errors are
+    not swallowed.
+14. Board and service ERT tests prove policy without a UI.  The isolated native
+    graphical test proves the composed surface, exact viewport, and public open
+    behavior without touching the user's Emacs.

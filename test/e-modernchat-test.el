@@ -537,6 +537,36 @@ messages so the transcript reads as one clean answer."
                               live-events)
                        '("view-live")))))))
 
+(ert-deftest e-chat-service-test-activity-tail-cannot-starve-message-snapshot ()
+  "A noisy activity tail cannot evict the durable conversation from a view."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session :harness harness :id "mixed-view"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding))))
+    (e-board-post-output
+     board :id "durable-answer" :author "test" :tags '(main)
+     :content "answer before noisy activity"
+     :source-output-key '(test 1 1))
+    (dotimes (index (+ e-chat-service-projection-capacity 5))
+      (e-board-post-activity
+       board
+       :id (format "activity-%03d" index)
+       :author "participant:test"
+       :subject-participant-id "test"
+       :source-turn-id "noisy-turn"
+       :activity-kind 'work-progress
+       :tags '(main)
+       :content (format "progress %d" index)
+       :source-activity-key (list 'test 1 (1+ index))))
+    (let* ((view (e-chat-service-subscribe-view harness "mixed-view" #'ignore))
+           (messages (e-chat-service-view-messages view))
+           (activities (e-chat-service-view-activity-events view)))
+      (should (equal (mapcar (lambda (message) (plist-get message :id)) messages)
+                     '("durable-answer")))
+      (should (= (length activities) e-chat-service-projection-capacity))
+      (should (equal (plist-get (car activities) :message-id) "activity-005")))))
+
 (ert-deftest e-chat-service-test-persistent-board-log-reopens-without-redelivery ()
   "A restarted service restores board history as board messages, not transcript."
   (let ((directory (make-temp-file "e-chat-board-log-" t))
