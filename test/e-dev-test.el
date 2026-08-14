@@ -215,6 +215,45 @@
                                         web annotations org-canvas project-local
                                         goodnite writing subagents-parent)))))
 
+(ert-deftest e-dev-test-reload-refreshes-retained-session-index-metadata ()
+  "Full reload repairs stale unloaded metadata in the retained session store."
+  (let* ((directory (make-temp-file "e-dev-refresh-index-" t))
+         (writer (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create writer :id "root")
+          (e-session-create writer :id "worker"
+                            :metadata '(:parent-session-id "root"
+                                        :subagent-role "tool-user"))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (worker (e-session--peek-session store "worker"))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+                 (e-harness-registry--instances
+                  (make-hash-table :test 'equal))
+                 (e-harness-registry--factories
+                  (make-hash-table :test 'equal))
+                 (e-harness-instance--instances
+                  (make-hash-table :test 'equal))
+                 (e-harness-instance--defaults
+                  (make-hash-table :test 'equal))
+                 (e-default--chat-sessions store)
+                 (e-session-directory directory)
+                 (e-default-chat-harness-factory nil))
+            (plist-put worker :metadata nil)
+            (e-harness-registry-register :chat-default harness)
+            (e-dev-reload default-directory)
+            (should (eq (e-harness-registry-get :chat-default) harness))
+            (should (eq (e-harness-sessions harness) store))
+            (should (eq (e-session--peek-session store "worker") worker))
+            (should (equal
+                     (mapcar (lambda (session) (plist-get session :id))
+                             (e-harness-root-session-list harness))
+                     '("root")))))
+      (delete-directory directory t))))
+
 (provide 'e-dev-test)
 
 ;;; e-dev-test.el ends here

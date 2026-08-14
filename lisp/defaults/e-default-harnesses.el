@@ -442,11 +442,17 @@ factories are recorded, but no harness is created."
 (defun e-default-harnesses-sync-instances (&optional specs)
   "Reconcile cached default harness instances with current config.
 Only existing instances are touched; lazy factories are left lazy."
-  (dolist (spec (e-default-harness--effective-specs specs))
-    (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
-      (funcall (or (plist-get spec :sync)
-                   #'e-default-harness-sync-from-factory)
-               harness spec)))
+  (let ((refreshed-stores (make-hash-table :test 'eq)))
+    (dolist (spec (e-default-harness--effective-specs specs))
+      (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
+        (funcall (or (plist-get spec :sync)
+                     #'e-default-harness-sync-from-factory)
+                 harness spec)
+        (let ((store (e-harness-sessions harness)))
+          (when (and (e-session-store-p store)
+                     (not (gethash store refreshed-stores)))
+            (puthash store t refreshed-stores)
+            (e-session-refresh-index-metadata store))))))
   nil)
 
 (defun e-default-harnesses-clear-instances (&optional specs)

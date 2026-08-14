@@ -13,6 +13,12 @@ The same failure was reproduced in isolated ERT tests using a temporary
 persistent store: an unloaded indexed subagent appeared in both
 =e-session-list-roots= and =e-chat--session-candidates=.
 
+The initial fix repaired newly created index stores.  A subsequent
+=e-dev-reload= preserved the already-live store and its old unloaded stubs, so
+their nil metadata survived and the picker remained polluted.  A reload test
+reproduced this while asserting that the harness, store, and worker stub
+identities were retained.
+
 * Root cause
 
 =e-session--session-index-entry= correctly writes durable session metadata to
@@ -22,6 +28,12 @@ therefore had no lineage or worker marker to inspect after restart.  The
 existing picker regression used only live in-memory sessions and could not
 exercise this index-loader boundary.
 
+=e-dev-reload= then exposed a second lifecycle boundary.  Default-harness sync
+intentionally preserves the existing session store so active sessions,
+subscribers, turns, queues, and presentation buffers retain their owner.  It
+refreshed replaceable backend/configuration state, but did not re-interpret the
+unloaded index stubs already held by that store.
+
 * Fix
 
 The persistent index loader now preserves and replay-normalizes the metadata
@@ -29,8 +41,14 @@ already present in each index entry.  Root-session policy remains owned by
 =e-session-root-p=; the chat shell consumes the resulting root catalog without
 duplicating lineage rules or inferring worker status from display titles.
 
-No journal replay, migration, or index rewrite is required.  Existing indexed
-metadata becomes effective as soon as the corrected source is loaded.
+The session store now also exposes a narrow in-place index-metadata refresh.
+Default-harness startup calls it once per retained store after reconciling the
+harness.  Only unloaded stubs receive persisted metadata; loaded mutable state
+and all lifecycle ownership remain untouched.
+
+No journal replay, migration, index rewrite, harness replacement, or session
+replacement is required.  Cold startup and =e-dev-reload= now produce the same
+root catalog.
 
 * Coverage
 
@@ -39,6 +57,13 @@ metadata becomes effective as soon as the corrected source is loaded.
 - =e-chat-test-session-candidates-exclude-indexed-worker-sessions= proves the
   actual chat picker excludes an indexed board-native worker while retaining
   its top-level parent.
+- =e-session-test-refresh-index-metadata-repairs-unloaded-stubs= proves an
+  unloaded stale stub is repaired in place without loading its transcript.
+- =e-defaults-test-startup-refreshes-retained-session-index-metadata= proves
+  default startup refreshes the preserved store.
+- =e-dev-test-reload-refreshes-retained-session-index-metadata= runs the full
+  source reload and proves the harness/store remain identical while the root
+  catalog is corrected.
 - The existing in-memory root and chat-candidate tests remain in place.
 
 * Verification
@@ -48,15 +73,18 @@ only 284 are classified as user-facing roots and only 21 of the 128
 board-native sessions are both board-native and root sessions.  The nested
 daily and plan-worker entries shown in the report are absent from that result.
 
-- Session tests: 93/93 passed.
-- Chat tests: 343 passed, zero unexpected, and one optional renderer skip.
-- Full suite: 2,136 expected results, five sandbox-only localhost socket
-  failures, and two optional skips; all five socket tests passed when rerun
-  with normal macOS networking.
-- Graphical suite: 18/18 passed in the isolated native frame.
+- Affected session, defaults, dev-reload, and chat suites: 473 expected
+  results, zero unexpected, and one optional renderer skip.
+- Full suite: 2,144 expected results, zero unexpected, and two optional skips.
+- The reload-specific graphical behavior test passed.  The complete graphical
+  suite finished with 17/18 expected results; the unrelated pre-existing
+  =session-switch-after-noisy-tail-is-visible= viewport assertion also failed
+  when rerun alone.  This slice changes neither chat rendering nor viewport
+  state.
 - =eldev compile= and =git diff --check= passed.
 
-The user's running Emacs was not reloaded.
+The user's running Emacs was not reloaded.  A bounded =emacsclient= scalar
+probe did not answer, so no further live mutation or reload was attempted.
 
 * Design self-check
 
@@ -69,17 +97,18 @@ The user's running Emacs was not reloaded.
    owns only candidate presentation.
 5. Coupling is reduced because the shell does not duplicate worker markers.
 6. Dependency direction is unchanged: the shell depends on the core catalog.
-7. No new side effect exists; index reading remains in the persistence adapter.
+7. Reload adds one index read through the session persistence adapter; harness
+   sync only requests the refresh.
 8. No state is added.  Metadata already persisted in the index is retained in
    the unloaded session stub for the stub's lifetime.
-9. No transcript I/O is added.  The already-parsed bounded index metadata is
-   retained, trading only its necessary in-memory lifetime for correct
-   classification.
+9. No transcript I/O is added.  Cold startup is unchanged; live reload reads
+   the index once per unique retained store and updates unloaded stubs in one
+   linear pass.
 10. No abstraction or interface was added.
 11. Object-shaped legacy indexes without metadata remain supported; no new
     compatibility path was required.
 12. No legacy code became obsolete in this slice.
 13. Existing malformed-index handling remains at the loader boundary;
     unexpected metadata errors are not swallowed by the picker.
-14. Core and chat integration tests separately prove catalog policy and shell
-    consumption, so either design can change narrowly.
+14. Core, default-startup, full-reload, and chat integration tests prove the
+    persistence and lifecycle boundaries independently.

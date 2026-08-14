@@ -454,6 +454,36 @@
           (should (equal (e-harness-enabled-layer-ids harness)
                          '(e web))))))))
 
+(ert-deftest e-defaults-test-startup-refreshes-retained-session-index-metadata ()
+  "Startup repairs stale unloaded index stubs in a retained harness store."
+  (let* ((directory (make-temp-file "e-defaults-refresh-index-" t))
+         (writer (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create writer :id "root")
+          (e-session-create writer :id "worker"
+                            :metadata '(:parent-session-id "root"
+                                        :subagent-role "tool-user"))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (worker (e-session--peek-session store "worker"))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+            (plist-put worker :metadata nil)
+            (e-defaults-test--with-empty-harness-registry
+              (e-harness-registry-register :chat-default harness)
+              (let ((e-default-chat-harness-factory nil)
+                    (e-default-chat-layer-ids nil))
+                (e-default-harnesses-startup))
+              (should (eq (e-harness-registry-get :chat-default) harness))
+              (should (eq (e-harness-sessions harness) store))
+              (should (equal
+                       (mapcar (lambda (session) (plist-get session :id))
+                               (e-harness-root-session-list harness))
+                       '("root"))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-capability ()
   "Startup sync replaces stale intrinsic chat-session capabilities in place."
   (e-defaults-test--with-empty-harness-registry

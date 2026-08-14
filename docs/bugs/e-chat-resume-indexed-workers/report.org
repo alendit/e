@@ -11,3 +11,7 @@ included plan workers and daily-helper prompts such as =Work in ...=,
 These worker sessions have their own dedicated surfaces and must remain
 directly addressable, but they do not belong in general chat resume, switch,
 active-session, or overview pickers.
+
+After the initial cold-loader fix, running =e-dev-reload= reproduced the same
+polluted picker.  A full live reload must apply corrected index interpretation
+to the retained session store, not require an Emacs process restart.

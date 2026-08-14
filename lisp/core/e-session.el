@@ -2208,24 +2208,43 @@ This explicit operation is the only checkpoint-less full-journal replay path."
             (push normalized entries))))
       (nreverse entries)))))
 
-(defun e-session--load-index (store)
-  "Load STORE session metadata from its persistent index file."
+(defun e-session--read-index-entries (store)
+  "Return STORE's parsed persistent index entries, or nil when unavailable."
   (when (and (e-session--persistent-p store)
              (file-readable-p (e-session-store-index-file store)))
-    (let* ((value (condition-case nil
-                      (e-session--json-read-file
-                       (e-session-store-index-file store))
-                    (file-error nil)
-                    (json-parse-error nil)))
-           (entries (e-session--index-entries value)))
-      (when entries
-        (clrhash (e-session-store-sessions store))
-        (clrhash (e-session-store-entry-indexes store))
-        (clrhash (e-session-store-board-journals store))
-        (setf (e-session-store-sequence store) 0)
-        (dolist (entry entries)
-          (e-session--put-index-entry store entry))
-        t))))
+    (let ((value (condition-case nil
+                     (e-session--json-read-file
+                      (e-session-store-index-file store))
+                   (file-error nil)
+                   (json-parse-error nil))))
+      (e-session--index-entries value))))
+
+(defun e-session--load-index (store)
+  "Load STORE session metadata from its persistent index file."
+  (when-let ((entries (e-session--read-index-entries store)))
+    (clrhash (e-session-store-sessions store))
+    (clrhash (e-session-store-entry-indexes store))
+    (clrhash (e-session-store-board-journals store))
+    (setf (e-session-store-sequence store) 0)
+    (dolist (entry entries)
+      (e-session--put-index-entry store entry))
+    t))
+
+(defun e-session-refresh-index-metadata (store)
+  "Refresh unloaded session metadata in STORE from its persistent index.
+Preserve session objects and all loaded mutable state.  This is the narrow
+reload path for a retained index-backed store: it applies updated index-stub
+interpretation without replaying journals or replacing lifecycle ownership."
+  (when-let ((entries (e-session--read-index-entries store)))
+    (dolist (entry entries)
+      (when-let ((session
+                  (gethash (plist-get entry :id)
+                           (e-session-store-sessions store))))
+        (unless (plist-get session :loaded)
+          (plist-put session :metadata
+                     (e-session--normalize-metadata-for-replay
+                      (plist-get entry :metadata)))))))
+  store)
 
 (defun e-session--load-index-from-session-files (store &optional only-missing)
   "Populate STORE metadata from session root records.

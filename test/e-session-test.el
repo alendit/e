@@ -2226,6 +2226,37 @@
             (should (= (length (e-session-list indexed)) 3))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-refresh-index-metadata-repairs-unloaded-stubs ()
+  "Index refresh repairs stale unloaded metadata without replacing sessions."
+  (let* ((directory (make-temp-file "e-session-refresh-index-" t))
+         (writer (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create writer :id "root")
+          (e-session-create writer :id "worker"
+                            :metadata '(:parent-session-id "root"
+                                        :subagent-role "tool-user"))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (worker (e-session--peek-session store "worker")))
+            ;; Reproduce a store retained across reload from code that did not
+            ;; hydrate metadata into unloaded index stubs.
+            (plist-put worker :metadata nil)
+            (should (equal (mapcar (lambda (session)
+                                     (plist-get session :id))
+                                   (e-session-list-roots store))
+                           '("worker" "root")))
+            (e-session-refresh-index-metadata store)
+            (should (eq (e-session--peek-session store "worker") worker))
+            (should-not (plist-get worker :loaded))
+            (should (equal (plist-get (plist-get worker :metadata)
+                                      :parent-session-id)
+                           "root"))
+            (should (equal (mapcar (lambda (session)
+                                     (plist-get session :id))
+                                   (e-session-list-roots store))
+                           '("root")))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-list-sessions-sorted-by-last-message ()
   "Session list order follows last message time, not metadata touches."
   (let* ((directory (make-temp-file "e-session-" t))
