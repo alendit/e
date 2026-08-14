@@ -487,6 +487,41 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                         (point-min) (point-max)))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-large-index-summary-has-bounded-loading-view ()
+  "A generated index summary cannot bury or stall the loading projection."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-session-summary-preview-max-chars 512)
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let* ((transcript (plist-get fixture :transcript))
+                 (window (car (e-chat-behavior-test--fixture-windows fixture)))
+                 (summary
+                  (mapconcat
+                   (lambda (index)
+                     (format "generated daily instruction line %04d" index))
+                   (number-sequence 1 400)
+                   "\n")))
+            (with-current-buffer transcript
+              (let ((inhibit-read-only t))
+                (e-chat--clear t)
+                (e-chat--render-session-loading (list :summary summary)))
+              (e-chat--show-latest-output window))
+            (redisplay t)
+            (when (e-graphical-test-screenshot-enabled-p)
+              (e-graphical-test-capture-state "large-index-summary-loading"))
+            (with-current-buffer transcript
+              (should (< (buffer-size) 700))
+              (goto-char (point-min))
+              (should (search-forward "Loading transcript" nil t))
+              (should (pos-visible-in-window-p (point) window t)))
+            (should (eq (selected-window)
+                        (cdr (e-chat-behavior-test--fixture-windows fixture))))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-short-output-stays-bottom-and-keeps-draft ()
   "Short streaming output stays low without stealing composer focus or draft."
   (skip-unless (display-graphic-p))

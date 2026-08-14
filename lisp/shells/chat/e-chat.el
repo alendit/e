@@ -94,6 +94,14 @@
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-session-summary-preview-max-chars 512
+  "Maximum session-summary characters rendered before transcript replay.
+Persistent indexes retain the complete first user message as their summary.
+That message can be a very large generated bootstrap prompt, so metadata-only
+loading and picker previews must never project it without a display bound."
+  :type 'integer
+  :group 'e-chat)
+
 (defcustom e-chat-session-replay-message-limit 40
   "Maximum recent transcript messages reconstructed in a chat buffer.
 Older durable messages remain available to the harness but are omitted from
@@ -2088,12 +2096,23 @@ PROMPT forces completion even when only one/default instance exists."
 
 (defun e-chat--render-session-loading (session)
   "Render cheap loading state for unloaded indexed SESSION."
-  (when-let ((summary (plist-get session :summary)))
+  (when-let ((summary (e-chat--session-summary-preview session)))
     (unless (string-empty-p summary)
       (e-chat--insert-entry "You" summary nil)))
   (e-chat--insert-protected
    (format "%s Loading transcript...\n\n" e-chat--system-glyph)
    'e-chat-activity-face))
+
+(defun e-chat--session-summary-preview (session)
+  "Return SESSION summary bounded for metadata-only presentation."
+  (when-let ((summary (plist-get session :summary)))
+    (let ((limit e-chat-session-summary-preview-max-chars))
+      (unless (and (integerp limit) (> limit 0))
+        (user-error
+         "e-chat-session-summary-preview-max-chars must be a positive integer"))
+      (if (> (length summary) limit)
+          (concat (substring summary 0 limit) "…")
+        summary))))
 
 (defun e-chat--validated-replay-limit (value option)
   "Return positive integer VALUE or report invalid replay OPTION."
@@ -9248,7 +9267,7 @@ CATEGORY is exposed through completion metadata when non-nil."
            (string-join
             (delq nil
                   (list (plist-get session :title)
-                        (plist-get session :summary)
+                        (e-chat--session-summary-preview session)
                         (when-let ((message-count
                                     (plist-get session :message-count)))
                           (format "%d messages" message-count))
@@ -10137,7 +10156,8 @@ face properties so the preview still reflects chat rendering."
          (messages (cl-remove-if-not
                     #'e-chat--active-session-preview-message-p
                     (e-chat--active-session-preview-messages
-                     harness session))))
+                     harness session)))
+         (summary-preview (e-chat--session-summary-preview session)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -10157,8 +10177,8 @@ face properties so the preview still reflects chat rendering."
             messages
             e-chat-resume-preview-message-limit)
            nil))
-         ((plist-get session :summary)
-          (e-chat--insert-entry "You" (plist-get session :summary) nil))
+         (summary-preview
+          (e-chat--insert-entry "You" summary-preview nil))
          (t
           (e-chat--insert-protected "No prompts yet")))
         (e-chat--active-session-sanitize-preview-properties)

@@ -1,0 +1,83 @@
+#+title: Investigation: Historical chat load stalls on generated index summary
+#+startup: overview
+
+* Evidence
+
+The affected unloaded index stub stores the complete first user message as its
+=:summary=.  For Grimoire daily sessions that message is a large generated
+bootstrap prompt.
+
+=e-chat--render-session-loading= projected that summary without a display
+bound before cooperative transcript replay started.  The screenshot shows the
+generated prompt occupying the loading surface.  While the surface was stuck,
+Emacs consumed one full CPU core and did not answer a bounded read-only client
+probe.  A one-second native stack sample placed the main thread in graphical
+redisplay of that buffer, rather than journal replay or provider I/O.
+
+The same unbounded metadata summary was also used by the unloaded-session
+resume and active-session previews.
+
+* Resolution
+
+Metadata-only chat projections now share a 512-character session-summary
+display bound.  The initial =Loading transcript...= surface and unloaded resume
+and active-session previews preserve a useful prefix without rendering the
+complete bootstrap prompt.  Durable session data and model replay are
+unchanged.
+
+The fix is presentation-owned: the index remains free to retain the full first
+user message as durable summary data, while chat decides how much is safe to
+paint before the transcript is available.
+
+* Coverage
+
+- =e-chat-test-index-loading-bounds-large-session-summary= proves the loading
+  projection contains the status but not a long summary tail.
+- =e-chat-test-active-session-preview-avoids-unloaded-index-session-load=
+  proves the unloaded picker preview uses the same bound without loading the
+  transcript.
+- =e-chat-behavior-test-large-index-summary-has-bounded-loading-view= renders a
+  400-line generated summary in a real graphical frame, captures the result,
+  and proves the bounded loading status remains visible while composer focus is
+  preserved.
+
+The captured graphical artifact was inspected: it shows thirteen short prompt
+lines ending in an ellipsis, followed immediately by =Loading transcript...= at
+the bottom of the transcript window and the composer still selected.
+
+* Verification
+
+- Focused chat suite: 344 expected results, zero unexpected, and one optional
+  renderer skip.
+- Focused graphical regression: 1/1 passed with screenshot/state capture.
+- Full suite: 2,145 expected results, zero unexpected, and two optional skips.
+- Complete graphical suite: 17/19 expected.  The new loading-view regression
+  passed; the two unexpected results were the pre-existing intermittent
+  =settled-output-follows-after-tall-transient= and
+  =short-output-stays-bottom-and-keeps-draft= tail-position assertions, neither
+  of which executes the metadata-only loading projection changed here.
+- =eldev compile= and both repositories' =git diff --check= passed.
+
+The user's CPU-bound Emacs was not mutated or reloaded.
+
+* Design self-check
+
+1. If this stopped here, historical generated-prompt sessions no longer wedge
+   the UI before replay.
+2. It moves toward explicitly bounded presentation of durable metadata.
+3. The durable summary is stable; its display limit is local and configurable.
+4. =e-chat= owns the loading and picker projection; =e-session= still owns the
+   complete durable summary.
+5. One helper reduces coupling between the two metadata-only chat views.
+6. No stable core policy now depends on the chat shell.
+7. No side effect moved inward; only inserted display text changed.
+8. No state was added.  The limit is ordinary presentation configuration.
+9. Rendering work is capped at 512 summary characters instead of scaling with
+   the full bootstrap prompt.
+10. No interface or substitutability contract changed.
+11. Existing indexes and summaries remain compatible and unmodified.
+12. The duplicate unbounded preview paths were removed.
+13. An invalid non-positive display limit fails visibly as user configuration
+    error; replay failures retain their existing error path.
+14. Unit tests prove both consumers and a graphical test proves native display,
+    visibility, and focus.

@@ -1,0 +1,12 @@
+#+title: Historical chat load stalls on generated index summary
+#+startup: overview
+
+* Report
+
+Opening the historical =Grimoire: Daily 2026-08-13= chat displayed its full
+generated bootstrap prompt followed by =Loading transcript...= and then became
+unresponsive.
+
+The visible loading projection covered dozens of lines before the durable
+transcript had loaded.  The Emacs server stopped answering even bounded scalar
+=emacsclient= probes.

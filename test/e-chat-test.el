@@ -10665,6 +10665,7 @@ The context-window denominator comes from the live provider lookup
   "Active-session preview renders metadata for unloaded index sessions."
   (let* ((directory (make-temp-file "e-chat-active-" t))
          (store (e-session-persistent-store-create directory))
+         (e-chat-session-summary-preview-max-chars 6)
          loaded)
     (unwind-protect
         (progn
@@ -10695,7 +10696,8 @@ The context-window denominator comes from the live provider lookup
                 (e-chat--active-session-preview candidate (current-buffer))
                 (let ((text (buffer-string)))
                   (should-not loaded)
-                  (should (string-match-p "last prompt" text))
+                  (should (string-match-p "last p…" text))
+                  (should-not (string-match-p "last prompt" text))
                   (should-not (string-match-p "last response" text)))))))
       (delete-directory directory t))))
 
@@ -10741,6 +10743,21 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-index-loading-bounds-large-session-summary ()
+  "Loading projection does not render an unbounded index summary."
+  (let ((e-chat-session-summary-preview-max-chars 40)
+        (summary (concat "visible prefix " (make-string 200 ?x)
+                         " forbidden tail")))
+    (with-temp-buffer
+      (e-chat-mode)
+      (let ((inhibit-read-only t))
+        (e-chat--render-session-loading (list :summary summary)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "visible prefix" text))
+        (should (string-match-p "Loading transcript" text))
+        (should-not (string-match-p "forbidden tail" text))
+        (should (< (length text) 120))))))
 
 (ert-deftest e-chat-test-open-session-renders-after-async-index-load ()
   "Opening an unloaded indexed session renders transcript after async replay."

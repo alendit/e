@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-unbounded-session-loading-summary/ | Historical chat load stalls while rendering generated index summary |
 | Closed | e-chat-resume-indexed-workers/ | Resume picker lists indexed worker sessions as top-level chats |
 | Closed | e-chat-live-session-switch-projection-starvation/ | Live session switch blanks a noisy transcript |
 | Closed | openai-http-premature-sse/ | OpenAI HTTP Responses stream ends before terminal event |
