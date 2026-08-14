@@ -1,0 +1,139 @@
+#+title: Investigation: malformed attachment while resuming an Org Canvas session
+#+startup: overview
+
+* Finding
+
+The archived daily and its referenced session were both resolvable.  The
+failure came from durable attachment data written while an older, valid legacy
+representation was being replaced, not from the Grimoire date picker.
+
+The persisted August 13 session ended with three apparent attachment elements:
+
+#+begin_src elisp
+((:uri "file:///.../daily/archive/2026/2026-08-13.org" ... :canvas t)
+ "uri"
+ ("file:///.../daily/2026-08-13.org" "label" ... "canvas" t))
+#+end_src
+
+The first element was a valid attachment.  The remaining string and list were
+the JSON-decoded tail of an older attachment plist.  The context provider
+iterated over that tail, treated ="uri"= as an attachment, and raised
+=Attachment must include :uri=.
+
+* Root Cause
+
+Legacy sessions may store one attachment directly under
+=:context-attachments=:
+
+#+begin_src elisp
+(:context-attachments
+ (:uri "file://old.org" :label "old" :canvas t))
+#+end_src
+
+=e-chat-session-attachments= returned that plist without converting it to the
+current list-of-attachments representation.  During Org Canvas replacement,
+=e-chat-session--replace-canvas= consequently treated each key and value in the
+single plist as a separate attachment.  The resulting mixed sequence was then
+persisted in the current-state reference lane.
+
+The original =grimoire-daily-open= test mocked the entire session-start helper.
+It never reached =e-org-canvas--mark-session= or
+=e-chat-session-attach-context=, so it did not cover the ownership boundary
+where the corruption occurred.
+
+* Source And Session Evidence
+
+- Source inspection traced the failure through
+  =grimoire-daily-open=, =grimoire-topic--start-agentic-session=,
+  =e-org-canvas--mark-session=, and =e-chat-session-attach-context=.
+- A minimal persistent-store reproduction with a single legacy attachment
+  produced the same malformed mixed sequence and the same missing-URI error.
+- The user's persisted session
+  =20260813T075414-6f5cc807b04a= contained the exact malformed sequence above.
+  Earlier records in the same journal contained one valid legacy attachment,
+  establishing the transition that wrote the corruption.
+- A bounded =emacsclient= probe did not return, so it was terminated without
+  mutating or reloading the running Emacs.  The durable journal was inspected
+  read-only instead.
+
+* Fix
+
+Normalize durable attachment representations in =e-chat-session= before any
+consumer reads or mutates them:
+
+- wrap the supported legacy single-attachment plist in the canonical list;
+- continue accepting JSON vectors as attachment sequences;
+- recognize and reconstruct only the exact malformed string-keyed canvas tail
+  written by the former replacement bug;
+- normalize every resulting attachment through the existing URI validator;
+- let every unknown malformed shape fail visibly.
+
+The repair lives in the chat-session attachment boundary.  Grimoire and Org
+Canvas continue to use the normal attachment API and do not need provider- or
+project-specific workarounds.
+
+The repaired value is persisted in canonical form the next time the daily is
+marked as the session canvas.  The implementation does not rewrite session
+journals out of band.
+
+* Validation
+
+- Focused =e-chat-session= ERT covers a persistent-store restart with the
+  supported legacy single attachment, the exact known malformed tail, and a
+  distinct invalid shape that must still fail loudly.
+- The Grimoire integration test invokes real daily resolution, existing-session
+  startup, Org Canvas marking, and chat-session attachment replacement.  It
+  mocks only the repository root, harness selection, buffer creation, and
+  graphical display.
+- A read-only copy of the user's 19 MB session journal was replayed through the
+  corrected code.  Replacing its canvas converged to one canonical attachment,
+  and the attachment context provider completed without error.
+- =eldev compile= passed.
+- The full =e= suite passed: 2,148 expected, 2 skipped, and 0 unexpected out of
+  2,150 tests.  The run was performed outside the filesystem/network sandbox so
+  its localhost MCP fixtures were included.
+- All six Grimoire topic test files passed independently: 83 expected and 0
+  unexpected tests.
+- The complete Grimoire topic layer and its tests byte-compiled with
+  =byte-compile-error-on-warn= enabled.
+- The isolated graphical Grimoire suite passed: 1 expected and 0 unexpected.
+
+* Architecture Self-Check
+
+1. If this package stopped here, the project would be better off: existing
+   persisted sessions resume, while unrelated invalid data still fails loudly.
+2. It moves toward one durable attachment representation owned by chat-session,
+   with compatibility contained at that representation boundary.
+3. The canonical list shape and required URI are stable.  The historical input
+   shapes are fixed facts.  Their conversion is local and removable after the
+   compatibility window; no general repair framework was introduced.
+4. =e-chat-session= owns attachment validation, identity, persistence, and
+   replacement.  Grimoire owns date selection, and Org Canvas only requests a
+   canvas attachment.
+5. Coupling is reduced because callers no longer need to know which durable
+   attachment generation a session uses.  The public attachment API is
+   unchanged.
+6. Dependencies continue to point from Grimoire and Org Canvas toward the
+   stable chat-session attachment API.  Core session storage remains ignorant
+   of chat attachment semantics.
+7. Persistent writes remain in the existing attach operation.  Normalization
+   itself is side-effect free and does not rewrite journals during reads.
+8. No new state is added.  Existing durable attachment references are decoded
+   into canonical process-local values and rebuilt by the next legitimate
+   canvas write.
+9. Normalization adds a linear pass over the small attachment sequence and its
+   short metadata plists.  It removes repeated downstream failures and requires
+   no transcript scan.
+10. The compatibility shapes all represent the same attachment contract.  An
+    implementation is not allowed to omit the required URI, and invalid inputs
+    are not weakened into partial attachments.
+11. Compatibility is explicit for the already documented
+    =:context-attachments= key and the exact malformed value observed in a real
+    journal.  No speculative fallback was added.
+12. The legacy single-plist and exact malformed-tail readers can be removed
+    once supported persisted sessions have been migrated or expired.
+13. Known historical representations are normalized.  Missing URIs, improper
+    sequences, and unrecognized malformed records surface as user errors.
+14. Core ERT proves normalization independently of Grimoire.  The Grimoire
+    integration test proves its command crosses the real attachment boundary,
+    so future presentation changes do not require rewriting core tests.

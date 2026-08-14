@@ -126,15 +126,96 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
         (plist-put attachment :canvas nil)))
     attachment))
 
+(defun e-chat-session--attachment-plist-shape-p (value)
+  "Return non-nil when VALUE has the shape of one attachment plist."
+  (and (proper-list-p value)
+       (let ((tail value)
+             (valid t))
+         (while (and valid tail)
+           (setq valid
+                 (and (keywordp (car tail))
+                      (consp (cdr tail))))
+           (setq tail (cddr tail)))
+         valid)))
+
+(defconst e-chat-session--legacy-attachment-string-keys
+  '("uri" "label" "buffer-name" "file" "mode" "id" "canvas")
+  "String keys emitted by the known malformed legacy attachment tail.")
+
+(defun e-chat-session--legacy-string-attachment (first-key values)
+  "Return a legacy attachment reconstructed from FIRST-KEY and VALUES.
+Return nil unless the pair has the exact string-keyed shape produced when a
+new canvas was consed onto a legacy single-attachment plist."
+  (when (and (equal first-key "uri")
+             (proper-list-p values))
+    (let ((tail (cons first-key values))
+          result
+          valid)
+      (setq valid (zerop (% (length tail) 2)))
+      (while (and valid tail)
+        (let ((key (pop tail))
+              (value (pop tail)))
+          (setq valid
+                (and (stringp key)
+                     (member key
+                             e-chat-session--legacy-attachment-string-keys)))
+          (when valid
+            (setq result
+                  (plist-put result (intern (concat ":" key)) value)))))
+      (and valid
+           (stringp (plist-get result :uri))
+           result))))
+
+(defun e-chat-session--repair-legacy-canvas-tail (attachments)
+  "Repair the known malformed legacy canvas tail in ATTACHMENTS.
+The old representation is repaired only when both the preceding attachment
+and reconstructed tail are canvases.  Other invalid data remains invalid and
+will fail loudly during attachment normalization."
+  (if (< (length attachments) 3)
+      attachments
+    (let* ((prefix (butlast attachments 2))
+           (tail (last attachments 2))
+           (repaired
+            (e-chat-session--legacy-string-attachment
+             (car tail) (cadr tail))))
+      (if (and repaired
+               (plist-get repaired :canvas)
+               (cl-some
+                (lambda (attachment)
+                  (and (e-chat-session--attachment-plist-shape-p attachment)
+                       (plist-get attachment :canvas)))
+                prefix))
+          (append prefix (list repaired))
+        attachments))))
+
+(defun e-chat-session--attachment-list (attachments)
+  "Return durable ATTACHMENTS in the canonical list-of-plists shape.
+Legacy sessions may store one attachment directly as a plist.  Accept that
+documented compatibility shape and repair the one malformed canvas tail
+written by the former canvas-replacement bug; reject every other invalid
+attachment through normal attachment validation."
+  (cond
+   ((null attachments) nil)
+   ((e-chat-session--attachment-plist-shape-p attachments)
+    (list attachments))
+   ((vectorp attachments)
+    (e-chat-session--repair-legacy-canvas-tail
+     (append attachments nil)))
+   ((proper-list-p attachments)
+    (e-chat-session--repair-legacy-canvas-tail attachments))
+   (t
+    (user-error "Attachments must be a sequence of attachment plists"))))
+
 (defun e-chat-session-attachments (harness session-id)
   "Return current live context attachments for SESSION-ID in HARNESS."
   (let* ((store (e-harness-sessions harness))
          (references (e-session-context-references
                       store session-id 'chat-session))
          (metadata (plist-get (e-session-get store session-id) :metadata)))
-    (copy-sequence
-     (or (plist-get references :attachments)
-         (plist-get metadata :context-attachments)))))
+    (mapcar #'e-chat-session--normalize-attachment
+            (e-chat-session--attachment-list
+             (or (plist-get references :attachments)
+                 (plist-get metadata :context-attachments))))))
 
 (defun e-chat-session--same-attachment-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same attachment."

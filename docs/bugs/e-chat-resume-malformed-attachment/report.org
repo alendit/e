@@ -1,0 +1,29 @@
+#+title: Resuming a legacy Org Canvas session rejects a malformed attachment
+
+* Report
+
+Opening the archived Grimoire daily for 2026-08-13 failed in the user's running
+Emacs with:
+
+#+begin_example
+Attachment must include :uri
+#+end_example
+
+The failure appeared after choosing the daily through =grimoire-daily-open=.
+The document was found, but its existing chat session did not finish loading.
+
+* Expected Behavior
+
+=grimoire-daily-open= should resume the session referenced by the archived
+daily, replace its previous Org Canvas attachment with the selected file, and
+open the document and chat together.  A persisted legacy attachment shape
+should be migrated at the chat-session boundary.  Unknown invalid attachment
+data should remain a visible error.
+
+* Testing Gap
+
+The original daily-picker test replaced
+=grimoire-topic--start-agentic-session= with a mock.  It proved date resolution
+and command routing, but never exercised real session loading, Org Canvas
+marking, or attachment replacement.  It therefore could not catch this
+failure.
