@@ -2206,6 +2206,26 @@
                    '("root")))
     (should (= (length (e-session-list store)) 3))))
 
+(ert-deftest e-session-test-index-store-list-roots-excludes-worker-sessions ()
+  "Root listing classifies unloaded indexed sessions from durable metadata."
+  (let* ((directory (make-temp-file "e-session-index-roots-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "root")
+          (e-session-create store :id "subagent"
+                            :metadata '(:parent-session-id "root"
+                                        :subagent-role "tool-user"))
+          (e-session-create store :id "task"
+                            :metadata '(:task-queue-task-id "tsk_000001"))
+          (let ((indexed (e-session-persistent-index-store-create directory)))
+            (should (equal (mapcar (lambda (session)
+                                     (plist-get session :id))
+                                   (e-session-list-roots indexed))
+                           '("root")))
+            (should (= (length (e-session-list indexed)) 3))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-list-sessions-sorted-by-last-message ()
   "Session list order follows last message time, not metadata touches."
   (let* ((directory (make-temp-file "e-session-" t))

@@ -1,0 +1,13 @@
+#+title: Resume picker lists indexed worker sessions as top-level chats
+#+startup: overview
+
+* Report
+
+Opening the switch-session picker after restarting Emacs showed durable
+subagent sessions alongside ordinary top-level chats.  The visible entries
+included plan workers and daily-helper prompts such as =Work in ...=,
+=Complete daily/archive/...=, and =Run exactly ...=.
+
+These worker sessions have their own dedicated surfaces and must remain
+directly addressable, but they do not belong in general chat resume, switch,
+active-session, or overview pickers.

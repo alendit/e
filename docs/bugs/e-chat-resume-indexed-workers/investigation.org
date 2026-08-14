@@ -1,0 +1,85 @@
+#+title: Investigation: Resume picker lists indexed worker sessions
+#+startup: overview
+
+* Reproduction
+
+The repository code was run against the user's real persisted session index,
+without loading any transcript journals.  Before the fix, all 1,035 indexed
+sessions were classified as roots.  Of 128 board-native sessions, the switch
+picker therefore admitted worker sessions carrying =:parent-session-id=,
+=:subagent-role=, and =:task-queue-task-id= metadata.
+
+The same failure was reproduced in isolated ERT tests using a temporary
+persistent store: an unloaded indexed subagent appeared in both
+=e-session-list-roots= and =e-chat--session-candidates=.
+
+* Root cause
+
+=e-session--session-index-entry= correctly writes durable session metadata to
+=index.json=.  However, =e-session--index-entry-session= replaced that metadata
+with nil when reconstructing an unloaded session stub.  Root classification
+therefore had no lineage or worker marker to inspect after restart.  The
+existing picker regression used only live in-memory sessions and could not
+exercise this index-loader boundary.
+
+* Fix
+
+The persistent index loader now preserves and replay-normalizes the metadata
+already present in each index entry.  Root-session policy remains owned by
+=e-session-root-p=; the chat shell consumes the resulting root catalog without
+duplicating lineage rules or inferring worker status from display titles.
+
+No journal replay, migration, or index rewrite is required.  Existing indexed
+metadata becomes effective as soon as the corrected source is loaded.
+
+* Coverage
+
+- =e-session-test-index-store-list-roots-excludes-worker-sessions= proves the
+  core root catalog classifies unloaded persistent-index stubs.
+- =e-chat-test-session-candidates-exclude-indexed-worker-sessions= proves the
+  actual chat picker excludes an indexed board-native worker while retaining
+  its top-level parent.
+- The existing in-memory root and chat-candidate tests remain in place.
+
+* Verification
+
+After the fix, the real index still exposes all 1,035 sessions directly, but
+only 284 are classified as user-facing roots and only 21 of the 128
+board-native sessions are both board-native and root sessions.  The nested
+daily and plan-worker entries shown in the report are absent from that result.
+
+- Session tests: 93/93 passed.
+- Chat tests: 343 passed, zero unexpected, and one optional renderer skip.
+- Full suite: 2,136 expected results, five sandbox-only localhost socket
+  failures, and two optional skips; all five socket tests passed when rerun
+  with normal macOS networking.
+- Graphical suite: 18/18 passed in the isolated native frame.
+- =eldev compile= and =git diff --check= passed.
+
+The user's running Emacs was not reloaded.
+
+* Design self-check
+
+1. If this stopped here, the persisted picker is already correct and covered.
+2. It moves toward one session-owned root catalog consumed by presentation
+   shells.
+3. Root semantics and indexed metadata are stable; no speculative extension
+   point was added.
+4. =e-session= owns durable metadata loading and root classification; =e-chat=
+   owns only candidate presentation.
+5. Coupling is reduced because the shell does not duplicate worker markers.
+6. Dependency direction is unchanged: the shell depends on the core catalog.
+7. No new side effect exists; index reading remains in the persistence adapter.
+8. No state is added.  Metadata already persisted in the index is retained in
+   the unloaded session stub for the stub's lifetime.
+9. No transcript I/O is added.  The already-parsed bounded index metadata is
+   retained, trading only its necessary in-memory lifetime for correct
+   classification.
+10. No abstraction or interface was added.
+11. Object-shaped legacy indexes without metadata remain supported; no new
+    compatibility path was required.
+12. No legacy code became obsolete in this slice.
+13. Existing malformed-index handling remains at the loader boundary;
+    unexpected metadata errors are not swallowed by the picker.
+14. Core and chat integration tests separately prove catalog policy and shell
+    consumption, so either design can change narrowly.

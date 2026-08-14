@@ -2117,7 +2117,9 @@ This explicit operation is the only checkpoint-less full-journal replay path."
     (when id
       (e-session--initialize-list-state
        (list :id id
-             :metadata nil
+             :metadata
+             (e-session--normalize-metadata-for-replay
+              (plist-get entry :metadata))
              :session-events nil
              :messages nil
              :activity-events nil

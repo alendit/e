@@ -7912,6 +7912,36 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
           (should-not (member "queued-task" ids))
           (should-not (member "pre-board" ids)))))))
 
+(ert-deftest e-chat-test-session-candidates-exclude-indexed-worker-sessions ()
+  "Resume candidates classify unloaded sessions from persisted metadata."
+  (let* ((directory (make-temp-file "e-chat-index-candidates-" t))
+         (writer (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-chat-test--create-session writer :id "top-level"
+                                       :metadata '(:name "Top Level"))
+          (e-chat-test--create-session
+           writer :id "worker"
+           :metadata '(:parent-session-id "top-level"
+                       :subagent-role "tool-user"
+                       :subagent-label "nested work"))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (harness
+                  (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions store))))
+            (e-chat-test--with-empty-harness-registry
+              (let ((e-chat-default-harness-id :chat-alpha))
+                (e-chat-test--register-chat-instance
+                 :chat-alpha "Alpha Target" harness t)
+                (should (equal
+                         (mapcar (lambda (candidate)
+                                   (plist-get candidate :session-id))
+                                 (e-chat--session-candidates))
+                         '("top-level")))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
   "Switch-session candidates list newest last message first."
   (let* ((store (e-session-store-create))
