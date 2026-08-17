@@ -50,7 +50,8 @@ the top even when native redisplay placed it correctly.
 
 - =e-chat-behavior-test-settled-output-follows-after-tall-transient= renders a
   100-line activity transient, settles it to a short answer, and asserts the
-  native output tail remains within eight text rows of the window bottom.
+  last rendered character remains within the presentation's intentional
+  four-row bottom breathing room (plus one glyph-edge row).
 - The same test captures an inspectable settled artifact and asserts that its
   screenshot model contains the nonzero visual line offset used by the bottom
   spacer.

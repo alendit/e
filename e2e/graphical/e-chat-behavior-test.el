@@ -277,6 +277,17 @@ Return a plist containing its stream, harness, transcript, and visible windows."
    3.0 "settled assistant answer")
   (e-chat-behavior-test--fixture-windows fixture))
 
+(defun e-chat-behavior-test--rendered-tail-position (&optional position)
+  "Return the last rendered character at or before POSITION.
+Chat projections end records with newlines.  The buffer position after that
+newline is a valid follow boundary, but it has no glyph and therefore no
+graphical coordinate.  Visual assertions must measure rendered output rather
+than the invisible insertion position."
+  (save-excursion
+    (goto-char (or position (point-max)))
+    (skip-chars-backward "\n")
+    (max (point-min) (1- (point)))))
+
 (defun e-chat-behavior-test--assert-tail-near-bottom (fixture)
   "Assert that FIXTURE's visible transcript tail is near its window bottom."
   (let ((transcript (plist-get fixture :transcript))
@@ -289,8 +300,10 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                        (e-chat-behavior-test--surface-windows transcript)))
              (let ((window (car windows)))
                (with-current-buffer transcript
-                 (let* ((tail (point-max))
-                        (tail-y (e-graphical-test-tail-y window tail))
+                 (let* ((tail (e-chat-behavior-test--rendered-tail-position))
+                        ;; `e-graphical-test-tail-y' accepts a boundary and
+                        ;; measures the character immediately before it.
+                        (tail-y (e-graphical-test-tail-y window (1+ tail)))
                         (body-pixels (window-body-height window t))
                         (line-pixels (frame-char-height))
                         (spacer
@@ -321,8 +334,13 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                    (and (eq (window-buffer window) transcript)
                         (pos-visible-in-window-p tail window t)
                         (integerp tail-y)
+                        ;; The presentation deliberately leaves four display
+                        ;; rows of breathing room below followed output.  The
+                        ;; glyph's Y coordinate is its top edge, so allow one
+                        ;; additional row while still rejecting the historical
+                        ;; middle-of-window placement.
                         (>= tail-y
-                            (- body-pixels (* 3 line-pixels)))))))))
+                            (- body-pixels (* 5 line-pixels)))))))))
          2.0 "transcript tail near window bottom")
       (error
        (ert-fail
@@ -740,7 +758,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
             (with-current-buffer transcript
               (should
                (pos-visible-in-window-p
-                (e-chat--output-follow-position) window t)))
+                (e-chat-behavior-test--rendered-tail-position
+                 (e-chat--output-follow-position))
+                window t)))
             (select-window (cdr windows))
             (let ((following-start (window-start window))
                   (old-tail

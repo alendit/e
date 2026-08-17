@@ -60,8 +60,11 @@ gap, exactly large enough to accept the bad placement.
   false, emits another provider update, and proves the viewport does not snap.
 - The same test scrolls one line back toward newer output, proves the viewport
   repins at the tail, emits another update, and checks the new tail placement.
-- The shared native-geometry assertion now requires the tail within three text
-  rows of the pane bottom instead of accepting eight.
+- The shared native-geometry assertion measures the final rendered character,
+  not the invisible insertion position after the projection's trailing
+  newline.  It accepts the intentional four rows of bottom breathing room plus
+  one row for the glyph's top-edge coordinate, while still rejecting the
+  historical middle-of-pane placement.
 - The batch viewport test independently models the pre/post-command direction
   boundary and proves that movement toward older output wins over a true
   physical-tail predicate.
@@ -80,7 +83,7 @@ gap, exactly large enough to accept the bad placement.
 - =eldev test=: 2,098 tests, 2,096 expected passes, 0 unexpected, and 2
   optional skips.  The sandboxed run first reached the local-network fixtures
   but could not bind their server sockets; the unrestricted rerun passed them.
-- Full graphical E2E suite: 17 tests passed, 0 unexpected.
+- Full graphical E2E suite: 19 tests passed, 0 unexpected.
 - =git diff --check=: passed.
 
 * Architecture self-check
