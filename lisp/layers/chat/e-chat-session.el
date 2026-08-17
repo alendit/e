@@ -100,8 +100,11 @@ METADATA is caller-provided turn activity metadata."
 
 (defun e-chat-session--attachment-uri (attachment)
   "Return ATTACHMENT's canonical URI."
-  (or (plist-get attachment :uri)
-      (user-error "Attachment must include :uri")))
+  (let ((uri (plist-get attachment :uri)))
+    (cond
+     ((stringp uri) uri)
+     ((null uri) (user-error "Attachment must include :uri"))
+     (t (user-error "Attachment :uri must be a string")))))
 
 (defun e-chat-session--attachment-id (attachment)
   "Return stable id for ATTACHMENT."
@@ -144,10 +147,11 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
 
 (defun e-chat-session--legacy-string-attachment (first-key values)
   "Return a legacy attachment reconstructed from FIRST-KEY and VALUES.
-Return nil unless the pair has the exact string-keyed shape produced when a
-new canvas was consed onto a legacy single-attachment plist."
-  (when (and (equal first-key "uri")
-             (proper-list-p values))
+Return nil unless the pair has the exact string-keyed shape produced by the
+historical attachment migration."
+  (when (vectorp values)
+    (setq values (append values nil)))
+  (when (and (equal first-key "uri") (proper-list-p values))
     (let ((tail (cons first-key values))
           result
           valid)
@@ -166,45 +170,57 @@ new canvas was consed onto a legacy single-attachment plist."
            (stringp (plist-get result :uri))
            result))))
 
-(defun e-chat-session--repair-legacy-canvas-tail (attachments)
-  "Repair the known malformed legacy canvas tail in ATTACHMENTS.
-The old representation is repaired only when both the preceding attachment
-and reconstructed tail are canvases.  Other invalid data remains invalid and
-will fail loudly during attachment normalization."
-  (if (< (length attachments) 3)
-      attachments
-    (let* ((prefix (butlast attachments 2))
-           (tail (last attachments 2))
-           (repaired
-            (e-chat-session--legacy-string-attachment
-             (car tail) (cadr tail))))
-      (if (and repaired
-               (plist-get repaired :canvas)
-               (cl-some
-                (lambda (attachment)
-                  (and (e-chat-session--attachment-plist-shape-p attachment)
-                       (plist-get attachment :canvas)))
-                prefix))
-          (append prefix (list repaired))
-        attachments))))
+(defun e-chat-session--repair-legacy-collapsed-attachment (attachment)
+  "Repair the known collapsed single legacy ATTACHMENT.
+One historical JSON migration encoded a single attachment as a =:uri= key
+whose value held the URI followed by the remaining string-keyed fields."
+  (if (and (e-chat-session--attachment-plist-shape-p attachment)
+           (= (length attachment) 2)
+           (eq (car attachment) :uri))
+      (or (e-chat-session--legacy-string-attachment
+           "uri" (cadr attachment))
+          attachment)
+    attachment))
+
+(defun e-chat-session--repair-legacy-flattened-attachments (attachments)
+  "Repair proven flattened attachment pairs in ATTACHMENTS.
+Historical JSON migration could encode one attachment as the string =uri=
+followed by a sequence containing its URI and remaining string-keyed fields.
+Decode every exact pair while preserving all other values for normal validation."
+  (let ((tail attachments)
+        result)
+    (while tail
+      (let* ((value (pop tail))
+             (repaired
+              (and tail
+                   (e-chat-session--legacy-string-attachment
+                    value (car tail)))))
+        (if repaired
+            (progn
+              (pop tail)
+              (push repaired result))
+          (push value result))))
+    (nreverse result)))
 
 (defun e-chat-session--attachment-list (attachments)
   "Return durable ATTACHMENTS in the canonical list-of-plists shape.
 Legacy sessions may store one attachment directly as a plist.  Accept that
-documented compatibility shape and repair the one malformed canvas tail
-written by the former canvas-replacement bug; reject every other invalid
+documented compatibility shape and repair the collapsed and flattened
+representations found in persisted checkpoints; reject every other invalid
 attachment through normal attachment validation."
-  (cond
-   ((null attachments) nil)
-   ((e-chat-session--attachment-plist-shape-p attachments)
-    (list attachments))
-   ((vectorp attachments)
-    (e-chat-session--repair-legacy-canvas-tail
-     (append attachments nil)))
-   ((proper-list-p attachments)
-    (e-chat-session--repair-legacy-canvas-tail attachments))
-   (t
-    (user-error "Attachments must be a sequence of attachment plists"))))
+  (let ((attachments
+         (e-chat-session--repair-legacy-collapsed-attachment attachments)))
+    (cond
+     ((null attachments) nil)
+     ((e-chat-session--attachment-plist-shape-p attachments)
+      (list attachments))
+     ((vectorp attachments)
+      (e-chat-session--repair-legacy-flattened-attachments
+       (append attachments nil)))
+     ((proper-list-p attachments)
+      (e-chat-session--repair-legacy-flattened-attachments attachments))
+     (t
+      (user-error "Attachments must be a sequence of attachment plists")))))
 
 (defun e-chat-session-attachments (harness session-id)
   "Return current live context attachments for SESSION-ID in HARNESS."

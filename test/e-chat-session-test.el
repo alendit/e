@@ -387,6 +387,113 @@
      (e-chat-session-context-attachments-provider
       :harness harness :session-id "corrupt"))))
 
+(ert-deftest e-chat-session-test-repairs-flattened-attachment-before-canonical ()
+  "A flattened attachment pair is decoded in any sequence position."
+  (let ((harness
+         (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-session-create
+     (e-harness-sessions harness)
+     :id "flattened-first"
+     :metadata
+     '(:context-references
+       (:chat-session
+        (:attachments
+         ("uri"
+          ("file://first.org" "label" "first" "canvas" nil)
+          (:uri "file://second.org" :label "second" :canvas nil))))))
+    (should
+     (equal
+      (mapcar (lambda (attachment) (plist-get attachment :uri))
+              (e-chat-session-attachments harness "flattened-first"))
+      '("file://first.org" "file://second.org")))))
+
+(ert-deftest e-chat-session-test-persisted-collapsed-attachment-replaces-canvas ()
+  "A persisted collapsed attachment is decoded before canvas replacement."
+  (let* ((directory (make-temp-file "e-chat-session-collapsed-context-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create
+           store
+           :id "collapsed"
+           :metadata
+           '(:context-references
+             (:chat-session
+              (:attachments
+               (:uri
+                ("file://old.org"
+                 "label" "old"
+                 "buffer-name" "old.org"
+                 "file" "/tmp/old.org"
+                 "mode" "org"
+                 "id" "old-canvas"
+                 "canvas" t))))))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions loaded)))
+            (should
+             (equal
+              (mapcar (lambda (attachment) (plist-get attachment :uri))
+                      (e-chat-session-attachments harness "collapsed"))
+              '("file://old.org")))
+            (e-chat-session-attach-context
+             harness "collapsed"
+             '(:uri "file://archive.org" :label "archive")
+             :canvas t)
+            (let ((attachments
+                   (e-chat-session-attachments harness "collapsed")))
+              (should (= (length attachments) 1))
+              (should (equal (plist-get (car attachments) :uri)
+                             "file://archive.org"))
+              (should (plist-get (car attachments) :canvas)))
+            (should
+             (e-chat-session-context-attachments-provider
+              :harness harness :session-id "collapsed"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-session-test-persisted-legacy-collapsed-vector-replaces-canvas ()
+  "A legacy collapsed vector is decoded before canvas replacement."
+  (let* ((directory (make-temp-file "e-chat-session-legacy-collapsed-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create
+           store
+           :id "legacy-collapsed"
+           :metadata
+           '(:context-attachments
+             (:uri
+              ["file://old.org"
+               "label" "old"
+               "buffer-name" "old.org"
+               "file" "/tmp/old.org"
+               "mode" "org"
+               "id" "old-canvas"
+               "canvas" t])))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions loaded)))
+            (should
+             (equal
+              (mapcar (lambda (attachment) (plist-get attachment :uri))
+                      (e-chat-session-attachments
+                       harness "legacy-collapsed"))
+              '("file://old.org")))
+            (e-chat-session-attach-context
+             harness "legacy-collapsed"
+             '(:uri "file://archive.org" :label "archive")
+             :canvas t)
+            (let ((attachments
+                   (e-chat-session-attachments
+                    harness "legacy-collapsed")))
+              (should (= (length attachments) 1))
+              (should (equal (plist-get (car attachments) :uri)
+                             "file://archive.org"))
+              (should (plist-get (car attachments) :canvas)))))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-session-test-unknown-invalid-legacy-attachment-fails-loudly ()
   "Unknown invalid legacy attachment data remains a visible error."
   (let ((harness
@@ -396,6 +503,20 @@
      :id "invalid"
      :metadata '(:context-attachments (:label "missing uri")))
     (should-error (e-chat-session-attachments harness "invalid")
+                  :type 'user-error)))
+
+(ert-deftest e-chat-session-test-non-string-uri-fails-loudly ()
+  "An unrecognized sequence-valued URI remains a visible validation error."
+  (let ((harness
+         (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-session-create
+     (e-harness-sessions harness)
+     :id "invalid-uri"
+     :metadata
+     '(:context-references
+       (:chat-session
+        (:attachments (:uri ("file://old.org" "unknown" "value"))))))
+    (should-error (e-chat-session-attachments harness "invalid-uri")
                   :type 'user-error)))
 
 (ert-deftest e-chat-session-test-attachments-are-current-state-context ()

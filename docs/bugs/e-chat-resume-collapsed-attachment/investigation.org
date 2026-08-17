@@ -1,0 +1,135 @@
+#+title: Investigation: collapsed attachment metadata on archived daily resume
+#+startup: overview
+
+* Finding
+
+The August 7 daily references session
+=20260807T130820-8004bfaef894=.  Its checkpoint stores chat attachments as:
+
+#+begin_src json
+{
+  "attachments": {
+    "uri": [
+      "file:///.../daily/2026-08-07.org",
+      "label", "2026-08-07.org",
+      "buffer-name", "2026-08-07.org",
+      "file", "/.../daily/2026-08-07.org",
+      "mode", "org",
+      "id", "762ac2f3a04e",
+      "canvas", true
+    ]
+  }
+}
+#+end_src
+
+Session replay exposes that as a single plist whose =:uri= value is the whole
+flattened field list.  The previous shape predicate accepted it as an
+attachment because it is technically a keyword plist.  URI hashing then
+received a list instead of a string and raised the visible
+=Invalid object argument= error.
+
+* Live And Durable Evidence
+
+- A bounded read-only =emacsclient= query confirmed the running Emacs exposes
+  the exact collapsed =(:attachments (:uri (...)))= value for the August 7
+  session.  No live state was changed.
+- A read-only inventory classified all 154 attachment-bearing checkpoints:
+  - 95 current-reference and 47 legacy-metadata checkpoints contain collapsed
+    single objects with an array-valued =uri=;
+  - 6 legacy sequences contain a canonical object followed by a flattened
+    ="uri"= pair;
+  - 1 legacy sequence contains a flattened ="uri"= pair before a canonical
+    object;
+  - 5 current-reference checkpoints contain canonical one-object arrays.
+- Replaying copies of the affected 4.5 MB journal and 2.1 MB checkpoint
+  reproduced the screenshot error before the fix.
+
+This showed that the August 13-specific tail repair covered only one of three
+historical encodings and that the supposedly exceptional collapsed form is the
+dominant persisted representation.
+
+* Root Cause
+
+Historical migration of attachment metadata crossed two ambiguous Lisp/JSON
+sequence representations.  A flattened attachment could emerge either as two
+array elements, ="uri"= plus a field vector, or as one object whose =uri=
+property contains that same field vector.
+
+The prior fix recognized only a flattened pair at the end of a sequence and
+required both it and an earlier attachment to be canvases.  That condition was
+based on the first observed journal rather than an inventory of persisted data.
+
+* Fix
+
+The chat-session boundary now decodes the proven historical representation in
+two wrappers:
+
+- a collapsed single plist whose sole =:uri= value contains the flattened
+  fields;
+- an exact ="uri"= plus field-sequence pair in any attachment-list position.
+
+Both wrappers use one decoder.  It accepts only the known attachment field
+names, requires paired fields and a string URI, and leaves anything else for
+normal validation.  The earlier canvas-tail-specific repair is removed.
+
+Attachment URI validation now explicitly requires a string, producing a clear
+user error for unrecognized data instead of leaking a JSON hashing error.
+
+The next legitimate canvas replacement persists the canonical list of
+attachment plists.  There is no out-of-band rewrite of user session journals.
+
+* Regression Coverage
+
+- Core persistent-store ERT replays the collapsed single-object form, replaces
+  its canvas, and builds attachment context.
+- Core persistent-store ERT separately covers a vector-backed collapsed value
+  from the legacy metadata lane.
+- Core ERT covers flattened pairs both after and before canonical attachments.
+- The Grimoire integration fixture now uses the exact public Elisp form from
+  the affected August 7 checkpoint and invokes real daily resolution, session
+  startup, Org Canvas marking, and attachment replacement.
+- A copied August 7 store passes replay, archived-canvas replacement, and
+  attachment context generation with the corrected code.
+
+- =eldev compile= passed.
+- The full =e= suite passed: 2,152 expected, 2 skipped, and 0 unexpected out of
+  2,154 tests.
+- All six Grimoire topic test files passed independently: 83 expected and 0
+  unexpected tests.
+- The complete Grimoire topic layer and tests byte-compiled with
+  =byte-compile-error-on-warn= enabled.
+- The isolated graphical Grimoire suite passed: 1 expected and 0 unexpected.
+
+* Architecture Self-Check
+
+1. If work stopped here, 149 previously unreadable or partly malformed
+   checkpoint shapes become resumable while unknown data remains visible.
+2. This moves toward one canonical attachment contract with historical decoding
+   contained at its owner boundary.
+3. Stable decisions are string URIs, known attachment fields, and a canonical
+   list of plists.  Historical wrappers are fixed evidence and remain local and
+   removable; no speculative migration framework was added.
+4. =e-chat-session= owns attachment semantics and compatibility.  Session
+   storage owns generic durable serialization, Org Canvas requests a canvas,
+   and Grimoire chooses a daily.
+5. Coupling is reduced because neither Grimoire nor Org Canvas knows persisted
+   attachment generations.  The public API is unchanged.
+6. Dependencies still point from project/UI layers to chat-session.  Generic
+   session persistence does not depend on attachment field policy.
+7. Decoding is side-effect free.  The only durable write remains the existing
+   explicit canvas replacement.
+8. No state is added.  Historical durable references are decoded to canonical
+   process-local values and later replaced through the normal write path.
+9. Runtime cost is one linear pass over a very small attachment list and its
+   short field sequence.  No transcript scan or checkpoint rewrite occurs.
+10. All accepted encodings satisfy the same URI and attachment-field contract.
+    Invalid implementations cannot omit or weaken that contract.
+11. Compatibility is limited to shapes found in the 154-checkpoint inventory.
+    Arbitrary objects and fields are not accepted.
+12. The collapsed and flattened decoders can be removed after historical
+    checkpoints are migrated or expire.  The prior canvas-tail-only helper was
+    removed now.
+13. Proven historical encodings are decoded; missing and non-string URIs or
+    unknown malformed values surface as user errors.
+14. Core tests isolate each encoding from Grimoire, while the Grimoire test
+    proves the real command crosses the attachment boundary.
