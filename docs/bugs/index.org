@@ -102,3 +102,4 @@ State values for coding agents:
 | Closed | org-canvas-stale-workspace-affinity/ | Org Canvas stale workspace affinity |
 | Closed | e-chat-read-marker-json-plist-listp/ | e-chat read-marker JSON plist causes listp after restart |
 | Closed | e-chat-mode-line-status-missing/ | e-chat no longer shows model and context status |
+| Closed | board-subagent-progress-missing-source-turn/ | Subagent progress omitted its source turn |
