@@ -141,97 +141,24 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
            (setq tail (cddr tail)))
          valid)))
 
-(defconst e-chat-session--legacy-attachment-string-keys
-  '("uri" "label" "buffer-name" "file" "mode" "id" "canvas")
-  "String keys emitted by the known malformed legacy attachment tail.")
-
-(defun e-chat-session--legacy-string-attachment (first-key values)
-  "Return a legacy attachment reconstructed from FIRST-KEY and VALUES.
-Return nil unless the pair has the exact string-keyed shape produced by the
-historical attachment migration."
-  (when (vectorp values)
-    (setq values (append values nil)))
-  (when (and (equal first-key "uri") (proper-list-p values))
-    (let ((tail (cons first-key values))
-          result
-          valid)
-      (setq valid (zerop (% (length tail) 2)))
-      (while (and valid tail)
-        (let ((key (pop tail))
-              (value (pop tail)))
-          (setq valid
-                (and (stringp key)
-                     (member key
-                             e-chat-session--legacy-attachment-string-keys)))
-          (when valid
-            (setq result
-                  (plist-put result (intern (concat ":" key)) value)))))
-      (and valid
-           (stringp (plist-get result :uri))
-           result))))
-
-(defun e-chat-session--repair-legacy-collapsed-attachment (attachment)
-  "Repair the known collapsed single legacy ATTACHMENT.
-One historical JSON migration encoded a single attachment as a =:uri= key
-whose value held the URI followed by the remaining string-keyed fields."
-  (if (and (e-chat-session--attachment-plist-shape-p attachment)
-           (= (length attachment) 2)
-           (eq (car attachment) :uri))
-      (or (e-chat-session--legacy-string-attachment
-           "uri" (cadr attachment))
-          attachment)
-    attachment))
-
-(defun e-chat-session--repair-legacy-flattened-attachments (attachments)
-  "Repair proven flattened attachment pairs in ATTACHMENTS.
-Historical JSON migration could encode one attachment as the string =uri=
-followed by a sequence containing its URI and remaining string-keyed fields.
-Decode every exact pair while preserving all other values for normal validation."
-  (let ((tail attachments)
-        result)
-    (while tail
-      (let* ((value (pop tail))
-             (repaired
-              (and tail
-                   (e-chat-session--legacy-string-attachment
-                    value (car tail)))))
-        (if repaired
-            (progn
-              (pop tail)
-              (push repaired result))
-          (push value result))))
-    (nreverse result)))
-
 (defun e-chat-session--attachment-list (attachments)
-  "Return durable ATTACHMENTS in the canonical list-of-plists shape.
-Legacy sessions may store one attachment directly as a plist.  Accept that
-documented compatibility shape and repair the collapsed and flattened
-representations found in persisted checkpoints; reject every other invalid
-attachment through normal attachment validation."
-  (let ((attachments
-         (e-chat-session--repair-legacy-collapsed-attachment attachments)))
-    (cond
-     ((null attachments) nil)
-     ((e-chat-session--attachment-plist-shape-p attachments)
-      (list attachments))
-     ((vectorp attachments)
-      (e-chat-session--repair-legacy-flattened-attachments
-       (append attachments nil)))
-     ((proper-list-p attachments)
-      (e-chat-session--repair-legacy-flattened-attachments attachments))
-     (t
-      (user-error "Attachments must be a sequence of attachment plists")))))
+  "Return canonical durable ATTACHMENTS as a list of attachment plists."
+  (when (vectorp attachments)
+    (setq attachments (append attachments nil)))
+  (unless (and (proper-list-p attachments)
+               (cl-every #'e-chat-session--attachment-plist-shape-p
+                         attachments))
+    (user-error "Attachments must be a sequence of attachment plists"))
+  attachments)
 
 (defun e-chat-session-attachments (harness session-id)
   "Return current live context attachments for SESSION-ID in HARNESS."
   (let* ((store (e-harness-sessions harness))
          (references (e-session-context-references
-                      store session-id 'chat-session))
-         (metadata (plist-get (e-session-get store session-id) :metadata)))
+                      store session-id 'chat-session)))
     (mapcar #'e-chat-session--normalize-attachment
             (e-chat-session--attachment-list
-             (or (plist-get references :attachments)
-                 (plist-get metadata :context-attachments))))))
+             (plist-get references :attachments)))))
 
 (defun e-chat-session--same-attachment-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same attachment."

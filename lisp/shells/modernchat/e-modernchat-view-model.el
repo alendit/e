@@ -180,22 +180,12 @@ capability-owned message details."
 
 (defun e-modernchat-view-model--attachments (metadata)
   "Return attachment plist list from session METADATA."
-  (let ((attachments (or (plist-get metadata :context-attachments)
-                         (plist-get metadata :context-references))))
+  (let ((attachments
+         (plist-get
+          (plist-get (plist-get metadata :context-references) :chat-session)
+          :attachments)))
     (cond
      ((vectorp attachments) (append attachments nil))
-     ((and (listp attachments)
-           (or (null attachments) (keywordp (car attachments))))
-      (let (result)
-        (while (consp attachments)
-          (let ((key (pop attachments))
-                (value (and (consp attachments) (pop attachments))))
-            (when value
-              (push (if (and (listp value) (keywordp (car value)))
-                        (plist-put (copy-sequence value) :kind key)
-                      (list :kind key :uri value))
-                    result))))
-        (nreverse result)))
      ((listp attachments) attachments)
      (t nil))))
 

@@ -42,8 +42,10 @@
      harness
      :id "session-1"
      :metadata '(:project-root "/tmp/project/"
-                 :context-attachments ((:uri "file:///tmp/a.org"
-                                         :label "a.org"))))
+                 :context-references
+                 (:chat-session
+                  (:attachments ((:uri "file:///tmp/a.org"
+                                  :label "a.org"))))))
     (dotimes (index 3)
       (e-modernchat-test--post-board-output
        harness "session-1" (format "m-%d" index)

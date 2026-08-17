@@ -324,186 +324,292 @@
              (e-action-work
               (e-capabilities-action-spec capability :compact))))))
 
-(ert-deftest e-chat-session-test-persisted-legacy-attachment-replaces-canvas ()
-  "A persisted legacy single attachment is normalized before replacement."
-  (let* ((directory (make-temp-file "e-chat-session-legacy-context-" t))
+(ert-deftest e-chat-session-test-persisted-canonical-attachment-replaces-canvas ()
+  "A persisted canonical attachment remains usable after replay."
+  (let* ((directory (make-temp-file "e-chat-session-context-" t))
          (store (e-session-persistent-store-create directory)))
     (unwind-protect
         (progn
-          (e-session-create
-           store
-           :id "legacy"
-           :metadata
-           '(:context-attachments
-             (:uri "file://old.org" :label "old" :canvas t)))
+          (e-session-create store :id "canonical")
+          (e-session-set-context-references
+           store "canonical" 'chat-session
+           '(:attachments
+             ((:uri "file://old.org" :label "old" :canvas t))))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
                            :sessions loaded)))
-            (should
-             (equal
-              (mapcar (lambda (attachment) (plist-get attachment :uri))
-                      (e-chat-session-attachments harness "legacy"))
-              '("file://old.org")))
+            (should (equal (mapcar (lambda (attachment)
+                                     (plist-get attachment :uri))
+                                   (e-chat-session-attachments
+                                    harness "canonical"))
+                           '("file://old.org")))
             (e-chat-session-attach-context
-             harness "legacy"
+             harness "canonical"
              '(:uri "file://archive.org" :label "archive")
              :canvas t)
             (let ((attachments
-                   (e-chat-session-attachments harness "legacy")))
+                   (e-chat-session-attachments harness "canonical")))
               (should (= (length attachments) 1))
               (should (equal (plist-get (car attachments) :uri)
                              "file://archive.org"))
               (should (plist-get (car attachments) :canvas)))
             (should
              (e-chat-session-context-attachments-provider
-              :harness harness :session-id "legacy"))))
+              :harness harness :session-id "canonical"))))
       (delete-directory directory t))))
 
-(ert-deftest e-chat-session-test-repairs-known-malformed-canvas-tail ()
-  "A canvas replacement repairs the exact malformed tail written by old code."
+(ert-deftest e-chat-session-test-obsolete-attachment-metadata-rejected ()
+  "The session schema no longer accepts the migrated legacy metadata key."
+  (let ((harness
+         (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (should-error
+     (e-session-create
+      (e-harness-sessions harness)
+      :id "legacy"
+      :metadata '(:context-attachments
+                  (:uri "file://old.org" :canvas t)))
+     :type 'error)))
+
+(ert-deftest e-chat-session-test-collapsed-attachment-fails-loudly ()
+  "A collapsed historical attachment requires the offline migration."
   (let ((harness
          (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-session-create
      (e-harness-sessions harness)
-     :id "corrupt"
+     :id "collapsed"
      :metadata
      '(:context-references
        (:chat-session
         (:attachments
-         ((:uri "file://archive.org" :label "archive" :canvas t)
-          "uri"
-          ("file://old.org" "label" "old" "canvas" t))))))
-    (e-chat-session-attach-context
-     harness "corrupt"
-     '(:uri "file://new-archive.org" :label "new archive")
-     :canvas t)
-    (let ((attachments (e-chat-session-attachments harness "corrupt")))
-      (should (= (length attachments) 1))
-      (should (equal (plist-get (car attachments) :uri)
-                     "file://new-archive.org"))
-      (should (plist-get (car attachments) :canvas)))
-    (should
-     (e-chat-session-context-attachments-provider
-      :harness harness :session-id "corrupt"))))
-
-(ert-deftest e-chat-session-test-repairs-flattened-attachment-before-canonical ()
-  "A flattened attachment pair is decoded in any sequence position."
-  (let ((harness
-         (e-harness-create :backend (e-backend-fake-create :items nil))))
-    (e-session-create
-     (e-harness-sessions harness)
-     :id "flattened-first"
-     :metadata
-     '(:context-references
-       (:chat-session
-        (:attachments
-         ("uri"
-          ("file://first.org" "label" "first" "canvas" nil)
-          (:uri "file://second.org" :label "second" :canvas nil))))))
-    (should
-     (equal
-      (mapcar (lambda (attachment) (plist-get attachment :uri))
-              (e-chat-session-attachments harness "flattened-first"))
-      '("file://first.org" "file://second.org")))))
-
-(ert-deftest e-chat-session-test-persisted-collapsed-attachment-replaces-canvas ()
-  "A persisted collapsed attachment is decoded before canvas replacement."
-  (let* ((directory (make-temp-file "e-chat-session-collapsed-context-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create
-           store
-           :id "collapsed"
-           :metadata
-           '(:context-references
-             (:chat-session
-              (:attachments
-               (:uri
-                ("file://old.org"
-                 "label" "old"
-                 "buffer-name" "old.org"
-                 "file" "/tmp/old.org"
-                 "mode" "org"
-                 "id" "old-canvas"
-                 "canvas" t))))))
-          (let* ((loaded (e-session-persistent-store-create directory))
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions loaded)))
-            (should
-             (equal
-              (mapcar (lambda (attachment) (plist-get attachment :uri))
-                      (e-chat-session-attachments harness "collapsed"))
-              '("file://old.org")))
-            (e-chat-session-attach-context
-             harness "collapsed"
-             '(:uri "file://archive.org" :label "archive")
-             :canvas t)
-            (let ((attachments
-                   (e-chat-session-attachments harness "collapsed")))
-              (should (= (length attachments) 1))
-              (should (equal (plist-get (car attachments) :uri)
-                             "file://archive.org"))
-              (should (plist-get (car attachments) :canvas)))
-            (should
-             (e-chat-session-context-attachments-provider
-              :harness harness :session-id "collapsed"))))
-      (delete-directory directory t))))
-
-(ert-deftest e-chat-session-test-persisted-legacy-collapsed-vector-replaces-canvas ()
-  "A legacy collapsed vector is decoded before canvas replacement."
-  (let* ((directory (make-temp-file "e-chat-session-legacy-collapsed-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create
-           store
-           :id "legacy-collapsed"
-           :metadata
-           '(:context-attachments
-             (:uri
-              ["file://old.org"
-               "label" "old"
-               "buffer-name" "old.org"
-               "file" "/tmp/old.org"
-               "mode" "org"
-               "id" "old-canvas"
-               "canvas" t])))
-          (let* ((loaded (e-session-persistent-store-create directory))
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions loaded)))
-            (should
-             (equal
-              (mapcar (lambda (attachment) (plist-get attachment :uri))
-                      (e-chat-session-attachments
-                       harness "legacy-collapsed"))
-              '("file://old.org")))
-            (e-chat-session-attach-context
-             harness "legacy-collapsed"
-             '(:uri "file://archive.org" :label "archive")
-             :canvas t)
-            (let ((attachments
-                   (e-chat-session-attachments
-                    harness "legacy-collapsed")))
-              (should (= (length attachments) 1))
-              (should (equal (plist-get (car attachments) :uri)
-                             "file://archive.org"))
-              (should (plist-get (car attachments) :canvas)))))
-      (delete-directory directory t))))
-
-(ert-deftest e-chat-session-test-unknown-invalid-legacy-attachment-fails-loudly ()
-  "Unknown invalid legacy attachment data remains a visible error."
-  (let ((harness
-         (e-harness-create :backend (e-backend-fake-create :items nil))))
-    (e-session-create
-     (e-harness-sessions harness)
-     :id "invalid"
-     :metadata '(:context-attachments (:label "missing uri")))
-    (should-error (e-chat-session-attachments harness "invalid")
+         (:uri ("file://old.org" "label" "old" "canvas" t))))))
+    (should-error (e-chat-session-attachments harness "collapsed")
                   :type 'user-error)))
+
+(ert-deftest e-chat-session-test-flattened-attachment-fails-loudly ()
+  "A flattened historical attachment requires the offline migration."
+  (let ((harness
+         (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-session-create
+     (e-harness-sessions harness)
+     :id "flattened"
+     :metadata
+     '(:context-references
+       (:chat-session
+        (:attachments
+         ("uri" ("file://old.org" "label" "old" "canvas" t))))))
+    (should-error (e-chat-session-attachments harness "flattened")
+                  :type 'user-error)))
+
+(ert-deftest e-chat-session-test-offline-migration-repairs-persistent-store ()
+  "The one-off migrator canonicalizes a real store before strict replay."
+  (skip-unless (executable-find "python3"))
+  (let* ((directory (make-temp-file "e-chat-attachment-migration-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "collapsed")
+         (journal (expand-file-name "sessions/collapsed.jsonl" directory))
+         (checkpoint
+          (expand-file-name "sessions/collapsed.checkpoint.json" directory))
+         (script
+          (expand-file-name
+           "docs/bugs/e-chat-resume-collapsed-attachment/migrate-chat-attachments.py"
+           (locate-dominating-file default-directory "Eldev")))
+         (canonical
+          "\"attachments\":[{\"uri\":\"file://old.org\",\"label\":\"old\",\"canvas\":true}]")
+         (collapsed
+          "\"attachments\":{\"uri\":[\"file://old.org\",\"label\",\"old\",\"canvas\",true]}")
+         before-dry-run)
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (e-session-set-context-references
+           store session-id 'chat-session
+           '(:attachments
+             ((:uri "file://old.org" :label "old" :canvas t))))
+          (e-session--write-session-checkpoint-now store session-id)
+          (dolist (file (list journal checkpoint))
+            (with-temp-buffer
+              (insert-file-contents file)
+              (goto-char (point-min))
+              (should (search-forward canonical nil t))
+              (replace-match collapsed t t)
+              (write-region (point-min) (point-max) file nil 'silent)))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions loaded)))
+            (should-error
+             (e-chat-session-attachments harness session-id)
+             :type 'user-error))
+          (setq before-dry-run (secure-hash 'sha256 journal))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory
+                            "--session-id" session-id)))
+            (should (search-backward "\"mode\": \"dry-run\"" nil t))
+            (should (search-backward "\"changed-records\": 2" nil t)))
+          (should (equal (secure-hash 'sha256 journal) before-dry-run))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory
+                            "--session-id" session-id
+                            "--apply" "--confirm-emacs-stopped")))
+            (should (search-backward "\"mode\": \"apply\"" nil t)))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions loaded))
+                 (attachments
+                  (e-chat-session-attachments harness session-id)))
+            (should (= (length attachments) 1))
+            (should (equal (plist-get (car attachments) :uri)
+                           "file://old.org")))
+          (should
+           (directory-files (expand-file-name "sessions" directory) nil
+                            "collapsed\\..*\\.bak\\."))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory
+                            "--session-id" session-id)))
+            (should (search-backward "\"changed-records\": 0" nil t))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-session-test-offline-migration-covers-inventoried-shapes ()
+  "The migrator rewrites every known shape in every session file format."
+  (skip-unless (executable-find "python3"))
+  (let* ((directory (make-temp-file "e-chat-attachment-shapes-" t))
+         (sessions (expand-file-name "sessions" directory))
+         (journal (expand-file-name "collapsed.jsonl" sessions))
+         (checkpoint (expand-file-name "flattened.checkpoint.json" sessions))
+         (index (expand-file-name "index.json" directory))
+         (script
+          (expand-file-name
+           "docs/bugs/e-chat-resume-collapsed-attachment/migrate-chat-attachments.py"
+           (locate-dominating-file default-directory "Eldev")))
+         files
+         hashes)
+    (unwind-protect
+        (progn
+          (make-directory sessions t)
+          (write-region
+           (concat
+            "{\"metadata\":{\"context-references\":{\"chat-session\":"
+            "{\"attachments\":{\"uri\":[\"file://collapsed.org\","
+            "\"label\",\"collapsed\",\"canvas\",true]}}}}}\n")
+           nil journal nil 'silent)
+          (write-region
+           (concat
+            "{\"records\":[{\"metadata\":{\"context-references\":"
+            "{\"chat-session\":{\"attachments\":[\"uri\","
+            "[\"file://flattened.org\",\"label\",\"flattened\","
+            "\"canvas\",true]]}}}}]}\n")
+           nil checkpoint nil 'silent)
+          (write-region
+           (concat
+            "[{\"id\":\"legacy\",\"metadata\":{\"context-attachments\":"
+            "{\"uri\":\"file://legacy.org\",\"label\":\"legacy\","
+            "\"canvas\":true}}}]\n")
+           nil index nil 'silent)
+          (setq files (list journal checkpoint index)
+                hashes (mapcar (lambda (file) (secure-hash 'sha256 file)) files))
+          (with-temp-buffer
+            (let ((status
+                   (call-process "python3" nil t nil script
+                                 "--session-root" directory)))
+              (unless (zerop status)
+                (ert-fail
+                 (format "Migration failed with status %s:\n%s"
+                         status (buffer-string)))))
+            (dolist (needle '("\"changed-records\": 3"
+                              "\"collapsed\": 1"
+                              "\"flattened\": 1"
+                              "\"legacy-single\": 1"))
+              (should (string-match-p (regexp-quote needle)
+                                      (buffer-string)))))
+          (should
+           (equal hashes
+                  (mapcar (lambda (file) (secure-hash 'sha256 file)) files)))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory
+                            "--apply" "--confirm-emacs-stopped"))))
+          (cl-labels
+              ((attachments
+                (metadata)
+                (plist-get
+                 (plist-get
+                  (plist-get metadata :context-references)
+                  :chat-session)
+                 :attachments))
+               (decode (file)
+                (json-parse-string
+                 (with-temp-buffer
+                   (insert-file-contents file)
+                   (buffer-string))
+                 :object-type 'plist :array-type 'list
+                 :null-object nil :false-object nil)))
+            (let* ((journal-record (decode journal))
+                   (checkpoint-record (car (plist-get (decode checkpoint)
+                                                       :records)))
+                   (index-record (car (decode index))))
+              (should
+               (equal (plist-get (car (attachments
+                                       (plist-get journal-record :metadata)))
+                                 :uri)
+                      "file://collapsed.org"))
+              (should
+               (equal (plist-get (car (attachments
+                                       (plist-get checkpoint-record :metadata)))
+                                 :uri)
+                      "file://flattened.org"))
+              (should
+               (equal (plist-get (car (attachments
+                                       (plist-get index-record :metadata)))
+                                 :uri)
+                      "file://legacy.org"))
+              (should-not (plist-member (plist-get index-record :metadata)
+                                        :context-attachments))))
+          (should (= (length (directory-files sessions nil "\\.bak\\.")) 2))
+          (should (= (length (directory-files directory nil "\\.bak\\.")) 1))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory)))
+            (should (search-backward "\"changed-records\": 0" nil t)))
+          (let* ((conflict (expand-file-name "conflict.jsonl" sessions))
+                 (all-files (cons conflict files)))
+            (write-region
+             (concat
+              "{\"metadata\":{"
+              "\"context-attachments\":{\"uri\":\"file://old.org\"},"
+              "\"context-references\":{\"chat-session\":{"
+              "\"attachments\":[{\"uri\":\"file://new.org\"}]}}}}\n")
+             nil conflict nil 'silent)
+            (setq hashes
+                  (mapcar (lambda (file) (secure-hash 'sha256 file)) all-files))
+            (with-temp-buffer
+              (should-not
+               (zerop
+                (call-process "python3" nil t nil script
+                              "--session-root" directory
+                              "--apply" "--confirm-emacs-stopped")))
+              (should (search-backward
+                       "both legacy and canonical attachment lanes"
+                       nil t)))
+            (should
+             (equal hashes
+                    (mapcar (lambda (file) (secure-hash 'sha256 file))
+                            all-files)))))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-session-test-non-string-uri-fails-loudly ()
   "An unrecognized sequence-valued URI remains a visible validation error."

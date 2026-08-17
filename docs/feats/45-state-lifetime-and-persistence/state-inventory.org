@@ -34,7 +34,6 @@ state-class entry in =e-session-metadata-schema=.
 | =:source= | shell | Session config | Low | Shell session creation | Persist when rediscovery depends on the source, such as the debug session. |
 | =:source-reference= | shell | Current-state reference | Low | Starter source capture | Persist the captured reference that explains the one-shot session. |
 | =:context-references= | session | Current-state reference | Medium | Attachment actions and layer references | Persist owner-keyed references; arrays must encode as JSON arrays. |
-| =:context-attachments= | chat-session | Current-state reference | Legacy | Old chat attachment metadata | Read for compatibility; new writes use =:context-references=. |
 | =:org-canvas-ref= | org-canvas | Current-state reference | Low | Org Canvas open/create flow | Persist stable document identity only. |
 | =:org-canvas= | org-canvas | Current-state reference | Legacy | Old Org Canvas metadata | Read for compatibility; strip volatile focus/scope on replay. |
 | =:mcp-active= | mcp | Capability state | Legacy | Old MCP activation metadata | Read for compatibility; new writes use capability state. |
@@ -137,8 +136,10 @@ the latest user request, then the stable canvas reference.
   state class, lifetime, and compatibility reason.
 - Presentation and active runtime state should fail fast if sent through generic
   session metadata.
-- Legacy readers stay only for real persisted keys: =:context-attachments=,
-  =:org-canvas=, =:model=, and =:mcp-active=.
+- Legacy readers stay only for real persisted keys that have not received an
+  explicit offline migration: =:org-canvas=, =:model=, and =:mcp-active=.
+- Historical =:context-attachments= and malformed attachment arrays are
+  migrated offline; the runtime accepts only =:context-references=.
 - Legacy data that mixes stable references with volatile focus should be
   normalized on replay instead of kept as steady-state behavior.
 - Performance regressions from this feature are not justified by the existing

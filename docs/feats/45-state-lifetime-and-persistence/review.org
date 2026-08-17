@@ -246,8 +246,8 @@ not evidence of a state-lifetime regression, but the live suite is not clean.
 2. The final direction is explicit lifetime lanes: stable config, current-state
    references, capability state, transcript/replay, runtime state, and
    presentation state.
-3. Uncertain compatibility remains local to schema entries and legacy readers.
-   No speculative extension layer was added.
+3. Remaining uncertain compatibility stays local to schema entries and legacy
+   readers.  Chat attachments instead use an explicit offline migration.
 4. =e-session= owns durable metadata validation.  Chat, Org Canvas, and MCP own
    their domain state and use typed session APIs.
 5. Coupling is reduced because callers no longer write arbitrary metadata keys.
@@ -257,11 +257,12 @@ not evidence of a state-lifetime regression, but the live suite is not clean.
    durable session rewrite path.
 8. The typed APIs name real state classes and do not require unsupported
    behavior from implementations.
-9. Compatibility is explicit for =:context-attachments=, =:org-canvas=,
-   =:model=, and =:mcp-active=.  Unknown keys fail.
+9. Compatibility is explicit for =:org-canvas=, =:model=, and =:mcp-active=.
+   =:context-attachments= was migrated offline and removed.  Unknown keys fail.
 10. Obsolete steady-state writes for read markers, Org focus, and MCP active
     metadata were removed.
-11. Expected legacy data is normalized or read through compatibility paths.
-    Unexpected ownerless metadata surfaces as a validation failure.
+11. Expected legacy data is migrated offline, normalized, or read through a
+    documented compatibility path.  Unexpected ownerless metadata surfaces as
+    a validation failure.
 12. Focused tests cover the core behavior without requiring unrelated UI tests
     to change.

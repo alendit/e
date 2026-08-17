@@ -183,12 +183,6 @@
      :state-class current-state-reference
      :lifetime durable-reference
      :indexed t)
-    (:context-attachments
-     :owner chat-session
-     :state-class current-state-reference
-     :lifetime durable-reference
-     :indexed t
-     :legacy t)
     (:org-canvas-ref
      :owner org-canvas
      :state-class current-state-reference

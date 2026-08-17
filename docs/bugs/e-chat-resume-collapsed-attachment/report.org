@@ -14,9 +14,10 @@ The daily document opened, but its referenced chat session did not resume.
 * Expected Behavior
 
 =grimoire-daily-open= should decode every attachment representation actually
-written by supported historical versions, replace the old daily canvas with the
-selected archived file, and resume the chat.  The compatibility reader must not
-accept arbitrary malformed data or hide invalid attachments.
+written by supported historical versions after an explicit one-off store
+migration, replace the old daily canvas with the selected archived file, and
+resume the chat.  The steady-state reader must accept only the canonical
+attachment shape and fail loudly when migration has not run.
 
 * Prior Gap
 
@@ -25,3 +26,6 @@ in the August 13 session.  It assumed the flattened pair followed an existing
 canvas.  The August 7 checkpoint instead stores one object whose =uri= value
 contains the URI and every remaining flattened field.  Neither the fixture nor
 the compatibility reader represented that form.
+
+The follow-up correction is architectural: historical serialization damage is
+repaired offline.  It is not a permanent chat-session compatibility concern.
