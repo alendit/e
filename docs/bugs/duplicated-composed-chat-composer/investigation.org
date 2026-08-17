@@ -1,6 +1,13 @@
 #+title: Duplicated Composed Chat Composer Investigation
 #+startup: overview
 
+* Superseded
+
+The reconciliation scheme described below was removed after the atomic window
+representation was shown to interfere with =persp-mode= restoration.  The
+current ordinary-pair design is recorded in
+=../e-chat-atomic-persp-restoration-corrupts-layout/investigation.org=.
+
 * Evidence
 
 The 2026-08-05 screenshot shows one transcript followed by two panes with the

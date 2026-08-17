@@ -617,16 +617,12 @@ TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
              (if (eq selected-buffer transcript)
                  selected
                (with-current-buffer transcript
-                 (or (car (rassq
-                           selected
-                           (buffer-local-value
-                            'e-chat--surface-window-pairs transcript)))
-                     (cl-find-if
-                      (lambda (window)
-                        (and (eq (window-frame window) (window-frame selected))
-                             (e-chat--surface-window-directly-below-p
-                              window selected)))
-                      (get-buffer-window-list transcript nil t)))))))
+                 (cl-find-if
+                  (lambda (window)
+                    (and (eq (window-frame window) (window-frame selected))
+                         (e-chat--surface-window-directly-below-p
+                          window selected)))
+                  (get-buffer-window-list transcript nil t))))))
         (when (and (window-live-p transcript-window)
                    (eq (window-buffer transcript-window) transcript))
           (cons transcript transcript-window))))))
@@ -674,14 +670,17 @@ TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
       (with-current-buffer buffer
         (e-chat--show-latest-output window)))))
 
-(defun e-chat--show-surface-latest-output-if-selected (surface)
-  "Show SURFACE's latest output when it remains the selected surface."
+(defun e-chat--complete-surface-activation-if-selected (surface)
+  "Complete SURFACE activation when it remains selected after redisplay."
   (let* ((window (cdr-safe surface))
          (frame (and (window-live-p window) (window-frame window))))
     (when (and (frame-live-p frame)
                (equal surface
                       (e-chat--selected-chat-surface
                        (frame-selected-window frame))))
+      (with-current-buffer (car surface)
+        (unless (window-live-p (e-chat--surface-composer-window window))
+          (e-chat--surface-display-composer window t)))
       (e-chat--show-surface-latest-output surface))))
 
 (defun e-chat--schedule-surface-activation (surface)
@@ -712,7 +711,8 @@ TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
                   (lambda (_job _handle)
                     (setq e-chat--surface-activation-handle nil)
                     (when (= generation e-chat--surface-activation-generation)
-                      (e-chat--show-surface-latest-output-if-selected surface))))
+                      (e-chat--complete-surface-activation-if-selected
+                       surface))))
                  :on-event (lambda (&rest _)
                              (e-chat--refresh-ui-work-diagnostics)))))))))
 
@@ -730,13 +730,14 @@ configuration change."
         (set-frame-parameter frame
                              e-chat--selected-surface-frame-parameter
                              surface)
-        ;; Entering an atomic window selects its `main' constituent, which is
-        ;; the transcript.  Reuse the shell's existing input-state transition
-        ;; at this activation boundary.  Internal composer-to-transcript
-        ;; navigation does not activate the surface again and remains focused.
+        ;; Entering a composed surface through its transcript routes input to
+        ;; the composer.  Internal composer-to-transcript navigation does not
+        ;; activate the already-selected surface again and remains focused.
         (when (eq (window-buffer selected) (car surface))
           (with-current-buffer (car surface)
-            (e-chat--enter-composer-input-state)))))
+            (when (window-live-p
+                   (e-chat--surface-composer-window (cdr surface)))
+              (e-chat--enter-composer-input-state))))))
     (e-chat--show-surface-latest-output surface)
     (e-chat--schedule-surface-activation surface)))
 
@@ -753,47 +754,12 @@ configuration change."
     (when (and surface (not (equal surface previous)))
       (e-chat--activate-surface surface))))
 
-(defvar e-chat--surface-activation-in-progress nil
-  "Non-nil while a selected composed chat surface is being restored.")
-
-(defun e-chat--activate-selected-surface-after-workspace-switch (&rest _)
-  "Activate selected chat output after a workspace switch."
-  (when-let ((surface (e-chat--selected-chat-surface)))
-    (e-chat--activate-surface surface)
-    ;; `persp-mode' can run its activation hooks while the restored window
-    ;; tree is still being assembled.  Complete an incomplete surface only
-    ;; once its transcript window can actually be split.
-    (let ((window (cdr surface)))
-      (when (and (window-live-p window)
-                 (eq (window-buffer window) (car surface))
-                 (e-chat--surface-window-can-split-p window))
-        (with-current-buffer (car surface)
-          (unless (window-live-p (e-chat--surface-composer-window window))
-            (let ((e-chat--surface-activation-in-progress t))
-              (e-chat--after-display-buffer (car surface)))))))))
-
-(defun e-chat--activate-selected-surface-after-buffer-switch ()
-  "Complete a selected composed chat after a generic buffer switch.
-Ordinary `switch-to-buffer' can expose a transcript without its composer.
-Restore only that incomplete surface.  If the selected transcript already has
-its paired composer window, it is a deliberate transcript focus transition and
-must remain selected for response navigation."
-  (unless e-chat--surface-activation-in-progress
-    (let* ((window (selected-window))
-           (buffer (window-buffer window)))
-      (when (and (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (e-chat--surface-transcript-p)))
-        (let ((e-chat--surface-activation-in-progress t))
-          (unless (with-current-buffer buffer
-                    (window-live-p
-                     (e-chat--surface-composer-window window)))
-            ;; Buffer-list notifications also occur during perspective/window
-            ;; restoration.  The selected transcript may be temporarily too
-            ;; small for the composer split; leave it for the workspace hook
-            ;; instead of aborting the host's restoration.
-            (when (e-chat--surface-window-can-split-p window)
-              (e-chat--after-display-buffer buffer))))))))
+(defun e-chat--activate-selected-surface-after-window-buffer-change (frame)
+  "Activate FRAME's selected chat surface after redisplay settles.
+`window-buffer-change-functions' runs from redisplay after a generic buffer or
+workspace transition has finished changing the window tree."
+  (when (frame-live-p frame)
+    (e-chat--activate-selected-surface-on-selection frame)))
 
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
@@ -803,9 +769,13 @@ must remain selected for response navigation."
                'e-chat--tail-selected-active-turn)
   (remove-hook 'window-configuration-change-hook
                'e-chat--tail-selected-active-turn)
+  (remove-hook 'buffer-list-update-hook
+               'e-chat--activate-selected-surface-after-buffer-switch)
   (when (boundp 'persp-activated-functions)
     (remove-hook 'persp-activated-functions
-                 'e-chat--tail-selected-active-turn))
+                 'e-chat--tail-selected-active-turn)
+    (remove-hook 'persp-activated-functions
+                 'e-chat--activate-selected-surface-after-workspace-switch))
   (unless (memq #'e-chat--mark-selected-session-read
                 window-selection-change-functions)
     (add-hook 'window-selection-change-functions
@@ -823,6 +793,12 @@ must remain selected for response navigation."
     (add-hook 'window-configuration-change-hook
               #'e-chat--flush-deferred-hidden-mode-line-statuses))
   (when (boundp 'window-buffer-change-functions)
+    (unless (memq
+             #'e-chat--activate-selected-surface-after-window-buffer-change
+             window-buffer-change-functions)
+      (add-hook
+       'window-buffer-change-functions
+       #'e-chat--activate-selected-surface-after-window-buffer-change))
     (unless (memq #'e-chat--flush-deferred-activity-redraws
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
@@ -831,10 +807,6 @@ must remain selected for response navigation."
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
                 #'e-chat--flush-deferred-hidden-mode-line-statuses)))
-  (unless (memq #'e-chat--activate-selected-surface-after-buffer-switch
-                buffer-list-update-hook)
-    (add-hook 'buffer-list-update-hook
-              #'e-chat--activate-selected-surface-after-buffer-switch))
   (unless (memq #'e-chat--flush-deferred-activity-redraws-after-minibuffer
                 minibuffer-exit-hook)
     (add-hook 'minibuffer-exit-hook
@@ -843,11 +815,7 @@ must remain selected for response navigation."
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)
       (add-hook 'persp-activated-functions
-                #'e-chat--mark-selected-session-read))
-    (unless (memq #'e-chat--activate-selected-surface-after-workspace-switch
-                  persp-activated-functions)
-      (add-hook 'persp-activated-functions
-                #'e-chat--activate-selected-surface-after-workspace-switch))))
+                #'e-chat--mark-selected-session-read))))
 
 (e-chat--ensure-window-selection-hook)
 
@@ -871,18 +839,6 @@ text rows in the composer."
   :type 'integer
   :group 'e-chat)
 
-(defun e-chat--surface-window-can-split-p (window)
-  "Return non-nil when WINDOW has room for the configured composer child.
-This checks the explicit size used by `display-buffer-in-atom-window' instead of
-`window-splittable-p', whose answer also depends on the user's general
-`split-height-threshold' and can be nil for a window that an explicit
-window operation can still split."
-  (and (window-live-p window)
-       (not (window-size-fixed-p window 'height))
-       (>= (window-total-height window)
-           (+ e-chat-composer-window-min-height
-              (window-min-size window)))))
-
 (defcustom e-chat-composer-window-max-height 10
   "Maximum height of an e chat composer window."
   :type 'integer
@@ -893,9 +849,6 @@ window operation can still split."
 
 (defvar-local e-chat--surface-transcript-buffer nil
   "Transcript buffer owned by this composer buffer, if any.")
-
-(defvar-local e-chat--surface-window-pairs nil
-  "Alist of transcript windows and their paired composer windows.")
 
 (defvar-local e-chat--surface-composer-layout-dirty nil
   "Whether a composer edit may require its paired window to be refitted.")
@@ -1294,11 +1247,6 @@ for audit, then clears it when the user returns to the composer.")
     (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
     (define-key map (kbd "C-p") #'e-chat-previous-line)
     (define-key map (kbd "<up>") #'e-chat-previous-line)
-    (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
-    (define-key map [remap split-window-below]
-                #'e-chat-surface-split-window-below)
-    (define-key map [remap split-window-right]
-                #'e-chat-surface-split-window-right)
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
@@ -1324,6 +1272,41 @@ for audit, then clears it when the user returns to the composer.")
 
 (defvar e-chat-mode-map (e-chat--make-mode-map)
   "Keymap for `e-chat-mode'.")
+
+(defun e-chat--make-surface-command-map (&optional map)
+  "Return high-priority MAP for structural chat-surface commands.
+Workspace minor modes commonly remap `delete-window'.  These default keys and
+command remappings must remain owned by the selected chat surface even when a
+host minor-mode map has precedence over its major-mode map."
+  (let ((map (or map (make-sparse-keymap))))
+    (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
+    (define-key map (kbd "C-x 0") #'e-chat-surface-delete-window)
+    (define-key map (kbd "C-x 1") #'e-chat-surface-delete-other-windows)
+    (define-key map (kbd "C-x 2") #'e-chat-surface-split-window-below)
+    (define-key map (kbd "C-x 3") #'e-chat-surface-split-window-right)
+    (define-key map [remap delete-window]
+                #'e-chat-surface-delete-window)
+    (define-key map [remap delete-other-windows]
+                #'e-chat-surface-delete-other-windows)
+    (define-key map [remap split-window-below]
+                #'e-chat-surface-split-window-below)
+    (define-key map [remap split-window-right]
+                #'e-chat-surface-split-window-right)
+    map))
+
+(defvar e-chat--surface-command-map
+  (e-chat--make-surface-command-map)
+  "High-priority structural command map for a composed chat surface.")
+
+(defvar-local e-chat--surface-command-map-active nil
+  "Non-nil when the current buffer owns chat-surface window commands.")
+
+(defvar e-chat--surface-emulation-mode-map-alist
+  `((e-chat--surface-command-map-active . ,e-chat--surface-command-map))
+  "Emulation map entry keeping surface commands above host minor modes.")
+
+(add-to-list 'emulation-mode-map-alists
+             'e-chat--surface-emulation-mode-map-alist)
 
 (defvar e-chat-context-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1448,6 +1431,9 @@ A no-op when Evil is absent."
   (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
   (setq e-chat-composer-mode-map
         (e-chat--make-composer-mode-map e-chat-composer-mode-map))
+  (setq e-chat--surface-command-map
+        (e-chat--make-surface-command-map
+         e-chat--surface-command-map))
   (e-chat--configure-evil-composer-bindings))
 
 (defun e-chat--setup-line-wrapping ()
@@ -1468,6 +1454,7 @@ to plain `visual-line-mode' when the package is missing.  Does nothing when
   "Major mode for e chat buffers.
 In the composer, leading ! captures command output, @ inserts file context,
 and / expands available prompts."
+  (setq-local e-chat--surface-command-map-active t)
   (e-chat--setup-line-wrapping)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--surface-kill-composer nil t)
@@ -1511,6 +1498,7 @@ cycle."
 (define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
   "Editable input pane owned by an e chat transcript surface."
   (use-local-map e-chat-composer-mode-map)
+  (setq-local e-chat--surface-command-map-active t)
   (setq-local mode-name '(:eval (e-chat--surface-composer-mode-name)))
   (e-chat--setup-line-wrapping)
   (e-chat--disable-modal-editing)
@@ -1553,16 +1541,14 @@ cycle."
       (when (buffer-live-p transcript)
         (with-current-buffer transcript
           (when (eq e-chat--surface-composer-buffer composer)
-            (setq e-chat--surface-composer-buffer nil)
-            (setq e-chat--surface-window-pairs nil)))))))
+            (setq e-chat--surface-composer-buffer nil)))))))
 
 (defun e-chat--surface-kill-composer ()
   "Kill the composer buffer paired with the current transcript buffer."
   (when-let ((composer e-chat--surface-composer-buffer))
     (when (buffer-live-p composer)
       (kill-buffer composer)))
-  (setq e-chat--surface-composer-buffer nil)
-  (setq e-chat--surface-window-pairs nil))
+  (setq e-chat--surface-composer-buffer nil))
 
 (defun e-chat--surface-initialize-composer (&optional text preserve-focus)
   "Replace the current composer pane contents with TEXT.
@@ -1609,7 +1595,10 @@ composer buffer; transcript rendering never calls it."
                 (buffer-local-value 'e-chat-session-id transcript))
     (setq-local e-chat--preview-buffer nil)
     (setq-local default-directory
-                (buffer-local-value 'default-directory transcript)))
+                (buffer-local-value 'default-directory transcript))
+    (when-let ((workspace (e-buffer-workspace transcript)))
+      (e-buffer-set-workspace composer workspace)
+      (e-workspace-add-buffer composer workspace)))
   composer)
 
 (defun e-chat--surface-create-composer (transcript)
@@ -1632,25 +1621,6 @@ composer buffer; transcript rendering never calls it."
             (e-chat--surface-create-composer (current-buffer))))
     e-chat--surface-composer-buffer))
 
-(defun e-chat--surface-prune-window-pairs ()
-  "Discard dead window pairs from the current transcript surface."
-  (setq e-chat--surface-window-pairs
-        (cl-remove-if-not
-         (lambda (pair)
-           (and (window-live-p (car pair))
-                (window-live-p (cdr pair))
-                (eq (window-buffer (car pair)) (current-buffer))
-                (eq (window-buffer (cdr pair)) e-chat--surface-composer-buffer)))
-         e-chat--surface-window-pairs)))
-
-(defun e-chat--surface-composer-windows (frame)
-  "Return FRAME windows displaying the current transcript's composer."
-  (let ((composer e-chat--surface-composer-buffer))
-    (cl-remove-if-not
-     (lambda (window)
-       (eq (window-buffer window) composer))
-     (window-list frame 'no-minibuf))))
-
 (defun e-chat--surface-window-directly-below-p
     (transcript-window composer-window)
   "Return non-nil when COMPOSER-WINDOW is directly below TRANSCRIPT-WINDOW."
@@ -1660,89 +1630,21 @@ composer buffer; transcript rendering never calls it."
          (= (nth 2 transcript-edges) (nth 2 composer-edges))
          (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
 
-(defun e-chat--surface-exact-pair-parent
-    (transcript-window composer-window)
-  "Return the internal parent containing only the two surface windows.
-Return nil unless TRANSCRIPT-WINDOW and COMPOSER-WINDOW are direct siblings
-and the parent's complete child list consists of exactly those two windows."
-  (let ((parent (and (window-live-p transcript-window)
-                     (window-parent transcript-window))))
-    (when (and parent
-               (window-live-p composer-window)
-               (eq parent (window-parent composer-window)))
-      (let ((child (window-child parent))
-            children)
-        (while child
-          (push child children)
-          (setq child (window-next-sibling child)))
-        (when (and (= (length children) 2)
-                   (memq transcript-window children)
-                   (memq composer-window children))
-          parent)))))
-
-(defun e-chat--surface-ensure-atomic-window-pair
-    (transcript-window composer-window)
-  "Make the exact transcript/composer pair one atomic Emacs window.
-Generic window-state restoration does not preserve `window-atom' parameters.
-Only re-atomize an exact two-child vertical pair so unrelated restored windows
-can never be absorbed into the chat surface."
-  (or (and (window-atom-root transcript-window)
-           (eq (window-atom-root transcript-window)
-               (window-atom-root composer-window)))
-      (when (e-chat--surface-window-directly-below-p
-             transcript-window composer-window)
-        (when-let ((parent
-                    (e-chat--surface-exact-pair-parent
-                     transcript-window composer-window)))
-          (window-make-atom parent)
-          t))))
-
-(defun e-chat--surface-reconcile-window-pairs (transcript-window)
-  "Rebuild and reconcile the surface containing TRANSCRIPT-WINDOW.
-The composer buffer owns its transcript identity.  Pair caches and window
-parameters are derived presentation state that mode or workspace restoration
-may discard."
-  (e-chat--surface-prune-window-pairs)
-  (let* ((frame (window-frame transcript-window))
-         (transcript (current-buffer))
-         (transcript-windows
-          (cl-remove-if-not
-           (lambda (window) (eq (window-buffer window) transcript))
-           (window-list frame 'no-minibuf)))
-         (composer-windows
-          (e-chat--surface-composer-windows frame))
-         (paired-composer-windows
-          (mapcar #'cdr e-chat--surface-window-pairs)))
-    (dolist (pair e-chat--surface-window-pairs)
-      (set-window-parameter (cdr pair) 'e-chat-composer transcript)
-      (e-chat--surface-ensure-atomic-window-pair (car pair) (cdr pair)))
-    (dolist (window transcript-windows)
-      (unless (assoc window e-chat--surface-window-pairs)
-        (when-let ((composer-window
-                    (cl-find-if
-                     (lambda (candidate)
-                       (and (not (memq candidate paired-composer-windows))
-                            (e-chat--surface-window-directly-below-p
-                             window candidate)))
-                     composer-windows)))
-          (push (cons window composer-window) e-chat--surface-window-pairs)
-          (push composer-window paired-composer-windows)
-          (set-window-parameter composer-window 'e-chat-composer transcript)
-          (e-chat--surface-ensure-atomic-window-pair
-           window composer-window))))
-    ;; A composer buffer is an internal part of its transcript surface, never
-    ;; an independently displayable shell.  Window/workspace restoration may
-    ;; recreate it without custom parameters; remove every unpaired view.
-    (dolist (window composer-windows)
-      (when (and (not (memq window paired-composer-windows))
-                 (window-deletable-p window))
-        (delete-window window)))
-    (cdr (assoc transcript-window e-chat--surface-window-pairs))))
-
 (defun e-chat--surface-composer-window (&optional transcript-window)
-  "Return the composer window paired with TRANSCRIPT-WINDOW, if any."
-  (e-chat--surface-reconcile-window-pairs
-   (or transcript-window (selected-window))))
+  "Return the composer directly below TRANSCRIPT-WINDOW, if any.
+The composer buffer owns transcript identity; adjacency is the complete
+ephemeral window-pair representation.  This lookup never changes the host
+window tree."
+  (setq transcript-window (or transcript-window (selected-window)))
+  (when (and (window-live-p transcript-window)
+             (buffer-live-p e-chat--surface-composer-buffer))
+    (cl-find-if
+     (lambda (candidate)
+       (and (eq (window-frame candidate)
+                (window-frame transcript-window))
+            (e-chat--surface-window-directly-below-p
+             transcript-window candidate)))
+     (get-buffer-window-list e-chat--surface-composer-buffer nil t))))
 
 (defun e-chat--surface-member-window-p (window transcript composer)
   "Return non-nil when WINDOW belongs to TRANSCRIPT and COMPOSER's surface."
@@ -1775,9 +1677,8 @@ read-only transcript.  A monolithic chat keeps `other-window' unchanged."
 
 (defun e-chat--surface-split-replacement-buffer (transcript composer)
   "Return a current-workspace buffer outside TRANSCRIPT and COMPOSER.
-An atomic split initially duplicates the selected surface constituent.  The
-composer is internal and its reconciliation correctly removes independent
-views, so replace that transient duplicate before the command returns."
+A root split initially duplicates the selected surface constituent.  Replace
+that transient internal view before the command returns."
   (let* ((workspace (e-workspace-current))
          (frame (selected-frame))
          (buffer
@@ -1813,12 +1714,49 @@ views, so replace that transient duplicate before the command returns."
 (defun e-chat-surface-split-window-below ()
   "Split below the complete composed surface."
   (interactive)
-  (e-chat--surface-split-window #'split-window-below))
+  (e-chat--surface-split-window #'split-root-window-below))
 
 (defun e-chat-surface-split-window-right ()
   "Split right of the complete composed surface."
   (interactive)
-  (e-chat--surface-split-window #'split-window-right))
+  (e-chat--surface-split-window #'split-root-window-right))
+
+(defun e-chat-surface-delete-window ()
+  "Delete the selected composed chat surface as one presentation unit."
+  (interactive)
+  (let* ((surface (e-chat--selected-chat-surface))
+         (transcript-window (cdr-safe surface))
+         (composer-window
+          (and surface
+               (with-current-buffer (car surface)
+                 (e-chat--surface-composer-window transcript-window)))))
+    (if (not (and (window-live-p transcript-window)
+                  (window-live-p composer-window)))
+        (delete-window)
+      (unless (cl-some
+               (lambda (window)
+                 (not (memq window (list transcript-window composer-window))))
+               (window-list (window-frame transcript-window) 'no-minibuf))
+        (user-error "Cannot delete the sole e-chat surface"))
+      (delete-window composer-window)
+      (delete-window transcript-window))))
+
+(defun e-chat-surface-delete-other-windows ()
+  "Delete every window outside the selected composed chat surface."
+  (interactive)
+  (let* ((surface (e-chat--selected-chat-surface))
+         (transcript-window (cdr-safe surface))
+         (composer-window
+          (and surface
+               (with-current-buffer (car surface)
+                 (e-chat--surface-composer-window transcript-window)))))
+    (if (not (and (window-live-p transcript-window)
+                  (window-live-p composer-window)))
+        (delete-other-windows)
+      (dolist (window
+               (window-list (window-frame transcript-window) 'no-minibuf))
+        (unless (memq window (list transcript-window composer-window))
+          (delete-window window))))))
 
 (defun e-chat--surface-fit-composer-window (&optional composer-window)
   "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
@@ -1839,24 +1777,12 @@ When SELECT is non-nil, select the composer window."
     (when (window-live-p transcript-window)
       (setq composer-window
             (or (e-chat--surface-composer-window transcript-window)
-                (let* ((e-chat--surface-activation-in-progress t)
-                       (window
-                        (display-buffer
-                         composer
-                         `((display-buffer-in-atom-window)
-                           (window . ,transcript-window)
-                           (side . below)
-                           (window-height
-                            . ,e-chat-composer-window-min-height)))))
-                  (unless (and (window-live-p window)
-                               (eq (window-buffer window) composer)
-                               (window-atom-root transcript-window)
-                               (eq (window-atom-root transcript-window)
-                                   (window-atom-root window)))
-                    (error "Could not create atomic e-chat composer window"))
-                  (set-window-parameter window 'e-chat-composer transcript)
-                  (push (cons transcript-window window)
-                        e-chat--surface-window-pairs)
+                (let ((window
+                       (split-window
+                        transcript-window
+                        (- e-chat-composer-window-min-height)
+                        'below)))
+                  (set-window-buffer window composer)
                   window)))
       (e-chat--surface-fit-composer-window composer-window)
       (when select
@@ -1876,8 +1802,10 @@ When SELECT is non-nil, select the composer window."
     (when-let ((transcript e-chat--surface-transcript-buffer))
       (when (buffer-live-p transcript)
         (with-current-buffer transcript
-          (dolist (pair e-chat--surface-window-pairs)
-            (e-chat--surface-fit-composer-window (cdr pair))))))))
+          (dolist (transcript-window
+                   (get-buffer-window-list transcript nil t))
+            (e-chat--surface-fit-composer-window
+             (e-chat--surface-composer-window transcript-window))))))))
 
 (defun e-chat--surface-refresh-composer-queue ()
   "Refresh queue chrome in the separate composer without touching transcript.
@@ -2320,7 +2248,13 @@ context insertions from the chat buffer the user is looking at."
      (e-chat--session-buffer-name
       e-chat-harness
       e-chat-session-id)
-     t)))
+     t)
+    (when (buffer-live-p e-chat--surface-composer-buffer)
+      (with-current-buffer e-chat--surface-composer-buffer
+        (rename-buffer
+         (format " *e-chat input:%s*"
+                 (buffer-name e-chat--surface-transcript-buffer))
+         t)))))
 
 (defun e-chat--event-consumer (harness buffer)
   "Return the live board event consumer for HARNESS chat BUFFER."
@@ -7764,9 +7698,8 @@ revealed block when revealing, or on the block that was focused when hiding."
   (cond
    ((e-chat--surface-transcript-p)
     (when-let ((transcript-window (get-buffer-window (current-buffer) t)))
-      (e-chat--surface-reconcile-window-pairs transcript-window)
-      (dolist (pair e-chat--surface-window-pairs)
-        (e-chat--surface-fit-composer-window (cdr pair)))))
+      (e-chat--surface-fit-composer-window
+       (e-chat--surface-composer-window transcript-window))))
    ((e-chat--surface-composer-p)
     (when-let ((transcript e-chat--surface-transcript-buffer))
       (with-current-buffer transcript
@@ -7790,12 +7723,10 @@ revealed block when revealing, or on the block that was focused when hiding."
             (with-current-buffer buffer
               (when (derived-mode-p 'e-chat-mode)
                 (if (e-chat--surface-transcript-p)
-                    (when-let ((transcript-window
-                                (get-buffer-window buffer t)))
-                      (e-chat--surface-reconcile-window-pairs
-                       transcript-window)
-                      (dolist (pair e-chat--surface-window-pairs)
-                        (e-chat--surface-fit-composer-window (cdr pair))))
+                    (dolist (transcript-window
+                             (get-buffer-window-list buffer nil t))
+                      (e-chat--surface-fit-composer-window
+                       (e-chat--surface-composer-window transcript-window)))
                   (e-chat--refresh-composer-position))))))))))
 
 (defun e-chat--ensure-window-refresh-hook ()
@@ -9088,6 +9019,12 @@ When SESSION-ID is nil, create a private execution session for the participant."
                        (e-board-observer-id
                         (e-chat-service-binding-observer binding))))
       (setq-local e-chat--preview-buffer nil)
+      (e-buffer-set-workspace
+       buffer
+       (if e-workspace-rebind-shell-on-open
+           (e-workspace-current)
+         (or existing-workspace
+             (e-workspace-current))))
       (when e-chat--surface-composition-enabled
         (when (and (buffer-live-p previous-surface-composer)
                    (not same-session))
@@ -9096,12 +9033,6 @@ When SESSION-ID is nil, create a private execution session for the participant."
           (e-chat--surface-bind-composer surface-composer buffer)
           (setq-local e-chat--surface-composer-buffer surface-composer))
         (e-chat--surface-ensure-composer))
-      (e-buffer-set-workspace
-       buffer
-       (if e-workspace-rebind-shell-on-open
-           (e-workspace-current)
-         (or existing-workspace
-             (e-workspace-current))))
       (e-chat--workspace-unread-cache-update-buffer buffer)
       (e-chat--rename-buffer-for-session)
       (unless unloaded-session

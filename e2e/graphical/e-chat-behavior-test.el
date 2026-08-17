@@ -56,7 +56,7 @@
 (defun e-chat-behavior-test--fixture-windows (fixture)
   "Resolve and retain FIXTURE's current composed-surface windows.
 Window objects are presentation state: native redisplay and perspective
-restoration may rebuild an equivalent atom and reuse an old window object for
+restoration may rebuild an equivalent pair and reuse an old window object for
 another buffer.  The transcript and composer buffers are the stable fixture
 identity, so every settled transition resolves the current pair from them."
   (let* ((transcript (plist-get fixture :transcript))
@@ -102,11 +102,11 @@ Return a plist containing its stream, harness, transcript, and visible windows."
          (session-id
           (e-board-e2e-create-session harness :id "graphical-chat"))
          (transcript (e-chat-open-session harness session-id t)))
-    ;; Split the already-composed native atom.  Creating this control window
-    ;; before the public open path lets `display-buffer' legitimately reuse it.
+    ;; Split the complete composed surface, then replace the command's ordinary
+    ;; control pane with the explicit outside fixture buffer.
     (when external-window
       (let ((outside (get-buffer-create "*e graphical outside*")))
-        (set-window-buffer (split-window-right) outside)))
+        (set-window-buffer (e-chat-surface-split-window-right) outside)))
     (e-graphical-test-wait-until
      (lambda ()
        (and (e-chat-behavior-test--surface-windows transcript)
@@ -426,8 +426,8 @@ than the invisible insertion position."
       (when (timerp restore-timer)
         (cancel-timer restore-timer)))))
 
-(ert-deftest e-chat-behavior-test-focus-and-atomic-delete ()
-  "Opening focuses the composer; C-x 0 closes the complete chat atom."
+(ert-deftest e-chat-behavior-test-focus-and-paired-delete ()
+  "Opening focuses the composer; C-x 0 closes the complete chat surface."
   (skip-unless (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
@@ -435,19 +435,23 @@ than the invisible insertion position."
     (unwind-protect
         (progn
           (setq fixture (e-chat-behavior-test--open-surface t))
-          (let ((transcript-window (plist-get fixture :transcript-window))
-                (composer-window (plist-get fixture :composer-window))
-                (outside-window
-                 (get-buffer-window "*e graphical outside*" nil)))
+          (let* ((composer-window (plist-get fixture :composer-window))
+                 (composer (window-buffer composer-window))
+                 (outside-window
+                  (get-buffer-window "*e graphical outside*" nil)))
             (should (eq (selected-window) composer-window))
             (with-current-buffer (window-buffer composer-window)
               (should (derived-mode-p 'e-chat-composer-mode)))
             (should (window-live-p outside-window))
             (e-graphical-test-send-keys "C-x 0")
-            (should-not (window-live-p transcript-window))
-            (should-not (window-live-p composer-window))
+            ;; Emacs may reuse a deleted leaf window object while collapsing
+            ;; the tree, so the surviving tree is the stable assertion.
+            (should (= (length (window-list nil 'nomini)) 1))
             (should (window-live-p outside-window))
-            (should (eq (selected-window) outside-window))))
+            (should (eq (selected-window) outside-window))
+            (should-not (memq (window-buffer outside-window)
+                              (list (plist-get fixture :transcript)
+                                    composer)))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer ()
@@ -594,12 +598,20 @@ than the invisible insertion position."
              :content "clean graphical reasoning")
            "clean graphical reasoning")
           (let* ((transcript (plist-get fixture :transcript))
-                 (window
-                  (car (e-chat-behavior-test--fixture-windows fixture))))
+                 (position
+                  (with-current-buffer transcript
+                    (goto-char (point-min))
+                    (should (search-forward
+                             "clean graphical reasoning" nil t))
+                    (match-beginning 0))))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (pos-visible-in-window-p
+                position
+                (car (e-chat-behavior-test--fixture-windows fixture))
+                t))
+             1.0 "reasoning content visible after redisplay")
             (with-current-buffer transcript
-              (goto-char (point-min))
-              (should (search-forward "clean graphical reasoning" nil t))
-              (should (pos-visible-in-window-p (match-beginning 0) window t))
               (should-not (string-match-p "(:type reasoning-delta"
                                           (buffer-string)))
               (should-not (string-match-p ":stream-kind summary"
@@ -755,12 +767,17 @@ than the invisible insertion position."
           (let* ((transcript (plist-get fixture :transcript))
                  (windows (e-chat-behavior-test--fixture-windows fixture))
                  (window (car windows)))
-            (with-current-buffer transcript
-              (should
-               (pos-visible-in-window-p
-                (e-chat-behavior-test--rendered-tail-position
-                 (e-chat--output-follow-position))
-                window t)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (pos-visible-in-window-p
+                  (e-chat-behavior-test--rendered-tail-position
+                   (e-chat--output-follow-position))
+                  (car (e-chat-behavior-test--fixture-windows fixture))
+                  t)))
+             1.0 "stream tail visible after redisplay")
+            (setq windows (e-chat-behavior-test--fixture-windows fixture)
+                  window (car windows))
             (select-window (cdr windows))
             (let ((following-start (window-start window))
                   (old-tail
@@ -908,7 +925,7 @@ than the invisible insertion position."
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
-  "A real persp-mode round trip restores the chat atom and composer focus."
+  "A real persp-mode round trip restores the chat pair and composer focus."
   (skip-unless (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))

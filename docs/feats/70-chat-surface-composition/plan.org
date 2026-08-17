@@ -19,9 +19,10 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 - The composer buffer owns draft text, point, completion, prefix handling, and
   local inline-reference presentation.
 - The surface controller owns the relationship between those buffers and their
-  paired Emacs windows.  The pair is one native atomic window so structural
-  commands apply to the whole chat surface.  It is ephemeral presentation
-  state, scoped to a transcript window.
+  ordinary adjacent Emacs windows.  A high-priority surface command map routes
+  structural commands across both panes without changing the host window-tree
+  representation.  The relationship is derived from buffer identity and
+  adjacency; no pair cache or custom window metadata is stored.
 - No capability, harness API, or provider adapter knows about either buffer or
   the window arrangement.
 - Transcript rendering must not delete, restore, or otherwise mutate composer
@@ -39,8 +40,11 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 4. DONE: verify draft preservation across durable messages, activity, claim updates,
    navigation, and window resizing.  Record any remaining legacy test seam as
    an explicit follow-up rather than treating it as the architecture.
-5. DONE: replace the ordinary self-healing split with an atomic window pair.
-   Reconcile atom metadata after generic window-state or workspace restoration.
+5. SUPERSEDED: the atomic pair and its reconciliation interfered with
+   =persp-mode= window-state restoration.
+6. DONE: use an ordinary adjacent pair, defer missing-composer creation until
+   redisplay has settled, and keep surface commands above host minor-mode
+   remappings without changing the saved window tree.
 
 * Completion notes
 
@@ -54,15 +58,15 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
   transcript/composer window pair is not reactivated merely because its
   transcript window becomes selected.
 - =C-x 0= in either constituent now closes the entire composed chat surface.
-  Splits requested from the surface are created outside the atomic pair by
-  Emacs's normal window machinery.
-- Entering the atomic surface through Emacs's =main= transcript constituent
-  activates the existing composer input state.  Moving from the composer to
-  the transcript inside the already-selected surface remains explicit response
-  navigation and is not redirected.
-- Generic window-state restoration does not preserve atom parameters.  The
-  surface controller re-atomizes only an exact two-child transcript/composer
-  sibling pair, so unrelated restored windows cannot join the chat atom.
+  Splits requested from the surface are created outside the complete pair by
+  Emacs's normal root-window machinery.
+- Entering the surface through its transcript activates the existing composer
+  input state.  Moving from composer to transcript inside the already-selected
+  surface remains explicit response navigation and is not redirected.
+- Workspace restoration saves and restores two ordinary sibling windows.  The
+  controller performs no structural reconciliation during host restoration;
+  a selected transcript missing its composer is completed through deferred UI
+  work after =window-buffer-change-functions= reports the settled tree.
 - Each transcript window owns ephemeral pinned-output state.  New turn output
   stays near the bottom while pinned, scrolling the transcript from either
   constituent unpins it, and returning the viewport to the output tail repins
@@ -78,26 +82,26 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 1. The first slice is useful on its own: it makes a transcript append unable
    to change a live draft.
 2. This moves toward presentation-owned composition, not capability-aware UI.
-3. Window layout is the uncertain, local adapter; atom restoration is a small,
-   reversible shell policy while session/harness contracts remain unchanged.
+3. Window layout is the uncertain, local adapter.  The ordinary pair and
+   post-redisplay completion policy are local and reversible while stable
+   session/harness contracts remain unchanged.
 4. The chat shell owns this behavior because it is the only consumer of its
    buffers, keymaps, and windows.
 5. The boundary reduces coupling: transcript rendering consumes no composer
    state, and composer editing consumes no block layout state.
 6. No dependency points from harness or capabilities toward this shell detail.
-7. Atomic creation and restoration effects live at the surface adapter edge.
-8. Surface/window state and drafts are ephemeral; durable messages remain in
-   the session store.
+7. Split, delete, focus, and fitting effects live at the surface adapter edge.
+8. Window geometry and selection are ephemeral, and the composer draft lives
+   only in its buffer; durable messages remain in the session store.
 9. Transcript append work no longer includes composer reconstruction or
    transcript screen-line measurement.
-10. Emacs's atomic-window contract is the real structural abstraction.  A
-    generic multi-pane shell abstraction remains deferred until another shell
-    requires it.
+10. Transcript/composer buffer ownership plus ordinary vertical adjacency is
+    the real contract.  No generic multi-pane abstraction is introduced.
 11. The old monolithic protocol is not retained for normal users.
 12. The eventual cleanup removes spacer-layout and composer capture/restore
     paths from normal transcript rendering.
-13. Expected transient lack of room defers layout work; failed atomic creation
-    and other unexpected window errors surface.
+13. Expected host restoration is crossed through deferred UI work; unexpected
+    split and window errors surface.
 14. Focused tests prove buffer mutation boundaries, native surface deletion,
-    and re-atomization after window-state restoration independently of a live
-    provider or capability.
+    ordinary-pair recovery after window-state restoration, and an exact
+    graphical =persp-mode= target restore independently of a live provider.

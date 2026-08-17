@@ -169,12 +169,12 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-delete-composer-window-closes-atomic-surface ()
-  "C-x 0 in the composer closes the composed chat as one native unit."
+(ert-deftest e-chat-test-delete-composer-window-closes-surface-pair ()
+  "C-x 0 in the composer closes both ordinary surface windows."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-atomic-delete"))
-         (external-buffer (generate-new-buffer " *e-chat atomic external*"))
+         (buffer (e-chat-test--buffer nil "chat-pair-delete"))
+         (external-buffer (generate-new-buffer " *e-chat pair external*"))
          transcript-window composer-window external-window)
     (unwind-protect
         (progn
@@ -182,19 +182,16 @@ tests, matching how the buffer behaves when shown to a user."
           (setq transcript-window (selected-window))
           (setq external-window (split-window transcript-window nil 'right))
           (set-window-buffer external-window external-buffer)
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer transcript-window buffer)
-            (with-current-buffer buffer
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window t))))
-          (should (window-atom-root transcript-window))
-          (should (eq (window-atom-root transcript-window)
-                      (window-atom-root composer-window)))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t)))
+          (should-not (window-atom-root transcript-window))
+          (should-not (window-atom-root composer-window))
           (with-selected-window composer-window
+            (should (eq (key-binding (kbd "C-x 0"))
+                        #'e-chat-surface-delete-window))
             (call-interactively (key-binding (kbd "C-x 0"))))
-          ;; Exercise the generic switch repair that previously recreated the
-          ;; composer after `C-x 0'.  Selection is now outside the closed atom.
-          (e-chat--activate-selected-surface-after-buffer-switch)
           (should-not (window-live-p transcript-window))
           (should-not (window-live-p composer-window))
           (should (window-live-p external-window))
@@ -210,7 +207,7 @@ tests, matching how the buffer behaves when shown to a user."
   "A surface split replaces its transient unpaired composer view."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-atomic-split"))
+         (buffer (e-chat-test--buffer nil "chat-pair-split"))
          (replacement (generate-new-buffer "*e-chat split replacement*"))
          (workspace (make-e-workspace-token
                      :backend 'single :id 'single :name "single"
@@ -220,11 +217,10 @@ tests, matching how the buffer behaves when shown to a user."
         (progn
           (delete-other-windows)
           (setq transcript-window (selected-window))
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer transcript-window buffer)
-            (with-current-buffer buffer
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window t))))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t)))
           (setq composer (window-buffer composer-window))
           (cl-letf (((symbol-function 'e-workspace-current)
                      (lambda (&optional _frame) workspace))
@@ -242,8 +238,7 @@ tests, matching how the buffer behaves when shown to a user."
           (should (window-live-p external-window))
           (should (eq (window-buffer external-window) replacement))
           (with-current-buffer buffer
-            (should (eq (e-chat--surface-reconcile-window-pairs
-                         transcript-window)
+            (should (eq (e-chat--surface-composer-window transcript-window)
                         composer-window)))
           (should (window-live-p external-window))
           (should (= (length (window-list nil 'nomini)) 3))
@@ -254,11 +249,11 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-window-state-restoration-reatomizes-surface ()
-  "Restored transcript/composer siblings recover their atomic contract."
+(ert-deftest e-chat-test-window-state-restoration-recovers-surface-pair ()
+  "Restored transcript/composer siblings recover their derived pair cache."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-atomic-restoration"))
+         (buffer (e-chat-test--buffer nil "chat-pair-restoration"))
          (external-buffer (generate-new-buffer " *e-chat restore external*"))
          transcript-window composer-window external-window state composer)
     (unwind-protect
@@ -267,11 +262,10 @@ tests, matching how the buffer behaves when shown to a user."
           (setq transcript-window (selected-window))
           (setq external-window (split-window transcript-window nil 'right))
           (set-window-buffer external-window external-buffer)
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer transcript-window buffer)
-            (with-current-buffer buffer
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window))))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window)))
           (setq composer (window-buffer composer-window))
           (setq state (window-state-get (frame-root-window) t))
           (delete-window composer-window)
@@ -281,12 +275,10 @@ tests, matching how the buffer behaves when shown to a user."
           (should (window-live-p transcript-window))
           (should (window-live-p composer-window))
           (with-current-buffer buffer
-            (should (eq (e-chat--surface-reconcile-window-pairs
-                         transcript-window)
+            (should (eq (e-chat--surface-composer-window transcript-window)
                         composer-window)))
-          (should (window-atom-root transcript-window))
-          (should (eq (window-atom-root transcript-window)
-                      (window-atom-root composer-window))))
+          (should-not (window-atom-root transcript-window))
+          (should-not (window-atom-root composer-window)))
       (set-window-configuration configuration)
       (when (buffer-live-p external-buffer)
         (kill-buffer external-buffer))
@@ -327,23 +319,26 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-buffer-switch-defers-composer-split-in-small-window ()
-  "Perspective restoration does not split a transiently small transcript."
+(ert-deftest e-chat-test-window-buffer-change-defers-composer-creation ()
+  "A generic chat buffer change creates its composer after redisplay work."
   (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-small-restored-window"))
+         (buffer (e-chat-test--buffer nil "chat-deferred-restored-window"))
          (transcript-window (display-buffer buffer)))
     (unwind-protect
-        (progn
-          ;; `buffer-list-update-hook' can run before persp-mode has restored
-          ;; the final window sizes.  This models that intermediate state and
-          ;; proves the hook leaves the split to the workspace callback.
-          (cl-letf (((symbol-function 'e-chat--surface-window-can-split-p)
-                     (lambda (&rest _arguments) nil))
-                    ((symbol-function 'e-chat--after-display-buffer)
+        (let ((calls 0))
+          (select-window transcript-window)
+          (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+          (cl-letf (((symbol-function 'e-chat--surface-display-composer)
                      (lambda (&rest _arguments)
-                       (error "composer split attempted too early"))))
-            (should-not (e-chat--activate-selected-surface-after-buffer-switch)))
-          (should-not (e-chat--surface-composer-window transcript-window)))
+                       (setq calls (1+ calls))
+                       nil)))
+            (e-chat--activate-selected-surface-after-window-buffer-change
+             (selected-frame))
+            (should (= calls 0))
+            (with-current-buffer buffer
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer buffer)))
+            (should (= calls 1))))
       (when (window-live-p transcript-window)
         (delete-window transcript-window))
       (when (buffer-live-p buffer)
@@ -1712,53 +1707,56 @@ must drop any revealed hidden blocks."
           (delete-other-windows window)
           (switch-to-buffer origin)
           (switch-to-buffer buffer)
+          (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
+          (e-chat--activate-selected-surface-after-window-buffer-change
+           (selected-frame))
+          (with-current-buffer buffer
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer buffer)))
           (setq composer
                 (buffer-local-value 'e-chat--surface-composer-buffer buffer))
           (should (buffer-live-p composer))
           (should (eq (window-buffer (selected-window)) composer))
           (should (eq (get-buffer-window buffer t) window))
-          (should (window-atom-root window))
-          (should (eq (window-atom-root window)
-                      (window-atom-root (selected-window)))))
+          (should-not (window-atom-root window))
+          (should-not (window-atom-root (selected-window))))
       (when (buffer-live-p origin)
         (kill-buffer origin))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-reload-reconciles-composed-surface-windows ()
-  "Reload rebuilds the pair cache and removes shell-owned duplicate panes."
+(ert-deftest e-chat-test-reload-preserves-composed-surface-pair ()
+  "Reload preserves the ordinary pair and its composer draft."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-reload-composed-surface"))
          transcript-window
-         composer
-         duplicate)
+         composer)
     (unwind-protect
         (progn
           (delete-other-windows)
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer (selected-window) buffer)
-            (setq transcript-window (get-buffer-window buffer))
-            (with-current-buffer buffer
-              (setq composer
-                    (window-buffer
-                     (e-chat--surface-display-composer transcript-window)))))
+          (set-window-buffer (selected-window) buffer)
+          (setq transcript-window (get-buffer-window buffer))
+          (with-current-buffer buffer
+            (setq composer
+                  (window-buffer
+                   (e-chat--surface-display-composer transcript-window))))
           (with-current-buffer buffer
             (with-current-buffer composer
               (goto-char (point-max))
               (insert "draft survives reload"))
             (should (= (length
-                        (e-chat--surface-composer-windows
-                         (window-frame transcript-window)))
+                        (get-buffer-window-list composer nil t))
                        1))
-            ;; Reinitializing `e-chat-mode' clears buffer-local derived state,
-            ;; while the window and its ownership parameter remain live.
+            ;; Reinitializing `e-chat-mode' leaves the ordinary window pair and
+            ;; composer buffer alive; no window cache needs reconstruction.
             (e-chat--attach-buffer
              buffer e-chat-harness e-chat-session-id
              e-chat-harness-instance-id)
             (e-chat--after-display-buffer buffer)
             (should (eq e-chat--surface-composer-buffer composer))
-            (should (= (length e-chat--surface-window-pairs) 1))
+            (should (eq (e-chat--surface-composer-window transcript-window)
+                        (get-buffer-window composer t)))
             (should (eq (buffer-local-value
                          'e-chat--surface-transcript-buffer composer)
                         buffer))
@@ -1772,68 +1770,11 @@ must drop any revealed hidden blocks."
               (should (equal (e-chat--surface-composer-mode-name)
                              "e-chat gpt-5.6-sol/high 18%% (64k/353k tok)")))
             (should (= (length
-                        (e-chat--surface-composer-windows
-                         (window-frame transcript-window)))
+                        (get-buffer-window-list composer nil t))
                        1))
             (with-current-buffer composer
               (should (equal (e-chat--composer-text)
-                             "draft survives reload")))
-            ;; Reconcile a duplicate left by the old reload behavior without
-            ;; touching windows that merely display the internal buffer.
-            (setq duplicate
-                  (split-window transcript-window
-                                (- e-chat-composer-window-min-height)
-                                'below))
-            (set-window-buffer duplicate composer)
-            (set-window-parameter duplicate 'e-chat-composer buffer)
-            (should (= (length
-                        (e-chat--surface-composer-windows
-                         (window-frame transcript-window)))
-                       2))
-            (e-chat--surface-display-composer transcript-window)
-            (should-not (window-live-p duplicate))
-            (should (= (length e-chat--surface-window-pairs) 1))
-            (should (= (length
-                        (e-chat--surface-composer-windows
-                         (window-frame transcript-window)))
-                       1))))
-      (set-window-configuration configuration)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-window-refresh-removes-unmarked-composer-duplicate ()
-  "Window restoration cannot leave a second view of an internal composer."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-restored-composer-duplicate"))
-         transcript-window
-         composer-window
-         composer
-         duplicate)
-    (unwind-protect
-        (progn
-          (delete-other-windows)
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer (selected-window) buffer)
-            (setq transcript-window (selected-window))
-            (setq duplicate
-                  (split-window transcript-window
-                                (- (* 2 e-chat-composer-window-min-height))
-                                'below))
-            (with-current-buffer buffer
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window t)))
-            (setq composer (window-buffer composer-window)))
-          ;; A workspace/window-state restore can recreate a window showing the
-          ;; internal composer buffer without restoring custom window params.
-          (set-window-buffer duplicate composer)
-          (should-not (window-parameter duplicate 'e-chat-composer))
-          (should (= (length (get-buffer-window-list composer nil t)) 2))
-          (e-chat--refresh-visible-composers)
-          (should (= (length (get-buffer-window-list composer nil t)) 1))
-          (should (eq (window-buffer composer-window) composer))
-          (should (eq (window-parameter composer-window 'e-chat-composer)
-                      buffer)))
+                             "draft survives reload")))))
       (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -5604,29 +5545,28 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (progn
           (delete-other-windows)
           (setq transcript-window (selected-window))
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer transcript-window buffer)
-            (with-current-buffer buffer
-              (e-chat-test--render-turn "turn-1" 10 11 "question" "answer")
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window t))
-              (set-buffer buffer)
-              (e-chat--show-latest-output transcript-window)
-              (setq spacer
-                    (cl-find-if
-                     (lambda (overlay)
-                       (eq (overlay-get
-                            overlay e-chat--output-bottom-spacer-property)
-                           transcript-window))
-                     (overlays-at (point-min))))
-              (should (overlayp spacer))
-              (should (eq (overlay-get spacer 'window) transcript-window))
-              (should (> (length (overlay-get spacer 'before-string)) 0))
-              (should (plist-get
-                       (e-chat--window-output-follow-state transcript-window)
-                       :follow))
-              (e-chat--set-window-output-follow-state transcript-window nil)
-              (should-not (overlay-buffer spacer)))))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" "answer")
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (e-chat--show-latest-output transcript-window)
+            (setq spacer
+                  (cl-find-if
+                   (lambda (overlay)
+                     (eq (overlay-get
+                          overlay e-chat--output-bottom-spacer-property)
+                         transcript-window))
+                   (overlays-at (point-min))))
+            (should (overlayp spacer))
+            (should (eq (overlay-get spacer 'window) transcript-window))
+            (should (> (length (overlay-get spacer 'before-string)) 0))
+            (should (plist-get
+                     (e-chat--window-output-follow-state transcript-window)
+                     :follow))
+            (e-chat--set-window-output-follow-state transcript-window nil)
+            (should-not (overlay-buffer spacer))))
       (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -5725,11 +5665,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-entering-atomic-surface-focuses-composer ()
-  "Entering a chat atom focuses input without breaking transcript navigation."
+(ert-deftest e-chat-test-entering-surface-pair-focuses-composer ()
+  "Entering a chat pair focuses input without breaking transcript navigation."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-atomic-entry-focus"))
+         (buffer (e-chat-test--buffer nil "chat-pair-entry-focus"))
          (external-buffer (generate-new-buffer " *e-chat focus external*"))
          transcript-window composer-window external-window)
     (unwind-protect
@@ -5738,15 +5678,13 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (setq transcript-window (selected-window))
           (setq external-window (split-window transcript-window nil 'right))
           (set-window-buffer external-window external-buffer)
-          (let ((e-chat--surface-activation-in-progress t))
-            (set-window-buffer transcript-window buffer)
-            (with-current-buffer buffer
-              (setq composer-window
-                    (e-chat--surface-display-composer transcript-window))))
-          (should (eq (window-atom-root transcript-window)
-                      (window-atom-root composer-window)))
-          ;; Emacs enters an atom through its `main' constituent, which is the
-          ;; transcript.  Surface activation must route input to the composer.
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window)))
+          (should-not (window-atom-root transcript-window))
+          (should-not (window-atom-root composer-window))
+          ;; Entering through the transcript routes input to the composer.
           (select-window external-window)
           (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
           (select-window transcript-window)
@@ -11149,17 +11087,20 @@ The context-window denominator comes from the live provider lookup
                       post-command-hook))))
 
 (ert-deftest e-chat-test-installs-surface-activation-hooks ()
-  "Chat activation follows selection/workspaces, not arbitrary layout changes."
+  "Chat activation follows selection and settled window-buffer changes."
   (cl-progv '(window-selection-change-functions
               window-configuration-change-hook
+              window-buffer-change-functions
               buffer-list-update-hook
               minibuffer-exit-hook
               persp-activated-functions)
       '((e-chat--tail-selected-active-turn)
         (e-chat--tail-selected-active-turn)
         nil
+        (e-chat--activate-selected-surface-after-buffer-switch)
         nil
-        (e-chat--tail-selected-active-turn))
+        (e-chat--tail-selected-active-turn
+         e-chat--activate-selected-surface-after-workspace-switch))
     (e-chat--ensure-window-selection-hook)
     (should-not (memq 'e-chat--tail-selected-active-turn
                       window-selection-change-functions))
@@ -11173,16 +11114,18 @@ The context-window denominator comes from the live provider lookup
                   window-selection-change-functions))
     (should-not (memq #'e-chat--activate-selected-surface-on-selection
                       window-configuration-change-hook))
-    (should-not (memq #'e-chat--activate-selected-surface-after-workspace-switch
-                      window-configuration-change-hook))
-    (should (memq #'e-chat--activate-selected-surface-after-buffer-switch
-                  buffer-list-update-hook))
+    (should
+     (memq #'e-chat--activate-selected-surface-after-window-buffer-change
+           window-buffer-change-functions))
+    (should-not (memq 'e-chat--activate-selected-surface-after-buffer-switch
+                      buffer-list-update-hook))
     (should (memq #'e-chat--flush-deferred-activity-redraws-after-minibuffer
                   minibuffer-exit-hook))
     (should (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions))
-    (should (memq #'e-chat--activate-selected-surface-after-workspace-switch
-                  persp-activated-functions))))
+    (should-not
+     (memq 'e-chat--activate-selected-surface-after-workspace-switch
+           persp-activated-functions))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."

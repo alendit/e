@@ -35,11 +35,11 @@ never falls back to batch mode.
 
 Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
 
-1. opening the chat atom focuses its composer and =C-x 0= deletes the atom;
+1. opening the chat pair focuses its composer and =C-x 0= deletes the pair;
 2. short output stays near the bottom while preserving composer focus/drafts;
 3. streamed output follows while pinned, stops following after user scroll,
    and follows again after the user reaches the tail;
-4. a real =persp-mode= switch round trip restores the atom and composer focus;
+4. a real =persp-mode= switch round trip restores the pair and composer focus;
 5. the focused composer shows model/context fill and updates from settled
    provider usage after a turn.
 

@@ -56,15 +56,9 @@
           (e-chat--after-display-buffer buffer)
           (with-current-buffer buffer
             (let* ((composer e-chat--surface-composer-buffer)
-                   (pair (cl-find-if
-                          (lambda (candidate)
-                            (and (window-live-p (car candidate))
-                                 (window-live-p (cdr candidate))
-                                 (eq (window-buffer (car candidate)) buffer)
-                                 (eq (window-buffer (cdr candidate)) composer)))
-                          e-chat--surface-window-pairs))
-                   (transcript-window (car pair))
-                   (composer-window (cdr pair)))
+                   (transcript-window (get-buffer-window buffer t))
+                   (composer-window
+                    (e-chat--surface-composer-window transcript-window)))
               (should (window-live-p transcript-window))
               (should (window-live-p composer-window))
               (should (eq (window-buffer composer-window) composer))
@@ -142,15 +136,9 @@
           (e-chat--after-display-buffer buffer)
           (with-current-buffer buffer
             (let* ((composer e-chat--surface-composer-buffer)
-                   (pair (cl-find-if
-                          (lambda (candidate)
-                            (and (window-live-p (car candidate))
-                                 (window-live-p (cdr candidate))
-                                 (eq (window-buffer (car candidate)) buffer)
-                                 (eq (window-buffer (cdr candidate)) composer)))
-                          e-chat--surface-window-pairs))
-                   (transcript-window (car pair))
-                   (composer-window (cdr pair)))
+                   (transcript-window (get-buffer-window buffer t))
+                   (composer-window
+                    (e-chat--surface-composer-window transcript-window)))
               (select-window composer-window)
               (with-current-buffer composer
                 (evil-local-mode 1)

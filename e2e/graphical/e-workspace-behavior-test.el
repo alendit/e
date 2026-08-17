@@ -213,9 +213,9 @@
        (should (eq (key-binding (kbd "C-x 3"))
                    #'e-chat-surface-split-window-right))
        (e-graphical-test-send-keys "C-x 3")
-       (e-graphical-test-wait-until
-        (lambda () (= (length (window-list nil 'nomini)) 3))
-        2.0 "chat atom plus native right split")
+      (e-graphical-test-wait-until
+       (lambda () (= (length (window-list nil 'nomini)) 3))
+        2.0 "chat pair plus native right split")
        (e-graphical-test-send-keys "C-x o")
        (should-not
         (memq (selected-window)
@@ -250,10 +250,62 @@
                (e-chat-behavior-test--surface-windows transcript))
               (composer-window (cdr surface)))
          (select-window composer-window)
+         (should (eq (key-binding (kbd "C-x 0"))
+                     #'e-chat-surface-delete-window))
+         (should (equal (e-chat--selected-chat-surface)
+                        (cons transcript (car surface))))
          (e-graphical-test-send-keys "C-x 0")
          (should (= (length (window-list nil 'nomini)) 1))
          (should (eq (window-buffer (selected-window)) split-buffer))
          (should-not (get-buffer-window transcript nil)))))))
+
+(ert-deftest e-workspace-behavior-test-chat-surface-restores-clean-target ()
+  "Leaving a chat surface restores the target perspective exactly."
+  (skip-unless (display-graphic-p))
+  (e-workspace-behavior-test--with-basic-persp
+   (lambda ()
+     (let ((target
+            (e-workspace-behavior-test--make-buffer
+             "*e workspace clean target*" "target workspace remains whole")))
+       (e-workspace-behavior-test--configure "e-clean-target" target)
+       (let ((lower
+              (split-window (selected-window)
+                            (- e-chat-composer-window-min-height)
+                            'below)))
+         (set-window-buffer lower target)
+         (select-window lower))
+       (let ((target-signature
+              (e-workspace-behavior-test--window-signature)))
+         (e-workspace-behavior-test--switch "e-chat-source")
+         (setq e-workspace-behavior-test--chat-fixture
+               (e-chat-behavior-test--open-surface))
+         (let* ((fixture e-workspace-behavior-test--chat-fixture)
+                (transcript (plist-get fixture :transcript))
+                (composer-window (plist-get fixture :composer-window))
+                (composer (window-buffer composer-window))
+                (source-persp (get-current-persp)))
+           ;; Both presentation buffers belong to the same workspace.  The
+           ;; composer is internal, but persp must retain it while saving and
+           ;; restoring the surface's ordinary sibling windows.
+           (should (persp-contain-buffer-p transcript source-persp))
+           (should (persp-contain-buffer-p composer source-persp))
+           (should (eq (selected-window) composer-window))
+           ;; Window-state restoration must never have to resize through an
+           ;; opaque atomic subtree owned by the chat shell.
+           (should-not
+            (window-atom-root (plist-get fixture :transcript-window)))
+           (should-not (window-atom-root composer-window))
+           (e-graphical-test-capture-automatic-transition
+            "workspace-leave-chat-surface"
+            (lambda ()
+              (e-workspace-behavior-test--switch "e-clean-target")))
+           (e-graphical-test-wait-until
+            (lambda ()
+              (equal (e-workspace-behavior-test--window-signature)
+                     target-signature))
+            3.0 "clean target perspective restored")
+           (should-not (get-buffer-window transcript nil))
+           (should-not (get-buffer-window composer nil))))))))
 
 (ert-deftest e-workspace-behavior-test-delete-chat-preserves-target-during-update ()
   "Deleting an updating chat perspective leaves the target perspective exact."

@@ -9,6 +9,13 @@ Done.
 
 * Review summary
 
+Subsequent correction: the atomic chat-window design described in this
+historical review was removed after it was shown to interfere with
+=persp-mode= restoration.  The current ordinary-pair contract and regression
+evidence are recorded in
+=docs/bugs/e-chat-atomic-persp-restoration-corrupts-layout/=.  The findings
+below describe the state reviewed on 2026-08-10.
+
 The default graphical suite now includes three real =persp-mode= workspace
 scenarios under a small non-Doom configuration.  They cover agent-owned buffer
 focus, chat-focused split/delete commands and round trips, and deletion of an

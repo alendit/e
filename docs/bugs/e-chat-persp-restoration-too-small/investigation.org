@@ -1,6 +1,13 @@
 #+title: e-chat Perspective Restoration in a Small Window Investigation
 #+startup: overview
 
+* Superseded
+
+The splitability guards described below treated the symptom but retained the
+atomic window representation that caused later =persp-mode= restore failures.
+The current fix is recorded in
+=../e-chat-atomic-persp-restoration-corrupts-layout/investigation.org=.
+
 * Root cause
 
 The composed-chat repair installed on =buffer-list-update-hook= can run while

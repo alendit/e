@@ -1,0 +1,23 @@
+#+title: Atomic e-chat Surface Corrupts Perspective Restoration
+#+startup: overview
+
+* Report
+
+The user reported on 2026-08-17 that switching workspaces could duplicate or
+misplace the separate e-chat composer and display =Could not create e-chat
+composer window=.  The visible result mixed a transcript from one workspace,
+an Org buffer from another workspace, and an orphaned composer pane.
+
+* Expected
+
+Switching away from a composed chat must restore the target workspace's saved
+window tree exactly.  Switching back must restore one transcript and one
+composer, with both buffers owned by the chat workspace.  e-chat must not
+modify the window tree while the workspace package is restoring it.
+
+* Actual
+
+The chat shell represented the transcript and composer as an atomic Emacs
+window subtree and tried to repair that subtree from workspace and buffer-list
+hooks.  =persp-mode= could fail while resizing its saved ordinary window tree,
+and the repair path then attempted another split inside the incomplete restore.
