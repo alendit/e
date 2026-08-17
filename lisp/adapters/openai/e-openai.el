@@ -92,7 +92,7 @@
   :group 'e-openai)
 
 (defcustom e-openai-request-timeout-seconds 180
-  "Seconds before OpenAI-like HTTP requests fail.
+  "Seconds without response progress before OpenAI-like HTTP requests fail.
 Set this to nil to deliberately disable provider HTTP request timeouts."
   :type '(choice (const :tag "No timeout" nil)
                  (number :tag "Seconds"))
@@ -1293,6 +1293,16 @@ handle."
                 (list 'e-openai-request-timeout
                       (format "OpenAI request timed out after %s seconds"
                               timeout))))))
+         (rearm-timeout ()
+           (when (and timeout (not settled))
+             (cancel-timeout)
+             (setq timeout-timer
+                   (run-at-time timeout nil #'settle-timeout))))
+         (track-response-progress (&rest _)
+           ;; `url-retrieve' calls its completion callback only after the full
+           ;; body arrives.  Its private response buffer changes on each
+           ;; network chunk, which is the HTTP transport's idle-progress edge.
+           (rearm-timeout))
          (handle-callback (status)
            (unless settled
              (setq settled t)
@@ -1332,9 +1342,10 @@ handle."
              nil
              'silent
              nil))
-      (when (and timeout (not settled))
-        (setq timeout-timer
-              (run-at-time timeout nil #'settle-timeout))))
+      (when (buffer-live-p request-buffer)
+        (with-current-buffer request-buffer
+          (add-hook 'after-change-functions #'track-response-progress nil t)))
+      (rearm-timeout))
     (e-backend-request-create
      :cancel (lambda ()
                (unless settled

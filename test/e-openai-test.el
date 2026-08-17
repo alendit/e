@@ -2272,6 +2272,35 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
       (should (= complete-count 0))
       (should-not (buffer-live-p buffer)))))
 
+(ert-deftest e-openai-test-default-http-timeout-rearms-on-response-progress ()
+  "Incoming HTTP response bytes extend the adapter's idle deadline."
+  (let ((e-openai-request-timeout-seconds 0.08)
+        buffer
+        error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url _callback &rest _args)
+                 (setq buffer
+                       (generate-new-buffer " *e-openai-test-http*"))
+                 buffer)))
+      (e-openai-codex--http-request-start
+       :url "https://example.test/codex/responses"
+       :headers '(("Authorization" . "Bearer test"))
+       :body "{}"
+       :on-complete #'ignore
+       :on-error (lambda (err) (setq error err)))
+      (e-openai-test--wait-until (lambda () nil) 0.05)
+      (with-current-buffer buffer
+        (insert "data: {\"type\":\"response.created\"}\n\n"))
+      ;; This crosses the original absolute deadline but remains inside the
+      ;; idle interval measured from the response-buffer insertion above.
+      (e-openai-test--wait-until (lambda () nil) 0.05)
+      (should-not error)
+      (should (buffer-live-p buffer))
+      ;; A genuinely idle stream still fails once the re-armed deadline passes.
+      (should (e-openai-test--wait-until (lambda () error) 0.15))
+      (should (eq (car error) 'e-openai-request-timeout))
+      (should-not (buffer-live-p buffer)))))
+
 (ert-deftest e-openai-test-timeout-settles-once ()
   "A late url callback after timeout does not settle the request again."
   (let ((e-openai-request-timeout-seconds 0.01)
