@@ -138,7 +138,7 @@ e://subagents/refs/types.md."
 
 (defun e-subagents--context-messages (&optional registry session-id)
   "Return context messages describing types and active direct children."
-  (let ((registry (or registry e-subagent-actions-default-registry))
+  (let* ((registry (or registry e-subagent-actions-default-registry))
         (blocks (delq nil (list (e-subagents--context-block)
                                 (and session-id
                                      (e-subagents--active-children-context

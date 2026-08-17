@@ -1,0 +1,19 @@
+#+title: Default Subagent Context Registry
+#+startup: overview
+
+* Change
+
+The subagent context provider now resolves its optional registry before it
+builds active-child supervision context.  Calls that omit the registry use
+=e-subagent-actions-default-registry= as documented.
+
+* Why tiny
+
+This changes one binding from parallel =let= to sequential =let*=.  It adds no
+state, interface, fallback, or compatibility path.
+
+* Validation
+
+- Focused ERT proves an omitted registry exposes a live child from the default.
+- =eldev compile --warnings-as-errors= verifies the resolved binding is used.
+- The full ERT suite passes.

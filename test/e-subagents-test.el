@@ -142,3 +142,20 @@
       (should (string-match-p "sub_000001: running" content))
       (should (string-match-p "Finished focused ERT" content))
       (should (string-match-p "Time alone never authorizes cancellation" content)))))
+
+(ert-deftest e-subagents-test-active-child-context-uses-default-registry ()
+  "Omitting REGISTRY still reads live children from the configured default."
+  (let* ((registry (e-subagent-registry-create))
+         (e-subagent-actions-default-registry registry)
+         (records (e-subagent-registry-records registry))
+         (record '(:subagent-id "sub_default" :status running
+                   :parent-session-id "parent" :started-at 0.0
+                   :last-activity-at 0.0 :progress-sequence 1
+                   :progress (:sequence 1 :summary "Default registry progress"))))
+    (puthash "sub_default" record records)
+    (setf (e-subagent-registry-order registry) '("sub_default"))
+    (let ((content
+           (plist-get (car (e-subagents--context-messages nil "parent"))
+                      :content)))
+      (should (string-match-p "sub_default: running" content))
+      (should (string-match-p "Default registry progress" content)))))
