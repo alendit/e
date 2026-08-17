@@ -973,10 +973,10 @@ shared by every provider request in the turn, so a non-nil value caps the
 whole turn's wall clock, not one request attempt -- a long turn with many tool
 calls can exceed it and fail even though no single request is stuck.
 
-Leave this nil in normal use: a hung request is already caught by the
-adapter idle deadline (`e-anthropic-request-timeout-seconds',
-`e-openai-request-timeout-seconds'), which re-arms on every response chunk,
-and transient failures are handled by harness retry/backoff
+Leave this nil in normal use.  Provider adapters may expose transport-specific
+idle deadlines, but OpenAI-like HTTP requests deliberately have no implicit
+local deadline because some gateways buffer healthy long-reasoning responses.
+Transient failures are handled by harness retry/backoff
 (`e-harness-retry-max-elapsed-seconds' and friends).  Set a number only when
 you deliberately want a per-turn wall-clock cap; explicit `:deadline' turn
 options still apply regardless."

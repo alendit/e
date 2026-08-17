@@ -4,88 +4,88 @@
 * Evidence
 
 The affected persistent session is
-=20260817T082401-fe31b7df9cd8=.  Its activity journal records six consecutive
-Engineering AI Model Gateway HTTP Responses attempts for the same turn.  The
-first five finished with =status= =error= after 179.995, 179.829, 179.866,
-179.838, and 179.791 seconds respectively; each request advertised
-=timeout-seconds= 180.  The sixth request was still active during inspection.
+=20260817T082401-fe31b7df9cd8=.  Its activity journal records repeated
+Engineering AI Model Gateway HTTP Responses attempts for the same turn.  Each
+failed after approximately 179.87 seconds and advertised =timeout-seconds= 180;
+the provider did not report a terminal result.
 
-The request uses =gpt-5.6-sol= with high reasoning effort, HTTP Responses
-streaming, and a request body around 1.04 MB.  Earlier provider rounds in the
-same session completed normally in roughly 3--30 seconds.  The repeated exact
-boundary therefore comes from the local adapter deadline, not a model-reported
-terminal result.
+The reproduction after restarting Emacs rules out the old process simply
+retaining pre-fix Lisp.  Its =continue= prompt produced request
+=01M0823WPGHMEN923ERV3H7GX8= with =gpt-5.6-sol=, high reasoning effort, 145
+input messages, 16 tools, and a 972,399-byte serialized body.  The journal held
+hundreds of retained messages and activity events.  Grimoire therefore matters
+as the source of the large daily-session shape, but the inspected recent
+Grimoire changes were test-only and provide no evidence of a runtime regression
+there.
 
-A bounded =emacsclient --timeout=2 --eval :ping= probe timed out.  =ps= showed
-the running Emacs at about 99.5% CPU and 692 MB RSS.  A five-second read-only
-=sample= captured most main-thread time in Redisplay/mode-line evaluation and a
-smaller repeating timer path.  This confirms that the reported turn also
-coincided with serious presentation pressure, but it does not by itself prove
-that presentation caused the provider deadline.
+The source-adjacent OpenAI bytecode was newer than its source, so stale
+bytecode was not the explanation.  The HTTP adapter received no observable
+response-buffer progress before its timer fired.  A gateway may legitimately
+buffer a long-reasoning response, which means a local idle timer cannot tell a
+healthy buffered request from a stalled one.
 
-The running Emacs was not reloaded or mutated.  The only lingering
-=emacsclient= process created by the first unbounded diagnostic probe was
-terminated after the bounded probe established that the server was
-unresponsive.
+A bounded =emacsclient= probe also timed out.  A read-only process sample found
+substantial main-thread time in redisplay, mode-line evaluation, and garbage
+collection.  That presentation pressure is real but separate: the evidence
+does not establish that it prevented network progress, and this change does not
+claim to fix it.  The running Emacs was not reloaded or mutated.
 
-* Source finding
+* Why the first E2E missed the recurrence
 
-=e-openai-request-timeout-seconds= is documented by the harness as an adapter
-idle deadline that re-arms on every response chunk.  The HTTP implementation
-does not satisfy that contract: =e-openai-codex--http-request-start= schedules
-one timer immediately after =url-retrieve= starts and cancels it only when the
-entire request callback runs.  Any legitimate streamed response lasting longer
-than 180 seconds is therefore killed at the absolute wall-clock boundary even
-if =url.el= has continued inserting response bytes.
-
-The Responses WebSocket path already has a true idle timeout that re-arms on
-every event.  The defect is specific to the default HTTP request path.
+The first live regression selected the configured =:chat-default= harness, but
+then used a fresh tiny session, forced low reasoning, waited for the real
+provider to finish, held its completed callback, and manually inserted SSE
+comments into the response buffer.  It proved that direct buffer insertions
+re-armed the timer.  It did not prove that real network chunks do so, and it
+could not reproduce a buffered high-reasoning request with Grimoire-sized
+retained history.  The test encoded the proposed mechanism instead of the
+reported behavior.
 
 * Resolution
 
-=e-openai-codex--http-request-start= now installs a buffer-local
-=after-change-functions= hook in the private =url-retrieve= response buffer.
-Every insertion re-arms the existing timeout timer, so the deadline measures
-time since the last received response bytes.  Final completion, cancellation,
-and timeout still converge on the same one-settlement cleanup path, and a
-genuinely idle request still fails after the configured interval.
+=e-openai-request-timeout-seconds= now defaults to nil.  OpenAI-like HTTP
+requests therefore have no implicit local deadline that can kill a buffered,
+healthy reasoning request.  Reload migration changes the old uncustomized
+180-second value to nil while preserving explicit Custom, saved, or theme
+overrides.
 
-The regression test first inserts response progress just before the initial
-deadline, proves that the request survives beyond that original absolute
-deadline, and then proves that it fails after a full interval without further
-progress.  It failed against the old implementation at the original deadline.
+An explicit numeric timeout remains supported for providers that guarantee
+observable progress.  The earlier response-buffer hook remains in place, and a
+focused localhost chunked-HTTP test now drives the real =url.el= process-filter
+path to prove that actual response chunks re-arm that opt-in idle timeout.
+Completion, cancellation, and timeout still converge on the existing
+one-settlement cleanup path.
 
-* Follow-up live coverage
+* Corrected live coverage
 
-The opt-in credentialed suite now exercises this contract through whichever
-=:chat-default= harness =E_E2E_CONFIG= selects.  For an HTTP default, it obtains
-a real provider response, holds the adapter completion callback, and appends
-valid SSE comments to the private response buffer at intervals shorter than a
-reduced idle window.  The request is required to remain alive for longer than
-that original window, receive every controlled progress pulse, and return the
-real provider answer.  A non-HTTP default skips because this HTTP deadline is
-not on its transport path.
+The opt-in credentialed suite uses whichever =:chat-default= harness
+=E_E2E_CONFIG= registers and no longer substitutes a fake transport or changes
+its reasoning effort.  One test crosses the real provider path and verifies
+that the actual HTTP request starts with no local deadline.  A second test seeds
+144 inert historical messages, adds the prompt as message 145, reaches at least
+900 KB, and requires that same configured harness and real provider to complete.
 
-The live suite now has two independent CI fences: =Eldev= excludes it whenever
-=CI= is present, even if =E_E2E= is accidentally set, and the suite's own
-runtime gate skips when loaded directly under =CI=.  Local execution still
-requires the explicit =E_E2E= and =E_E2E_CONFIG= opt-ins.
+The live suite has two CI fences: =Eldev= excludes it whenever =CI= is present,
+even if =E_E2E= is set, and its runtime gate skips when loaded directly under
+=CI=.  Local execution still requires explicit =E_E2E= and =E_E2E_CONFIG=
+opt-ins.
 
 * Validation
 
-- The complete repository ERT suite passed: 2,158 tests, 2,156 expected
+- The complete repository ERT suite passed: 2,161 tests, 2,159 expected
   results, 0 unexpected, and 2 environment-dependent skips.
-- The complete OpenAI adapter ERT file passed: 115 tests, 0 unexpected.
-- The controlled live regression passed against the configured Engineering AI
-  =:chat-default= HTTP harness: 1 test, 0 unexpected, in 17.2 seconds.
-- With =CI= and =E_E2E= both set, Eldev reported no live test files to use;
-  directly loading the suite also skipped the focused live test.
-- The live E2E file byte-compiled with warnings treated as errors.
-- The changed adapter compiled with warnings treated as errors.
+- The complete OpenAI adapter ERT file passed: 118 tests, 0 unexpected.
+- The real localhost chunked-HTTP timeout regression passed.
+- The configured Engineering AI =:chat-default= no-deadline live test passed:
+  1 test, 0 unexpected, in 2.04 seconds.
+- The configured Engineering AI Grimoire-sized live test passed with 145 input
+  messages and at least 900 KB: 1 test, 0 unexpected, in 5.79 seconds.
+- With =CI= and =E_E2E= both set, Eldev reported no live test files to use.
+- The changed production modules and live E2E file compiled with warnings
+  treated as errors.
 - The isolated graphical large-transcript/provider-responsiveness test passed:
-  1 test, 0 unexpected.  This test does not reproduce the sampled live
-  Redisplay pressure, so that observation remains separate from the fixed
-  transport contract.
+  1 test, 0 unexpected.  It does not reproduce the sampled live redisplay
+  pressure, so that observation remains a separate investigation lead.
 - =git diff --check= passed.
 
 Repository-side validation used private batch and graphical Emacs instances.
@@ -94,33 +94,32 @@ restart or an explicitly requested =e-dev-reload= when Emacs is idle.
 
 * Architecture self-check
 
-1. This slice independently prevents healthy long-running HTTP streams from
-   being killed, so stopping here leaves the runtime better off.
-2. It moves HTTP behavior toward the backend-neutral harness contract: provider
-   adapters own transport and retry details, and timeouts represent inactivity.
-3. The stable idle-deadline behavior is direct.  The =url.el=-specific progress
-   signal stays local to this adapter and can be replaced without changing the
-   harness contract.
-4. The OpenAI HTTP adapter owns this behavior because it owns the request
-   buffer, timer, completion, cancellation, and transport cleanup.
-5. Coupling increases only between two existing internals of the same adapter:
-   the private response buffer and its timer.  No public interface widens.
-6. No dependency reverses; core policy does not depend on =url.el=.
-7. The network-buffer observation remains at the adapter boundary, outside
-   harness policy.
-8. The only added state is a buffer-local hook closure.  It lives exactly as
-   long as the private request buffer and is discarded when that buffer dies.
-9. Each response-buffer change cancels and creates one timer.  This is linear
-   in received chunks and avoids additional parsing or body copies.
-10. No new abstraction or interface is introduced; the existing cancellable
-    backend-request contract is unchanged.
-11. Existing completion, cancellation, timeout error shape, and disabled-timeout
-    behavior remain compatible.  No legacy path was added.
-12. There is no newly obsolete compatibility code to remove in this slice.
-13. Expected timeout and cancellation use the existing settlement paths;
-    unexpected hook or callback errors remain visible rather than swallowed.
-14. The focused adapter test proves progress and inactivity independently of a
-    real provider.  The opt-in default-harness live test crosses the real
-    provider, board, harness, and HTTP adapter boundary.  Existing completion,
-    cancellation, and network-process tests cover the neighboring lifecycle
-    behavior without UI involvement.
+1. This slice stops the reproducible retry loop without requiring a provider to
+   expose progress that it may buffer, so stopping here improves the runtime.
+2. It moves toward provider-owned transport policy behind the generic harness:
+   the HTTP adapter exposes an optional timeout without imposing one globally.
+3. Gateway buffering is variable and uncertain, so the decision remains a
+   reversible provider setting.  The stable default models only what is known:
+   no safe local deadline exists without a progress guarantee.
+4. The OpenAI adapter owns the behavior because it owns this transport and its
+   timeout; the harness only documents the backend-neutral policy.
+5. No public interface widens and no new coupling is added.  The live tests
+   consume the existing configured default-harness contract.
+6. Dependencies still point from harness orchestration toward the provider
+   adapter contract; core code does not depend on =url.el= details.
+7. Network observation and timer effects remain inside the adapter boundary.
+8. No durable state is added.  The default is configuration; explicit timeout
+   timer and response hook state remain scoped to one request buffer.
+9. Disabling the implicit timer removes per-request timer work.  An explicit
+   timeout retains one cancel/create operation per received chunk.
+10. No abstraction is introduced.  HTTP and WebSocket retain distinct timeout
+    semantics because their observable progress contracts differ.
+11. Explicit user timeout values remain compatible.  Only the unsafe
+    uncustomized legacy default migrates.
+12. The former implicit 180-second default is removed; the opt-in timeout path
+    remains because it is a real provider-specific capability.
+13. Expected explicit timeout and cancellation use existing settlement paths;
+    unexpected callback and network errors still surface.
+14. Unit tests prove default migration and real chunk handling independently.
+    Live tests prove the configured default harness and reported request shape;
+    unrelated test fixtures need no rewrites.

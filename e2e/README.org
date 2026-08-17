@@ -110,14 +110,20 @@ Useful environment variables:
 - =E_E2E_CONFIG=: readable Elisp file that configures and registers the
   =:chat-default= harness; required.
 - =E_E2E_TIMEOUT_SECONDS=: live turn timeout override; defaults to 30 seconds.
-- =E_E2E_IDLE_TIMEOUT_SECONDS=: shortened idle window used by the controlled
-  long-stream HTTP regression; defaults to 10 seconds.
+- =E_E2E_LARGE_HISTORY_BYTES=: synthetic retained history for the Grimoire-sized
+  default-harness regression; defaults to 900,000 bytes.
+- =E_E2E_LARGE_HISTORY_TIMEOUT_SECONDS=: outer E2E wait for that large live
+  request; defaults to 600 seconds and is not an adapter deadline.
+The HTTP deadline regression uses whichever =:chat-default= harness the config
+selects and crosses its real provider path.  It requires an HTTP default to
+start without an implicit local deadline, because a provider gateway may buffer
+a healthy long-reasoning response.  It skips for a non-HTTP default because
+that transport has its own progress and timeout contract.
 
-The long-stream regression uses whichever =:chat-default= harness the config
-selects.  When that harness uses HTTP, the test obtains a real provider response
-and then feeds harmless SSE comment progress across more than one shortened idle
-window before allowing completion.  It skips for a non-HTTP default because the
-OpenAI HTTP deadline is not on that transport path.
+A second HTTP regression seeds 145 messages and roughly 900 KB of inert history
+before prompting that same configured default harness.  This matches the
+observed Grimoire daily request shape closely enough to cover the large retained
+session path while keeping the fixture independent of personal Grimoire data.
 
 The explicit-cache E2E runs only when the selected OpenAI Responses profile
 sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects

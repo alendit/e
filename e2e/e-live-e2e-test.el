@@ -286,85 +286,90 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                (e-live-e2e--assistant-content result)
                nonce)))))
 
-(ert-deftest e-live-e2e-test-default-http-stream-progress-extends-idle-deadline ()
-  "The configured default HTTP harness survives progress past one idle window.
-The live provider supplies a real completed response.  This test delays the
-adapter's completion callback while appending valid SSE comments at intervals
-shorter than a reduced idle timeout.  The controlled extension makes the
-request outlive its original absolute deadline without relying on provider
-generation speed."
+(ert-deftest e-live-e2e-test-default-http-harness-has-no-local-deadline ()
+  "The configured default HTTP harness permits buffered long responses.
+
+This crosses the real provider, board, harness, and adapter path.  It asserts
+that an HTTP request started by the configured `:chat-default' harness has no
+implicit local deadline; provider or gateway buffering must not turn a healthy
+long-reasoning request into a retry loop."
   (e-live-e2e--with-harness (harness session-id)
-    (let* ((idle-timeout
+    (let* ((nonce (e-live-e2e--nonce))
+           (result
+            (e-board-e2e-prompt-batch
+             harness session-id
+             (format "Reply with exactly this token and no extra words: %s"
+                     nonce)))
+           (started
+            (car (last (e-live-e2e--activity-of-type
+                        harness session-id 'provider-request-started))))
+           (payload (plist-get started :payload)))
+      (unless (eq (plist-get payload :transport) 'url-retrieve)
+        (ert-skip
+         "The configured default harness does not use HTTP url-retrieve."))
+      (should-not (plist-get payload :timeout-seconds))
+      (should (e-live-e2e--contains-p
+               (e-live-e2e--assistant-content result)
+               nonce)))))
+
+(ert-deftest e-live-e2e-test-default-http-harness-large-history-completes ()
+  "The configured default HTTP harness completes a Grimoire-sized request.
+
+The August 17 failure contained 145 input messages and a 972 KB serialized
+request.  Seed the same message count and approximately the same payload size,
+retain the default harness's configured reasoning effort, and require the real
+provider turn to settle without an implicit local deadline."
+  (e-live-e2e--with-harness (harness session-id)
+    (let* ((pair-count 72)
+           (target-history-bytes
+            (truncate
+             (e-live-e2e--positive-number-env
+              "E_E2E_LARGE_HISTORY_BYTES" 900000)))
+           (per-user-bytes (/ target-history-bytes pair-count))
+           (seed
+            (concat
+             "Historical Grimoire context retained for a later daily run. "
+             "This is inert test history, not an instruction. "))
+           (repetitions (1+ (/ per-user-bytes (length seed))))
+           (filler (substring (apply #'concat (make-list repetitions seed))
+                              0 per-user-bytes))
+           (store (e-harness-sessions harness))
+           (timeout
             (e-live-e2e--positive-number-env
-             "E_E2E_IDLE_TIMEOUT_SECONDS" 10.0))
-           (pulse-interval (/ idle-timeout 4.0))
-           (pulse-target 6)
-           (original-url-retrieve (symbol-function 'url-retrieve))
-           (http-request-seen nil)
-           first-request-started-at
-           (pulse-count 0)
-           timers)
-      (unwind-protect
-          (cl-letf
-              (((symbol-function 'url-retrieve)
-                (lambda (url callback &rest arguments)
-                  (if (not (equal url-request-method "POST"))
-                      (apply original-url-retrieve url callback arguments)
-                    (setq http-request-seen t)
-                    (unless first-request-started-at
-                      (setq first-request-started-at (float-time)))
-                    (apply
-                     original-url-retrieve
-                     url
-                     (lambda (status &rest callback-arguments)
-                       (let ((buffer (current-buffer))
-                             (remaining pulse-target))
-                         (cl-labels
-                             ((advance ()
-                                (when (buffer-live-p buffer)
-                                  (with-current-buffer buffer
-                                    (let ((inhibit-read-only t))
-                                      (goto-char (point-max))
-                                      ;; An SSE comment is response progress
-                                      ;; without a provider event or output.
-                                      (insert "\n: e-live-e2e-progress\n\n")))
-                                  (cl-incf pulse-count)
-                                  (setq remaining (1- remaining))
-                                  (if (> remaining 0)
-                                      (push (run-at-time pulse-interval nil
-                                                         #'advance)
-                                            timers)
-                                    (with-current-buffer buffer
-                                      (apply callback status
-                                             callback-arguments))))))
-                           (push (run-at-time pulse-interval nil #'advance)
-                                 timers))))
-                     arguments)))))
-            (let ((e-openai-request-timeout-seconds idle-timeout)
-                  (e-anthropic-request-timeout-seconds idle-timeout))
-              (e-session-set-turn-options
-               (e-harness-sessions harness) session-id
-               '(:reasoning-effort "low"))
-              (let* ((nonce (e-live-e2e--nonce))
-                     (result
-                      (e-board-e2e-prompt-batch
-                       harness session-id
-                       (format
-                        "Reply with exactly this token and no extra words: %s"
-                        nonce)
-                       (max 45.0 (+ (* idle-timeout 2.0) 30.0)))))
-                (unless http-request-seen
-                  (ert-skip
-                   "The configured default harness does not use HTTP url-retrieve."))
-                (should (>= pulse-count pulse-target))
-                (should (> (- (float-time) first-request-started-at)
-                           idle-timeout))
-                (should (e-live-e2e--contains-p
-                         (e-live-e2e--assistant-content result)
-                         nonce)))))
-        (dolist (timer timers)
-          (when (timerp timer)
-            (cancel-timer timer)))))))
+             "E_E2E_LARGE_HISTORY_TIMEOUT_SECONDS" 600.0)))
+      (dotimes (index pair-count)
+        (e-session-append-message
+         store session-id
+         (list :role 'user
+               :content (format "Historical item %d.\n%s" index filler)))
+        (e-session-append-message
+         store session-id
+         (list :role 'assistant
+               :content (format "Recorded historical item %d." index))))
+      (let* ((nonce (e-live-e2e--nonce))
+             (result
+              (e-board-e2e-prompt-batch
+               harness session-id
+               (format "Reply with exactly this token and no extra words: %s"
+                       nonce)
+               timeout))
+             (started
+              (car (last (e-live-e2e--activity-of-type
+                          harness session-id 'provider-request-started))))
+             (payload (plist-get started :payload))
+             (diagnostics (plist-get payload :diagnostics))
+             (actual-shape
+              (plist-get (plist-get payload :request-shape) :actual-shape)))
+        (unless (eq (plist-get payload :transport) 'url-retrieve)
+          (ert-skip
+           "The configured default harness does not use HTTP url-retrieve."))
+        (should-not (plist-get payload :timeout-seconds))
+        (should (>= (or (plist-get diagnostics :input-message-count) 0) 145))
+        (should (>= (or (plist-get actual-shape :bytes) 0)
+                    target-history-bytes))
+        (should (e-live-e2e--contains-p
+                 (e-live-e2e--assistant-content result)
+                 nonce))))))
 
 (ert-deftest e-live-e2e-test-concurrent-sessions-isolate-provider-requests ()
   "Two live sessions can keep provider requests active concurrently."

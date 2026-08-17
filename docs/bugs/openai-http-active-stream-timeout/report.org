@@ -8,6 +8,14 @@ The user reported that a Grimoire implementation turn repeatedly displayed
 visible transcript accumulated several identical failed attempts without
 finishing the requested work.
 
-Expected behavior: an OpenAI HTTP streaming request that continues receiving
-provider bytes remains alive.  The configured request timeout should fail only
-a transport that has made no response progress for the timeout interval.
+An initial fix changed the OpenAI HTTP timeout from an absolute deadline to an
+idle deadline.  After restarting Emacs, the user reproduced the same failure on
+a short =continue= prompt.  The resumed daily session still sent its retained
+Grimoire history: 145 input messages in a 972,399-byte serialized request, with
+high reasoning effort.  The recurrence showed that the first fix and its live
+test had not covered the reported request shape.
+
+Expected behavior: the default OpenAI HTTP path must permit a gateway to buffer
+a healthy long-reasoning response.  An explicit provider timeout may enforce an
+idle interval when the selected provider guarantees observable progress, but
+the runtime must not assume that guarantee by default.

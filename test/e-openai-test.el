@@ -101,6 +101,32 @@
       (put symbol 'customized-value customized)
       (put symbol 'theme-value theme))))
 
+(ert-deftest e-openai-test-http-timeout-default-is-disabled ()
+  "Buffered HTTP reasoning responses have no unsafe implicit deadline."
+  (should-not (default-value 'e-openai-request-timeout-seconds)))
+
+(ert-deftest e-openai-test-http-timeout-default-migrates-on-reload ()
+  "The old HTTP timeout migrates unless the user explicitly customized it."
+  (let* ((symbol 'e-openai-request-timeout-seconds)
+         (saved (get symbol 'saved-value))
+         (customized (get symbol 'customized-value))
+         (theme (get symbol 'theme-value)))
+    (unwind-protect
+        (progn
+          (put symbol 'saved-value nil)
+          (put symbol 'customized-value nil)
+          (put symbol 'theme-value nil)
+          (let ((e-openai-request-timeout-seconds 180))
+            (e-openai--migrate-http-timeout-default)
+            (should-not e-openai-request-timeout-seconds))
+          (put symbol 'saved-value '(180))
+          (let ((e-openai-request-timeout-seconds 180))
+            (e-openai--migrate-http-timeout-default)
+            (should (= e-openai-request-timeout-seconds 180))))
+      (put symbol 'saved-value saved)
+      (put symbol 'customized-value customized)
+      (put symbol 'theme-value theme))))
+
 (ert-deftest e-openai-test-read-auth-token-and-account-id ()
   "Auth parsing extracts the access token and account id."
   (let* ((token (e-openai-test--jwt))
@@ -2300,6 +2326,78 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
       (should (e-openai-test--wait-until (lambda () error) 0.15))
       (should (eq (car error) 'e-openai-request-timeout))
       (should-not (buffer-live-p buffer)))))
+
+(ert-deftest e-openai-test-http-idle-timeout-rearms-on-real-url-chunks ()
+  "Actual `url.el' process-filter chunks extend an explicit idle timeout."
+  (let* ((e-openai-request-timeout-seconds 0.12)
+         (url-proxy-services nil)
+         (server nil)
+         (clients nil)
+         (timers nil)
+         response
+         error)
+    (cl-labels
+        ((send-chunk (client data)
+           (when (process-live-p client)
+             (process-send-string
+              client
+              (format "%x\r\n%s\r\n" (string-bytes data) data))))
+         (serve-request (client data)
+           (when (string-match-p "\r\n\r\n" data)
+             (set-process-filter client #'ignore)
+             (process-send-string
+              client
+              (concat "HTTP/1.1 200 OK\r\n"
+                      "Content-Type: text/event-stream\r\n"
+                      "Transfer-Encoding: chunked\r\n"
+                      "Connection: close\r\n\r\n"))
+             (push (run-at-time
+                    0.08 nil #'send-chunk client
+                    "data: {\"type\":\"response.created\"}\n\n")
+                   timers)
+             (push (run-at-time
+                    0.16 nil #'send-chunk client
+                    "data: {\"type\":\"response.completed\"}\n\n")
+                   timers)
+             (push (run-at-time
+                    0.24 nil
+                    (lambda ()
+                      (when (process-live-p client)
+                        (process-send-string client "0\r\n\r\n")
+                        (process-send-eof client))))
+                   timers))))
+      (unwind-protect
+          (progn
+            (setq server
+                  (make-network-process
+                   :name "e-openai-stream-server"
+                   :server t
+                   :host 'local
+                   :service t
+                   :noquery t
+                   :log (lambda (_server client _message)
+                          (push client clients)
+                          (set-process-query-on-exit-flag client nil)
+                          (set-process-filter client #'serve-request))))
+            (let ((port (process-contact server :service)))
+              (e-openai-codex--http-request-start
+               :url (format "http://127.0.0.1:%s/responses" port)
+               :headers '(("Content-Type" . "application/json"))
+               :body "{}"
+               :on-complete (lambda (value) (setq response value))
+               :on-error (lambda (err) (setq error err))))
+            (should (e-openai-test--wait-until
+                     (lambda () (or response error)) 1.0))
+            (should-not error)
+            (should (string-match-p "response.completed" response)))
+        (dolist (timer timers)
+          (when (timerp timer)
+            (cancel-timer timer)))
+        (dolist (client clients)
+          (when (process-live-p client)
+            (delete-process client)))
+        (when (process-live-p server)
+          (delete-process server))))))
 
 (ert-deftest e-openai-test-timeout-settles-once ()
   "A late url callback after timeout does not settle the request again."

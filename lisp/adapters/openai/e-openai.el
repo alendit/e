@@ -91,9 +91,13 @@
   :type 'symbol
   :group 'e-openai)
 
-(defcustom e-openai-request-timeout-seconds 180
-  "Seconds without response progress before OpenAI-like HTTP requests fail.
-Set this to nil to deliberately disable provider HTTP request timeouts."
+(defcustom e-openai-request-timeout-seconds nil
+  "Optional idle timeout for OpenAI-like HTTP requests, in seconds.
+
+The default is nil because an HTTP provider or gateway may buffer the response
+while a long reasoning request is still healthy.  A local deadline cannot
+distinguish that state from a stalled request.  Set a number only when the
+selected HTTP provider guarantees response progress within that interval."
   :type '(choice (const :tag "No timeout" nil)
                  (number :tag "Seconds"))
   :group 'e-openai)
@@ -152,6 +156,18 @@ uncustomized old defaults to the current bounded value."
                    'e-openai-websocket-idle-timeout-seconds)))
     (setq e-openai-websocket-idle-timeout-seconds 60)))
 
+(defun e-openai--migrate-http-timeout-default ()
+  "Disable the old implicit HTTP timeout across live reloads.
+
+Reloading this file leaves the prior 180-second defcustom value bound.  Keep a
+real Custom or theme override, but migrate the uncustomized old default to the
+new provider-safe nil default."
+  (when (and (equal e-openai-request-timeout-seconds 180)
+             (not (e-openai--custom-override-p
+                   'e-openai-request-timeout-seconds)))
+    (setq e-openai-request-timeout-seconds nil)))
+
+(e-openai--migrate-http-timeout-default)
 (e-openai--migrate-websocket-idle-timeout-default)
 
 (defun e-openai--plist-without (plist key)
