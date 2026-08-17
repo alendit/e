@@ -480,6 +480,68 @@
             (should (search-backward "\"changed-records\": 0" nil t))))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-session-test-offline-migration-translates-checkpoint-offset ()
+  "Rewriting a journal preserves the checkpoint's logical record boundary."
+  (skip-unless (executable-find "python3"))
+  (let* ((directory (make-temp-file "e-chat-attachment-offset-" t))
+         (sessions (expand-file-name "sessions" directory))
+         (journal (expand-file-name "offset.jsonl" sessions))
+         (checkpoint (expand-file-name "offset.checkpoint.json" sessions))
+         (script
+          (expand-file-name
+           "docs/bugs/e-chat-resume-collapsed-attachment/migrate-chat-attachments.py"
+           (locate-dominating-file default-directory "Eldev")))
+         (first-line
+          (concat
+           "{\"type\":\"session\",\"session-id\":\"offset\",\"metadata\":"
+           "{\"context-attachments\":{\"uri\":\"file://offset.org\","
+           "\"label\":\"legacy\",\"canvas\":true}}}"))
+         (second-line
+          "{\"type\":\"activity-event\",\"session-id\":\"offset\"}")
+         (old-offset (1+ (string-bytes first-line)))
+         migrated-offset)
+    (unwind-protect
+        (progn
+          (make-directory sessions t)
+          (write-region (concat first-line "\n" second-line "\n")
+                        nil journal nil 'silent)
+          (write-region
+           (format
+            "{\"version\":1,\"session-id\":\"offset\",\"journal-byte-offset\":%d,\"records\":[]}\n"
+            old-offset)
+           nil checkpoint nil 'silent)
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory)))
+            (should (search-backward
+                     "\"checkpoint-offsets-updated\": 1" nil t)))
+          (with-temp-buffer
+            (should
+             (zerop
+              (call-process "python3" nil t nil script
+                            "--session-root" directory
+                            "--apply" "--confirm-emacs-stopped"))))
+          (setq migrated-offset
+                (plist-get
+                 (json-parse-string
+                  (with-temp-buffer
+                    (insert-file-contents checkpoint)
+                    (buffer-string))
+                  :object-type 'plist :array-type 'list)
+                 :journal-byte-offset))
+          (with-temp-buffer
+            (insert-file-contents-literally journal)
+            (goto-char (point-min))
+            (forward-line 1)
+            (should (= migrated-offset (1- (position-bytes (point)))))
+            (should (equal (buffer-substring-no-properties
+                            (line-beginning-position) (line-end-position))
+                           second-line)))
+          (should (/= migrated-offset old-offset)))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-session-test-offline-migration-covers-inventoried-shapes ()
   "The migrator rewrites every known shape in every session file format."
   (skip-unless (executable-find "python3"))

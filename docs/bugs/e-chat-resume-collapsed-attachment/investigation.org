@@ -83,6 +83,11 @@ and atomically replaces changed files.  A record containing both legacy and
 canonical attachment lanes is ambiguous and aborts the migration before any
 write.
 
+Re-serializing a changed JSONL record can change its UTF-8 byte length.  The
+migrator therefore maps each paired checkpoint's =journal-byte-offset= from the
+old journal record boundary to the same boundary in the rendered journal.  An
+offset that is not an exact record boundary aborts the migration before writes.
+
 The migration is idempotent.  Applying it to a copy of the exact August 7
 journal/checkpoint repaired both malformed records; a second dry run reported
 zero changes, and the strict reader loaded the canvas URI successfully.
@@ -100,11 +105,14 @@ zero changes, and the strict reader loaded the canvas URI successfully.
   single-object metadata across journal, checkpoint, and index files; it checks
   the canonical output, backups, dry-run immutability, idempotence, and
   pre-write rejection of ambiguous dual-lane metadata.
+- A checkpoint-offset ERT rewrites a pre-checkpoint journal record, proves the
+  dry run reports the translated offset, and verifies the migrated offset still
+  lands exactly on the following JSONL record.
 - A copied August 7 store passes strict replay after migration.
 
 - =eldev compile --warnings-as-errors= passed.
-- The final full =e= suite passed: 2,154 expected, 2 skipped, and 0 unexpected
-  out of 2,156 tests.
+- The final full =e= suite passed: 2,155 expected, 2 skipped, and 0 unexpected
+  out of 2,157 tests.
 - The full graphical =e= suite passed: 19 expected and 0 unexpected.
 - All six Grimoire topic test files passed independently: 83 expected and 0
   unexpected tests.

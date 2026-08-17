@@ -3,8 +3,9 @@
 
 This is an offline, one-off store migration.  It scans the complete selected
 store before writing, defaults to a dry run, creates sibling timestamped
-backups, and atomically replaces only changed files.  Stop Emacs before apply
-mode so its session writer cannot race the migration.
+backups, translates paired checkpoint offsets to rewritten journal record
+boundaries, and atomically replaces only changed files.  Stop Emacs before
+apply mode so its session writer cannot race the migration.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ class StoreFile:
     raw_lines: list[str] | None = None
     selected_indices: set[int] | None = None
     changed_indices: set[int] = field(default_factory=set)
+    structural_changed: bool = False
 
 
 def read_jsonl(path: Path) -> StoreFile:
@@ -187,14 +189,72 @@ def migrate_file(store_file: StoreFile, session_ids: set[str], shapes: Counter[s
             store_file.changed_indices.add(index)
 
 
+def rendered_journal_lines(store_file: StoreFile) -> list[str]:
+    assert store_file.kind == "journal"
+    assert store_file.raw_lines is not None
+    lines = list(store_file.raw_lines)
+    for index in store_file.changed_indices:
+        lines[index] = json.dumps(
+            store_file.records[index], separators=(",", ":"), ensure_ascii=False
+        )
+    return lines
+
+
+def translated_journal_offset(store_file: StoreFile, old_offset: int) -> int:
+    """Translate OLD_OFFSET to the same record boundary after journal rewrite."""
+    assert store_file.kind == "journal"
+    assert store_file.raw_lines is not None
+    if store_file.changed_indices and not store_file.original.endswith("\n"):
+        fail(f"{store_file.path}: changed journal does not end in a newline")
+    rendered = rendered_journal_lines(store_file)
+    old_position = 0
+    new_position = 0
+    if old_offset == 0:
+        return 0
+    for old_line, new_line in zip(store_file.raw_lines, rendered, strict=True):
+        old_position += len(old_line.encode("utf-8")) + 1
+        new_position += len(new_line.encode("utf-8")) + 1
+        if old_position == old_offset:
+            return new_position
+        if old_position > old_offset:
+            break
+    fail(f"{store_file.path}: checkpoint offset {old_offset} is not a record boundary")
+
+
+def translate_checkpoint_offsets(files: list[StoreFile]) -> int:
+    """Update checkpoints paired with rewritten journals; return update count."""
+    checkpoints = {
+        item.path.name.removesuffix(".checkpoint.json"): item
+        for item in files
+        if item.kind == "checkpoint"
+    }
+    updated = 0
+    for journal in files:
+        if journal.kind != "journal" or not journal.changed_indices:
+            continue
+        session_id = journal.path.name.removesuffix(".jsonl")
+        checkpoint = checkpoints.get(session_id)
+        if checkpoint is None:
+            continue
+        old_offset = checkpoint.root.get("journal-byte-offset")
+        if not isinstance(old_offset, int) or isinstance(old_offset, bool):
+            fail(f"{checkpoint.path}: journal-byte-offset is not an integer")
+        new_offset = translated_journal_offset(journal, old_offset)
+        if new_offset != old_offset:
+            checkpoint.root["journal-byte-offset"] = new_offset
+            checkpoint.structural_changed = True
+            updated += 1
+    return updated
+
+
+def changed_file(store_file: StoreFile) -> bool:
+    return bool(store_file.changed_indices or store_file.structural_changed)
+
+
 def render(store_file: StoreFile) -> str:
     if store_file.kind == "journal":
-        assert store_file.raw_lines is not None
-        lines = list(store_file.raw_lines)
-        for index in store_file.changed_indices:
-            lines[index] = json.dumps(store_file.records[index], separators=(",", ":"))
-        return "\n".join(lines) + "\n"
-    return json.dumps(store_file.root, separators=(",", ":")) + "\n"
+        return "\n".join(rendered_journal_lines(store_file)) + "\n"
+    return json.dumps(store_file.root, separators=(",", ":"), ensure_ascii=False) + "\n"
 
 
 def atomic_write(path: Path, text: str, mode: int) -> None:
@@ -255,8 +315,9 @@ def main() -> None:
     shapes: Counter[str] = Counter()
     for store_file in files:
         migrate_file(store_file, session_ids, shapes)
+    checkpoint_offsets_updated = translate_checkpoint_offsets(files)
 
-    changed = [store_file for store_file in files if store_file.changed_indices]
+    changed = [store_file for store_file in files if changed_file(store_file)]
     plan: dict[str, Any] = {
         "mode": "apply" if args.apply else "dry-run",
         "session-root": str(root),
@@ -264,6 +325,7 @@ def main() -> None:
         "scanned-files": len(files),
         "changed-files": len(changed),
         "changed-records": sum(len(item.changed_indices) for item in changed),
+        "checkpoint-offsets-updated": checkpoint_offsets_updated,
         "attachment-shapes": dict(sorted(shapes.items())),
         "files": [
             {"path": str(item.path), "changed-records": len(item.changed_indices)}
