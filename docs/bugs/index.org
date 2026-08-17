@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | session-persistence-checkpoint-batch-budget/ | Multi-session checkpoint exceeds persistence command budget |
 | Closed | openai-http-active-stream-timeout/ | Active OpenAI HTTP stream times out after 180 seconds |
 | Closed | e-chat-resume-collapsed-attachment/ | Archived daily resume rejects collapsed attachment metadata |
 | Closed | e-chat-resume-malformed-attachment/ | Resuming a legacy Org Canvas session rejects a malformed attachment |

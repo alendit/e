@@ -333,36 +333,76 @@ reload; new submissions always prepare once before entering the outbox."
   (e-session-persistence--submit
    controller (list :op "append" :session-id session-id :record record)))
 
-(defun e-session-persistence--checkpoint-operation (controller session-ids)
-  "Return writer checkpoint operation for CONTROLLER SESSION-IDS."
+(defun e-session-persistence--checkpoint-operation (controller session-id)
+  "Return one bounded writer checkpoint operation for CONTROLLER SESSION-ID."
   (let ((store (e-session-persistence-store controller)))
     (list :op "checkpoint"
-          :sessions
-          (vconcat
-           (mapcar (lambda (session-id)
-                     (e-session-checkpoint-manifest store session-id))
-                   session-ids)))))
+          :sessions (vector (e-session-checkpoint-manifest store session-id)))))
 
-(defun e-session-persistence--submit-checkpoint
-    (controller &optional on-done on-error)
-  "Submit dirty resume manifests and catalog checkpoint for CONTROLLER."
+(defun e-session-persistence--reindex-operation ()
+  "Return the writer operation used as a checkpoint-batch index barrier."
+  (list :op "reindex"))
+
+(defun e-session-persistence--submit-checkpoint-batch
+    (controller on-done on-error)
+  "Submit dirty checkpoints, then one reindex barrier, for CONTROLLER.
+
+Each session manifest travels in its own bounded command.  The writer handles
+commands serially, so acknowledging the final reindex means every preceding
+checkpoint is durable.  Call ON-DONE after that barrier or ON-ERROR once on the
+first terminal failure.  The caller owns one unsettled-write slot spanning the
+whole batch; each submitted writer command owns its ordinary outbox slot."
   (let* ((store (e-session-persistence-store controller))
          (session-ids (e-session-checkpoint-dirty-session-ids store))
-         (operation
-          (e-session-persistence--checkpoint-operation controller session-ids))
-         (command-id
-          (e-session-persistence--submit
-           controller operation on-done
-           (lambda (err)
+         (remaining (copy-sequence session-ids))
+         (settled nil)
+         first-command-id)
+    (cl-labels
+        ((fail (err)
+           (unless settled
+             (setq settled t)
+             ;; A failed checkpoint or reindex leaves the batch retryable.
+             ;; Mutations made after an earlier manifest was submitted already
+             ;; re-added their ids; `puthash' safely coalesces both cases.
              (dolist (session-id session-ids)
                (e-session--mark-checkpoint-dirty store session-id))
-             (if on-error
-                 (funcall on-error err)
-               (display-warning 'e-session-persistence
-                                (error-message-string err)
-                                :error))))))
-    (e-session-checkpoint-mark-clean store session-ids)
-    command-id))
+             (funcall on-error err)))
+         (finish (value)
+           (unless settled
+             (setq settled t)
+             (funcall on-done value)))
+         (submit-operation (operation success)
+           (condition-case err
+               (let ((command-id
+                      (e-session-persistence--submit
+                       controller operation success #'fail)))
+                 (unless first-command-id
+                   (setq first-command-id command-id))
+                 command-id)
+             ;; Preflight invokes FAIL before re-signalling.  The settlement
+             ;; guard makes this catch idempotent and keeps timer callbacks from
+             ;; leaking their batch-level unsettled slot.
+             (error
+              (fail err)
+              nil)))
+         (submit-next (&optional _value)
+           (unless settled
+             (condition-case err
+                 (if-let ((session-id (pop remaining)))
+                     (when (submit-operation
+                            (e-session-persistence--checkpoint-operation
+                             controller session-id)
+                            #'submit-next)
+                       ;; Transfer this snapshot out of the dirty set before the
+                       ;; event loop can observe its acknowledgement.  A later
+                       ;; mutation marks it dirty again; a failure re-marks the
+                       ;; whole captured batch in FAIL.
+                       (e-session-checkpoint-mark-clean store (list session-id)))
+                   (submit-operation
+                    (e-session-persistence--reindex-operation) #'finish))
+               (error (fail err))))))
+      (submit-next)
+      first-command-id)))
 
 (defun e-session-persistence-declare-board-state
     (controller session-id principal board-id)
@@ -383,26 +423,45 @@ derived session-index checkpoint remains asynchronous."
         (run-at-time
          (max 0 e-session-persistence-checkpoint-delay) nil
          (lambda ()
-           ;; Transfer ownership from the timer to the outbox without exposing
-           ;; a false quiescent edge between the two states.
-           (e-session-persistence--submit-checkpoint controller)
+           ;; Keep the timer's ownership slot across the full command series so
+           ;; acknowledgements cannot expose false quiescent edges between
+           ;; checkpoints and the final reindex barrier.
            (setf (e-session-persistence-checkpoint-timer controller) nil)
-           (e-session--adjust-unsettled-writes
-            (e-session-persistence-store controller) -1)))))
+           (e-session-persistence--submit-checkpoint-batch
+            controller
+            (lambda (_value)
+              (e-session--adjust-unsettled-writes
+               (e-session-persistence-store controller) -1))
+            (lambda (err)
+              (e-session--adjust-unsettled-writes
+               (e-session-persistence-store controller) -1)
+              (display-warning 'e-session-persistence
+                               (error-message-string err)
+                               :error)))))))
 
 (defun e-session-persistence-finalize (controller on-done on-error)
   "Asynchronously finalize CONTROLLER's current durability boundary.
-Call ON-DONE after the writer acknowledges the checkpoint, or ON-ERROR if the
-writer rejects it.  Return the stable checkpoint command id."
+Call ON-DONE after the writer acknowledges every dirty session checkpoint and
+the final reindex barrier, or ON-ERROR if the writer rejects one.  Return the
+first stable command id in that batch."
   (let ((timer (e-session-persistence-checkpoint-timer controller)))
     (when timer (cancel-timer timer))
-    (prog1
-        (e-session-persistence--submit-checkpoint
-         controller on-done on-error)
-      (when timer
-        (setf (e-session-persistence-checkpoint-timer controller) nil)
-        (e-session--adjust-unsettled-writes
-         (e-session-persistence-store controller) -1)))))
+    ;; A scheduled checkpoint already owns one slot.  Otherwise establish the
+    ;; batch slot before submitting its first outbox command.
+    (unless timer
+      (e-session--adjust-unsettled-writes
+       (e-session-persistence-store controller) 1))
+    (setf (e-session-persistence-checkpoint-timer controller) nil)
+    (e-session-persistence--submit-checkpoint-batch
+     controller
+     (lambda (value)
+       (e-session--adjust-unsettled-writes
+        (e-session-persistence-store controller) -1)
+       (funcall on-done value))
+     (lambda (err)
+       (e-session--adjust-unsettled-writes
+        (e-session-persistence-store controller) -1)
+       (funcall on-error err)))))
 
 (defun e-session-persistence-enable (store)
   "Attach and return an asynchronous persistence controller for STORE."

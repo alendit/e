@@ -45,9 +45,11 @@
           (should (equal (e-session-persistence-unsettled-state)
                          '(:generation 1 :writes 1)))
           (funcall callback)
+          ;; The batch slot remains live alongside the current writer command.
           (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
-                     1))
+                     2))
           (let ((request (e-session-persistence-command-request (car sent))))
+            (should (equal (plist-get request :op) "reindex"))
             (e-session-persistence--handle-response
              controller (list :id (plist-get request :id) :ok t)))
           (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
@@ -194,6 +196,125 @@
                            "writer owned"))
             (should (file-exists-p (expand-file-name "index.json" directory)))))
       (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-checkpoints-dirty-sessions-before-one-reindex ()
+  "Dirty sessions use bounded commands followed by one reindex barrier."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-checkpoint-batch-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (e-session-persistence-command-node-limit 300)
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (original-submit (symbol-function 'e-session-persistence--submit))
+         submitted
+         states
+         done
+         failure)
+    (unwind-protect
+        (let ((e-session--unsettled-change-function
+               (lambda (state) (push (copy-sequence state) states))))
+          (cl-letf (((symbol-function 'e-session-persistence--submit)
+                     (lambda (target operation &optional on-done on-error)
+                       (push (copy-tree operation) submitted)
+                       (funcall original-submit target operation
+                                on-done on-error))))
+            (dolist (session-id '("one" "two"))
+              (e-session-create store :id session-id)
+              (dotimes (index 20)
+                (e-session-append-board-message
+                 store session-id
+                 (list :id (format "%s-%d" session-id index)
+                       :kind 'output))))
+            (let* ((dirty (e-session-checkpoint-dirty-session-ids store))
+                   (aggregate
+                    (list :op "checkpoint"
+                          :sessions
+                          (vconcat
+                           (mapcar
+                            (lambda (session-id)
+                              (e-session-checkpoint-manifest store session-id))
+                            dirty)))))
+              (should (= (length dirty) 2))
+              (should-not
+               (e-session-persistence--command-within-budget-p aggregate))
+              (dolist (session-id dirty)
+                (should
+                 (e-session-persistence--command-within-budget-p
+                  (e-session-persistence--checkpoint-operation
+                   controller session-id)))))
+            (setq states nil)
+            (e-session-finalize
+             store
+             (lambda (_value) (setq done t))
+             (lambda (err) (setq failure err)))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (not done) (not failure) (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should-not failure)
+            (should done)
+            (let* ((operations (nreverse submitted))
+                   (checkpoints
+                    (seq-filter
+                     (lambda (operation)
+                       (equal (plist-get operation :op) "checkpoint"))
+                     operations))
+                   (reindexes
+                    (seq-filter
+                     (lambda (operation)
+                       (equal (plist-get operation :op) "reindex"))
+                     operations))
+                   (writes
+                    (mapcar (lambda (state) (plist-get state :writes))
+                            (nreverse states))))
+              (should (= (length checkpoints) 2))
+              (dolist (operation checkpoints)
+                (should (= (length (plist-get operation :sessions)) 1)))
+              (should (= (length reindexes) 1))
+              (should (= (car (last writes)) 0))
+              (should-not (memq 0 (butlast writes))))
+            (let ((reopened (e-session-persistent-index-store-create directory)))
+              (should (equal (sort (mapcar (lambda (entry)
+                                             (plist-get entry :id))
+                                           (e-session-list reopened))
+                                   #'string<)
+                             '("one" "two"))))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-checkpoint-preflight-failure-releases-batch ()
+  "A rejected checkpoint leaves its session dirty without wedging quiescence."
+  (let* ((directory (make-temp-file "e-session-checkpoint-reject-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         controller
+         failure)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (setq controller (e-session-persistence-enable store))
+          (e-session--mark-checkpoint-dirty store "session-1")
+          (let ((e-session-persistence-command-node-limit 8))
+            (e-session-finalize
+             store #'ignore (lambda (err) (setq failure err))))
+          (should failure)
+          (should (string-match-p "pre-encoding budget"
+                                  (error-message-string failure)))
+          (should (equal (e-session-checkpoint-dirty-session-ids store)
+                         '("session-1")))
+          (should (= (e-session-store-unsettled-write-count store) 0))
+          (should (= (plist-get (e-session-persistence-unsettled-state) :writes)
+                     0))
+          (should-not (e-session-persistence-checkpoint-timer controller))
+          (should (= (hash-table-count
+                      (e-session-persistence-outbox controller))
+                     0)))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 

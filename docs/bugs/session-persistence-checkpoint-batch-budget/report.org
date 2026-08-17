@@ -1,0 +1,17 @@
+#+title: Multi-session Checkpoint Exceeds Persistence Command Budget
+#+startup: overview
+
+* Report
+
+The user reported this warning while a Grimoire chat and parallel Grimoire
+agents were active:
+
+#+begin_example
+Error (e-session-persistence): Invalid session persistence command:
+"Writer command exceeds pre-encoding budget"
+#+end_example
+
+Expected behavior: independently valid dirty session checkpoints remain
+persistable when several sessions change during the same debounce interval.
+Catalog reindexing should occur once after that durability batch rather than
+forcing all session manifests into one writer command.

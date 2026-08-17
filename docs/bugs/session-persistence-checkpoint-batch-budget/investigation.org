@@ -1,0 +1,84 @@
+#+title: Multi-session Checkpoint Budget Investigation
+#+startup: overview
+
+* Evidence
+
+The warning originates in =e-session-persistence--encode-command= before JSON
+encoding, Node execution, or disk I/O.  The preflight limits one command to
+4,096 Lisp nodes and 256 KiB of strings/encoded output.
+
+Four concurrently dirty sessions reconstructed from the affected Grimoire
+store produced the exact rejection.  Their aggregate checkpoint request had
+4,411 Lisp nodes but encoded to only 35,889 bytes.  Each individual manifest
+fit the default command budgets.  Journal modification times continued to
+advance after the warning, so record appends remained durable; the failed work
+was the derived checkpoint/catalog boundary.
+
+The old checkpoint operation placed every dirty manifest in one =:sessions=
+vector.  Session count therefore leaked into the per-command node budget.
+Because the timer callback performed its ownership cleanup only after
+submission, synchronous preflight rejection could also leave the checkpoint
+timer's unsettled-write slot live.
+
+* Resolution
+
+Checkpoint and catalog ownership are now separate writer operations.  The
+controller submits exactly one session manifest per =checkpoint= command and
+waits for its acknowledgement before submitting the next.  After all captured
+dirty sessions are durable, it submits one =reindex= barrier.  The Node writer
+processes commands serially, so acknowledging that barrier proves that every
+preceding session checkpoint completed and that the catalog was rebuilt once.
+
+The checkpoint batch retains one unsettled-write ownership slot across the
+entire asynchronous series.  Individual writer commands retain their existing
+outbox slots, so acknowledgements cannot expose a false quiescent edge between
+sessions.  A failed checkpoint or reindex re-marks the captured sessions dirty,
+releases the batch slot exactly once, and reports the error through the existing
+callback/warning path.
+
+* Validation
+
+- The focused persistence suite passed: 21 tests, 0 unexpected.
+- The combined session and persistence suites passed: 115 tests, 0 unexpected.
+- The complete repository suite passed outside the restricted network sandbox:
+  2,163 tests, 2,161 expected, 0 unexpected, and 2 optional environment skips.
+- Batch compilation with warnings as errors passed for
+  =e-session-persistence.el=, and =node --check= passed for the writer.
+- The multi-session regression constructs two individually valid manifests
+  whose aggregate exceeds a reduced node budget.  It proves two one-session
+  checkpoint commands, one reindex command, successful reopen through the
+  rebuilt catalog, and no intermediate zero-write state.
+- The preflight-failure regression proves that an unencodable individual
+  checkpoint remains dirty while its timer, outbox, and unsettled counts clean
+  up.
+
+* Architecture self-check
+
+1. This slice restores checkpoint progress under normal parallel-session load,
+   so stopping here improves durability independently of a future SQLite store.
+2. It moves toward explicit durability operations: per-session state commits
+   and one store-level derived-index barrier.
+3. A future storage backend remains uncertain and local to the writer.  The
+   stable ordering and acknowledgement contract is represented directly now.
+4. The session persistence controller owns batching and acknowledgements; the
+   Node writer owns checkpoint files and catalog reconstruction.
+5. The writer protocol gains one narrow =reindex= operation while checkpoint
+   narrows from an arbitrary vector to exactly one manifest.
+6. Core session policy still depends only on the persistence controller, not
+   Node or filesystem details.
+7. Checkpoint and catalog filesystem effects remain in the writer process.
+8. The only added state is closure-local batch progress and settlement state;
+   it lives for one durability boundary and is rebuilt from the dirty set.
+9. Manifest serialization remains bounded per session.  Catalog reconstruction
+   runs once per batch rather than once per session.
+10. =checkpoint= and =reindex= now name substitutable, non-overlapping writer
+    operations instead of one operation with two unrelated effects.
+11. Journal and checkpoint formats are unchanged.  The internal writer protocol
+    changes with its bundled sole client; no obsolete aggregate path remains.
+12. The aggregate multi-session checkpoint operation and implicit reindex side
+    effect were removed.
+13. Expected writer/preflight errors settle the batch once and keep work dirty;
+    unexpected errors reach the same visible persistence error callback.
+14. Unit/integration coverage proves the command boundary, serial barrier,
+    quiescence ownership, failure cleanup, and durable reopen independently of
+    the graphical chat shell.

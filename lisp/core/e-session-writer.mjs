@@ -341,7 +341,11 @@ async function handle(request) {
       if (record.type === "session") await ensureInitialCheckpoint(directory, sessionId, record);
     }
   } else if (request.op === "checkpoint") {
-    for (const manifest of request.sessions || []) await writeSessionCheckpoint(directory, manifest);
+    if (!Array.isArray(request.sessions) || request.sessions.length !== 1) {
+      throw new WriterRequestError("Checkpoint request needs exactly one session manifest");
+    }
+    await writeSessionCheckpoint(directory, request.sessions[0]);
+  } else if (request.op === "reindex") {
     await rebuildIndex(directory);
   } else {
     throw new WriterRequestError(`Unsupported writer operation ${request.op}`);
