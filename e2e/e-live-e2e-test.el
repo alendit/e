@@ -8,8 +8,8 @@
 ;;; Commentary:
 
 ;; ERT tests that exercise the real harness/backend/tool/session path against
-;; live provider APIs.  These tests are intentionally gated by E_E2E and are not
-;; in the default Eldev test fileset.
+;; live provider APIs.  These tests are intentionally gated by E_E2E, disabled
+;; whenever CI is set, and not in the default Eldev test fileset.
 ;;
 ;; The tests are backend-agnostic: they build the configured `:chat-default'
 ;; harness from `e-default-harness-specs' rather than naming a provider, so they
@@ -26,6 +26,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e)
+(require 'e-anthropic)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-context)
@@ -39,6 +40,14 @@
 (load (expand-file-name
        "e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+
+(declare-function e-board-e2e-create-session "e-board-e2e-support"
+                  (harness &rest arguments))
+(declare-function e-board-e2e-prompt-async "e-board-e2e-support"
+                  (harness session-id prompt))
+(declare-function e-board-e2e-prompt-batch "e-board-e2e-support"
+                  (harness session-id prompt &optional timeout))
+(declare-function e-board-e2e-reset-runtime "e-board-e2e-support" ())
 
 (defconst e-live-e2e--harness-id :chat-default
   "Registry id of the default chat harness exercised by live e2e tests.")
@@ -55,7 +64,18 @@
 
 (defun e-live-e2e--enabled-p ()
   "Return non-nil when live e2e validation is explicitly enabled."
-  (e-live-e2e--env "E_E2E"))
+  (and (e-live-e2e--env "E_E2E")
+       (not (getenv "CI"))))
+
+(defun e-live-e2e--positive-number-env (name fallback)
+  "Return positive numeric environment variable NAME, or FALLBACK."
+  (let ((value (e-live-e2e--env name)))
+    (if value
+        (let ((number (string-to-number value)))
+          (if (> number 0)
+              number
+            (error "%s must be a positive number" name)))
+      fallback)))
 
 (defun e-live-e2e--config-file ()
   "Return the readable backend configuration file, or nil.
@@ -80,6 +100,8 @@ Signal nothing when unconfigured; callers skip in that case."
 
 (defun e-live-e2e--require-enabled ()
   "Skip the current test unless live e2e validation can run."
+  (when (getenv "CI")
+    (ert-skip "Live provider e2e tests are disabled when CI is set."))
   (unless (e-live-e2e--enabled-p)
     (ert-skip "Set E_E2E=1 to run live e2e tests."))
   (let ((path (e-live-e2e--config-file)))
@@ -133,7 +155,7 @@ backend is whatever the configuration selected."
    (e-session-activity-events (e-harness-sessions harness) session-id)))
 
 (defun e-live-e2e--request-tool-differences (first second)
-  "Return bounded tool identity differences between request bodies FIRST and SECOND."
+  "Return bounded tool identity differences between FIRST and SECOND bodies."
   (let ((first-tools (append (plist-get first :tools) nil))
         (second-tools (append (plist-get second :tools) nil)))
     (cl-loop for first-tool in first-tools
@@ -263,6 +285,86 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
       (should (e-live-e2e--contains-p
                (e-live-e2e--assistant-content result)
                nonce)))))
+
+(ert-deftest e-live-e2e-test-default-http-stream-progress-extends-idle-deadline ()
+  "The configured default HTTP harness survives progress past one idle window.
+The live provider supplies a real completed response.  This test delays the
+adapter's completion callback while appending valid SSE comments at intervals
+shorter than a reduced idle timeout.  The controlled extension makes the
+request outlive its original absolute deadline without relying on provider
+generation speed."
+  (e-live-e2e--with-harness (harness session-id)
+    (let* ((idle-timeout
+            (e-live-e2e--positive-number-env
+             "E_E2E_IDLE_TIMEOUT_SECONDS" 10.0))
+           (pulse-interval (/ idle-timeout 4.0))
+           (pulse-target 6)
+           (original-url-retrieve (symbol-function 'url-retrieve))
+           (http-request-seen nil)
+           first-request-started-at
+           (pulse-count 0)
+           timers)
+      (unwind-protect
+          (cl-letf
+              (((symbol-function 'url-retrieve)
+                (lambda (url callback &rest arguments)
+                  (if (not (equal url-request-method "POST"))
+                      (apply original-url-retrieve url callback arguments)
+                    (setq http-request-seen t)
+                    (unless first-request-started-at
+                      (setq first-request-started-at (float-time)))
+                    (apply
+                     original-url-retrieve
+                     url
+                     (lambda (status &rest callback-arguments)
+                       (let ((buffer (current-buffer))
+                             (remaining pulse-target))
+                         (cl-labels
+                             ((advance ()
+                                (when (buffer-live-p buffer)
+                                  (with-current-buffer buffer
+                                    (let ((inhibit-read-only t))
+                                      (goto-char (point-max))
+                                      ;; An SSE comment is response progress
+                                      ;; without a provider event or output.
+                                      (insert "\n: e-live-e2e-progress\n\n")))
+                                  (cl-incf pulse-count)
+                                  (setq remaining (1- remaining))
+                                  (if (> remaining 0)
+                                      (push (run-at-time pulse-interval nil
+                                                         #'advance)
+                                            timers)
+                                    (with-current-buffer buffer
+                                      (apply callback status
+                                             callback-arguments))))))
+                           (push (run-at-time pulse-interval nil #'advance)
+                                 timers))))
+                     arguments)))))
+            (let ((e-openai-request-timeout-seconds idle-timeout)
+                  (e-anthropic-request-timeout-seconds idle-timeout))
+              (e-session-set-turn-options
+               (e-harness-sessions harness) session-id
+               '(:reasoning-effort "low"))
+              (let* ((nonce (e-live-e2e--nonce))
+                     (result
+                      (e-board-e2e-prompt-batch
+                       harness session-id
+                       (format
+                        "Reply with exactly this token and no extra words: %s"
+                        nonce)
+                       (max 45.0 (+ (* idle-timeout 2.0) 30.0)))))
+                (unless http-request-seen
+                  (ert-skip
+                   "The configured default harness does not use HTTP url-retrieve."))
+                (should (>= pulse-count pulse-target))
+                (should (> (- (float-time) first-request-started-at)
+                           idle-timeout))
+                (should (e-live-e2e--contains-p
+                         (e-live-e2e--assistant-content result)
+                         nonce)))))
+        (dolist (timer timers)
+          (when (timerp timer)
+            (cancel-timer timer)))))))
 
 (ert-deftest e-live-e2e-test-concurrent-sessions-isolate-provider-requests ()
   "Two live sessions can keep provider requests active concurrently."

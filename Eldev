@@ -61,9 +61,10 @@
 ;; Live E2E tests intentionally sit outside the default test fileset because
 ;; they call real provider APIs.  Deterministic integration tests live under
 ;; test/ and remain part of every normal run.  Opt into the live suite with
-;; E_E2E=1, for example:
+;; E_E2E=1 outside CI, for example:
 ;;   E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
-(when (getenv "E_E2E")
+(when (and (getenv "E_E2E")
+           (not (getenv "CI")))
   (setf eldev-test-fileset
         (list :or eldev-test-fileset "./e2e/e-live-e2e-test.el")))
 

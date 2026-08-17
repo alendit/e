@@ -70,7 +70,7 @@ viewport positions without using or focusing the desktop.
 * Live provider E2E
 
 The credentialed suite exercises the runtime against a real provider API and
-is not part of normal tests or CI:
+is not part of normal tests and explicitly skips whenever =CI= is set:
 
 #+begin_src sh
 E_E2E=1 \
@@ -110,6 +110,14 @@ Useful environment variables:
 - =E_E2E_CONFIG=: readable Elisp file that configures and registers the
   =:chat-default= harness; required.
 - =E_E2E_TIMEOUT_SECONDS=: live turn timeout override; defaults to 30 seconds.
+- =E_E2E_IDLE_TIMEOUT_SECONDS=: shortened idle window used by the controlled
+  long-stream HTTP regression; defaults to 10 seconds.
+
+The long-stream regression uses whichever =:chat-default= harness the config
+selects.  When that harness uses HTTP, the test obtains a real provider response
+and then feeds harmless SSE comment progress across more than one shortened idle
+window before allowing completion.  It skips for a non-HTTP default because the
+OpenAI HTTP deadline is not on that transport path.
 
 The explicit-cache E2E runs only when the selected OpenAI Responses profile
 sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects

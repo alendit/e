@@ -55,11 +55,32 @@ deadline, proves that the request survives beyond that original absolute
 deadline, and then proves that it fails after a full interval without further
 progress.  It failed against the old implementation at the original deadline.
 
+* Follow-up live coverage
+
+The opt-in credentialed suite now exercises this contract through whichever
+=:chat-default= harness =E_E2E_CONFIG= selects.  For an HTTP default, it obtains
+a real provider response, holds the adapter completion callback, and appends
+valid SSE comments to the private response buffer at intervals shorter than a
+reduced idle window.  The request is required to remain alive for longer than
+that original window, receive every controlled progress pulse, and return the
+real provider answer.  A non-HTTP default skips because this HTTP deadline is
+not on its transport path.
+
+The live suite now has two independent CI fences: =Eldev= excludes it whenever
+=CI= is present, even if =E_E2E= is accidentally set, and the suite's own
+runtime gate skips when loaded directly under =CI=.  Local execution still
+requires the explicit =E_E2E= and =E_E2E_CONFIG= opt-ins.
+
 * Validation
 
 - The complete repository ERT suite passed: 2,158 tests, 2,156 expected
   results, 0 unexpected, and 2 environment-dependent skips.
 - The complete OpenAI adapter ERT file passed: 115 tests, 0 unexpected.
+- The controlled live regression passed against the configured Engineering AI
+  =:chat-default= HTTP harness: 1 test, 0 unexpected, in 17.2 seconds.
+- With =CI= and =E_E2E= both set, Eldev reported no live test files to use;
+  directly loading the suite also skipped the focused live test.
+- The live E2E file byte-compiled with warnings treated as errors.
 - The changed adapter compiled with warnings treated as errors.
 - The isolated graphical large-transcript/provider-responsiveness test passed:
   1 test, 0 unexpected.  This test does not reproduce the sampled live
@@ -99,5 +120,7 @@ restart or an explicitly requested =e-dev-reload= when Emacs is idle.
 13. Expected timeout and cancellation use the existing settlement paths;
     unexpected hook or callback errors remain visible rather than swallowed.
 14. The focused adapter test proves progress and inactivity independently of a
-    real provider.  Existing completion, cancellation, and network-process
-    tests cover the neighboring lifecycle behavior without UI involvement.
+    real provider.  The opt-in default-harness live test crosses the real
+    provider, board, harness, and HTTP adapter boundary.  Existing completion,
+    cancellation, and network-process tests cover the neighboring lifecycle
+    behavior without UI involvement.
