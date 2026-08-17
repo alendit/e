@@ -120,6 +120,26 @@ zero changes, and the strict reader loaded the canvas URI successfully.
   =byte-compile-error-on-warn= enabled.
 - The isolated graphical Grimoire suite passed: 1 expected and 0 unexpected.
 
+* Live migration
+
+The first live apply exposed a missing invariant in the migration tool:
+re-serialized journal records could move checkpoint byte boundaries.  All 207
+files from that attempt were restored from their timestamped backups before the
+tool was corrected.  No migrated state from the failed attempt was retained.
+
+The corrected live apply migrated 497 attachment records across 209 files and
+translated 56 checkpoint offsets.  It created 209 fresh backups stamped
+=20260817T121502Z=.  Read-back verification then proved:
+
+- a complete second dry run found 1,887 canonical attachments and zero changes;
+- the August 7 daily session strictly replayed its one canvas attachment at the
+  expected file URI; and
+- all 24 board-native root chat sessions replayed with zero failures.
+
+One historical non-board journal has no checkpoint or session-root record.  It
+is excluded by the board-native chat-candidate policy and was deliberately not
+converted into a fabricated root chat.
+
 * Architecture Self-Check
 
 1. If work stopped here, historical stores have a safe repair tool and the
