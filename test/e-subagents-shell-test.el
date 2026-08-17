@@ -43,6 +43,7 @@
 (defun e-subagents-shell-test--spawn (registry parent parent-session-id label)
   "Spawn a non-settling reviewer child under PARENT with LABEL."
   (e-subagent-spawn registry parent parent-session-id
+                    :source-turn-id "parent-turn"
                     :type :reviewer :prompt "go" :label label
                     :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
 

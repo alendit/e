@@ -1,0 +1,68 @@
+#+title: Investigation: subagent progress reaches board without a source turn
+#+startup: overview
+
+* Finding
+
+This was a current producer defect, not an old persisted session shape.  The
+2026-08-17 daily journal records a current six-child fan-out on session
+=20260817T075619-cf15649f7b7c=.  The subagent runner prepared each awaitable
+parent-board work handle with =:session-id= but omitted the spawning action's
+=:turn-id=.  Board enrollment installed its activity observer anyway.  The
+first =e-subagent--record-progress= call therefore queued =work-progress= with
+a nil source turn; the scheduled drain later surfaced
+=e-board-invalid-activity=.
+
+The earlier tests only proved a hand-built work handle that already contained
+=:turn-id=.  Subagent runner tests exercised progress without draining the
+board mailbox, so the observer's captured error and the timer boundary hid the
+missing provenance.
+
+* Fix
+
+=e-subagent-spawn= and =e-subagent-resume= now require the initiating parent
+turn explicitly.  The capability action adapter carries the active action
+context's turn through the runner into the awaitable work handle.
+
+The board runtime independently rejects attached work whose source turn is not
+a string before it installs hook dispatchers, activity observers, invocation
+targets, or observed board work.  The failure is synchronous and loud at the
+ownership boundary; there is no nil fallback or timer-side error suppression.
+
+The subagent integration test now emits real child progress, drains the board
+mailbox, and requires the resulting activity to carry the spawning parent turn.
+A separate board test proves invalid work mutates neither the handle nor board.
+
+* Validation
+
+- 102 focused board-runtime, subagent-runner, and subagent-shell tests pass.
+- The exact regression crosses subagent registry progress, =e-work= activity
+  observation, board mailbox drain, and board activity validation.
+- The running Emacs was inspected only through its persisted daily session;
+  it was not reloaded or changed.
+
+* Design self-check
+
+1. The slice stops the observed timer failure and improves the validity
+   boundary independently of later migration work.
+2. It moves toward source-turn-qualified participant activity throughout the
+   board runtime.
+3. Source-turn correlation is stable policy; no uncertain abstraction was
+   added.
+4. Subagent actions own propagation of their initiating context; board runtime
+   owns admission of board-enrolled work.
+5. The interface grows by one required provenance value and removes an implicit
+   dependency on ambient context.
+6. Stable board policy does not depend on the subagent implementation.
+7. Timer publication stays outward; validation moves before side effects.
+8. No runtime state was added.  The existing work context now retains one
+   immutable turn id.
+9. The change adds one constant-time type check per attached work enrollment.
+10. The source-turn requirement is shared by every participant activity and is
+    substitutable across work producers.
+11. No compatibility behavior applies to newly created process-local work.
+12. The invalid nil provenance path is removed.
+13. Invalid work fails synchronously; unexpected publication errors still
+    surface.
+14. Core tests prove pre-mutation rejection and the integrated subagent
+    progress path without relying on the user's Emacs.
+

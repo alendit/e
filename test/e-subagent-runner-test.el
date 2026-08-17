@@ -51,6 +51,11 @@
          (e-board-runtime--producer-tail nil)
          (e-board-runtime--producer-drain-scheduled nil)
          (e-board-runtime--producer-scheduler (lambda (_callback)))
+         (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
+         (e-board-runtime--pending-activity-head nil)
+         (e-board-runtime--pending-activity-tail nil)
+         (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
+         (e-board-runtime--activity-drain-scheduled nil)
          (e-board-runtime--admission-open-p t)
          (e-board-runtime--unsettled-producer-count 0)
          (e-board-runtime--unsettled-generation 0)
@@ -87,6 +92,18 @@
     (e-subagent--seed-child child-harness child-session-id seed-messages)
     (list :cancel #'ignore)))
 
+(defun e-subagent-runner-test--spawn
+    (registry parent-harness parent-session-id &rest arguments)
+  "Spawn test work from one explicit parent turn."
+  (apply #'e-subagent-spawn registry parent-harness parent-session-id
+         :source-turn-id "parent-turn" arguments))
+
+(defun e-subagent-runner-test--resume
+    (registry subagent-id &optional prompt runner)
+  "Resume test work from one explicit parent turn."
+  (e-subagent-resume registry subagent-id prompt runner
+                     :source-turn-id "parent-resume-turn"))
+
 (ert-deftest e-subagent-runner-test-spawn-records-lineage-and-seeds ()
   "Spawn creates a child under the parent lineage and seeds explicit context."
   (e-subagent-runner-test--with-instances
@@ -97,7 +114,7 @@
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
       (let* ((record
-              (e-subagent-spawn
+              (e-subagent-runner-test--spawn
                registry parent "parent-1"
                :type :reviewer
                :prompt "Review tmp://plan.org"
@@ -106,7 +123,10 @@
                :runner (e-subagent-runner-test--capturing-runner captured)))
              (child-session-id (plist-get record :session-id))
              (call (car captured))
-             (child-harness (plist-get call :child-harness)))
+             (child-harness (plist-get call :child-harness))
+             (work-handle
+              (e-subagent-registry-work-handle
+               registry (plist-get record :subagent-id))))
         (should (eq (plist-get record :type) :reviewer))
         (should (eq (plist-get record :role) 'reviewer))
         (should (eq (plist-get record :status) 'running))
@@ -115,6 +135,8 @@
                                (plist-get record :subagent-id))))
         (should (equal (plist-get record :parent-session-id) "parent-1"))
         (should (equal (plist-get call :prompt) "Review tmp://plan.org"))
+        (should (equal (plist-get (e-work-handle-context work-handle) :turn-id)
+                       "parent-turn"))
         ;; Child session carries durable lineage metadata sharing the parent id.
         (let ((metadata (plist-get (e-session-get
                                     (e-harness-sessions child-harness)
@@ -159,7 +181,22 @@
                    facts))
           (let ((tags (mapcar #'e-board-message-tags facts)))
             (should (member '(subagent change queued) tags))
-            (should (member '(subagent change running) tags))))))))
+            (should (member '(subagent change running) tags))))
+        ;; A real child progress event publishes with the spawning turn instead
+        ;; of failing later from the activity-drain timer.
+        (e-subagent--record-progress
+         registry (plist-get record :subagent-id) work-handle 'tool-finished)
+        (e-board-runtime--drain-activity-mailboxes)
+        (let* ((binding (e-chat-service-binding parent "parent-1"))
+               (activities
+                (cl-remove-if-not
+                 (lambda (message) (eq (e-board-message-kind message) 'activity))
+                 (e-board-messages
+                  (e-board-registry-board-source-board
+                   (e-chat-service-binding-board binding))))))
+          (should (= (length activities) 1))
+          (should (equal (e-board-message-source-turn-id (car activities))
+                         "parent-turn")))))))
 
 (ert-deftest e-subagent-runner-test-final-message-is-default-result ()
   "A settle with a summary records it as the compact result."
@@ -169,7 +206,7 @@
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -188,7 +225,7 @@
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -214,7 +251,7 @@
                     :backend (e-backend-fake-create :items nil)))
            (cancelled nil))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on-settle)
@@ -237,7 +274,7 @@ turn's result lands."
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -248,7 +285,7 @@ turn's result lands."
         (funcall settle 'failed :error "Backend returned no assistant output")
         (should (eq (e-subagent-registry-status registry subagent-id) 'failed))
         ;; Resume with a fresh capturing runner; the record re-opens.
-        (let ((resumed (e-subagent-resume
+        (let ((resumed (e-subagent-runner-test--resume
                         registry subagent-id "keep going"
                         (e-subagent-runner-test--capturing-runner captured))))
           (should (eq (plist-get resumed :status) 'running))
@@ -275,14 +312,14 @@ turn's result lands."
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (subagent-id (plist-get record :subagent-id))
              (settle (plist-get (car captured) :on-settle)))
         (funcall settle 'cancelled)
-        (e-subagent-resume registry subagent-id nil
+        (e-subagent-runner-test--resume registry subagent-id nil
                            (e-subagent-runner-test--capturing-runner captured))
         (should (stringp (plist-get (car captured) :prompt)))
         (should-not (string-empty-p (plist-get (car captured) :prompt)))))))
@@ -297,14 +334,14 @@ turn's result lands."
            (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
       (e-harness-test-create-board-session parent :id "parent-1")
       ;; A running child is not resumable.
-      (let* ((running (e-subagent-spawn
+      (let* ((running (e-subagent-runner-test--spawn
                        registry parent "parent-1"
                        :type :reviewer :prompt "go" :runner noop))
              (running-id (plist-get running :subagent-id)))
-        (should-error (e-subagent-resume registry running-id nil noop)
+        (should-error (e-subagent-runner-test--resume registry running-id nil noop)
                       :type 'user-error))
       ;; A deliberately shut-down child is refused even though it is terminal.
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -312,7 +349,7 @@ turn's result lands."
         (e-subagent-shutdown registry subagent-id)
         (should (eq (e-subagent-registry-status registry subagent-id) 'cancelled))
         (should (e-subagent-registry-shutdown-p registry subagent-id))
-        (should-error (e-subagent-resume registry subagent-id nil noop)
+        (should-error (e-subagent-runner-test--resume registry subagent-id nil noop)
                       :type 'user-error)))))
 
 (ert-deftest e-subagent-runner-test-list-scopes-to-parent ()
@@ -324,9 +361,9 @@ turn's result lands."
            (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
       (e-harness-test-create-board-session parent :id "parent-1")
       (e-harness-test-create-board-session parent :id "parent-2")
-      (e-subagent-spawn registry parent "parent-1"
+      (e-subagent-runner-test--spawn registry parent "parent-1"
                         :type :reviewer :prompt "a" :runner noop)
-      (e-subagent-spawn registry parent "parent-2"
+      (e-subagent-runner-test--spawn registry parent "parent-2"
                         :type :reviewer :prompt "b" :runner noop)
       (should (equal (mapcar (lambda (r) (plist-get r :parent-session-id))
                              (e-subagent-registry-list registry "parent-1"))
@@ -346,7 +383,7 @@ turn's result lands."
                     :backend (e-backend-fake-create :items nil))))
       (e-harness-test-create-board-session parent :id "parent-1")
       (should-error
-       (e-subagent-spawn registry parent "parent-1"
+       (e-subagent-runner-test--spawn registry parent "parent-1"
                          :type :chat-plain :prompt "go"
                          :runner (lambda (_h _s _p _seed _on)
                                    (list :cancel #'ignore)))
@@ -361,7 +398,7 @@ turn's result lands."
            (steered nil)
            (queued nil))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
@@ -391,7 +428,7 @@ the harness."
       (cl-letf (((symbol-function 'e-harness-test-queue-prompt)
                  (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
         ;; A failed child is not sendable; the error points at resume.
-        (let* ((record (e-subagent-spawn
+        (let* ((record (e-subagent-runner-test--spawn
                         registry parent "parent-1"
                         :type :reviewer :prompt "go"
                         :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -405,7 +442,7 @@ the harness."
             (should (string-match-p "resume" (cadr err))))
           (should-not queued))
         ;; A done child is likewise refused.
-        (let* ((record (e-subagent-spawn
+        (let* ((record (e-subagent-runner-test--spawn
                         registry parent "parent-1"
                         :type :reviewer :prompt "go"
                         :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -424,7 +461,7 @@ the harness."
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :seed-messages (list '(:role user :content "one")
@@ -491,7 +528,7 @@ A later configure-type override is preserved across subsequent spawns."
                     :backend (e-backend-fake-create :items nil)))
            (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn registry parent "parent-1"
+      (let* ((record (e-subagent-runner-test--spawn registry parent "parent-1"
                                        :type :lean :prompt "go" :runner noop))
              (harness (e-subagent-registry-child-harness
                        registry (plist-get record :subagent-id))))
@@ -503,7 +540,7 @@ A later configure-type override is preserved across subsequent spawns."
                        '(:skills-include ("writing"))))
         ;; A parent override persists; the second spawn does not re-seed.
         (e-subagent-configure-type :lean :enable-layers '("web"))
-        (e-subagent-spawn registry parent "parent-1"
+        (e-subagent-runner-test--spawn registry parent "parent-1"
                           :type :lean :prompt "again" :runner noop)
         (should (memq 'web (e-harness-enabled-layer-ids harness)))))))
 
@@ -531,7 +568,7 @@ A later configure-type override is preserved across subsequent spawns."
              (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
         (e-harness-test-create-board-session parent :id "parent-1")
         (let* ((record
-                (e-subagent-spawn registry parent "parent-1"
+                (e-subagent-runner-test--spawn registry parent "parent-1"
                                   :type :cached-child
                                   :prompt "go"
                                   :runner noop))
@@ -609,7 +646,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
@@ -628,7 +665,7 @@ report is child-side and must not be on the parent surface."
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -651,7 +688,7 @@ report is child-side and must not be on the parent surface."
                     :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -669,7 +706,7 @@ report is child-side and must not be on the parent surface."
                     :backend (e-backend-fake-create :items nil))))
       (e-subagents-register-waitable-resolver registry)
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
@@ -687,7 +724,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (lambda (_h _s _p _seed _on)
@@ -716,7 +753,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1"
                       :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -762,7 +799,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1" :type :reviewer :prompt "go"
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (subagent-id (plist-get record :subagent-id))
@@ -805,7 +842,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1" :type :reviewer :prompt "go"
                       :run-id "run-1" :task-key "review" :attempt 0
                       :runner (e-subagent-runner-test--capturing-runner captured)))
@@ -833,7 +870,7 @@ report is child-side and must not be on the parent surface."
            (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
            (captured (list nil)))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-spawn
+      (let* ((record (e-subagent-runner-test--spawn
                       registry parent "parent-1" :type :reviewer :prompt "go"
                       :run-id "run-1" :task-key "review" :attempt 0
                       :runner (e-subagent-runner-test--capturing-runner captured)))

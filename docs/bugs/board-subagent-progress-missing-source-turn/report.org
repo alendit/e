@@ -1,0 +1,20 @@
+#+title: Bug: subagent progress reaches board without a source turn
+#+startup: overview
+
+* Report
+
+On 2026-08-17 the Grimoire daily chat displayed a timer error from
+=e-board-runtime--drain-activity-mailboxes=:
+
+#+begin_example
+(e-board-invalid-activity
+ :author "participant:ptc_01M07DJYZCZSTBSQRMVY88SD81"
+ :subject-participant-id "ptc_01M07DJYZCZSTBSQRMVY88SD81"
+ :source-turn-id nil
+ :activity-kind work-progress)
+#+end_example
+
+Invalid board work must fail on its initiating call before enrollment mutates
+the harness or board.  It must not queue an invalid activity that fails later
+from a timer.
+

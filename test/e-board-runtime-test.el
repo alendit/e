@@ -2338,6 +2338,28 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
         (should-not (e-work-handle-started-p handle))))))
 
+(ert-deftest e-board-runtime-test-missing-source-turn-rejects-before-enrollment ()
+  "Board work without participant activity provenance mutates no owner."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach board harness "session" :participant-id "participant")
+      (let* ((source-board (e-board-registry-board-source-board board))
+             (handle (e-work-prepare
+                      (e-work-spec-create
+                       :id "invalid" :execution 'cooperative
+                       :interactive-policy 'async
+                       :runner (lambda (_handle _arguments _context) :deferred))
+                      nil :context '(:session-id "session")))
+             (enroll (e-harness-work-enrollment-function harness)))
+        (should-error (funcall enroll handle nil)
+                      :type 'e-board-runtime-invalid-work)
+        (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should-not (e-work-handle-activity-observer handle))
+        (should-not (e-work-handle-hook-dispatcher handle))
+        (should-not (e-work-handle-started-p handle))))))
+
 (ert-deftest e-board-runtime-test-enrollment-installs-bounded-activity-mailbox ()
   "Board enrollment captures progress before it schedules general hook work."
   (e-board-runtime-test--with-empty-state

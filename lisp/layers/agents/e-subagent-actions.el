@@ -46,6 +46,7 @@
    registry
    (plist-get context :harness)
    (plist-get context :session-id)
+   :source-turn-id (plist-get context :turn-id)
    :type (plist-get arguments :type)
    :prompt (plist-get arguments :prompt)
    :seed-messages (plist-get arguments :seed-messages)
@@ -88,11 +89,13 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
                    (e-subagent-actions--subagent-id arguments)
                    (plist-get arguments :prompt)))
 
-(defun e-subagent-actions--resume (registry _context arguments)
+(defun e-subagent-actions--resume (registry context arguments)
   "Resume a settled-but-live subagent in REGISTRY with one new turn."
   (e-subagent-resume registry
                      (e-subagent-actions--subagent-id arguments)
-                     (plist-get arguments :prompt)))
+                     (plist-get arguments :prompt)
+                     nil
+                     :source-turn-id (plist-get context :turn-id)))
 
 (defun e-subagent-actions--interrupt (registry _context arguments)
   "Interrupt a subagent in REGISTRY."

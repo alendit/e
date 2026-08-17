@@ -320,7 +320,7 @@ never resurrected."
       (apply #'e-subagent-registry-update registry subagent-id fields))))
 
 (defun e-subagent--drive-turn
-    (registry subagent-id parent-harness parent-session-id
+    (registry subagent-id parent-harness parent-session-id source-turn-id
               child-harness session-id prompt seed-messages runner)
   "Start one child turn for SUBAGENT-ID and wire its settle + work handle.
 Mint a fresh cooperative `e-work' handle, mirror the record's terminal state
@@ -335,6 +335,7 @@ existing child session)."
           (e-work-prepare
            (e-subagent--work-spec) nil
            :context (list :session-id parent-session-id
+                          :turn-id source-turn-id
                           :work-kind 'subagent
                           :domain-ref (format "subagent:%s" subagent-id)))))
     (when-let ((enroll (e-harness-work-enrollment-function parent-harness)))
@@ -372,16 +373,20 @@ existing child session)."
 
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
-              &key type prompt seed-messages label schedule runner run-id task-key attempt)
+              &key source-turn-id type prompt seed-messages label schedule runner
+              run-id task-key attempt)
   "Spawn a subagent of TYPE under a parent lineage and return its record.
 REGISTRY tracks the child.  PARENT-HARNESS and PARENT-SESSION-ID identify the
 spawning session, whose lineage the child inherits so they share one tmp root.
-PROMPT is the child's task.  RUN-ID, TASK-KEY, and ATTEMPT optionally bind the
-child to one durable orchestration assignment.  SEED-MESSAGES are optional explicit context
+SOURCE-TURN-ID is the parent turn that initiated the child.  PROMPT is the
+child's task.  RUN-ID, TASK-KEY, and ATTEMPT optionally bind the child to one
+durable orchestration assignment.  SEED-MESSAGES are optional explicit context
 messages.  LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
 `queue'.  RUNNER overrides the default direct-turn runner for tests; it is
 called as (CHILD-HARNESS CHILD-SESSION-ID PROMPT SEED-MESSAGES ON-SETTLE) and
 returns a handle plist carrying `:cancel'."
+  (unless (stringp source-turn-id)
+    (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
   (let* ((type (e-subagent--normalize-type type))
@@ -422,7 +427,7 @@ returns a handle plist carrying `:cancel'."
     (e-subagent--inherit-prompt-cache-policy
      parent-harness parent-session-id child-harness child-session-id)
     (e-subagent--drive-turn
-     registry subagent-id parent-harness parent-session-id
+     registry subagent-id parent-harness parent-session-id source-turn-id
      child-harness child-session-id prompt seed-messages runner)
     ;; A synchronous runner may already have settled the record; only a
     ;; still-live record advances to running.
@@ -431,7 +436,8 @@ returns a handle plist carrying `:cancel'."
       (e-subagent-registry-update registry subagent-id :status 'running))
     (e-subagent-registry-get registry subagent-id)))
 
-(defun e-subagent-resume (registry subagent-id &optional prompt runner)
+(cl-defun e-subagent-resume
+    (registry subagent-id &optional prompt runner &key source-turn-id)
   "Resume a settled-but-live SUBAGENT-ID with one new turn on its child session.
 The recovery path for a subagent whose turn ended in `failed' or `cancelled'
 while its child session and full transcript stayed live -- typically a
@@ -443,7 +449,10 @@ Refuses a record that was explicitly `shutdown' (a deliberate terminal intent,
 unlike a failure), one already `running', or one whose child harness is gone.
 Transitions the record back to `running', clears the prior error and reported
 flag so the resumed turn's result can land, mints a fresh awaitable work
-handle, and re-arms the settle callback.  Return the normalized record."
+handle, and re-arms the settle callback.  SOURCE-TURN-ID is the parent turn
+that initiated this resume.  Return the normalized record."
+  (unless (stringp source-turn-id)
+    (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
   (let* ((status (e-subagent-registry-status registry subagent-id))
          (record (e-subagent-registry-get registry subagent-id))
          (harness (e-subagent-registry-child-harness registry subagent-id))
@@ -471,6 +480,7 @@ handle, and re-arms the settle callback.  Return the normalized record."
      registry subagent-id
      (e-subagent-registry-parent-harness registry subagent-id)
      (plist-get record :parent-session-id)
+     source-turn-id
      harness session-id prompt nil runner)
     (e-subagent-registry-get registry subagent-id)))
 

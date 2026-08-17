@@ -45,6 +45,9 @@
 (define-error 'e-board-runtime-producer-disabled
   "e board runtime producer has no current live binding"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-invalid-work
+  "e board runtime work has invalid provenance"
+  'e-board-runtime-error)
 
 (cl-defstruct (e-board-runtime-admission-token
                (:constructor e-board-runtime--admission-token-create))
@@ -1099,14 +1102,22 @@ has no callback and is observed only."
   (when-let* ((session-id (plist-get (e-work-handle-context handle) :session-id))
               (attachment (gethash (e-board-runtime--session-key harness session-id)
                                    e-board-runtime--endpoint-attachments)))
-    (let* ((board (e-board-registry-board-source-board
+    (let* ((context (e-work-handle-context handle))
+           (turn-id (plist-get context :turn-id))
+           (board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
+      ;; Every participant activity is correlated by source turn.  Reject an
+      ;; invalid handle before installing observers or enrolling board work so
+      ;; the defect surfaces on the initiating call instead of a later timer.
+      (unless (stringp turn-id)
+        (signal 'e-board-runtime-invalid-work
+                (list :work-id (e-work-handle-id handle)
+                      :session-id session-id
+                      :turn-id turn-id)))
       (e-board-runtime--install-work-hooks attachment handle)
       (if callback
-          (let* ((context (e-work-handle-context handle))
-                 (turn-id (plist-get context :turn-id))
-                 (tool-call-id (plist-get (plist-get context :tool-call) :id))
+          (let* ((tool-call-id (plist-get (plist-get context :tool-call) :id))
                  (invocation-id (list turn-id tool-call-id))
                  ;; Capturing this service first means an invalid tool-call
                  ;; identity cannot leave an enrolled board operation behind.
