@@ -1,0 +1,20 @@
+#+title: Private task queues leak invalid await references
+
+* Report
+
+A board-backed Grimoire daily run used a private =e-task-queue= only as its bounded execution scheduler.
+Manual inspection of that queue returned records with =task:tsk_...= await references.
+Those references looked public but could not resolve because the process-global =task:= resolver only targets the default Task Queue capability queue.
+
+* User-visible impact
+
+- A participant can cross the board abstraction boundary and start reasoning about private execution records.
+- Passing a leaked private =task:= reference to generic =await= fails as unknown work.
+- Queue-local task ids can collide because every queue starts with =tsk_000001=.
+- The failure can be misread as a board or worker failure even though the board barrier is healthy.
+
+* Expected behavior
+
+Private scheduler queues must not expose generic await references.
+Board workflows should expose only their run projection and continuation contract.
+The one public Task Queue capability queue may continue to expose =task:= references because it owns the registered resolver.

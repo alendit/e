@@ -53,6 +53,15 @@
          (handle (e-work-start (e-action-work spec) arguments)))
     (e-work-handle-result handle)))
 
+(ert-deftest e-task-queue-actions-test-only-public-queue-registers-task-resolver ()
+  "Only the public action queue may claim the process-global task scheme."
+  (should (e-task-queue-expose-await-references-p
+           e-task-queue-actions-default-queue))
+  (should-error
+   (e-task-queue-actions-register-waitable-resolver
+    (e-task-queue-actions-test--queue))
+   :type 'user-error))
+
 (ert-deftest e-task-queue-actions-test-capability-actions-and-resource ()
   "The capability exposes the queue actions and a readable reference resource."
   (let* ((capability (e-task-queue-capability-create
@@ -88,6 +97,7 @@
                           :metadata '(:source "grimoire:inbox"))))
            (task-id (plist-get record :task-id)))
       (should (stringp task-id))
+      (should-not (plist-member record :await-ref))
       (should (equal (plist-get record :metadata) '(:source "grimoire:inbox")))
       (should (= 1 (length (e-task-queue-actions-test--call
                             capability :list-tasks nil))))

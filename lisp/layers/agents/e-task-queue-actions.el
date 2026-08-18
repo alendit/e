@@ -54,7 +54,8 @@
   "Detailed Task Queue action reference.")
 
 (defvar e-task-queue-actions-default-queue
-  (e-task-queue-create :directory e-task-queue-directory)
+  (e-task-queue-create :directory e-task-queue-directory
+                       :expose-await-references-p t)
   "Default durable task queue backing the capability actions.
 It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
 
@@ -90,8 +91,10 @@ expects and pass an existing keyword or nil through unchanged."
    (t (signal 'wrong-type-argument (list 'stringp :harness-instance-id)))))
 
 (defun e-task-queue-actions-register-waitable-resolver (&optional queue)
-  "Register the `task' waitable scheme for QUEUE."
+  "Register the `task' waitable scheme for public QUEUE."
   (let ((queue (or queue e-task-queue-actions-default-queue)))
+    (unless (e-task-queue-expose-await-references-p queue)
+      (user-error "Cannot register private task queue as the global task resolver"))
     (e-waitable-register-resolver
      "task"
      (lambda (id) (e-task-queue-work-handle queue id)))))

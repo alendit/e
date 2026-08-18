@@ -94,14 +94,25 @@ tests need a runner whose handle carries one."
                    :runner (e-task-queue-test--fake-runner recorder)))
            (record (e-task-queue-enqueue queue :prompt "do thing")))
       (should (stringp (plist-get record :task-id)))
-      (should (equal (plist-get record :await-ref)
-                     (format "task:%s" (plist-get record :task-id))))
+      (should-not (plist-member record :await-ref))
       (should (equal (plist-get record :prompt) "do thing"))
       (should (eq (plist-get record :harness-instance-id) :chat-a))
       ;; Cap is 2 by default and nothing else is running, so it dispatched.
       (should (eq (plist-get (e-task-queue-get queue (plist-get record :task-id))
                              :status)
                   'running)))))
+
+(ert-deftest e-task-queue-test-public-queue-returns-await-reference ()
+  "A queue explicitly exposed to agents returns resolvable task references."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :expose-await-references-p t
+                   :runner (e-task-queue-test--fake-runner recorder)))
+           (record (e-task-queue-enqueue queue :prompt "do thing")))
+      (should (equal (plist-get record :await-ref)
+                     (format "task:%s" (plist-get record :task-id)))))))
 
 (ert-deftest e-task-queue-test-admission-control-under-cap ()
   "With cap 2, a third enqueue waits until a running task settles."
@@ -749,6 +760,7 @@ without one there is nothing to analyze, so the task terminates."
                      queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
              (settle (plist-get (car (e-task-queue-test--recorder-calls recorder)) :settle)))
         (should (equal (plist-get first :task-id) (plist-get again :task-id)))
+        (should-not (plist-member first :await-ref))
         (should (equal (plist-get (plist-get first :metadata) :board-run-id) "run-1"))
         (funcall settle :status 'done :outputs '((:kind text :value "ok")))
         (let ((projection (e-board-orchestration-project-board board)))

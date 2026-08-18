@@ -163,7 +163,9 @@ Each function receives QUEUE, the live RECORD, and its persisted status.")
   "An in-memory task queue with a bounded dispatcher.
 RECORDS maps task ids to mutable task plists.  ORDER lists task ids in enqueue
 order (oldest first).  MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER
-override the module defaults when non-nil.  DISPATCHING guards dispatch
+override the module defaults when non-nil.  EXPOSE-AWAIT-REFERENCES-P marks the
+one public queue whose task ids the global =task:= resolver can resolve.
+DISPATCHING guards dispatch
 re-entrancy so a synchronous runner settle does not recurse.  PAUSED-P is the
 queue-level gate that stops the dispatcher from starting new work.  DIRECTORY,
 when non-nil, makes the queue durable and names where records are written;
@@ -178,6 +180,7 @@ WRITE-TIMER coalesces those writes."
   dispatching
   paused-p
   max-retries
+  expose-await-references-p
   directory
   write-timer
   write-process
@@ -186,11 +189,14 @@ WRITE-TIMER coalesces those writes."
   write-callbacks)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
-                                    runner producer-binding max-retries directory)
+                                    runner producer-binding max-retries directory
+                                    expose-await-references-p)
   "Return a new task queue.
 MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, MAX-RETRIES, and RUNNER override the
 module defaults for this queue when non-nil.  Without RUNNER, PRODUCER-BINDING
 must name current process-local board authority and queued tasks publish facts.
+EXPOSE-AWAIT-REFERENCES-P is reserved for a queue whose task ids are registered
+with the global waitable resolver; private scheduler queues must leave it nil.
 DIRECTORY, when non-nil, makes the queue durable and stores its records there;
 without it the queue stays in-memory."
   (e-task-queue--create
@@ -199,6 +205,7 @@ without it the queue stays in-memory."
    :runner runner
    :producer-binding producer-binding
    :max-retries max-retries
+   :expose-await-references-p expose-await-references-p
    :directory directory))
 
 ;; --- configuration accessors ------------------------------------------------
@@ -254,25 +261,27 @@ truncated prompt prefix in `:prompt-summary'."
   (or (gethash task-id (e-task-queue-records queue))
       (signal 'e-task-queue-unknown-task (list task-id))))
 
-(defun e-task-queue--normalize (record)
-  "Return a model-facing copy of RECORD without runtime-only fields."
+(defun e-task-queue--normalize (queue record)
+  "Return a model-facing copy of QUEUE's RECORD without runtime-only fields."
   (let ((task-id (plist-get record :task-id)))
-    (list :task-id task-id
-          :await-ref (format "task:%s" task-id)
-          :status (plist-get record :status)
-        :prompt (plist-get record :prompt)
-        :origin-prompt (plist-get record :origin-prompt)
-        :summary (plist-get record :summary)
-        :prompt-summary (plist-get record :prompt-summary)
-        :metadata (plist-get record :metadata)
-        :harness-instance-id (plist-get record :harness-instance-id)
-        :enqueued-at (plist-get record :enqueued-at)
-        :started-at (plist-get record :started-at)
-        :finished-at (plist-get record :finished-at)
-        :session-id (plist-get record :session-id)
-        :retries (or (plist-get record :retries) 0)
-          :outputs (plist-get record :outputs)
-          :error (plist-get record :error))))
+    (append
+     (list :task-id task-id)
+     (when (e-task-queue-expose-await-references-p queue)
+       (list :await-ref (format "task:%s" task-id)))
+     (list :status (plist-get record :status)
+           :prompt (plist-get record :prompt)
+           :origin-prompt (plist-get record :origin-prompt)
+           :summary (plist-get record :summary)
+           :prompt-summary (plist-get record :prompt-summary)
+           :metadata (plist-get record :metadata)
+           :harness-instance-id (plist-get record :harness-instance-id)
+           :enqueued-at (plist-get record :enqueued-at)
+           :started-at (plist-get record :started-at)
+           :finished-at (plist-get record :finished-at)
+           :session-id (plist-get record :session-id)
+           :retries (or (plist-get record :retries) 0)
+           :outputs (plist-get record :outputs)
+           :error (plist-get record :error)))))
 
 (defun e-task-queue--notify (queue)
   "Run change hooks for QUEUE."
@@ -282,12 +291,12 @@ truncated prompt prefix in `:prompt-summary'."
 
 (defun e-task-queue-get (queue task-id)
   "Return the normalized record for TASK-ID in QUEUE."
-  (e-task-queue--normalize (e-task-queue--record queue task-id)))
+  (e-task-queue--normalize queue (e-task-queue--record queue task-id)))
 
 (defun e-task-queue-list (queue)
   "Return normalized task records in QUEUE, newest-first."
   (mapcar (lambda (task-id)
-            (e-task-queue--normalize (gethash task-id (e-task-queue-records queue))))
+            (e-task-queue--normalize queue (gethash task-id (e-task-queue-records queue))))
           (reverse (e-task-queue-order queue))))
 
 (defun e-task-queue-outputs (queue task-id)
@@ -403,7 +412,7 @@ non-nil when a retry was armed.  The original prompt is preserved in
              ;; A retry needs a failed session to reference and analyze.
              (plist-get record :session-id))
     (let ((retry-prompt (e-task-queue--build-retry-prompt
-                         (e-task-queue--normalize record))))
+                         (e-task-queue--normalize queue record))))
       (plist-put record :retries (1+ (or (plist-get record :retries) 0)))
       (plist-put record :prompt retry-prompt)
       (plist-put record :status 'queued)
@@ -456,7 +465,7 @@ QUEUE after a real transition."
         (plist-put record :finished-at (e-task-queue--timestamp))
         (e-task-queue--settle-work-handle record status)
         (run-hook-with-args 'e-task-queue-terminal-functions
-                            queue (e-task-queue--normalize record))))
+                            queue (e-task-queue--normalize queue record))))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))))
 
@@ -492,7 +501,7 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
       (when harness
         (let ((handle
                (funcall (e-task-queue--runner queue)
-                        (e-task-queue--normalize record)
+                        (e-task-queue--normalize queue record)
                         (if (e-task-queue-runner queue) harness queue)
                         (lambda (&rest settle-args)
                           (apply #'e-task-queue--settle queue task-id
@@ -573,7 +582,7 @@ may already be running when this returns."
           (append (e-task-queue-order queue) (list task-id)))
     (e-task-queue--notify queue)
     (e-task-queue--dispatch queue)
-    (e-task-queue--normalize (e-task-queue--record queue task-id))))
+    (e-task-queue--normalize queue (e-task-queue--record queue task-id))))
 
 (defun e-task-queue-cancel (queue task-id)
   "Cancel TASK-ID in QUEUE and return its normalized record.
@@ -599,7 +608,7 @@ settle.  Terminal tasks are returned unchanged."
          (e-task-queue--settle-work-handle record 'cancelled)
          (e-task-queue--notify queue)
          (e-task-queue--dispatch queue))))
-    (e-task-queue--normalize record)))
+    (e-task-queue--normalize queue record)))
 
 (defun e-task-queue-pause (queue task-id)
   "Pause TASK-ID in QUEUE and return its normalized record.
@@ -627,7 +636,7 @@ returned unchanged."
            (plist-put record :started-at nil)
            (e-task-queue--notify queue)
            (e-task-queue--dispatch queue)))))
-    (e-task-queue--normalize record)))
+    (e-task-queue--normalize queue record)))
 
 (defun e-task-queue-resume (queue task-id)
   "Resume a paused TASK-ID in QUEUE and return its normalized record.
@@ -640,7 +649,7 @@ under the normal cap.  A non-paused task is returned unchanged."
       (plist-put record :finished-at nil)
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))
-    (e-task-queue--normalize record)))
+    (e-task-queue--normalize queue record)))
 
 (defun e-task-queue-pause-all (queue)
   "Set QUEUE's pause gate and pause every non-terminal task.

@@ -1,0 +1,33 @@
+#+title: Investigation: private task queues leak invalid await references
+
+* Finding
+
+=e-task-queue--normalize= added =:await-ref task:<task-id>= to every queue record.
+The =task:= waitable resolver is process-global and is registered by =e-task-queue-actions-register-waitable-resolver= for =e-task-queue-actions-default-queue= only.
+A private queue therefore advertised references that no registered resolver could map to its work handles.
+
+The daily board contract did not leak queue records by itself.
+The leak appeared when manual supervision called the private queue and consumed its normalized records.
+The unconditional normalized field made that implementation detail look like a supported participant contract.
+
+* Evidence
+
+- =lisp/core/e-task-queue.el= previously emitted =:await-ref= unconditionally from =e-task-queue--normalize=.
+- =lisp/layers/agents/e-task-queue-actions.el= registers the sole =task:= resolver against the default capability queue.
+- =.e/layers/topic/daily-run.el= creates a separate durable queue for bounded daily worker dispatch.
+- =e-board-orchestration-actions-dispatch-queue-task= maps private queue lifecycle back to the daily source board without requiring participant-visible task references.
+
+* Fix
+
+Queues are now private by default.
+=e-task-queue-create= accepts =:expose-await-references-p= for the one queue whose task ids are registered with the global resolver.
+Normalized private records omit =:await-ref= entirely.
+The default Task Queue capability queue explicitly opts in.
+Resolver registration rejects a private queue instead of silently installing an invalid contract.
+
+* Verification
+
+- =test/e-task-queue-test.el= proves private queues omit await references, public queues retain resolvable references, and board-orchestration dispatch records stay private.
+- =test/e-task-queue-actions-test.el= proves only the public default queue may register the global =task:= scheme and custom capability queues do not expose await references.
+- Focused Task Queue and action suites passed 45/45 tests.
+- The running Emacs was not reloaded.
