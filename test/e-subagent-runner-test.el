@@ -509,6 +509,32 @@ the harness."
         (should (memq 'emacs-base (plist-get result :enabled-layers)))
         (should-not (memq 'os-base (plist-get result :enabled-layers)))))))
 
+(ert-deftest e-subagent-runner-test-configure-type-before-first-spawn-persists ()
+  "configure-type preserves pre-spawn overrides when child defaults are seeded."
+  (e-subagent-runner-test--with-instances
+    (e-harness-instance-register
+     :id :lean
+     :name "Lean"
+     :kind 'tool-user
+     :subagent t
+     :description "Lean tool runner."
+     :layers '(harness-base os-base)
+     :factory (lambda () (e-harness-create
+                          :backend (e-backend-fake-create :items nil))))
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (e-subagent-configure-type :lean :enable-layers '("web"))
+      (let* ((record (e-subagent-runner-test--spawn
+                      registry parent "parent-1"
+                      :type :lean :prompt "go" :runner noop))
+             (harness (e-subagent-registry-child-harness
+                       registry (plist-get record :subagent-id))))
+        (should (equal (e-harness-enabled-layer-ids harness)
+                       '(harness-base os-base subagents-child web)))))))
+
 (ert-deftest e-subagent-runner-test-instance-layers-seed-child-harness ()
   "An instance's declared :layers/:layer-config seed its child harness once.
 A later configure-type override is preserved across subsequent spawns."

@@ -541,11 +541,10 @@ children of a type share one harness, this configures the type, not a single
 child."
   (let* ((type (e-subagent--normalize-type type))
          (instance (e-subagent--type-instance type))
-         (harness (e-harness-instance-get-or-create type))
+         (harness (e-subagent--child-harness instance))
          (enable-layers (plist-get args :enable-layers))
          (disable-layers (plist-get args :disable-layers))
          (layer-config (plist-get args :layer-config)))
-    (ignore instance)
     (dolist (layer (append disable-layers nil))
       (e-harness-disable-layer-id harness (e-subagent--layer-symbol layer)))
     (dolist (layer (append enable-layers nil))

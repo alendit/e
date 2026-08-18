@@ -1,0 +1,20 @@
+#+title: Subagent pre-spawn layer override is clobbered
+
+* Report
+
+The Grimoire daily runner configured the shared =tool-user= subagent harness with the =slack-mcp= layer before it spawned the Slack gatherer.
+The Slack child still received only the lean OS and Emacs tools.
+Its daily fragment therefore recorded Slack as unavailable even though the parent session had working Slack MCP tools.
+
+* User-visible impact
+
+- A workflow that follows the documented =configure-type= before =spawn= order can silently lose the requested layer on the first child.
+- Slack, web, or other opt-in tools can be absent from the child while the parent believes configuration succeeded.
+- Later children may work if the shared harness is configured again after its first spawn, which makes the failure depend on process history.
+
+* Reproduction evidence
+
+- Daily run: =daily:2026-08-18:20260818T122723893435000=.
+- Slack child session: =20260818T123001-06c1b76caf0d=.
+- The child tool context listed =read=, =write=, =edit=, =glob=, =search=, =resource_sync_status=, =bash=, =await=, =list_buffers=, =save_buffer=, and =run_elisp=, with no =mcp__slack__*= tools.
+- A focused regression test reproduced the same loss with a synthetic =web= layer enabled before the first spawn.

@@ -1,0 +1,41 @@
+#+title: Investigation: subagent pre-spawn layer override is clobbered
+
+* Finding
+
+The failure is an initialization-order bug in the shared subagent harness.
+=e-subagent-configure-type= created the harness directly and enabled the requested layer.
+It did not apply the harness instance's declared child setup or mark the harness in =e-subagent--configured-harnesses=.
+The first later spawn entered =e-subagent--child-harness=, treated that harness as uninitialized, and replaced its enabled layer set with the instance defaults plus =subagents-child=.
+That replacement removed =slack-mcp= before the child turn was built.
+
+* Competing hypotheses
+
+- A bad =slack-mcp= layer id was unlikely because the live harness resolved the same id to all =mcp__slack__*= tools after configuration survived initialization.
+- Missing Slack credentials were unlikely because the parent session used the same MCP server successfully.
+- Child prompt error was ruled out because =e-tools-current-context-summary= in the child showed that Slack tools were absent from the tool registry itself.
+
+* Evidence
+
+- =.e/layers/topic/daily-run.el= calls =e-subagent-configure-type= before dispatching any daily child.
+- =lisp/layers/agents/e-subagent-runner.el= previously had =e-subagent-configure-type= call =e-harness-instance-get-or-create= directly.
+- The same file's =e-subagent--child-harness= uses =e-harness-set-enabled-layer-ids= during first-child initialization, which replaces earlier layer toggles.
+- =test/e-subagent-runner-test.el= covered configuration after a first spawn but did not cover configuration before the first spawn.
+- The new regression test failed with =web= missing from =(harness-base os-base subagents-child)= before the fix.
+
+* Fix
+
+=e-subagent-configure-type= now obtains the shared harness through =e-subagent--child-harness=.
+This applies the instance defaults exactly once before requested enable, disable, and capability-config overrides.
+A new test configures =web= before the first spawn and asserts that the child keeps both its default layers and the override.
+
+* Verification
+
+- =eldev -p test test -f test/e-subagent-runner-test.el e-subagent-runner-test-configure-type-before-first-spawn-persists=: 29/29 passed after the fix.
+- The same new test failed before the source change because =web= disappeared on first spawn.
+- The running Emacs was not reloaded.
+- The current session did not expose the =e-dev= action needed to mark a reload as required.
+
+* Operational note
+
+The investigation re-enabled =slack-mcp= on the already-initialized live =tool-user= harness, so this Emacs process now exposes Slack tools to that type.
+A reload is still required for the corrected pre-spawn behavior to survive a fresh process.

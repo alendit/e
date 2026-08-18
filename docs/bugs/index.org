@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | subagent-pre-spawn-layer-override-clobbered/ | Subagent pre-spawn layer override is clobbered |
 | Closed | e-chat-atomic-persp-restoration-corrupts-layout/ | Atomic e-chat surface corrupts perspective restoration |
 | Closed | session-persistence-checkpoint-batch-budget/ | Multi-session checkpoint exceeds persistence command budget |
 | Closed | openai-http-active-stream-timeout/ | Active OpenAI HTTP stream times out after 180 seconds |
