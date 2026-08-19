@@ -1,0 +1,28 @@
+#+title: Project-Local Action Capabilities
+#+startup: overview
+
+* Status
+
+In-progress
+
+* Goal
+
+Make trusted project-local actions available through normal =e-actions-call= dispatch and =e-action://= discovery for the active session project root.
+Keep project policy out of the shared runtime.
+
+* Design
+
+- Add optional action-capability providers to =e-capability=.
+- Expand providers only through =e-harness-effective-action-capabilities=.
+- Keep =e-harness-effective-capabilities= unchanged so ordinary status and model-facing capability paths do not load project Elisp.
+- Let the project-local aggregate return action-bearing capabilities discovered under the active session root.
+- Use the same action-capability view for dispatch and action-description resources.
+- Reject duplicate action capability ids deterministically.
+
+* Verification
+
+- Dispatch a trusted project-local action from its session root.
+- Prove untrusted cold inspection does not load repository Elisp.
+- Prove an edited action contract invalidates the project-local cache.
+- Verify =e-action://active=, capability, and action resources.
+- Exercise a board continuation that calls a project-local action.

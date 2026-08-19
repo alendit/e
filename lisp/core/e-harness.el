@@ -44,6 +44,8 @@
   "Session already has an active turn")
 (define-error 'e-harness-board-attachment-required
   "Live harness execution requires a current board attachment")
+(define-error 'e-harness-duplicate-action-capability
+  "Duplicate action capability id")
 
 (defvar e-harness--attached-port-authorizer nil
   "Adapter validating private live-port attachment tokens.")
@@ -360,6 +362,37 @@ SESSION-ID and TURN-ID identify the root used for config-aware layer factories."
             (append capabilities
                     (copy-sequence (or (e-layer-capabilities layer) nil)))))
     capabilities))
+
+(defun e-harness--unique-action-capabilities (capabilities)
+  "Return CAPABILITIES after rejecting duplicate capability ids."
+  (let ((seen (make-hash-table :test #'eq))
+        result)
+    (dolist (capability capabilities)
+      (let ((id (e-capability-id capability)))
+        (when (gethash id seen)
+          (signal 'e-harness-duplicate-action-capability (list id)))
+        (puthash id t seen)
+        (push capability result)))
+    (nreverse result)))
+
+(defun e-harness-effective-action-capabilities
+    (harness &optional session-id turn-id)
+  "Return action capabilities for HARNESS SESSION-ID and TURN-ID.
+Ordinary action-bearing capabilities are combined with action capabilities
+provided dynamically for the active session context."
+  (let* ((capabilities
+          (e-harness-effective-capabilities harness session-id turn-id))
+         (ordinary
+          (cl-remove-if-not #'e-capability-actions capabilities))
+         (provided
+          (e-capabilities-provided-action-capabilities
+           capabilities
+           :harness harness
+           :session-id session-id
+           :turn-id turn-id)))
+    (e-harness--unique-action-capabilities
+     (append ordinary
+             (cl-remove-if-not #'e-capability-actions provided)))))
 
 (defun e-harness-active-capabilities (harness)
   "Return HARNESS capabilities for callers without session context."

@@ -860,6 +860,12 @@ revalidates via `e-project-local--discovered-capabilities'."
   (e-project-local--discovered-capabilities
    (e-project-local--context-directory fallback context)))
 
+(defun e-project-local--context-action-capabilities (fallback &rest context)
+  "Return trusted project-local action capabilities for CONTEXT or FALLBACK."
+  (cl-remove-if-not
+   #'e-capability-actions
+   (e-project-local--context-capabilities fallback context)))
+
 (defun e-project-local--register-context-tools
     (fallback registry &rest context)
   "Register project-local tools for CONTEXT, using FALLBACK when needed."
@@ -929,6 +935,11 @@ revalidates via `e-project-local--discovered-capabilities'."
            (e-project-local--prime-action-descriptor
             fallback
             "Reload trusted allowlisted project-local extensions explicitly."))
+     :action-capability-providers
+     (list (lambda (&rest context)
+             (apply #'e-project-local--context-action-capabilities
+                    fallback
+                    context)))
      :tools
      (list (lambda (registry &rest context)
              (apply #'e-project-local--register-context-tools

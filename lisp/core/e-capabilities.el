@@ -30,7 +30,8 @@
                                    resource-methods resources
                                    context-providers actions hooks
                                    instruction-priority config-options config
-                                   prompts structured-blocks message-details))
+                                   prompts structured-blocks message-details
+                                   action-capability-providers))
                (:conc-name e-capability--))
   id
   name
@@ -46,7 +47,8 @@
   config
   prompts
   structured-blocks
-  message-details)
+  message-details
+  action-capability-providers)
 
 (cl-defstruct (e-action
                (:constructor e-action--create
@@ -218,6 +220,33 @@ This accessor tolerates stale capability records compiled before the
   (if (>= (length capability) 16)
       (e-capability--message-details capability)
     nil))
+
+(defun e-capability-action-capability-providers (capability)
+  "Return CAPABILITY dynamic action-capability providers.
+This accessor tolerates stale capability records compiled before the
+`action-capability-providers' slot existed."
+  (if (>= (length capability) 17)
+      (e-capability--action-capability-providers capability)
+    nil))
+
+(defun e-capabilities-provided-action-capabilities
+    (capabilities &rest context)
+  "Return action capabilities dynamically provided by CAPABILITIES.
+CONTEXT is passed as keyword arguments to every provider."
+  (let (provided)
+    (dolist (capability capabilities)
+      (dolist (provider
+               (e-capability-action-capability-providers capability))
+        (unless (functionp provider)
+          (signal 'wrong-type-argument (list 'functionp provider)))
+        (let ((children (apply provider context)))
+          (unless (listp children)
+            (signal 'wrong-type-argument (list 'listp children)))
+          (dolist (child children)
+            (unless (e-capability-p child)
+              (signal 'wrong-type-argument (list 'e-capability-p child)))
+            (push child provided)))))
+    (nreverse provided)))
 
 (defconst e-capabilities-system-guidance-default-capability-index 100000
   "Synthetic capability index for system-guidance hook fragments.

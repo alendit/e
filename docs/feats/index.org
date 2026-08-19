@@ -93,3 +93,4 @@ Status values for coding agents:
 | 80 | Done        | 80-voice-adjustment-gradual-discovery/       | Voice Adjustment Gradual Discovery                    |
 | 81 | In-review   | 81-openai-gpt56-explicit-prompt-cache/       | OpenAI GPT-5.6 Explicit Prompt Cache                   |
 | 82 | Done        | 82-board-native-subagent-supervision/         | Board-Native Subagent Supervision                     |
+| 83 | In-progress | 83-project-local-action-capabilities/       | Project-Local Action Capabilities                    |

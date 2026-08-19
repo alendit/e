@@ -55,10 +55,7 @@
 
 (defun e-action-resources--effective-capabilities (harness session-id turn-id)
   "Return action-bearing effective capabilities for HARNESS SESSION-ID TURN-ID."
-  (cl-remove-if-not
-   (lambda (capability)
-     (e-capability-actions capability))
-   (e-harness-effective-capabilities harness session-id turn-id)))
+  (e-harness-effective-action-capabilities harness session-id turn-id))
 
 (defun e-action-resources--action-entries (capability)
   "Return action entries for CAPABILITY as (KEY . SPEC) pairs."
@@ -75,7 +72,8 @@
   "Return active CAPABILITY-ID for HARNESS SESSION-ID TURN-ID."
   (cl-find-if (lambda (capability)
                 (eq (e-capability-id capability) capability-id))
-              (e-harness-effective-capabilities harness session-id turn-id)))
+              (e-harness-effective-action-capabilities
+               harness session-id turn-id)))
 
 (defun e-action-resources--find-action (capability action-key)
   "Return action spec for CAPABILITY ACTION-KEY."

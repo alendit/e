@@ -146,10 +146,17 @@
       (plist-get context :turn-id)))
 
 (defun e-actions--find-capability (harness session-id turn-id capability-id)
-  "Return active CAPABILITY-ID from HARNESS SESSION-ID TURN-ID."
-  (cl-find-if (lambda (capability)
-                (eq (e-capability-id capability) capability-id))
-              (e-harness-effective-capabilities harness session-id turn-id)))
+  "Return active CAPABILITY-ID from HARNESS SESSION-ID TURN-ID.
+Resolve ordinary capabilities first so dispatching a built-in project-local
+inspection action does not load cold repository Elisp."
+  (or (cl-find-if (lambda (capability)
+                    (eq (e-capability-id capability) capability-id))
+                  (e-harness-effective-capabilities
+                   harness session-id turn-id))
+      (cl-find-if (lambda (capability)
+                    (eq (e-capability-id capability) capability-id))
+                  (e-harness-effective-action-capabilities
+                   harness session-id turn-id))))
 
 (defun e-actions--schema-required (parameters)
   "Return required keys from action PARAMETERS schema."
