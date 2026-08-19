@@ -1,0 +1,51 @@
+#+title: Trace-Driven Hot Path Remediation
+#+startup: overview
+
+* Goal
+
+Remove the two unbounded synchronous costs identified by the 2026-08-19
+developer traces, then bound the remaining live chat projection without
+discarding durable activity detail.
+
+* Ownership
+
+- The chat shell owns mutable progress presentation and the bounded live
+  activity projection.
+- The process-reporting capability owns marker-specific counterfactual
+  measurement.  The generic loop must not know marker tool or segment names.
+- Durable activity remains complete; only the live transient projection is
+  bounded.
+
+* Slices
+
+** DONE Slice 1: Incremental progress tail
+
+Render completed activity rounds as immutable text and update only the latest
+marker-delimited thinking/running/working row on progress ticks.  Full activity
+events may rebuild the transient projection; cosmetic timer ticks may not scan,
+re-property, or re-index the completed prefix.
+
+Exit evidence:
+
+- focused batch coverage proves all buffer changes begin inside the active tail;
+- graphical timer coverage proves the same contract under native redisplay.
+
+** TODO Slice 2: Capability-owned request accounting
+
+Remove unconditional process-marker counterfactual construction from the
+provider loop.  Preserve ordinary request lifecycle identity without request
+shape work.  Expose marker accounting only through an explicit
+process-reporting-owned measurement path.
+
+** TODO Slice 3: Bounded live activity history
+
+Show a configurable number of recent rounds plus an omitted-round summary in
+the live transient block.  Settled expandable details and durable activity keep
+the complete history.
+
+* Verification
+
+- focused ERT for chat, loop, harness telemetry, and process reporting;
+- focused graphical tests for incremental progress and bounded live history;
+- complete graphical suite after all slices;
+- source compilation and diff review without reloading the running Emacs.

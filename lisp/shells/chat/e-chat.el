@@ -4949,17 +4949,42 @@ harness-confirmed active turn."
 
 (defun e-chat--activity-record-visible-chunks (record)
   "Return visible activity chunks for semantic activity RECORD."
+  (plist-get (e-chat--activity-record-transient-data record) :chunks))
+
+(defun e-chat--activity-record-transient-data (record)
+  "Return transient render data for semantic activity RECORD.
+The returned plist contains complete visible :text and :chunks.  While the
+latest round is the active turn's mutable progress tail, :progress-start and
+:progress-end are character offsets delimiting only that tail in :text."
   (let* ((rounds (e-chat--activity-records record))
          (latest (car (last rounds)))
-         (active-turn (and (equal (plist-get record :id)
-                                  e-chat--progress-turn-id)
-                           (e-chat--service-active-turn-matches-p
-                            e-chat--progress-turn-id))))
-    (delq nil
-          (mapcar (lambda (round)
-                    (e-chat--activity-round-visible-text
-                     round (and active-turn (eq round latest))))
-                  rounds))))
+         (active-tail
+          (and latest
+               (equal (plist-get record :id) e-chat--progress-turn-id)
+               (e-chat--service-active-turn-matches-p
+                e-chat--progress-turn-id)))
+         (separator (concat "\n" e-chat--activity-separator "\n"))
+         chunks
+         (offset 0)
+         progress-start
+         progress-end)
+    (dolist (round rounds)
+      (when-let ((text (e-chat--activity-round-visible-text
+                        round (and active-tail (eq round latest)))))
+        (when chunks
+          (setq offset (+ offset (length separator))))
+        (when (and active-tail (eq round latest))
+          (setq progress-start offset)
+          (setq progress-end (+ progress-start (length text))))
+        (setq offset (+ offset (length text)))
+        (push text chunks)))
+    (setq chunks (nreverse chunks))
+    (let ((text (and chunks
+                     (concat (string-join chunks separator) "\n\n"))))
+      (list :chunks chunks
+            :text text
+            :progress-start progress-start
+            :progress-end progress-end))))
 
 (defun e-chat--activity-action-visible-chunks (record)
   "Return visible action chunks from RECORD intermittent entries."
@@ -5201,12 +5226,7 @@ Count tool invocations after the reasoning chunk they followed."
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
   (if (e-chat--activity-records record)
-      (when-let ((chunks (e-chat--activity-record-visible-chunks record)))
-        (when chunks
-          (concat (string-join
-                   chunks
-                   (concat "\n" e-chat--activity-separator "\n"))
-                  "\n\n")))
+      (plist-get (e-chat--activity-record-transient-data record) :text)
     (when-let ((entries (plist-get record :intermittent-entries)))
       (let ((chunks (e-chat--activity-visible-chunks entries)))
         (when chunks
@@ -5856,24 +5876,73 @@ window retains its scroll position, including when the composer is focused."
                             record
                             (e-chat--activity-summary-text record)))
          (pending-summary (and record (plist-get record :pending-hook-summary)))
-         (transient-text (and record (e-chat--transient-text record)))
+         (transient-data
+          (and record
+               (e-chat--activity-records record)
+               (e-chat--activity-record-transient-data record)))
+         (transient-text
+          (and record
+               (or (plist-get transient-data :text)
+                   (e-chat--transient-text record))))
+         (pending-prefix (and pending-summary
+                              (concat pending-summary "\n\n")))
          (text (if final-rendered
                    (concat (when summary-text
                              (concat summary-text "\n\n"))
-                           (when pending-summary
-                             (concat pending-summary "\n\n")))
+                           pending-prefix)
                  (when (or pending-summary transient-text)
-                   (concat (when pending-summary
-                             (concat pending-summary "\n\n"))
+                   (concat pending-prefix
                            transient-text
-                           (when (and pending-summary has-progress)
+                           (when (and pending-summary has-progress
+                                      (not transient-text))
                              (e-chat--entry-text "Assistant"
-                                                 (e-chat--progress-dots))))))))
-    (list :has-progress has-progress
-          :final-rendered final-rendered
-          :summary-text summary-text
-          :text text
-          :block-kind (if summary-text 'activity-summary 'activity))))
+                                                 (e-chat--progress-dots)))))))
+         (progress-start
+          (and (not final-rendered)
+               has-progress
+               (cond
+                ((plist-get transient-data :progress-start)
+                 (+ (length (or pending-prefix ""))
+                    (plist-get transient-data :progress-start)))
+                ((and pending-summary (not transient-text))
+                 (length pending-prefix)))))
+         (progress-end
+          (and progress-start
+               (cond
+                ((plist-get transient-data :progress-end)
+                 (+ (length (or pending-prefix ""))
+                    (plist-get transient-data :progress-end)))
+                (t (length text))))))
+    (let ((data
+           (list :has-progress has-progress
+                 :final-rendered final-rendered
+                 :summary-text summary-text
+                 :text text
+                 :progress-start progress-start
+                 :progress-end progress-end
+                 :block-kind (if summary-text 'activity-summary 'activity))))
+      (when (and has-progress (not text))
+        (let ((display (e-chat--entry-text "Assistant"
+                                           (e-chat--progress-dots))))
+          (plist-put data :progress-start 0)
+          (plist-put data :progress-end (length display))))
+      data)))
+
+(defun e-chat--progress-tail-text (turn-id record)
+  "Return only TURN-ID's mutable progress tail text from RECORD."
+  (cond
+   ((and record
+         (e-chat--activity-records record)
+         (equal turn-id e-chat--progress-turn-id)
+         (e-chat--service-active-turn-matches-p turn-id))
+    (when-let ((latest (car (last (e-chat--activity-records record)))))
+      (e-chat--activity-round-visible-text latest t)))
+   ((and record
+         (plist-get record :pending-hook-summary)
+         (not (e-chat--transient-text record)))
+    (e-chat--entry-text "Assistant" (e-chat--progress-dots)))
+   ((not (and record (e-chat--transient-text record)))
+    (e-chat--entry-text "Assistant" (e-chat--progress-dots)))))
 
 (defun e-chat--turn-pending-hook-summary (turn-id)
   "Return capability-provided pending hook activity for TURN-ID, if any."
@@ -5939,10 +6008,16 @@ window retains its scroll position, including when the composer is focused."
         (let* ((activity-block-id
                 (and record
                      (e-chat--running-status-activity-block-id record)))
+               (progress-start (plist-get data :progress-start))
+               (progress-end (plist-get data :progress-end))
                (properties `(e-chat-transient-turn-id ,turn-id
                              e-chat-turn-id ,turn-id)))
-          (setq e-chat--progress-start-marker nil)
-          (setq e-chat--progress-end-marker nil)
+          (setq e-chat--progress-start-marker
+                (and progress-start
+                     (copy-marker (+ start progress-start) nil)))
+          (setq e-chat--progress-end-marker
+                (and progress-end
+                     (copy-marker (+ start progress-end) nil)))
           (when activity-block-id
             (setq properties
                   (append properties
@@ -6372,9 +6447,55 @@ the exiting minibuffer, so defer the coalesced flush by one event-loop turn."
 
 (defun e-chat--render-progress-indicator (turn-id)
   "Render active assistant progress indicator for TURN-ID."
-  (e-chat--render-running-status
-   turn-id
-   (e-chat--existing-turn-record turn-id)))
+  (let ((record (e-chat--existing-turn-record turn-id)))
+    (unless (e-chat--replace-progress-tail turn-id record)
+      (e-chat--render-running-status turn-id record))))
+
+(defun e-chat--replace-progress-tail (turn-id record)
+  "Replace only TURN-ID's mutable progress tail from RECORD.
+Return non-nil when live tail markers allowed an incremental update."
+  (let* ((start (and (markerp e-chat--progress-start-marker)
+                     (marker-position e-chat--progress-start-marker)))
+         (end (and (markerp e-chat--progress-end-marker)
+                   (marker-position e-chat--progress-end-marker)))
+         (bounds (e-chat--running-status-bounds))
+         (text (e-chat--progress-tail-text turn-id record)))
+    (when (and start end bounds text
+               (<= (car bounds) start)
+               (<= start end)
+               (<= end (cdr bounds))
+               (not (e-chat--composer-needs-sanitize-p)))
+      (let ((navigation-state
+             (e-chat--capture-running-status-navigation-state))
+            (display-state
+             (e-chat--capture-running-status-display-state))
+            (activity-block-id (and record
+                                    (plist-get record :activity-block-id)))
+            new-end)
+        (let ((inhibit-read-only t))
+          (setq new-end
+                (e-chat--replace-region-text-minimally start end text))
+          (e-chat--copy-running-status-display-properties start text)
+          (e-chat--mark-protected start new-end)
+          (if activity-block-id
+              (add-text-properties
+               start new-end
+               `(font-lock-face e-chat-system-face
+                 e-chat-transient-turn-id ,turn-id
+                 e-chat-turn-id ,turn-id
+                 e-chat-block-id ,activity-block-id))
+            (add-text-properties
+             start new-end
+             `(font-lock-face e-chat-assistant-face
+               e-chat-progress-turn-id ,turn-id)))
+          (setq e-chat--progress-start-marker (copy-marker start nil))
+          (setq e-chat--progress-end-marker (copy-marker new-end nil))
+          (e-chat--note-transcript-layout-change))
+        (e-chat--restore-running-status-navigation-state navigation-state)
+        (when display-state
+          (e-chat--restore-running-status-display-state display-state))
+        (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id))
+      t)))
 
 (defun e-chat--advance-progress-indicator ()
   "Advance and rerender the active assistant progress indicator."

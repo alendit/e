@@ -1060,6 +1060,72 @@ than the invisible insertion position."
              3.0 "large chat settled after minibuffer provider completion")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-progress-timer-edits-only-active-tail ()
+  "A graphical progress timer leaves a long completed activity prefix unchanged."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-progress-interval 0.05)
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "long activity prompt")
+          (let ((transcript (plist-get fixture :transcript)))
+            (with-current-buffer transcript
+              (let* ((turn-id e-chat--progress-turn-id)
+                     (record (e-chat--existing-turn-record turn-id))
+                     (now (float-time))
+                     rounds)
+                (dotimes (index 48)
+                  (setq rounds
+                        (append
+                         rounds
+                         (list (list :kind 'round
+                                     :round (1+ index)
+                                     :started-at (+ 10 (* index 2))
+                                     :ended-at (+ 11 (* index 2))
+                                     :status 'done
+                                     :reasoning nil
+                                     :tool-batches nil)))))
+                (setq rounds
+                      (append rounds
+                              (list (list :kind 'round
+                                          :round 49
+                                          :started-at (- now 5)
+                                          :status 'active
+                                          :reasoning nil
+                                          :tool-batches nil))))
+                (plist-put record :activity-records rounds)
+                (plist-put record :activity-round 49)
+                (plist-put record :has-provider-activity t)
+                (e-chat--render-turn-transient turn-id record)
+                (e-chat--cancel-pending-activity-redraw)
+                (let* ((tail-start
+                        (marker-position e-chat--progress-start-marker))
+                       (stable-prefix
+                        (buffer-substring-no-properties
+                         (point-min) tail-start))
+                       changes)
+                  (add-hook 'before-change-functions
+                            (lambda (start end)
+                              (push (cons start end) changes))
+                            nil t)
+                  (e-graphical-test-wait-until
+                   (lambda ()
+                     (and changes
+                          (> e-chat--progress-frame 0)))
+                   1.0 "incremental graphical progress tick")
+                  (should (cl-every (lambda (change)
+                                      (>= (car change) tail-start))
+                                    changes))
+                  (should (equal stable-prefix
+                                 (buffer-substring-no-properties
+                                  (point-min) tail-start)))
+                  (e-chat-behavior-test--capture-state
+                   "progress-updated-only-active-tail"))))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
   "A real persp-mode round trip restores the chat pair and composer focus."
   (skip-unless (display-graphic-p))

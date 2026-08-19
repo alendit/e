@@ -4218,6 +4218,59 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-rerender-touches-only-active-tail ()
+  "Progress redraw leaves completed activity rounds physically untouched."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-active-tail")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-test--mark-active-turn "turn-1")
+          (dotimes (index 24)
+            (let ((started-at (* index 2)))
+              (e-chat--render-event
+               (e-events-make :type 'provider-request-started
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :created-at started-at
+                              :payload '(:status started)))
+              (unless (= index 23)
+                (e-chat--render-event
+                 (e-events-make :type 'provider-request-finished
+                                :session-id e-chat-session-id
+                                :turn-id "turn-1"
+                                :created-at (1+ started-at)
+                                :payload '(:status done))))))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)))
+          (let* ((tail-start (marker-position e-chat--progress-start-marker))
+                 (stable-prefix
+                  (buffer-substring-no-properties (point-min) tail-start))
+                 changes)
+            (add-hook 'before-change-functions
+                      (lambda (start end)
+                        (push (cons start end) changes))
+                      nil t)
+            (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                       (lambda (&optional _time) 60.0)))
+              (e-chat--advance-progress-indicator)
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer (current-buffer))))
+            (should changes)
+            (should (cl-every (lambda (change)
+                                (>= (car change) tail-start))
+                              changes))
+            (should (equal stable-prefix
+                           (buffer-substring-no-properties
+                            (point-min) tail-start)))
+            (should (string-match-p "Thinking for 0min 14sec"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-updates-between-provider-and-tool ()
   "Progress redraw keeps counting after a provider settles within a live turn."
   (let ((buffer (e-chat-test--buffer nil "chat-between-step-progress")))
