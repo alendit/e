@@ -45,11 +45,18 @@ Exit evidence:
   and joined to lifecycle events by provider request id;
 - 179 focused loop, harness, and process-reporting tests pass.
 
-** TODO Slice 3: Bounded live activity history
+** DONE Slice 3: Bounded live activity history
 
 Show a configurable number of recent rounds plus an omitted-round summary in
 the live transient block.  Settled expandable details and durable activity keep
 the complete history.
+
+Exit evidence:
+
+- live text and tool navigation project the latest 12 rounds by default;
+- focused batch coverage proves omitted rounds remain in expanded details;
+- graphical coverage proves a 30-round turn shows only the latest 6 rounds
+  under a test-local limit while retaining round 1 in details.
 
 * Verification
 

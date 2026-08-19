@@ -4271,6 +4271,40 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-live-activity-bounds-rounds-with-complete-details ()
+  "Live activity is bounded while settled details retain every round."
+  (let* ((e-chat-live-activity-round-limit 5)
+         (rounds
+          (cl-loop
+           for index from 1 to 8
+           collect
+           `(:kind round
+             :round ,index
+             :started-at ,(* index 2)
+             :ended-at ,(1+ (* index 2))
+             :status done
+             :reasoning ((:content ,(format "reasoning-%d" index)))
+             :tool-batches
+             ((:items ((:id ,(format "call-%d" index)
+                        :call ,(format "tool-%d" index)
+                        :output ,(format "output-%d" index))))))))
+         (record (list :id "turn-1" :activity-records rounds))
+         (data (e-chat--activity-record-transient-data record))
+         (text (plist-get data :text))
+         (expanded (e-chat--activity-expanded-text record))
+         (live-tools (e-chat--activity-tool-items record t))
+         (all-tools (e-chat--activity-tool-items record)))
+    (should (= (plist-get data :omitted-round-count) 3))
+    (should (string-match-p "3 earlier activity rounds omitted" text))
+    (should-not (string-match-p "reasoning-1" text))
+    (should (string-match-p "reasoning-4" text))
+    (should (string-match-p "reasoning-8" text))
+    (should (string-match-p "reasoning-1" expanded))
+    (should-not (string-match-p "activity rounds omitted" expanded))
+    (should (= (length live-tools) 5))
+    (should (equal (plist-get (car live-tools) :call) "tool-4"))
+    (should (= (length all-tools) 8))))
+
 (ert-deftest e-chat-test-progress-rerender-updates-between-provider-and-tool ()
   "Progress redraw keeps counting after a provider settles within a live turn."
   (let ((buffer (e-chat-test--buffer nil "chat-between-step-progress")))

@@ -1126,6 +1126,71 @@ than the invisible insertion position."
                    "progress-updated-only-active-tail"))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-live-activity-history-is-bounded ()
+  "A long live turn projects recent rounds while retaining complete details."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-live-activity-round-limit 6)
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "bounded activity prompt")
+          (let ((transcript (plist-get fixture :transcript)))
+            (with-current-buffer transcript
+              (let* ((turn-id e-chat--progress-turn-id)
+                     (record (e-chat--existing-turn-record turn-id))
+                     (now (float-time))
+                     rounds)
+                (dotimes (offset 30)
+                  (let ((index (1+ offset)))
+                    (push
+                     (list :kind 'round
+                           :round index
+                           :started-at (+ 10 (* index 2))
+                           :ended-at (and (< index 30)
+                                          (+ 11 (* index 2)))
+                           :status (if (= index 30) 'active 'done)
+                           :reasoning
+                           (list (list :content
+                                       (format "reasoning-round-%02d" index)))
+                           :tool-batches
+                           (list
+                            (list :items
+                                  (list
+                                   (list :id (format "call-%02d" index)
+                                         :call (format "tool-%02d" index)
+                                         :output
+                                         (format "output-%02d" index))))))
+                     rounds)))
+                (setq rounds (nreverse rounds))
+                (plist-put (car (last rounds)) :started-at (- now 5))
+                (plist-put record :activity-records rounds)
+                (plist-put record :activity-round 30)
+                (plist-put record :has-provider-activity t)
+                (e-chat--render-turn-transient turn-id record)
+                (e-chat--cancel-pending-activity-redraw)
+                (let* ((bounds (e-chat--running-status-bounds))
+                       (text (buffer-substring-no-properties
+                              (car bounds) (cdr bounds)))
+                       (block
+                        (gethash (plist-get record :activity-block-id)
+                                 e-chat--block-registry))
+                       (tools (plist-get block :tool-items))
+                       (details (e-chat--activity-expanded-text record)))
+                  (should (string-match-p
+                           "24 earlier activity rounds omitted" text))
+                  (should-not (string-match-p "reasoning-round-01" text))
+                  (should (string-match-p "reasoning-round-25" text))
+                  (should (string-match-p "reasoning-round-30" text))
+                  (should (= (length tools) 6))
+                  (should (equal (plist-get (car tools) :call) "tool-25"))
+                  (should (string-match-p "reasoning-round-01" details))
+                  (e-chat-behavior-test--capture-state
+                   "bounded-live-activity-history"))))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
   "A real persp-mode round trip restores the chat pair and composer focus."
   (skip-unless (display-graphic-p))

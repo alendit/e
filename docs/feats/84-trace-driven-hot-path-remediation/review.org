@@ -1,0 +1,105 @@
+#+title: Review: Trace-Driven Hot Path Remediation
+#+author: e implementation
+#+date: 2026-08-19
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+All three trace-driven slices meet their ownership and performance contracts.
+No unresolved finding remains.  The progress timer mutates only the active
+tail, process-marker accounting is absent from ordinary provider requests, and
+live activity history is bounded without truncating durable or expandable
+detail.
+
+* Scope reviewed
+
+- chat running-status rendering, block metadata, unit tests, and graphical E2E;
+- provider lifecycle emission and durable harness projection;
+- explicit process-reporting request measurement, persistence, and reporting;
+- feature 52 and public accounting documentation.
+
+* Verification
+
+#+begin_src sh
+eldev -q test test/e-loop-test.el test/e-process-reporting-test.el test/e-harness-test.el
+eldev -q test test/e-chat-test.el
+bash e2e/run-graphical-tests.sh
+eldev -q test
+eldev -q compile --set all
+git diff --check
+#+end_src
+
+#+begin_example
+179/179 focused loop, harness, and process-reporting tests passed.
+352 expected, 0 unexpected, 1 skipped in the complete chat test file.
+25/25 graphical behavior tests passed, including both new regressions.
+Full repository run: 2179 expected, 3 unexpected, 2 skipped out of 2184.
+The three failures are existing whole-suite shared window/timer-state failures;
+all three pass together when selected in isolation.
+Compilation completed with existing test warnings.  Whitespace check passed.
+#+end_example
+
+The first unprivileged full run also had six local HTTP fixture failures because
+the sandbox denied server sockets.  The permitted rerun removed all six and
+left only the three isolated-pass whole-suite failures above.
+
+* UX and performance playthrough
+
+- A 49-round graphical turn advanced its real progress timer without changing
+  any buffer position before the active tail.
+- A 30-round graphical turn with a test-local limit of 6 showed an omission row
+  plus rounds 25 through 30.  Live tool navigation exposed six matching items,
+  while expanded details still contained round 1.
+- The complete graphical suite covered composer focus, paired deletion, popups,
+  workspace restoration, reload preservation, scrolling, and settlement with
+  no unexpected result.
+
+* Architecture review
+
+Chat owns both presentation optimizations.  The loop retains provider-neutral
+lifecycle facts and no longer names process-reporting segments or tools.  The
+process-reporting capability owns the expensive opt-in counterfactual and its
+durable record.  No new shared shell/window exception or cross-component chat
+knowledge was introduced.
+
+* Design self-check
+
+1. Each commit is independently useful: incremental timer rendering, removal
+   of unconditional accounting, then bounded live history.
+2. The direction is bounded shell presentation and capability-owned optional
+   diagnostics around a provider-neutral harness.
+3. The configurable round count is local and reversible; stable ownership is
+   modeled directly without a new extension framework.
+4. Chat owns rendering; process reporting owns marker accounting; the loop owns
+   request lifecycle.
+5. Coupling is reduced: marker names disappeared from core, and no other shell
+   needs to know about chat presentation.
+6. Stable core policy has no dependency on the process-reporting capability.
+7. Presentation mutation stays in chat and diagnostic persistence stays in the
+   capability boundary.
+8. No durable state was added to chat.  Explicit diagnostic shapes use the
+   existing session process-report store; live projection state remains local.
+9. Ordinary requests eliminate four full serialization/hash passes.  Progress
+   ticks edit only the active tail, and full live projections render at most 12
+   recent rounds by default.
+10. No substitutable interface or speculative adapter was added.
+11. Existing persisted request-shape records remain readable; ordinary new
+    requests intentionally stop creating them.
+12. Marker-specific loop and harness projection code was removed.
+13. Explicit measurement rejects incomplete records; unexpected persistence
+    errors surface through the existing process-reporting path.
+14. Focused tests prove each invariant independently, and graphical tests prove
+    native redisplay, geometry, timer, and tool-list behavior.
+
+* Live reload
+
+The user's running Emacs was not reloaded or changed.  A full =e-dev-reload= (or
+restart) is required before that process uses the new behavior.
+
+* Unresolved
+
+None.

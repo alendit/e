@@ -209,6 +209,12 @@ The complete reasoning text remains available from response details."
   :type 'natnum
   :group 'e-chat)
 
+(defcustom e-chat-live-activity-round-limit 12
+  "Maximum recent provider rounds shown in a live activity block.
+Earlier rounds remain in the turn record and settled expandable details."
+  :type '(integer 1)
+  :group 'e-chat)
+
 (define-obsolete-variable-alias
   'e-chat-model-context-token-limits
   'e-context-budget-model-token-limits
@@ -4947,16 +4953,28 @@ harness-confirmed active turn."
     (when lines
       (string-join lines "\n"))))
 
-(defun e-chat--activity-record-visible-chunks (record)
-  "Return visible activity chunks for semantic activity RECORD."
-  (plist-get (e-chat--activity-record-transient-data record) :chunks))
+(defun e-chat--activity-record-visible-chunks (record &optional complete)
+  "Return visible activity chunks for semantic activity RECORD.
+When COMPLETE is non-nil, include every durable round."
+  (plist-get (e-chat--activity-record-transient-data record complete) :chunks))
 
-(defun e-chat--activity-record-transient-data (record)
+(defun e-chat--activity-record-projected-rounds (record &optional complete)
+  "Return RECORD rounds for a live or COMPLETE activity projection."
+  (let ((rounds (e-chat--activity-records record)))
+    (if complete
+        rounds
+      (last rounds (min (length rounds)
+                        (max 1 e-chat-live-activity-round-limit))))))
+
+(defun e-chat--activity-record-transient-data (record &optional complete)
   "Return transient render data for semantic activity RECORD.
-The returned plist contains complete visible :text and :chunks.  While the
-latest round is the active turn's mutable progress tail, :progress-start and
-:progress-end are character offsets delimiting only that tail in :text."
-  (let* ((rounds (e-chat--activity-records record))
+The returned plist contains visible :text, :chunks, and :rounds.  Unless
+COMPLETE is non-nil, the live projection is bounded and begins with an omitted
+round summary when needed.  While the latest round is the active turn's mutable
+progress tail, :progress-start and :progress-end delimit only that tail."
+  (let* ((all-rounds (e-chat--activity-records record))
+         (rounds (e-chat--activity-record-projected-rounds record complete))
+         (omitted-count (- (length all-rounds) (length rounds)))
          (latest (car (last rounds)))
          (active-tail
           (and latest
@@ -4968,6 +4986,13 @@ latest round is the active turn's mutable progress tail, :progress-start and
          (offset 0)
          progress-start
          progress-end)
+    (when (> omitted-count 0)
+      (let ((summary
+             (format "… %d earlier activity %s omitted"
+                     omitted-count
+                     (if (= omitted-count 1) "round" "rounds"))))
+        (push summary chunks)
+        (setq offset (length summary))))
     (dolist (round rounds)
       (when-let ((text (e-chat--activity-round-visible-text
                         round (and active-tail (eq round latest)))))
@@ -4983,6 +5008,8 @@ latest round is the active turn's mutable progress tail, :progress-start and
                      (concat (string-join chunks separator) "\n\n"))))
       (list :chunks chunks
             :text text
+            :rounds rounds
+            :omitted-round-count omitted-count
             :progress-start progress-start
             :progress-end progress-end))))
 
@@ -5105,7 +5132,8 @@ Count tool invocations after the reasoning chunk they followed."
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
   (if (e-chat--activity-records record)
-      (when-let ((chunks (append (e-chat--activity-record-visible-chunks record)
+      (when-let ((chunks (append (e-chat--activity-record-visible-chunks
+                                  record t)
                                  (e-chat--activity-action-visible-chunks record))))
         (when chunks
           (concat (string-join
@@ -5188,8 +5216,9 @@ Count tool invocations after the reasoning chunk they followed."
          (format "Provider details\n%s" (pp-to-string details)))
         "\n\n")))))
 
-(defun e-chat--activity-tool-items (record)
-  "Return tool call/output items derived from RECORD."
+(defun e-chat--activity-tool-items (record &optional live-projection)
+  "Return tool call/output items derived from RECORD.
+When LIVE-PROJECTION is non-nil, include only live-projected rounds."
   (if (e-chat--activity-records record)
       (mapcar
        (lambda (item)
@@ -5197,7 +5226,9 @@ Count tool invocations after the reasoning chunk they followed."
                :output (plist-get item :output)))
        (apply #'append
               (mapcar #'e-chat--round-tool-items
-                      (e-chat--activity-records record))))
+                      (if live-projection
+                          (e-chat--activity-record-projected-rounds record)
+                        (e-chat--activity-records record)))))
     (let ((items nil)
           current)
       (dolist (entry (plist-get record :intermittent-entries))
@@ -6041,7 +6072,8 @@ window retains its scroll position, including when the composer is focused."
              (string-trim-right text)
              start
              end
-             (e-chat--activity-tool-items record)
+             (e-chat--activity-tool-items
+              record (not (plist-get data :final-rendered)))
              (plist-get data :details-text))))
       (setq e-chat--progress-start-marker
             (copy-marker start nil))
