@@ -30,12 +30,20 @@ Exit evidence:
 - focused batch coverage proves all buffer changes begin inside the active tail;
 - graphical timer coverage proves the same contract under native redisplay.
 
-** TODO Slice 2: Capability-owned request accounting
+** DONE Slice 2: Capability-owned request accounting
 
 Remove unconditional process-marker counterfactual construction from the
 provider loop.  Preserve ordinary request lifecycle identity without request
 shape work.  Expose marker accounting only through an explicit
 process-reporting-owned measurement path.
+
+Exit evidence:
+
+- the provider loop and harness contain no process-marker request-shape code;
+- ordinary lifecycle events contain no =:request-shape= field;
+- explicit measurement and its durable record are owned by process reporting
+  and joined to lifecycle events by provider request id;
+- 179 focused loop, harness, and process-reporting tests pass.
 
 ** TODO Slice 3: Bounded live activity history
 

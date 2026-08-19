@@ -105,106 +105,6 @@ results, that the stored response does not contain."
                  :provider-anchor-source-message-count
                  source-message-count))))
 
-(defun e-loop--shape-value (value)
-  "Return durable hash and byte length for model-visible VALUE."
-  (let ((text (prin1-to-string value)))
-    (list :sha256 (secure-hash 'sha256 text)
-          :bytes (string-bytes text))))
-
-(defun e-loop--without-marker-messages (messages)
-  "Return MESSAGES with complete process_marker call/result pairs removed."
-  (let* ((call-ids
-          (delq nil
-                (mapcar
-                 (lambda (message)
-                   (when (and (eq (plist-get message :role) 'tool-call)
-                              (equal (plist-get
-                                      (plist-get message :content) :name)
-                                     "process_marker"))
-                     (plist-get (plist-get message :content) :id)))
-                 messages))))
-    (seq-remove
-     (lambda (message)
-       (or (and (eq (plist-get message :role) 'tool-call)
-                (member (plist-get (plist-get message :content) :id)
-                        call-ids))
-           (and (eq (plist-get message :role) 'tool)
-                (member (plist-get (plist-get message :content)
-                                   :tool-call-id)
-                        call-ids))))
-     messages)))
-
-(defun e-loop--marker-guidance-segment-p (segment)
-  "Return non-nil when SEGMENT is process-reporting capability guidance."
-  (equal (plist-get segment :id) '(process-reporting instructions)))
-
-(defun e-loop--remove-message-once (messages target)
-  "Return MESSAGES with the first message equal to TARGET removed."
-  (let (removed result)
-    (dolist (message messages (nreverse result))
-      (if (and (not removed) (equal message target))
-          (setq removed t)
-        (push message result)))))
-
-(defun e-loop--without-marker-guidance (messages segments)
-  "Return MESSAGES without guidance identified by context SEGMENTS."
-  (let ((result messages))
-    (dolist (segment segments result)
-      (when (e-loop--marker-guidance-segment-p segment)
-        (dolist (message (plist-get segment :messages))
-          (setq result (e-loop--remove-message-once result message)))))))
-
-(defun e-loop--without-marker-tool (tools)
-  "Return TOOLS without the process_marker descriptor."
-  (seq-remove (lambda (tool)
-                (equal (plist-get tool :name) "process_marker"))
-              tools))
-
-(defun e-loop--request-snapshot (messages options)
-  "Return one backend-neutral provider request value."
-  (let ((copy (copy-tree options)))
-    (plist-put copy :messages (copy-tree messages))
-    copy))
-
-(defun e-loop--request-shape (messages options segments)
-  "Measure actual and marker-free request shapes without retaining content."
-  (let* ((actual (e-loop--request-snapshot messages options))
-         (no-active-messages (e-loop--without-marker-messages messages))
-         (no-passive-messages (e-loop--without-marker-guidance messages segments))
-         (paired-messages
-          (e-loop--without-marker-guidance no-active-messages segments))
-         (no-passive-options (copy-tree options))
-         (paired-options (copy-tree options)))
-    (plist-put no-passive-options :tools
-               (e-loop--without-marker-tool
-                (plist-get no-passive-options :tools)))
-    (plist-put paired-options :tools
-               (e-loop--without-marker-tool
-                (plist-get paired-options :tools)))
-    (let ((without-passive
-           (e-loop--request-snapshot no-passive-messages no-passive-options))
-          (without-active
-           (e-loop--request-snapshot no-active-messages options))
-          (paired
-           (e-loop--request-snapshot paired-messages paired-options)))
-      (list :revision "request-shape-v2"
-            :serialization "backend-neutral-elisp-v1"
-            :tokenizer-revision (plist-get options :tokenizer-revision)
-            :actual-shape (e-loop--shape-value actual)
-            :without-passive-shape (e-loop--shape-value without-passive)
-            :without-active-shape (e-loop--shape-value without-active)
-            :paired-shape (e-loop--shape-value paired)
-            :model (plist-get options :model)
-            :reasoning-effort (or (plist-get options :reasoning-effort)
-                                  (plist-get options :effort))
-            :prompt-cache-key-present
-            (and (plist-get options :prompt-cache-key) t)
-            :prompt-cache-key-sha256
-            (when-let ((key (plist-get options :prompt-cache-key)))
-              (secure-hash 'sha256 (format "%s" key)))
-            :prompt-cache-retention
-            (plist-get options :prompt-cache-retention)))))
-
 (defun e-loop--request-cause-fields (causes)
   "Return stable lifecycle fields for completed tool-call CAUSES."
   (when causes
@@ -219,18 +119,15 @@ results, that the stored response does not contain."
             :caused-by-tool-calls (vconcat records)))))
 
 (defun e-loop--request-lifecycle-payload
-    (request status request-id request-ordinal request-shape
-             &optional started-at causes)
+    (request status request-id request-ordinal &optional started-at causes)
   "Return sanitized lifecycle payload for REQUEST with stable identity.
 REQUEST-ID and REQUEST-ORDINAL join all events for one provider request.
-REQUEST-SHAPE contains hashes and sizes of model-visible request ingredients.
 STARTED-AT is the `float-time' value captured when the request was published.
 CAUSES lists every completed tool call that induced a follow-up request."
   (let* ((metadata (and (e-backend-request-p request)
                         (e-backend-request-metadata request)))
          (payload (list :provider-request-id request-id
                         :provider-request-ordinal request-ordinal
-                        :request-shape request-shape
                         :provider (plist-get metadata :provider)
                         :transport (plist-get metadata :transport)
                         :url-host (plist-get metadata :url-host)
@@ -361,7 +258,6 @@ tool I/O, and turn settlement are callback-driven."
                   (provider-request nil)
                   (provider-request-id nil)
                   (provider-request-ordinal nil)
-                  (provider-request-shape nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
                   (provider-request-causes next-request-causes))
@@ -377,9 +273,6 @@ tool I/O, and turn settlement are callback-driven."
                           (1+ provider-request-sequence))
                     (setq provider-request-id (e-session-generate-ulid))
                     (setq provider-request-ordinal provider-request-sequence)
-                    (setq provider-request-shape
-                          (e-loop--request-shape
-                           turn-messages turn-options segments))
                     (setq provider-request-started-at (float-time))
                     (setq provider-request-finished nil)
                     (publish-request request)
@@ -389,7 +282,7 @@ tool I/O, and turn settlement are callback-driven."
                      :payload
                      (e-loop--request-lifecycle-payload
                       request 'started provider-request-id
-                      provider-request-ordinal provider-request-shape nil
+                      provider-request-ordinal nil
                       provider-request-causes)))
                    (finish-provider-request
                     (status)
@@ -402,7 +295,7 @@ tool I/O, and turn settlement are callback-driven."
                        :payload
                        (e-loop--request-lifecycle-payload
                         provider-request status provider-request-id
-                        provider-request-ordinal provider-request-shape
+                        provider-request-ordinal
                         provider-request-started-at
                         provider-request-causes))))
                    (promote-provider-anchor

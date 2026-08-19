@@ -286,6 +286,13 @@ checkpoint, request ids, paired shape measures, token usage joins, explicit
 follow-up cause, and completion events preserve enough evidence for those later
 measurements without duplicating arbitrary prompt content into telemetry.
 
+On 2026-08-19, feature 84 removed this counterfactual from the ordinary
+provider hot path after profiling showed that copying, printing, and hashing
+four request variants dominated large requests. Request lifecycle ids and
+causes remain generic. Request-shape measurement and persistence are now an
+explicit process-reporting-owned diagnostic; ordinary requests record no
+shape.
+
 * Provenance
 
 The original grimoire inbox item proposed a =bug_report= tool for recording things that did not work and was triaged on 2026-07-03.

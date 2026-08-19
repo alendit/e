@@ -541,20 +541,216 @@
                events)))
     (copy-tree (plist-get event :payload))))
 
+(defun e-process-reporting--shape-value (value)
+  "Return a hash and byte length for model-visible VALUE."
+  (let ((text (prin1-to-string value)))
+    (list :sha256 (secure-hash 'sha256 text)
+          :bytes (string-bytes text))))
+
+(defun e-process-reporting--without-marker-messages (messages)
+  "Return MESSAGES with complete process_marker call/result pairs removed."
+  (let ((call-ids
+         (delq nil
+               (mapcar
+                (lambda (message)
+                  (when (and (eq (plist-get message :role) 'tool-call)
+                             (equal (plist-get
+                                     (plist-get message :content) :name)
+                                    "process_marker"))
+                    (plist-get (plist-get message :content) :id)))
+                messages))))
+    (seq-remove
+     (lambda (message)
+       (or (and (eq (plist-get message :role) 'tool-call)
+                (member (plist-get (plist-get message :content) :id)
+                        call-ids))
+           (and (eq (plist-get message :role) 'tool)
+                (member (plist-get (plist-get message :content)
+                                   :tool-call-id)
+                        call-ids))))
+     messages)))
+
+(defun e-process-reporting--guidance-segment-p (segment)
+  "Return non-nil when SEGMENT is process-reporting guidance."
+  (equal (plist-get segment :id) '(process-reporting instructions)))
+
+(defun e-process-reporting--remove-message-once (messages target)
+  "Return MESSAGES with the first message equal to TARGET removed."
+  (let (removed result)
+    (dolist (message messages (nreverse result))
+      (if (and (not removed) (equal message target))
+          (setq removed t)
+        (push message result)))))
+
+(defun e-process-reporting--without-guidance (messages segments)
+  "Return MESSAGES without process-reporting guidance in SEGMENTS."
+  (let ((result messages))
+    (dolist (segment segments result)
+      (when (e-process-reporting--guidance-segment-p segment)
+        (dolist (message (plist-get segment :messages))
+          (setq result
+                (e-process-reporting--remove-message-once
+                 result message)))))))
+
+(defun e-process-reporting--without-marker-tool (tools)
+  "Return TOOLS without the process_marker descriptor."
+  (seq-remove (lambda (tool)
+                (equal (plist-get tool :name) "process_marker"))
+              tools))
+
+(defun e-process-reporting--request-snapshot (messages options)
+  "Return one backend-neutral provider request value."
+  (let ((copy (copy-tree options)))
+    (plist-put copy :messages (copy-tree messages))
+    copy))
+
+(defun e-process-reporting-measure-request-shape (messages options segments)
+  "Explicitly measure marker overhead in MESSAGES, OPTIONS, and SEGMENTS.
+This intentionally expensive counterfactual is owned by process reporting and
+is never called by the provider loop.  Call it only for a requested diagnostic
+measurement, then persist or compare the returned content-free shape record as
+needed."
+  (let* ((actual
+          (e-process-reporting--request-snapshot messages options))
+         (no-active-messages
+          (e-process-reporting--without-marker-messages messages))
+         (no-passive-messages
+          (e-process-reporting--without-guidance messages segments))
+         (paired-messages
+          (e-process-reporting--without-guidance no-active-messages segments))
+         (no-passive-options (copy-tree options))
+         (paired-options (copy-tree options)))
+    (plist-put no-passive-options :tools
+               (e-process-reporting--without-marker-tool
+                (plist-get no-passive-options :tools)))
+    (plist-put paired-options :tools
+               (e-process-reporting--without-marker-tool
+                (plist-get paired-options :tools)))
+    (let ((without-passive
+           (e-process-reporting--request-snapshot
+            no-passive-messages no-passive-options))
+          (without-active
+           (e-process-reporting--request-snapshot no-active-messages options))
+          (paired
+           (e-process-reporting--request-snapshot
+            paired-messages paired-options)))
+      (list :revision "request-shape-v2"
+            :serialization "backend-neutral-elisp-v1"
+            :tokenizer-revision (plist-get options :tokenizer-revision)
+            :actual-shape (e-process-reporting--shape-value actual)
+            :without-passive-shape
+            (e-process-reporting--shape-value without-passive)
+            :without-active-shape
+            (e-process-reporting--shape-value without-active)
+            :paired-shape (e-process-reporting--shape-value paired)
+            :model (plist-get options :model)
+            :reasoning-effort (or (plist-get options :reasoning-effort)
+                                  (plist-get options :effort))
+            :prompt-cache-key-present
+            (and (plist-get options :prompt-cache-key) t)
+            :prompt-cache-key-sha256
+            (when-let ((key (plist-get options :prompt-cache-key)))
+              (secure-hash 'sha256 (format "%s" key)))
+            :prompt-cache-retention
+            (plist-get options :prompt-cache-retention)))))
+
+(defun e-process-reporting--shape-measure-projection (measure)
+  "Return the content-free fields from request-shape MEASURE."
+  (when (listp measure)
+    (let ((hash (plist-get measure :sha256))
+          (bytes (plist-get measure :bytes)))
+      (when (and (stringp hash) (numberp bytes))
+        (list :sha256 (e-telemetry-redact-string hash)
+              :bytes bytes)))))
+
+(defun e-process-reporting--shape-projection (shape)
+  "Return a narrow content-free projection of request SHAPE."
+  (when (listp shape)
+    (let (projected)
+      (dolist (key '(:revision :serialization :tokenizer-revision :model
+                     :reasoning-effort :prompt-cache-key-sha256
+                     :prompt-cache-retention))
+        (when-let ((value (plist-get shape key)))
+          (when (stringp value)
+            (setq projected
+                  (append projected
+                          (list key (e-telemetry-redact-string value)))))))
+      (when (plist-member shape :prompt-cache-key-present)
+        (setq projected
+              (append projected
+                      (list :prompt-cache-key-present
+                            (and (plist-get shape
+                                            :prompt-cache-key-present)
+                                 t)))))
+      (dolist (key '(:actual-shape :without-passive-shape
+                     :without-active-shape :paired-shape))
+        (when-let ((measure
+                    (e-process-reporting--shape-measure-projection
+                     (plist-get shape key))))
+          (setq projected (append projected (list key measure)))))
+      projected)))
+
+(defun e-process-reporting-record-request-shape
+    (context request-id request-ordinal shape)
+  "Record explicit request SHAPE for REQUEST-ID in action CONTEXT.
+REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
+  (unless (and (stringp request-id) (not (string-empty-p request-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p request-id)))
+  (unless (numberp request-ordinal)
+    (signal 'wrong-type-argument (list 'numberp request-ordinal)))
+  (let ((projected (e-process-reporting--shape-projection shape)))
+    (unless (and (plist-get projected :actual-shape)
+                 (plist-get projected :without-passive-shape)
+                 (plist-get projected :without-active-shape)
+                 (plist-get projected :paired-shape))
+      (user-error "Incomplete process-reporting request shape"))
+    (e-process-reporting--public-record
+     (e-process-reporting--append
+      context
+      (list :report-type "request-shape"
+            :created-at (e-process-reporting--timestamp)
+            :provider-request-id request-id
+            :provider-request-ordinal request-ordinal
+            :shape projected
+            :session-id (plist-get context :session-id)
+            :turn-id (plist-get context :turn-id))))))
+
+(defun e-process-reporting-measure-and-record-request-shape
+    (context request-id request-ordinal messages options segments)
+  "Explicitly measure and record marker overhead for one provider request."
+  (e-process-reporting-record-request-shape
+   context request-id request-ordinal
+   (e-process-reporting-measure-request-shape messages options segments)))
+
 (defun e-process-reporting--shape-bytes (shape key)
   "Return byte count under KEY in request SHAPE."
-  (or (plist-get (plist-get shape key) :bytes) 0))
+  (plist-get (plist-get shape key) :bytes))
 
-(defun e-process-reporting--request-cost-entry (event events)
+(defun e-process-reporting--recorded-request-shape (payload records)
+  "Return the explicit or legacy request shape for PAYLOAD from RECORDS."
+  (or (plist-get payload :request-shape)
+      (when-let ((record
+                  (car
+                   (last
+                    (seq-filter
+                     (lambda (candidate)
+                       (equal (plist-get candidate :provider-request-id)
+                              (plist-get payload :provider-request-id)))
+                     records)))))
+        (plist-get record :shape))))
+
+(defun e-process-reporting--request-cost-entry (event events shape-records)
   "Return one honest paired request attribution entry."
   (let* ((payload (plist-get event :payload))
-         (shape (plist-get payload :request-shape))
+         (shape
+          (e-process-reporting--recorded-request-shape payload shape-records))
          (actual (e-process-reporting--shape-bytes shape :actual-shape))
          (paired (e-process-reporting--shape-bytes shape :paired-shape))
          (without-passive
           (e-process-reporting--shape-bytes shape :without-passive-shape))
          (without-active
           (e-process-reporting--shape-bytes shape :without-active-shape))
+         (measured (and actual paired without-passive without-active))
          (causes
           (or (plist-get payload :caused-by-tool-calls)
               (when-let ((name (plist-get payload :caused-by-tool-name)))
@@ -574,11 +770,12 @@
           :marker-follow-up-call-ids
           (vconcat (mapcar (lambda (cause) (plist-get cause :id))
                            marker-causes))
+          :measurement-status (if measured "recorded" "not-recorded")
           :actual-bytes actual
           :paired-bytes paired
-          :direct-context-delta-bytes (- actual paired)
-          :passive-surface-bytes (- actual without-passive)
-          :active-marker-bytes (- actual without-active)
+          :direct-context-delta-bytes (and measured (- actual paired))
+          :passive-surface-bytes (and measured (- actual without-passive))
+          :active-marker-bytes (and measured (- actual without-active))
           :token-usage
           (e-process-reporting--request-usage
            events (plist-get payload :provider-request-id))
@@ -595,20 +792,39 @@
            (lambda (event)
              (eq (plist-get event :event-type) 'provider-request-started))
            events))
+         (shape-records
+          (e-process-reporting--records-of-type
+           (e-process-reporting--reports context) "request-shape"))
          (entries
           (mapcar (lambda (event)
-                    (e-process-reporting--request-cost-entry event events))
+                    (e-process-reporting--request-cost-entry
+                     event events shape-records))
                   requests))
          (markers
           (e-process-reporting--records-of-type
            (e-process-reporting--reports context) "marker"))
          (delta-bytes
-          (apply #'+ (mapcar (lambda (entry)
-                               (plist-get entry :direct-context-delta-bytes))
-                             entries))))
+          (let ((measured
+                 (delq nil
+                       (mapcar
+                        (lambda (entry)
+                          (plist-get entry :direct-context-delta-bytes))
+                        entries))))
+            (and measured (apply #'+ measured))))
+         (measured-count
+          (cl-count-if
+           (lambda (entry)
+             (equal (plist-get entry :measurement-status) "recorded"))
+           entries)))
     (list :scope "request-shape-counterfactual"
           :session-id session-id
           :provider-request-count (length requests)
+          :measured-request-count measured-count
+          :measurement-status
+          (cond
+           ((= measured-count 0) "not-recorded")
+           ((= measured-count (length requests)) "recorded")
+           (t "partial"))
           :marker-count (length markers)
           :marker-follow-up-request-count
           (cl-count-if (lambda (entry)
@@ -620,7 +836,7 @@
           :provider-tokenizer-used nil
           :behavioral-estimate nil
           :note
-          "Paired byte deltas preserve enough request data for post-hoc provider serialization/tokenization; they do not claim provider-token or behavioral overhead.")))
+          "Counterfactual byte deltas exist only for requests measured explicitly by process reporting; ordinary provider requests do not perform or retain this expensive measurement. Values do not claim provider-token or behavioral overhead.")))
 
 (defconst e-process-reporting--marker-parameters
   `(:type "object"

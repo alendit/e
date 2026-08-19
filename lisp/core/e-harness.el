@@ -1328,38 +1328,6 @@ Apply TRANSFORM when supplied."
   "Return redacted VALUE when it is a string."
   (and (stringp value) (e-telemetry-redact-string value)))
 
-(defun e-harness--request-shape-measure-projection (measure)
-  "Return a narrow durable projection of request-shape MEASURE."
-  (when (listp measure)
-    (append
-     (e-harness--activity-field
-      measure :sha256 #'stringp #'e-harness--safe-activity-string)
-     (e-harness--activity-field measure :bytes #'numberp))))
-
-(defun e-harness--request-shape-activity-projection (shape)
-  "Return a narrow redacted durable projection of request SHAPE."
-  (when (listp shape)
-    (let (projected)
-      (dolist (key '(:revision :serialization :tokenizer-revision :model
-                     :reasoning-effort :prompt-cache-key-sha256
-                     :prompt-cache-retention))
-        (setq projected
-              (append projected
-                      (e-harness--activity-field
-                       shape key #'stringp #'e-harness--safe-activity-string))))
-      (setq projected
-            (append projected
-                    (e-harness--activity-field
-                     shape :prompt-cache-key-present
-                     (lambda (value) (memq value '(t :json-false))))))
-      (dolist (key '(:actual-shape :without-passive-shape
-                     :without-active-shape :paired-shape))
-        (when-let ((measure
-                    (e-harness--request-shape-measure-projection
-                     (plist-get shape key))))
-          (setq projected (append projected (list key measure)))))
-      projected)))
-
 (defun e-harness--tool-cause-activity-projection (cause)
   "Return a narrow redacted durable projection of tool CAUSE."
   (when (listp cause)
@@ -1425,10 +1393,6 @@ Apply TRANSFORM when supplied."
       (setq projected
             (append projected
                     (e-harness--activity-field payload key #'numberp))))
-    (when-let ((shape
-                (e-harness--request-shape-activity-projection
-                 (plist-get payload :request-shape))))
-      (setq projected (append projected (list :request-shape shape))))
     (when-let ((diagnostics
                 (e-harness--provider-diagnostics-activity-projection
                  (plist-get payload :diagnostics))))

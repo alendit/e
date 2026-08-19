@@ -321,11 +321,8 @@
       (should (= (plist-get started-payload :provider-request-ordinal) 1))
       (should (equal (plist-get started-payload :provider-request-id)
                      (plist-get finished-payload :provider-request-id)))
-      (should (equal (plist-get started-payload :request-shape)
-                     (plist-get finished-payload :request-shape)))
-      (should (equal (plist-get (plist-get started-payload :request-shape)
-                                :revision)
-                     "request-shape-v2"))
+      (should-not (plist-member started-payload :request-shape))
+      (should-not (plist-member finished-payload :request-shape))
       (should (eq (plist-get started-payload :status) 'started))
       (should (eq (plist-get finished-payload :status) 'done))
       (should (numberp (plist-get finished-payload :elapsed-seconds)))
@@ -480,37 +477,6 @@
                      "marker-call"))
       (should (equal (plist-get followup-usage :provider-request-id)
                      (plist-get followup :provider-request-id))))))
-
-(ert-deftest e-loop-test-request-shape-removes-only-marker-guidance-segment ()
-  "Unrelated messages mentioning process_marker stay in the paired shape."
-  (let* ((marker-message '(:role system :content "marker guidance"))
-         (unrelated
-          '(:role system
-            :content "A long project policy mentions process_marker but is unrelated."))
-         (messages (list marker-message unrelated '(:role user :content "hi")))
-         (options '(:tools ((:name "process_marker") (:name "echo"))))
-         (segments
-          (list (list :id '(process-reporting instructions)
-                      :messages (list marker-message))))
-         (shape (e-loop--request-shape messages options segments))
-         (expected-options (copy-tree options)))
-    (plist-put expected-options :tools '((:name "echo")))
-    (should
-     (equal
-      (plist-get (plist-get shape :without-passive-shape) :sha256)
-      (plist-get
-       (e-loop--shape-value
-        (e-loop--request-snapshot
-         (list unrelated '(:role user :content "hi")) expected-options))
-       :sha256)))
-    (should-not
-     (equal
-      (plist-get (plist-get shape :without-passive-shape) :sha256)
-      (plist-get
-       (e-loop--shape-value
-        (e-loop--request-snapshot
-         '((:role user :content "hi")) expected-options))
-       :sha256)))))
 
 (ert-deftest e-loop-test-followup-request-carries-all-tool-causes ()
   "A marker remains a cause when another tool finishes in the same response."

@@ -244,10 +244,12 @@ second process-reporting file or lock. Persisted free text crosses the shared
 redaction boundary, while activity and extraction records use named schemas
 instead of copying arbitrary metadata.
 
-The =:cost-report= action reports per-request paired byte measures for the
-actual request and marker-free request shape. It separates passive surface,
-active call/result, and induced follow-up requests. The persisted shapes are
+The =:cost-report= action reports paired byte measures only for request shapes
+that were explicitly measured. Ordinary provider requests perform no
+counterfactual serialization or hashing and therefore report
+=measurement-status= as =not-recorded=. For an intentional diagnostic,
+=e-process-reporting-measure-request-shape= constructs the actual and
+marker-free shapes inside the owning capability. Those shapes are
 backend-neutral serialized hashes and byte counts, not canonical provider
-payloads or provider-token counts. Provider serializer/tokenizer integration
-and behavioral replay remain deliberate follow-up measurement work; the report
-does not claim either result.
+payloads or provider-token counts; the report does not claim provider-token or
+behavioral overhead.

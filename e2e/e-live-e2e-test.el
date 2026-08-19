@@ -357,16 +357,13 @@ provider turn to settle without an implicit local deadline."
               (car (last (e-live-e2e--activity-of-type
                           harness session-id 'provider-request-started))))
              (payload (plist-get started :payload))
-             (diagnostics (plist-get payload :diagnostics))
-             (actual-shape
-              (plist-get (plist-get payload :request-shape) :actual-shape)))
+             (diagnostics (plist-get payload :diagnostics)))
         (unless (eq (plist-get payload :transport) 'url-retrieve)
           (ert-skip
            "The configured default harness does not use HTTP url-retrieve."))
         (should-not (plist-get payload :timeout-seconds))
         (should (>= (or (plist-get diagnostics :input-message-count) 0) 145))
-        (should (>= (or (plist-get actual-shape :bytes) 0)
-                    target-history-bytes))
+        (should-not (plist-member payload :request-shape))
         (should (e-live-e2e--contains-p
                  (e-live-e2e--assistant-content result)
                  nonce))))))

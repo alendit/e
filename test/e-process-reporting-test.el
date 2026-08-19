@@ -213,13 +213,15 @@
          :provider-request-ordinal 1
          :caused-by-tool-call-id "marker-call"
          :caused-by-tool-name "process_marker"
-         :caused-by-tool-calls [(:id "marker-call" :name "process_marker")]
-         :request-shape
-         (:serialization "backend-neutral-elisp-v1"
-          :actual-shape (:sha256 "a" :bytes 140)
-          :without-passive-shape (:sha256 "b" :bytes 100)
-          :without-active-shape (:sha256 "c" :bytes 120)
-          :paired-shape (:sha256 "d" :bytes 80))))
+         :caused-by-tool-calls [(:id "marker-call" :name "process_marker")]))
+      (e-process-reporting-record-request-shape
+       (e-process-reporting-test--context harness)
+       "request-1" 1
+       '(:serialization "backend-neutral-elisp-v1"
+         :actual-shape (:sha256 "a" :bytes 140)
+         :without-passive-shape (:sha256 "b" :bytes 100)
+         :without-active-shape (:sha256 "c" :bytes 120)
+         :paired-shape (:sha256 "d" :bytes 80)))
       (let* ((report (e-process-reporting-test--call-action
                       harness :cost-report nil))
              (entry (car (plist-get report :requests))))
@@ -228,11 +230,66 @@
         (should (= (plist-get entry :direct-context-delta-bytes) 60))
         (should (= (plist-get entry :passive-surface-bytes) 40))
         (should (= (plist-get entry :active-marker-bytes) 20))
+        (should (= (plist-get report :measured-request-count) 1))
+        (should (equal (plist-get report :measurement-status) "recorded"))
         (should (plist-get entry :marker-follow-up))
         (should (equal (plist-get report :estimation-method)
                        "backend-neutral-serialized-utf-8-bytes"))
         (should-not (plist-get report :provider-tokenizer-used))
         (should-not (plist-get report :behavioral-estimate))))))
+
+(ert-deftest e-process-reporting-test-request-shape-measurement-is-explicit-and-owned ()
+  "Explicit accounting removes only capability-owned marker surfaces."
+  (let* ((marker-message '(:role system :content "marker guidance"))
+         (unrelated
+          '(:role system
+            :content "A project policy mentions process_marker but is unrelated."))
+         (messages (list marker-message unrelated '(:role user :content "hi")))
+         (options '(:tools ((:name "process_marker") (:name "echo"))))
+         (segments
+          (list (list :id '(process-reporting instructions)
+                      :messages (list marker-message))))
+         (shape
+          (e-process-reporting-measure-request-shape
+           messages options segments))
+         (expected-options (copy-tree options)))
+    (plist-put expected-options :tools '((:name "echo")))
+    (should (equal (plist-get shape :revision) "request-shape-v2"))
+    (should
+     (equal
+      (plist-get (plist-get shape :without-passive-shape) :sha256)
+      (plist-get
+       (e-process-reporting--shape-value
+        (e-process-reporting--request-snapshot
+         (list unrelated '(:role user :content "hi")) expected-options))
+       :sha256)))
+    (should-not
+     (equal
+      (plist-get (plist-get shape :without-passive-shape) :sha256)
+      (plist-get
+       (e-process-reporting--shape-value
+        (e-process-reporting--request-snapshot
+         '((:role user :content "hi")) expected-options))
+       :sha256)))))
+
+(ert-deftest e-process-reporting-test-cost-report-is-honest-when-unmeasured ()
+  "Ordinary request events report that no counterfactual was recorded."
+  (e-process-reporting-test--with-store (store directory)
+    (let ((harness (e-process-reporting-test--harness store)))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-started
+       '(:provider-request-id "request-1"
+         :provider-request-ordinal 1))
+      (let* ((report (e-process-reporting-test--call-action
+                      harness :cost-report nil))
+             (entry (car (plist-get report :requests))))
+        (should (equal (plist-get report :measurement-status)
+                       "not-recorded"))
+        (should (= (plist-get report :measured-request-count) 0))
+        (should-not (plist-get report :direct-context-delta-bytes))
+        (should (equal (plist-get entry :measurement-status)
+                       "not-recorded"))
+        (should-not (plist-get entry :actual-bytes))))))
 
 (ert-deftest e-process-reporting-test-reports-use-session-store-not-transcript ()
   (e-process-reporting-test--with-store (store directory)
