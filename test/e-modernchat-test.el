@@ -13,12 +13,14 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-actions)
 (require 'e-backend)
 (require 'e-bayesian-reasoning)
 (require 'e-chat-service)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-modernchat)
 (require 'e-modernchat-view-model)
+(require 'e-project-local)
 (require 'e-session)
 (require 'e-structured-blocks)
 
@@ -930,3 +932,86 @@ messages so the transcript reads as one clean answer."
                                         :continuation)
                              :state)
                   'published)))))
+
+
+(ert-deftest e-chat-service-test-continuation-invokes-project-local-action ()
+  "A board continuation can dispatch an action from its session project root."
+  (let* ((project (make-temp-file "e-continuation-project-action-" t))
+         (directory (expand-file-name ".e/capabilities/daily-run" project))
+         (file (expand-file-name "capability.el" directory))
+         (e-project-local-allowed-roots (list project))
+         (e-board--registry (make-hash-table :test 'equal))
+         (e-board-registry--boards (make-hash-table :test 'equal))
+         (e-board-registry--id-sequence 0)
+         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+         (e-chat-service--board-bindings (make-hash-table :test 'equal))
+         (e-chat-service--continuation-reconciling
+          (make-hash-table :test 'equal))
+         action-result)
+    (unwind-protect
+        (progn
+          (make-directory directory t)
+          (write-region
+           ";;; capability.el -*- lexical-binding: t; -*-
+(e-project-capability-register
+ :id 'daily-run
+ :factory
+ (lambda (_directory)
+   (e-capability-create
+    :id 'daily-run
+    :name \"Daily run\"
+    :actions
+    (list :finalize
+          (e-action-cheap-create
+           :description \"Finalize a daily run.\"
+           :runner (lambda (_arguments _context) 'finalized))))))"
+           nil file nil 'silent)
+          (let* ((harness (e-harness-create :enabled-layer-ids nil))
+                 (_ (e-harness-set-intrinsic-capabilities
+                     harness
+                     (list (e-project-local--dynamic-capability project))))
+                 (_session
+                  (e-harness-create-session
+                   harness :id "coordinator"
+                   :metadata (list :project-root project)))
+                 (runtime-board
+                  (e-board-registry-create
+                   :id "continuation-project-board" :principal "test"))
+                 (board
+                  (e-board-registry-board-source-board runtime-board))
+                 (binding
+                  (e-chat-service--binding-create
+                   :harness harness :board runtime-board)))
+            (e-board-orchestration-publish-fact
+             board
+             '(:version 1 :type manifest :idempotency-key "manifest"
+               :payload (:run-id "run-1"
+                         :tasks ((:task-key "task" :required t
+                                  :accepted-attempt 0))
+                         :continuation
+                         (:session-id "coordinator" :prompt "reconcile"
+                          :publication-key "publication-1"))))
+            (e-board-orchestration-publish-fact
+             board
+             '(:version 1 :type terminal-report :idempotency-key "report"
+               :payload (:run-id "run-1" :task-key "task" :attempt 0
+                         :status done :summary "done" :outputs [])))
+            (cl-letf (((symbol-function 'e-chat-service-queue-session)
+                       (lambda (queued-harness queued-session _prompt
+                                &rest _arguments)
+                         (setq action-result
+                               (e-actions-call
+                                'daily-run :finalize nil
+                                (list :harness queued-harness
+                                      :session-id queued-session)))
+                         "continuation-message")))
+              (e-chat-service--reconcile-board-continuation binding))
+            (should (eq action-result 'finalized))
+            (should
+             (eq (plist-get
+                  (plist-get
+                   (e-board-orchestration-run-projection board "run-1")
+                   :continuation)
+                  :state)
+                 'published))))
+      (delete-directory project t))))

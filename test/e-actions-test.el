@@ -226,6 +226,30 @@
       (let ((matches (e-resources-search resources "e-action://" "rename" nil)))
         (should (< 0 (length (plist-get matches :matches))))))))
 
+(ert-deftest e-actions-test-dynamic-action-capability-duplicate-id-signals ()
+  "Dynamic action expansion rejects ambiguous capability ids."
+  (let* ((action
+          (e-action-cheap-create
+           :runner (lambda (_arguments _context) "ok")))
+         (ordinary
+          (e-capability-create
+           :id 'duplicate-action
+           :actions (list :run action)))
+         (provided
+          (e-capability-create
+           :id 'duplicate-action
+           :actions (list :run action)))
+         (host
+          (e-capability-create
+           :id 'provider-host
+           :action-capability-providers
+           (list (lambda (&rest _context) (list provided)))))
+         (harness (e-harness-create :enabled-layer-ids nil)))
+    (e-harness-set-intrinsic-capabilities harness (list ordinary host))
+    (should-error
+     (e-harness-effective-action-capabilities harness)
+     :type 'e-harness-duplicate-action-capability)))
+
 (ert-deftest e-actions-test-rejected-arguments-never-enter-activity ()
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
          (parameters

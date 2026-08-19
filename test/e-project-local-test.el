@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'e)
 (require 'e-actions)
+(require 'e-action-resources)
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-layer-selection)
@@ -111,6 +112,40 @@ SOURCE overrides the default layer source."
   (e-project-local-test--write-file
    (expand-file-name (format ".e/layers/%s/layer.el" id) root)
    (or source (e-project-local-test--layer-source id))))
+
+(defun e-project-local-test--action-capability-source
+    (id description result &optional load-form)
+  "Return project-local action source for ID DESCRIPTION and RESULT.
+LOAD-FORM, when non-nil, runs when the repository file is loaded."
+  (format
+   ";;; capability.el -*- lexical-binding: t; -*-
+%s
+(e-project-capability-register
+ :id '%s
+ :factory
+ (lambda (_directory)
+   (e-capability-create
+    :id '%s
+    :name \"Project action\"
+    :actions
+    (list :run
+          (e-action-cheap-create
+           :description %S
+           :runner (lambda (_arguments _context) %S))))))"
+   (or load-form "") id id description result))
+
+(defun e-project-local-test--action-harness (project &optional resources)
+  "Return a harness rooted at PROJECT with dynamic project actions.
+When RESOURCES is non-nil, include action-description resources."
+  (let ((harness (e-harness-create :enabled-layer-ids nil)))
+    (e-harness-set-intrinsic-capabilities
+     harness
+     (append
+      (list (e-project-local--dynamic-capability project))
+      (when resources (list (e-action-resources-capability-create)))))
+    (e-harness-create-session
+     harness :id "session-1" :metadata (list :project-root project))
+    harness))
 
 (ert-deftest e-project-local-test-empty-repo-is-no-op ()
   "A repo with no .e/capabilities yields only the guidance capability."
@@ -797,6 +832,112 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
                            messages)))))
       (delete-directory outer t))))
 
+
+(ert-deftest e-project-local-test-action-dispatch-uses-session-root ()
+  "Trusted project actions dispatch through the active session root."
+  (let* ((project (make-temp-file "e-project-local-action-dispatch-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           project 'topic
+           (e-project-local-test--action-capability-source
+            'topic "Run the project action." "rooted-action"))
+          (let ((harness (e-project-local-test--action-harness project)))
+            (should
+             (equal
+              (e-actions-call
+               'topic :run nil
+               (list :harness harness :session-id "session-1"))
+              "rooted-action"))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-action-resources-use-dynamic-actions ()
+  "Action resources expose the same project action that dispatch resolves."
+  (let* ((project (make-temp-file "e-project-local-action-resource-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           project 'topic
+           (e-project-local-test--action-capability-source
+            'topic "Run the dynamic project action." "resource-action"))
+          (let* ((harness
+                  (e-project-local-test--action-harness project t))
+                 (resources
+                  (e-harness-resources harness "session-1" "turn-1")))
+            (should (string-match-p
+                     "e-action://topic"
+                     (e-resources-read resources "e-action://active" nil)))
+            (should (string-match-p
+                     "e-action://topic/run"
+                     (e-resources-read resources "e-action://topic" nil)))
+            (should (string-match-p
+                     "Run the dynamic project action"
+                     (e-resources-read resources "e-action://topic/run" nil)))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-action-discovery-reloads-after-edit ()
+  "Editing a project action refreshes the next live lookup contract."
+  (let* ((project (make-temp-file "e-project-local-action-edit-" t))
+         (file (expand-file-name
+                ".e/capabilities/topic/capability.el" project))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           project 'topic
+           (e-project-local-test--action-capability-source
+            'topic "Version one." "version-1"))
+          (let ((harness (e-project-local-test--action-harness project t)))
+            (should (equal
+                     (e-actions-call
+                      'topic :run nil
+                      (list :harness harness :session-id "session-1"))
+                     "version-1"))
+            (should (string-match-p
+                     "Version one"
+                     (e-resources-read
+                      (e-harness-resources harness "session-1" "turn-1")
+                      "e-action://topic/run" nil)))
+            (e-project-local-test--make-capability
+             project 'topic
+             (e-project-local-test--action-capability-source
+              'topic "Version two." "version-2"))
+            (set-file-times file (time-add (current-time) 5))
+            (should (equal
+                     (e-actions-call
+                      'topic :run nil
+                      (list :harness harness :session-id "session-1"))
+                     "version-2"))
+            (should (string-match-p
+                     "Version two"
+                     (e-resources-read
+                      (e-harness-resources harness "session-1" "turn-2")
+                      "e-action://topic/run" nil)))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-untrusted-action-discovery-does-not-load-elisp ()
+  "Cold action discovery does not load Elisp outside the trust allowlist."
+  (let* ((project (make-temp-file "e-project-local-action-untrusted-" t))
+         (e-project-local-allowed-roots nil)
+         (e-project-local-test--unexpected-inspect-load nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           project 'topic
+           (e-project-local-test--action-capability-source
+            'topic "Untrusted." "must-not-run"
+            "(setq e-project-local-test--unexpected-inspect-load t)"))
+          (let ((harness (e-project-local-test--action-harness project)))
+            (should
+             (equal
+              (mapcar #'e-capability-id
+                      (e-harness-effective-action-capabilities
+                       harness "session-1" "turn-1"))
+              '(project-local)))
+            (should-not e-project-local-test--unexpected-inspect-load)))
+      (delete-directory project t))))
 
 (ert-deftest e-project-local-test-prime-project-loads-allowed-extensions ()
   "Priming eagerly runs normal discovery for trusted extension projects."
