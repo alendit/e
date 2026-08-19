@@ -1,0 +1,27 @@
+#+title: e-dev instructions serialize as an invalid OpenAI text array
+#+startup: overview
+
+* Report
+
+On a recent =gpt-5.6-sol= chat turn, the provider rejected the request before
+generation with:
+
+#+begin_example
+Invalid type for 'input[7].content[0].text': expected a string, but got an array instead.
+#+end_example
+
+LiteLLM then reported that no fallback model group was configured for
+=gpt-5.6-sol=.  The turn settled as failed after roughly two seconds.
+
+* Impact
+
+- A newly built GPT-5.6 request can fail before the provider starts generating.
+- The long fallback diagnostic obscures the actual request-shape error.
+- Retrying without changing the request context can reproduce the same 400.
+
+* Expected
+
+Every backend-neutral ordinary message contributed by a capability should have
+string content, and the OpenAI Responses adapter should therefore emit a string
+for every =input[*].content[*].text= field.
+

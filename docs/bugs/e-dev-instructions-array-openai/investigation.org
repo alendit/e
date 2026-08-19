@@ -1,0 +1,142 @@
+#+title: Investigation: e-dev instructions serialize as an invalid OpenAI text array
+#+startup: overview
+
+* Summary
+
+Confirmed.  The =e-dev= capability contributes its =:instructions= as a Lisp
+list of three strings instead of one string.  Capability instructions become a
+backend-neutral system message without normalization.  Under GPT-5.6's
+segmented Responses prompt layout, the OpenAI adapter maps that system message
+directly to a developer input item and preserves the list as =:text=.  JSON
+encoding therefore produces ="text":[...]=, which the provider rejects because
+Responses requires =text= to be a string.
+
+The malformed =e-dev= message was index 7 in the inspected live context, which
+matches the provider's =input[7].content[0].text= error.
+
+* Live inspection
+
+Inspection used bounded, read-only =emacsclient --eval= probes against the
+running Emacs.  No package reload was performed.
+
+The active chat was:
+
+#+begin_example
+buffer     *e-chat:Grimoire: Daily 2026-08-19*
+session    20260819T090231-836e450c6b4d
+mode       e-chat-mode
+#+end_example
+
+The durable user, assistant, and system transcript messages all had string
+content.  Rebuilding the live harness context found one malformed ordinary
+message:
+
+#+begin_example
+context index  7
+role           system
+content type   cons
+content length 3
+segment        (:kind static-prefix :id (e-dev instructions))
+#+end_example
+
+All three list elements were strings.  The first two were:
+
+#+begin_example
+When editing e from inside e, do not call `e-dev-reload' during an active turn.
+Use the `e-dev' action `mark-reload-required' when a full reload is needed, and let the user run `M-x e-dev-reload' when idle.
+#+end_example
+
+A bounded direct probe of the currently loaded OpenAI mapper confirmed the wire
+shape independently of the provider:
+
+#+begin_example
+type=cons length=2 json={"type":"message","role":"developer","content":[{"type":"input_text","text":["a","b"]}]}
+#+end_example
+
+* Source inspected
+
+** The e-dev capability violates the instructions contract
+
+=lisp/layers/e-dev-layer.el=, =e-dev-layer--reload-capability-create=, passes:
+
+#+begin_src emacs-lisp
+:instructions
+(list
+ "When editing e from inside e, ..."
+ "Use the `e-dev' action ..."
+ "Only mark a full reload ...")
+#+end_src
+
+Other capabilities and tests consistently use a string for =:instructions=.
+The related system-guidance constructor in =lisp/core/e-capabilities.el=
+explicitly documents content as prose and rejects non-string content.
+
+** Capability context preserves the invalid value
+
+=e-capabilities--context-fragments= in =lisp/core/e-capabilities.el= creates the
+static system message with:
+
+#+begin_src emacs-lisp
+(list :role 'system
+      :content (e-capability-instructions capability))
+#+end_src
+
+There is currently no type check in =e-capability-create=, so the list survives
+until backend serialization.
+
+** The OpenAI adapter exposes the list on the wire
+
+=e-openai-codex--message-content= in =lisp/adapters/openai/e-openai.el= constructs
+the Responses content item as:
+
+#+begin_src emacs-lisp
+(list :type type :text (or content ""))
+#+end_src
+
+For an ordinary system message it therefore preserves a list-valued =content=
+as a list-valued =text=.  This is a faithful mapping of an invalid
+backend-neutral message, not a provider or LiteLLM conversion error.
+
+* Why it surfaced now
+
+Commit =ed050b9d= added the provider-gated GPT-5.6 segmented prompt layout.
+When that layout is active, =e-openai-codex--request-input-messages= retains
+stable system messages as individual Responses input items.  The malformed
+=e-dev= fragment is consequently sent directly as the eighth input item.
+
+The =e-dev= list predates that layout.  The new layout did not create the bad
+value; it made the latent capability-contract violation visible to the provider
+in exactly the shape reported by the 400 response.
+
+The subsequent LiteLLM text about unavailable fallbacks is secondary.  It says
+the original =gpt-5.6-sol= request failed and no configured model-group fallback
+could accept it; changing fallback routing would not make this malformed request
+valid.
+
+* Correct fix boundary
+
+The semantic owner is =e-dev-layer=:
+
+1. Make its three instruction paragraphs one string, rather than a list.
+2. Add focused coverage that the =e-dev= capability contributes string
+   instructions and that a GPT-5.6 segmented OpenAI request serializes all
+   ordinary =text= fields as strings.
+3. Separately harden the stable capability boundary by rejecting non-string,
+   non-nil =:instructions= in =e-capability-create=.  This should fail at the
+   component contract rather than silently stringifying arbitrary values in a
+   provider adapter.
+
+No runtime fix was applied during this investigation.
+
+* Verification performed
+
+The existing focused context-inspection suite still passes:
+
+#+begin_src shell
+eldev test -f test/e-context-inspection-test.el
+#+end_src
+
+Result: 8 tests run; 8 results as expected; 0 unexpected.  This confirms the
+current suite does not assert the instruction content type or its OpenAI wire
+encoding, which is the missing regression coverage described above.
+
