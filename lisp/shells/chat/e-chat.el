@@ -4116,6 +4116,7 @@ The relation is one-to-one inside a chat buffer."
                               :transient-end-marker nil
                               :activity-block-id nil
                               :response-separator-rendered nil
+                              :assistant-output-rendered nil
                               :final-rendered nil)))
             (puthash turn-id record registry)
             record)))))
@@ -8287,14 +8288,26 @@ separate dimmed representation instead."
        (e-chat--start-progress-indicator turn-id)
        (e-chat--set-status (format "running %s" turn-id))))
     ('turn-finished
-     (e-chat--set-turn-time (plist-get event :turn-id)
-                             :ended-at
-                             (plist-get event :created-at))
-     (e-chat--run-pending-activity-redraw)
-     (e-chat--mark-buffer-session-read-if-selected)
-     (e-chat--set-status "done")
-     (e-chat--ensure-composer)
-     (e-chat--refresh-composer-position))
+     (let* ((turn-id (plist-get event :turn-id))
+            (created-at (plist-get event :created-at))
+            (output-tail-windows
+             (e-chat--capture-live-output-follow-windows)))
+       (e-chat--set-turn-time turn-id :ended-at created-at)
+       (e-chat--settle-open-thinking turn-id created-at 'done)
+       (e-chat--cancel-pending-activity-redraw turn-id)
+       (e-chat--stop-progress-indicator turn-id)
+       (when-let ((record (e-chat--existing-turn-record turn-id)))
+         (e-chat--delete-turn-transient record)
+         ;; Board output and terminal lifecycle are distinct shell events.
+         ;; Only the public terminal event settles chat presentation.
+         (when (plist-get record :assistant-output-rendered)
+           (e-chat--finalize-turn-display turn-id)))
+       (e-chat--refresh-mode-line-status t)
+       (e-chat--mark-buffer-session-read-if-selected)
+       (e-chat--set-status "done")
+       (e-chat--ensure-composer)
+       (e-chat--refresh-composer-position)
+       (e-chat--restore-output-tail-windows output-tail-windows)))
     ('turn-failed
      (let ((output-tail-windows
             (e-chat--capture-live-output-follow-windows)))
@@ -8394,22 +8407,10 @@ separate dimmed representation instead."
                 (output-tail-windows
                  (and assistant-p
                       (e-chat--capture-live-output-follow-windows))))
-           (when assistant-p
-             (e-chat--set-turn-time turn-id
-                                    :ended-at
-                                    (plist-get event :created-at))
-             (e-chat--cancel-pending-activity-redraw turn-id)
-             (e-chat--stop-progress-indicator turn-id)
-             (when-let ((record (e-chat--existing-turn-record turn-id)))
-               (e-chat--delete-turn-transient record)))
            (e-chat--render-durable-message message turn-id)
            (when assistant-p
-             (e-chat--finalize-turn-display turn-id)
-             ;; Provider usage remains private durable session state rather
-             ;; than board transcript activity.  The projected assistant
-             ;; output is the successful-turn boundary where live board-native
-             ;; chats can refresh that settled context fill.
-             (e-chat--refresh-mode-line-status t)
+             (plist-put (e-chat--turn-record turn-id)
+                        :assistant-output-rendered t)
              (e-chat--restore-output-tail-windows output-tail-windows))
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))

@@ -1,0 +1,102 @@
+#+title: e-chat Intermediate Assistant Summary Flicker Investigation
+#+startup: overview
+
+* Finding
+
+The board migration exposed a stale chat-shell assumption.  The board runtime
+publishes successful output and terminal lifecycle as two ordered board
+messages: an =output= followed by a =turn-summary=.  The chat service maps those
+to =message-added= and =turn-finished= respectively.
+
+=e-chat--render-event= nevertheless treated every assistant =message-added= as
+the successful-turn boundary.  It set =:ended-at=, stopped progress, deleted
+the live transient, and rendered =Turn took ...=.  Until the corresponding
+=turn-finished= projection arrived, subsequent activity or deferred redisplay
+could present the turn as live again.  That produced the reported alternation
+between progress and a settled summary.
+
+The board did not corrupt the transcript.  It made output delivery and terminal
+lifecycle independently observable, revealing that the presentation shell had
+collapsed two different semantics into one event.
+
+* Live evidence
+
+After the user remediated the visible state, bounded read-only
+=emacsclient --eval= probes inspected the selected Grimoire chat without
+reloading it or reading large buffers.
+
+- The active turn record was still =running=, with =:ended-at= and
+  =:final-rendered= unset while progress activity existed.
+- Recent private session metadata showed a prior turn with two assistant
+  messages under the same turn id, confirming that assistant-message creation
+  is not itself a reliable lifecycle boundary when settlement hooks run.
+- The running Emacs was left unchanged.
+
+* Source evidence
+
+- =lisp/core/e-harness.el= emits the public =turn-finished= event only after
+  =:turn-finished= capability hooks have settled.
+- =lisp/core/e-board-runtime.el= handles that event by publishing the final
+  output first and the terminal =turn-summary= second.
+- =lisp/core/e-chat-service.el= maps those board messages to =message-added=
+  and =turn-finished= shell events.
+- =lisp/shells/chat/e-chat.el= previously finalized successful presentation in
+  the assistant =message-added= branch instead of the terminal branch.
+
+* Fix
+
+Successful settlement is now owned solely by the chat shell's
+=turn-finished= handler.  Assistant =message-added= renders durable output and
+records that output was projected, but leaves progress, timing, and the running
+summary untouched.  =turn-finished= settles thinking, cancels pending activity
+redraw, stops progress, removes the transient, renders the summary once when
+assistant output exists, and refreshes the mode line.
+
+The output-present flag is buffer-local turn presentation state.  It prevents a
+terminal activity event from synthesizing a successful summary when this shell
+never received the assistant output.  Replay remains separate because it
+reconstructs already-settled state.
+
+* Validation
+
+- Focused ERT reproduction: passed.  Two assistant messages keep one turn's
+  progress active and render no =Turn took= text until =turn-finished=; the
+  terminal event renders exactly one summary.
+- Complete =test/e-chat-test.el=: 350 passed, 0 unexpected, 1 existing skip.
+- Focused graphical test with screenshot capture: passed.  The intermediate
+  frame visibly contains =Initial answer= plus live =Thinking= and no summary;
+  the terminal frame contains one =Turn took= summary.
+- Complete =bash e2e/run-graphical-tests.sh=: 23 passed, 0 unexpected.
+- The graphical run also corrected a stale test expectation left by the prior
+  configured-context-limit change: the visual mode-line test now verifies the
+  configured limit directly and no longer expects a provider-catalog request.
+- The running Emacs was not reloaded.
+
+* Architecture self-check
+
+1. This slice leaves chat presentation with a single truthful terminal edge.
+2. It moves toward board-native shells consuming content and lifecycle as
+   distinct semantic events.
+3. The stable decision is that =turn-finished= owns settlement.  The only new
+   state is a local, reversible output-projection fact; no speculative seam was
+   added.
+4. The chat shell owns progress and summary rendering, so the behavior remains
+   in its cohesive presentation responsibility.
+5. Coupling is reduced: chat depends on the existing narrow shell event
+   contract and no other Emacs component knows that chat is special.
+6. No stable harness, board, or capability policy now depends on chat UI.
+7. All redisplay, window-follow, and mode-line side effects remain in the shell.
+8. =:assistant-output-rendered= is derived, buffer-local, per-turn state.  It
+   does not survive the presentation buffer; replay reconstructs settled
+   presentation without consulting it.
+9. Terminal handling replaces premature work; it adds no scan, timer, or
+   provider work.
+10. No new interface or substitutability claim was introduced.
+11. Replay compatibility is retained; the obsolete live-message terminal path
+    was removed.
+12. The message handler's duplicated stop, delete, finalization, and mode-line
+    settlement code is gone.
+13. Existing terminal failure and cancellation paths remain explicit;
+    unexpected rendering errors still surface.
+14. Focused ERT proves event semantics independently, and graphical ERT proves
+    the native redisplay transition without requiring unrelated test rewrites.

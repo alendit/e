@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-intermediate-assistant-summary-flicker/ | Intermediate assistant message flickers settled summary during active turn |
 | Closed | e-chat-surface-constituent-overwritten/ | e-chat surface constituent overwritten by generic buffer display |
 | Closed | private-task-queue-await-ref-leak/ | Private task queues leak invalid await references |
 | Closed | subagent-pre-spawn-layer-override-clobbered/ | Subagent pre-spawn layer override is clobbered |

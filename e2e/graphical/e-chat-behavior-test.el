@@ -654,6 +654,87 @@ than the invisible insertion position."
           (e-chat-behavior-test--assert-tail-near-bottom fixture))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-intermediate-assistant-keeps-live-progress ()
+  "An intermediate assistant block never presents a settled turn summary."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let ((transcript (plist-get fixture :transcript))
+                (session-id (plist-get fixture :session-id))
+                (started-at (float-time)))
+            (with-current-buffer transcript
+              (dolist (event
+                       (list
+                        (e-events-make
+                         :type 'turn-started :session-id session-id
+                         :turn-id "turn-intermediate" :created-at started-at)
+                        (e-events-make
+                         :type 'provider-request-started :session-id session-id
+                         :turn-id "turn-intermediate" :created-at started-at)
+                        (e-events-make
+                         :type 'provider-request-finished :session-id session-id
+                         :turn-id "turn-intermediate"
+                         :created-at (+ started-at 0.02)
+                         :payload '(:status done))
+                        (e-events-make
+                         :type 'message-added :session-id session-id
+                         :turn-id "turn-intermediate"
+                         :created-at (+ started-at 0.02)
+                         :payload '(:message
+                                    (:id "answer-1" :role assistant
+                                     :content "Initial answer.")))
+                        (e-events-make
+                         :type 'provider-request-started :session-id session-id
+                         :turn-id "turn-intermediate"
+                         :created-at (+ started-at 0.03))))
+                (e-chat--render-event event)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (and (equal e-chat--progress-turn-id "turn-intermediate")
+                      (string-match-p "Initial answer" (buffer-string))
+                      (not (string-match-p "Turn took" (buffer-string))))))
+             2.0 "intermediate answer with live progress")
+            (e-chat-behavior-test--capture-state
+             "intermediate-assistant-with-live-progress")
+            (with-current-buffer transcript
+              (e-chat--render-event
+               (e-events-make
+                :type 'provider-request-finished :session-id session-id
+                :turn-id "turn-intermediate"
+                :created-at (+ started-at 0.05)
+                :payload '(:status done)))
+              (e-chat--render-event
+               (e-events-make
+                :type 'message-added :session-id session-id
+                :turn-id "turn-intermediate"
+                :created-at (+ started-at 0.05)
+                :payload '(:message
+                           (:id "answer-2" :role assistant
+                            :content "Corrected answer."))))
+              (e-chat--render-event
+               (e-events-make
+                :type 'turn-finished :session-id session-id
+                :turn-id "turn-intermediate"
+                :created-at (+ started-at 0.06))))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (and (null e-chat--progress-turn-id)
+                      (= (save-excursion
+                           (goto-char (point-min))
+                           (how-many "Turn took" (point-min) (point-max)))
+                         1)
+                      (null (e-ui-work-pending (current-buffer))))))
+             2.0 "terminal event settles one summary")
+            (e-chat-behavior-test--capture-state
+             "terminal-event-settles-summary")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-reasoning-renders-content-not-payload ()
   "Board-backed reasoning renders prose without its protocol payload."
   (skip-unless (display-graphic-p))

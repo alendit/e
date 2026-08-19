@@ -1,0 +1,12 @@
+#+title: e-chat Intermediate Assistant Summary Flicker
+#+startup: overview
+
+* Report
+
+While a turn is still running, the chat tail intermittently switches from live
+progress to a settled =Turn took ...= summary and then back to progress.
+
+The affected session contained multiple assistant messages in one private
+harness turn while claim-validation work continued.  In the board-backed chat
+projection, assistant output and the terminal turn summary are separate events.
+The settled summary should appear only after the terminal event.

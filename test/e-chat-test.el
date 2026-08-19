@@ -3765,6 +3765,10 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
             :payload (list :message
                            (list :id "message-1" :role 'assistant
                                  :turn-id "turn-1" :content content))))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1" :created-at 22))
           (let ((rendered (buffer-string)))
             (should (string-match-p
                      (regexp-quote
@@ -3917,6 +3921,12 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                           :created-at 11
                           :payload '(:message (:role assistant
                                                 :content "Final answer."))))
+          (should (equal e-chat--progress-turn-id "turn-1"))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11))
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
@@ -4946,6 +4956,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :created-at 205
                             :payload '(:message (:role assistant
                                                   :content "Final answer."))))
+            (e-chat--render-event
+             (e-events-make :type 'turn-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 205))
             (should (= details-calls 0)))
           (let ((content (buffer-string)))
             (should (string-match-p
@@ -4964,6 +4979,82 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (string-match-p "Thought for 1min 3sec" content))
             (should (string-match-p "2 tool calls" content))
             (should (string-match-p "Thought for 0min 45sec" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-intermediate-assistant-keeps-turn-progress-active ()
+  "Assistant messages do not settle presentation before the terminal event."
+  (let ((buffer (e-chat-test--buffer nil "chat-intermediate-assistant")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:message (:role assistant
+                                                :content "First answer."))))
+          (let ((record (e-chat--existing-turn-record "turn-1")))
+            (should (equal e-chat--progress-turn-id "turn-1"))
+            (should-not (plist-get record :ended-at))
+            (should-not (plist-get record :final-rendered))
+            (should (string-match-p "First answer" (buffer-string)))
+            (should-not (string-match-p "Turn took" (buffer-string))))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 3))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 5
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 5
+                          :payload '(:message (:role assistant
+                                                :content "Corrected answer."))))
+          (should (equal e-chat--progress-turn-id "turn-1"))
+          (should-not (string-match-p "Turn took" (buffer-string)))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 6
+                          :payload '(:reason stop)))
+          (let ((record (e-chat--existing-turn-record "turn-1"))
+                (content (buffer-string)))
+            (should-not e-chat--progress-turn-id)
+            (should (= (plist-get record :ended-at) 6))
+            (should (plist-get record :final-rendered))
+            (should (= (save-excursion
+                         (goto-char (point-min))
+                         (how-many "Turn took" (point-min) (point-max)))
+                       1))
+            (should (string-match-p
+                     (concat "Corrected answer\\.\n\n"
+                             "Turn took 0min 6sec\\.")
+                     content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5012,6 +5103,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :created-at 2
                           :payload '(:message (:role assistant
                                                 :content "Done."))))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "Turn took 0min 2sec, 1 action\\." content))
@@ -5084,6 +5180,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :created-at 205
                           :payload '(:message (:role assistant
                                                 :content "Final answer."))))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205))
           (goto-char (point-max))
           (insert "follow-up draft")
           (e-chat-test--focus-block-containing "Turn took 3min 25sec")
@@ -7185,6 +7286,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :payload (list :message
                                          (list :role 'assistant
                                                :content "final answer"))))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12))
           (should (cl-every #'e-chat--live-block-record e-chat--block-order))
           (should-not (cl-some
                        (lambda (block-id)
