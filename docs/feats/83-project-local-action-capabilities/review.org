@@ -24,6 +24,11 @@ A regression test verifies that capability skills retain a dynamic action provid
 
 The continuation regression now executes a real queued continuation turn whose =run_elisp= tool call invokes the project-local action through active tool context.
 
+* Independent verification
+
+A fresh review subagent confirmed that both original findings are resolved.
+The final focused run passed 79 tests, and warning-as-error compilation passed for the changed runtime files.
+
 * Residual risk
 
 Dynamic action discovery intentionally loads trusted project Elisp for live action lookup and =e-action://= discovery.
