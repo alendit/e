@@ -375,11 +375,12 @@ SESSION-ID and TURN-ID identify the root used for config-aware layer factories."
         (push capability result)))
     (nreverse result)))
 
-(defun e-harness-effective-action-capabilities
-    (harness &optional session-id turn-id)
+(cl-defun e-harness-effective-action-capabilities
+    (harness &optional session-id turn-id &key requested-capability-id)
   "Return action capabilities for HARNESS SESSION-ID and TURN-ID.
 Ordinary action-bearing capabilities are combined with action capabilities
-provided dynamically for the active session context."
+provided dynamically for the active session context.
+REQUESTED-CAPABILITY-ID identifies a specific capability lookup when known."
   (let* ((capabilities
           (e-harness-effective-capabilities harness session-id turn-id))
          (ordinary
@@ -389,7 +390,8 @@ provided dynamically for the active session context."
            capabilities
            :harness harness
            :session-id session-id
-           :turn-id turn-id)))
+           :turn-id turn-id
+           :requested-capability-id requested-capability-id)))
     (e-harness--unique-action-capabilities
      (append ordinary
              (cl-remove-if-not #'e-capability-actions provided)))))

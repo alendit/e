@@ -341,6 +341,49 @@ When RESOURCES is non-nil, include action-description resources."
                                       (e-store-read-entry entry))))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-capability-skills-preserve-action-providers ()
+  "Adding skill resources keeps dynamic action-capability providers."
+  (let* ((project (make-temp-file "e-project-local-action-skills-" t))
+         (directory (expand-file-name ".e/capabilities/topic/" project))
+         (child
+          (e-capability-create
+           :id 'child-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :runner (lambda (_arguments _context) "ok")))))
+         (provider (lambda (&rest _context) (list child)))
+         (capability
+          (e-capability-create
+           :id 'topic
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :runner (lambda (_arguments _context) "topic")))
+           :action-capability-providers (list provider))))
+    (unwind-protect
+        (progn
+          (e-project-local-test--write-file
+           (expand-file-name "skills/daily/SKILL.md" directory)
+           "---
+name: daily
+description: Daily action skill.
+---
+Steps.")
+          (let ((decorated
+                 (e-project-local--with-capability-skills
+                  capability directory)))
+            (should (equal
+                     (e-capability-action-capability-providers decorated)
+                     (list provider)))
+            (should (equal
+                     (mapcar
+                      #'e-capability-id
+                      (e-capabilities-provided-action-capabilities
+                       (list decorated)))
+                     '(child-action)))))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-folds-in-layer-skills ()
   "Layer-scoped skills register as project-local read-only e:// resources."
   (let* ((project (make-temp-file "e-project-local-layer-skills-" t))

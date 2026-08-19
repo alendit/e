@@ -17,12 +17,15 @@
 (require 'e-backend)
 (require 'e-bayesian-reasoning)
 (require 'e-chat-service)
+(require 'e-emacs-tools)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-modernchat)
 (require 'e-modernchat-view-model)
 (require 'e-project-local)
 (require 'e-session)
 (require 'e-structured-blocks)
+
+(defvar e-modernchat-test--project-action-result nil)
 
 (defun e-modernchat-test--post-board-output (harness session-id id content)
   "Post one board-visible test output and drain its bounded projection page."
@@ -935,19 +938,34 @@ messages so the transcript reads as one clean answer."
 
 
 (ert-deftest e-chat-service-test-continuation-invokes-project-local-action ()
-  "A board continuation can dispatch an action from its session project root."
+  "A queued board continuation resolves an action from its session project root."
   (let* ((project (make-temp-file "e-continuation-project-action-" t))
          (directory (expand-file-name ".e/capabilities/daily-run" project))
          (file (expand-file-name "capability.el" directory))
          (e-project-local-allowed-roots (list project))
+         (e-modernchat-test--project-action-result nil)
          (e-board--registry (make-hash-table :test 'equal))
+         (e-board--id-sequence 0)
          (e-board-registry--boards (make-hash-table :test 'equal))
          (e-board-registry--id-sequence 0)
+         (e-board-registry--unsettled-pickup-count 0)
+         (e-board-registry--unsettled-effect-count 0)
+         (e-board-registry--unsettled-routing-count 0)
+         (e-board-registry--unsettled-generation 0)
+         (e-board-runtime--attachments (make-hash-table :test 'equal))
+         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+         (e-board-runtime--invocations (make-hash-table :test 'equal))
+         (e-board-runtime--pending-pickup-head nil)
+         (e-board-runtime--pending-pickup-tail nil)
+         (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+         (e-board-runtime--pickup-drain-scheduled nil)
+         (e-board-runtime--admission-open-p t)
          (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
          (e-chat-service--board-bindings (make-hash-table :test 'equal))
          (e-chat-service--continuation-reconciling
           (make-hash-table :test 'equal))
-         action-result)
+         (backend-calls 0))
     (unwind-protect
         (progn
           (make-directory directory t)
@@ -964,24 +982,58 @@ messages so the transcript reads as one clean answer."
     (list :finalize
           (e-action-cheap-create
            :description \"Finalize a daily run.\"
-           :runner (lambda (_arguments _context) 'finalized))))))"
+           :runner
+           (lambda (_arguments _context)
+             (setq e-modernchat-test--project-action-result 'finalized)))))))"
            nil file nil 'silent)
-          (let* ((harness (e-harness-create :enabled-layer-ids nil))
-                 (_ (e-harness-set-intrinsic-capabilities
-                     harness
-                     (list (e-project-local--dynamic-capability project))))
-                 (_session
-                  (e-harness-create-session
-                   harness :id "coordinator"
+          (let* ((backend
+                  (e-backend-create
+                   :name "project-action-continuation"
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore options)
+                      (setq backend-calls (1+ backend-calls))
+                      (if (= backend-calls 1)
+                          (progn
+                            (should (equal (plist-get (car (last messages))
+                                                     :content)
+                                           "reconcile"))
+                            (funcall
+                             on-item
+                             '(:type tool-call
+                               :id "run-action"
+                               :name "run_elisp"
+                               :arguments
+                               (:code
+                                "(e-actions-call 'daily-run :finalize nil)")))
+                            (funcall on-item '(:type done :reason tool-use)))
+                        (funcall on-item
+                                 '(:type assistant-message
+                                   :content "reconciled"))
+                        (funcall on-item '(:type done :reason stop)))))))
+                 (tools
+                  (e-capability-create
+                   :id 'continuation-tools
+                   :tools
+                   (list (lambda (registry)
+                           (e-emacs-tools-register-run-elisp registry)))))
+                 (harness
+                  (e-harness-create
+                   :backend backend
+                   :enabled-layer-ids nil
+                   :intrinsic-capabilities
+                   (list (e-project-local--dynamic-capability project)
+                         tools)))
+                 (session
+                  (e-chat-service-create-session
+                   :harness harness
+                   :id "coordinator"
                    :metadata (list :project-root project)))
-                 (runtime-board
-                  (e-board-registry-create
-                   :id "continuation-project-board" :principal "test"))
-                 (board
-                  (e-board-registry-board-source-board runtime-board))
-                 (binding
-                  (e-chat-service--binding-create
-                   :harness harness :board runtime-board)))
+                 (session-id (plist-get session :id))
+                 (binding (e-chat-service-binding harness session-id))
+                 (runtime-board (e-chat-service-binding-board binding))
+                 (board (e-board-registry-board-source-board runtime-board)))
             (e-board-orchestration-publish-fact
              board
              '(:version 1 :type manifest :idempotency-key "manifest"
@@ -996,17 +1048,18 @@ messages so the transcript reads as one clean answer."
              '(:version 1 :type terminal-report :idempotency-key "report"
                :payload (:run-id "run-1" :task-key "task" :attempt 0
                          :status done :summary "done" :outputs [])))
-            (cl-letf (((symbol-function 'e-chat-service-queue-session)
-                       (lambda (queued-harness queued-session _prompt
-                                &rest _arguments)
-                         (setq action-result
-                               (e-actions-call
-                                'daily-run :finalize nil
-                                (list :harness queued-harness
-                                      :session-id queued-session)))
-                         "continuation-message")))
-              (e-chat-service--reconcile-board-continuation binding))
-            (should (eq action-result 'finalized))
+            (e-chat-service--reconcile-board-continuation binding)
+            (e-board-runtime--drain-input-routing
+             runtime-board
+             (lambda ()
+               (e-board-drain-input-classifications board)))
+            (e-board-runtime--drain-pickups)
+            (should (equal (plist-get
+                            (e-harness-wait-batch harness session-id 2.0)
+                            :status)
+                           'done))
+            (should (= backend-calls 2))
+            (should (eq e-modernchat-test--project-action-result 'finalized))
             (should
              (eq (plist-get
                   (plist-get

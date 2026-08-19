@@ -536,7 +536,12 @@ e://<capability>/skills/project/<slug> resources.  Returns nil when none."
        :hooks (e-capability-hooks capability)
        :instruction-priority (e-capability-instruction-priority capability)
        :config-options (e-capability-config-options capability)
-       :config (e-capability-config capability))
+       :config (e-capability-config capability)
+       :prompts (e-capability-prompts capability)
+       :structured-blocks (e-capability-structured-blocks capability)
+       :message-details (e-capability-message-details capability)
+       :action-capability-providers
+       (e-capability-action-capability-providers capability))
     capability))
 
 (defun e-project-local--layer-skill-specs (layer-id directory)
@@ -861,10 +866,16 @@ revalidates via `e-project-local--discovered-capabilities'."
    (e-project-local--context-directory fallback context)))
 
 (defun e-project-local--context-action-capabilities (fallback &rest context)
-  "Return trusted project-local action capabilities for CONTEXT or FALLBACK."
-  (cl-remove-if-not
-   #'e-capability-actions
-   (e-project-local--context-capabilities fallback context)))
+  "Return trusted project-local action capabilities for CONTEXT or FALLBACK.
+Resolving the aggregate's own built-in actions uses only a warmed snapshot so
+cold inspection does not execute repository Elisp."
+  (let* ((directory (e-project-local--context-directory fallback context))
+         (requested (plist-get context :requested-capability-id))
+         (capabilities
+          (if (eq requested 'project-local)
+              (or (e-project-local--cached-capabilities directory) nil)
+            (e-project-local--discovered-capabilities directory))))
+    (cl-remove-if-not #'e-capability-actions capabilities)))
 
 (defun e-project-local--register-context-tools
     (fallback registry &rest context)

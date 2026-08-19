@@ -245,10 +245,25 @@
            :action-capability-providers
            (list (lambda (&rest _context) (list provided)))))
          (harness (e-harness-create :enabled-layer-ids nil)))
-    (e-harness-set-intrinsic-capabilities harness (list ordinary host))
+    (e-harness-set-intrinsic-capabilities
+     harness
+     (list ordinary host (e-action-resources-capability-create)))
+    (e-harness-create-session harness :id "session-1")
     (should-error
      (e-harness-effective-action-capabilities harness)
-     :type 'e-harness-duplicate-action-capability)))
+     :type 'e-harness-duplicate-action-capability)
+    (should-error
+     (e-actions-call
+      'duplicate-action :run nil
+      (list :harness harness :session-id "session-1"))
+     :type 'e-harness-duplicate-action-capability)
+    (let ((resources (e-harness-resources harness "session-1" "turn-1")))
+      (dolist (uri '("e-action://active"
+                     "e-action://duplicate-action"
+                     "e-action://duplicate-action/run"))
+        (should-error
+         (e-resources-read resources uri nil)
+         :type 'e-harness-duplicate-action-capability)))))
 
 (ert-deftest e-actions-test-rejected-arguments-never-enter-activity ()
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))

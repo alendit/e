@@ -1,0 +1,30 @@
+#+title: Review: Project-Local Action Capabilities
+#+startup: overview
+
+* Scope
+
+Independent review of commits =fccb5fb9= and =64da282c= against the project-local action capability plan.
+
+* Resolved findings
+
+** DONE Dispatch and action resources disagreed on duplicate ids
+
+Dispatch first searched ordinary capabilities and could bypass duplicate-id validation.
+It now uses =e-harness-effective-action-capabilities= like =e-action://= resources.
+The requested capability id is passed to dynamic providers so project-local can preserve cold inspection without creating a second action view.
+Tests cover duplicate rejection through dispatch and the active, capability, and action resource URIs.
+
+** DONE Capability skill decoration dropped action providers
+
+=e-project-local--with-capability-skills= rebuilt capability records without the new provider slot.
+It now preserves action-capability providers, prompts, structured blocks, and message-detail providers.
+A regression test verifies that capability skills retain a dynamic action provider.
+
+* Additional verification
+
+The continuation regression now executes a real queued continuation turn whose =run_elisp= tool call invokes the project-local action through active tool context.
+
+* Residual risk
+
+Dynamic action discovery intentionally loads trusted project Elisp for live action lookup and =e-action://= discovery.
+Cold aggregate-action dispatch uses the warmed project snapshot when resolving =project-local= itself, so its inspection action remains no-load.
