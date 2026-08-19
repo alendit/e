@@ -4988,6 +4988,50 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-retry-relabels-failed-provider-attempt-with-error ()
+  "A retrying provider attempt is not presented as a failed thought."
+  (let ((buffer (e-chat-test--buffer nil "chat-retrying-provider")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (dolist
+              (event
+               (list
+                (e-events-make :type 'turn-started
+                               :session-id e-chat-session-id
+                               :turn-id "turn-1" :created-at 0)
+                (e-events-make :type 'provider-request-started
+                               :session-id e-chat-session-id
+                               :turn-id "turn-1" :created-at 0)
+                (e-events-make :type 'provider-request-finished
+                               :session-id e-chat-session-id
+                               :turn-id "turn-1" :created-at 5
+                               :payload '(:status error))
+                (e-events-make :type 'turn-retrying
+                               :session-id e-chat-session-id
+                               :turn-id "turn-1" :created-at 5
+                               :payload '(:error "503: upstream unavailable"
+                                          :details (:status 503)
+                                          :attempt 1
+                                          :backoff-seconds 2.0))))
+            (e-chat--render-event event))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (round (car (plist-get record :activity-records)))
+                 (expanded (e-chat--activity-expanded-text record))
+                 (content (buffer-string)))
+            (should (eq (plist-get round :status) 'retrying))
+            (should (equal (plist-get round :error)
+                           "503: upstream unavailable"))
+            (should (string-match-p
+                     "Provider attempt failed after 0min 5sec; retry 1 in 2sec"
+                     expanded))
+            (should (string-match-p "Error: 503: upstream unavailable" expanded))
+            (should-not (string-match-p "Thought failed" expanded))
+            (should (string-match-p "retry 1 in 2s" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-turn-collapses-progress-to-summary ()
   "Settled activity collapses to a navigable turn summary."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-summary"))

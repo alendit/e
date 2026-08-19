@@ -438,6 +438,49 @@ its final value only when the turn settled."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-starter-test-retrying-provider-retains-error ()
+  "A starter retry shows the failed attempt, error, and retry schedule."
+  (let* ((buffer (get-buffer-create "*e-chat-starter-retrying*"))
+         (state (make-e-chat-starter-state
+                 :session-id "starter-session"
+                 :question "Explain"
+                 :source-reference '(:label "demo.el:1")
+                 :status 'running
+                 :buffer buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-starter-mode)
+          (setq-local e-chat-starter--state state)
+          (dolist (event
+                   (list
+                    (e-events-make :type 'turn-started
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1" :created-at 0)
+                    (e-events-make :type 'provider-request-started
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1" :created-at 0)
+                    (e-events-make :type 'provider-request-finished
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1" :created-at 5
+                                   :payload '(:status error))
+                    (e-events-make :type 'turn-retrying
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1" :created-at 5
+                                   :payload '(:error "503: unavailable"
+                                              :attempt 1
+                                              :backoff-seconds 2.0))))
+            (e-chat-starter--handle-event state event))
+          (should (equal (e-chat-starter-state-progress state)
+                         "retry 1 in 2s"))
+          (should (string-match-p
+                   "Provider attempt failed after 0min 5sec; retry 1 in 2sec"
+                   (buffer-string)))
+          (should (string-match-p "Error: 503: unavailable" (buffer-string)))
+          (should-not (string-match-p "Thought failed" (buffer-string))))
+      (e-chat-starter--stop-progress-timer state)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-starter-test-start-creates-session-and-captures-answer ()
   "Starting here creates one real chat session and records the backend answer."
   (let* ((harness (e-chat-starter-test--harness

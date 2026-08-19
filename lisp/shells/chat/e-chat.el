@@ -4744,7 +4744,9 @@ how long it ran."
 (defun e-chat--normalize-round-status (status)
   "Return presentation round status for provider STATUS."
   (pcase status
-    ((or 'error "error" 'failed "failed") 'failed)
+    ((or 'error "error" 'attempt-failed "attempt-failed") 'attempt-failed)
+    ((or 'retrying "retrying") 'retrying)
+    ((or 'failed "failed") 'failed)
     ((or 'cancelled "cancelled") 'cancelled)
     ((or 'active "active" 'started "started") 'active)
     (_ 'done)))
@@ -4761,6 +4763,9 @@ ACTIVE-AT is used for active thinking duration."
               (or active-at (e-chat--current-time-seconds)))))
     ('failed
      (format "Thought failed after %s"
+             (e-chat--format-duration started-at ended-at)))
+    ('attempt-failed
+     (format "Provider attempt failed after %s"
              (e-chat--format-duration started-at ended-at)))
     ('cancelled
      (format "Thought cancelled after %s"
@@ -4779,14 +4784,25 @@ ACTIVE-AT is used for active thinking duration."
 
 (defun e-chat--round-thought-text (round)
   "Return visible thought text for semantic ROUND."
-  (e-chat--thought-content
-   (plist-get round :status)
-   (plist-get round :started-at)
-   (plist-get round :ended-at)
-   (when (eq (e-chat--normalize-round-status
-              (plist-get round :status))
-             'active)
-     (e-chat--current-time-seconds))))
+  (if (eq (e-chat--normalize-round-status (plist-get round :status))
+          'retrying)
+      (concat
+       (format "Provider attempt failed after %s; retry %s in %.0fsec"
+               (e-chat--format-duration
+                (plist-get round :started-at)
+                (plist-get round :ended-at))
+               (or (plist-get round :retry-attempt) 1)
+               (or (plist-get round :retry-backoff-seconds) 0))
+       (when-let ((error-message (plist-get round :error)))
+         (format "\nError: %s" error-message)))
+    (e-chat--thought-content
+     (plist-get round :status)
+     (plist-get round :started-at)
+     (plist-get round :ended-at)
+     (when (eq (e-chat--normalize-round-status
+                (plist-get round :status))
+               'active)
+       (e-chat--current-time-seconds)))))
 
 (defun e-chat--activity-round-row-text (left &optional right)
   "Return activity round row with LEFT and optional right-side RIGHT text."
@@ -5316,7 +5332,10 @@ STATUS defaults to `done'."
                    (eq (plist-get candidate :status) 'active)))
             (reverse (plist-get record :intermittent-entries)))))
       (when entry
-        (plist-put entry :title "Thought")
+        (plist-put entry :title
+                   (if (eq status 'attempt-failed)
+                       "Provider attempt"
+                     "Thought"))
         (plist-put entry :status
                    (e-chat--normalize-round-status (or status 'done)))
         (plist-put entry :ended-at created-at)
@@ -5327,11 +5346,49 @@ STATUS defaults to `done'."
                     created-at))))
     record))
 
+(defun e-chat--record-turn-retrying (turn-id payload)
+  "Record retry decision PAYLOAD for TURN-ID's latest failed attempt."
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (let ((round
+           (cl-find-if
+            (lambda (candidate)
+              (memq (e-chat--normalize-round-status
+                     (plist-get candidate :status))
+                    '(attempt-failed retrying)))
+            (reverse (e-chat--activity-records record))))
+          (entry
+           (cl-find-if
+            (lambda (candidate)
+              (and (eq (plist-get candidate :kind) 'thinking)
+                   (memq (e-chat--normalize-round-status
+                          (plist-get candidate :status))
+                         '(attempt-failed retrying))))
+            (reverse (plist-get record :intermittent-entries)))))
+      (when round
+        (plist-put round :status 'retrying)
+        (plist-put round :retry-attempt (plist-get payload :attempt))
+        (plist-put round :retry-backoff-seconds
+                   (plist-get payload :backoff-seconds))
+        (plist-put round :error (plist-get payload :error))
+        (plist-put round :error-details (plist-get payload :details)))
+      (when entry
+        (plist-put entry :title "Provider attempt")
+        (plist-put entry :status 'retrying)
+        (plist-put entry :retry-attempt (plist-get payload :attempt))
+        (plist-put entry :retry-backoff-seconds
+                   (plist-get payload :backoff-seconds))
+        (plist-put entry :error (plist-get payload :error))
+        (plist-put entry :error-details (plist-get payload :details))
+        (when round
+          (plist-put entry :content (e-chat--round-thought-text round))))
+      record)))
+
 (defun e-chat--latest-open-round-record (record)
   "Return RECORD's latest non-terminal provider round."
   (cl-find-if
    (lambda (round)
-     (memq (plist-get round :status) '(active error)))
+     (memq (e-chat--normalize-round-status (plist-get round :status))
+           '(active attempt-failed retrying)))
    (reverse (e-chat--activity-records record))))
 
 (defun e-chat--settle-open-thinking (turn-id ended-at status)
@@ -5345,8 +5402,9 @@ STATUS defaults to `done'."
                   (cl-find-if
                    (lambda (candidate)
                      (and (eq (plist-get candidate :kind) 'thinking)
-                          (memq (plist-get candidate :status)
-                                '(active error))))
+                          (memq (e-chat--normalize-round-status
+                                 (plist-get candidate :status))
+                                '(active attempt-failed retrying))))
                    (reverse (plist-get record :intermittent-entries)))))
         (plist-put entry :title "Thought")
         (plist-put entry :status status)
@@ -6644,6 +6702,9 @@ function records only lifecycle audit text."
         turn-id
         (plist-get activity-event :created-at)
         (plist-get (plist-get activity-event :payload) :status)))
+      ('turn-retrying
+       (e-chat--record-turn-retrying
+        turn-id (plist-get activity-event :payload)))
       ('turn-finished
        (e-chat--set-turn-time turn-id
                               :ended-at
@@ -8590,6 +8651,15 @@ separate dimmed representation instead."
       (plist-get event :created-at)
       (plist-get (plist-get event :payload) :status))
      (e-chat--request-activity-redraw (plist-get event :turn-id)))
+    ('turn-retrying
+     (let* ((turn-id (plist-get event :turn-id))
+            (payload (plist-get event :payload))
+            (attempt (plist-get payload :attempt))
+            (backoff (plist-get payload :backoff-seconds)))
+       (e-chat--record-turn-retrying turn-id payload)
+       (e-chat--set-status
+        (format "retry %s in %.0fs" (or attempt 1) (or backoff 0)))
+       (e-chat--request-activity-redraw turn-id 'activity)))
     ('queue-changed
      (if (e-chat--surface-transcript-p)
          (e-chat--surface-refresh-composer-queue)
@@ -8682,13 +8752,6 @@ separate dimmed representation instead."
      (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")
      (e-chat--insert-entry "System" "Session reset" t))
-    ('turn-retrying
-     (let* ((payload (plist-get event :payload))
-            (attempt (plist-get payload :attempt))
-            (backoff (plist-get payload :backoff-seconds)))
-       (e-chat--set-status
-        (format "rate limited; retry %s in %.0fs"
-                (or attempt 1) (or backoff 0)))))
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t)))
      (when (e-chat--event-may-change-unread-p event)

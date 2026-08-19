@@ -210,6 +210,7 @@ so a child-frame adapter can be added without changing controller logic."
       ('turn-finished
        (list (e-chat-starter--activity-event event 'turn-finished)))
       ((or 'provider-request-started 'provider-request-finished
+           'turn-retrying
            'reasoning-delta 'tool-started 'tool-progress 'tool-finished
            'turn-failed 'turn-cancelled)
        (list (e-chat-starter--activity-event event (plist-get event :type))))
@@ -423,6 +424,13 @@ the turn settles or the popup buffer dies."
        (e-chat-starter--record-activity-event state event))
       ('provider-request-finished
        (e-chat-starter--record-activity-event state event))
+      ('turn-retrying
+       (let* ((payload (plist-get event :payload))
+              (attempt (or (plist-get payload :attempt) 1))
+              (backoff (or (plist-get payload :backoff-seconds) 0)))
+         (setf (e-chat-starter-state-progress state)
+               (format "retry %s in %.0fs" attempt backoff))
+         (e-chat-starter--record-activity-event state event)))
       ('reasoning-delta
        (setf (e-chat-starter-state-progress state)
              (or (plist-get (plist-get event :payload) :content)

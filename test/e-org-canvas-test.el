@@ -1497,6 +1497,39 @@
       (when (buffer-live-p target)
         (kill-buffer target)))))
 
+(ert-deftest e-org-canvas-test-input-passes-retry-to-chat-presentation ()
+  "Org Canvas passes retry details through the shared chat presentation."
+  (let* ((harness (e-org-canvas-test--harness))
+         (target (get-buffer-create "org-canvas-retry-target"))
+         buffer
+         rendered-event)
+    (e-harness-test-create-board-session harness :id "session-1")
+    (unwind-protect
+        (progn
+          (setq buffer
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (let ((event
+                 (e-events-make :type 'turn-retrying
+                                :session-id "session-1"
+                                :turn-id "turn-1" :created-at 5
+                                :payload '(:error "503: unavailable"
+                                           :attempt 1
+                                           :backoff-seconds 2.0))))
+            (cl-letf (((symbol-function 'e-chat--render-event)
+                       (lambda (candidate)
+                         (setq rendered-event candidate))))
+              (with-current-buffer buffer
+                (e-org-canvas--input-render-event buffer event)))
+            (should (equal rendered-event event))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
 (ert-deftest e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message ()
   "Submitted input panes show a done line when a turn has no assistant output."
   (let* ((harness (e-org-canvas-test--harness))

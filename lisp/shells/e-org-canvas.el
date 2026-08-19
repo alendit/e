@@ -1146,6 +1146,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
        (e-chat--delete-composer)
        (e-org-canvas--input-select-result-buffer buffer))
       ((or 'turn-started 'provider-request-started 'provider-request-finished
+           'turn-retrying
            'assistant-delta 'reasoning-delta 'tool-started 'tool-finished
            'token-usage)
        (e-org-canvas--input-enter-result-state)

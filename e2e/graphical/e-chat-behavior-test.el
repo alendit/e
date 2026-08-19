@@ -735,6 +735,67 @@ than the invisible insertion position."
              "terminal-event-settles-summary")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-retrying-provider-shows-error-and-retry ()
+  "A retrying provider attempt visibly retains its error without claiming failure."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let ((transcript (plist-get fixture :transcript))
+                (session-id (plist-get fixture :session-id))
+                (started-at (float-time)))
+            (with-current-buffer transcript
+              (dolist
+                  (event
+                   (list
+                    (e-events-make
+                     :type 'turn-started :session-id session-id
+                     :turn-id "turn-retrying" :created-at started-at)
+                    (e-events-make
+                     :type 'provider-request-started :session-id session-id
+                     :turn-id "turn-retrying" :created-at started-at)
+                    (e-events-make
+                     :type 'provider-request-finished :session-id session-id
+                     :turn-id "turn-retrying" :created-at (+ started-at 5)
+                     :payload '(:status error))
+                    (e-events-make
+                     :type 'turn-retrying :session-id session-id
+                     :turn-id "turn-retrying" :created-at (+ started-at 5)
+                     :payload '(:error "503: upstream unavailable"
+                                :details (:status 503)
+                                :attempt 1 :backoff-seconds 2.0))))
+                (e-chat--render-event event)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (and (string-match-p
+                       "Provider attempt failed after 0min 5sec; retry 1 in 2sec"
+                       (buffer-string))
+                      (string-match-p "Error: 503: upstream unavailable"
+                                      (buffer-string))
+                      (not (string-match-p "Thought failed"
+                                           (buffer-string))))))
+             2.0 "retrying provider error")
+            (let* ((window
+                    (car (e-chat-behavior-test--fixture-windows fixture)))
+                   (position
+                    (with-current-buffer transcript
+                      (save-excursion
+                        (goto-char (point-min))
+                        (search-forward "Provider attempt failed")
+                        (match-beginning 0)))))
+              (set-window-start window position t)
+              (set-window-point window position)
+              (redisplay t)
+              (should (eq (window-buffer window) transcript))
+              (should (pos-visible-in-window-p position window t)))
+            (e-chat-behavior-test--capture-state
+             "retrying-provider-error-retained")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-reasoning-renders-content-not-payload ()
   "Board-backed reasoning renders prose without its protocol payload."
   (skip-unless (display-graphic-p))

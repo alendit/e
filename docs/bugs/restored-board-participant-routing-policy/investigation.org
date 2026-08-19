@@ -61,9 +61,63 @@ This must be stored and restored by =e-chat-service=; callers such as Grimoire
 should not need a restart hook that re-specializes the binding.
 
 The retry-status omission is an independent board activity projection defect.
-Exposing the existing =turn-retrying= lifecycle edge would make transient
-attempts legible, but it would not prevent the duplicate turn.  Preserving the
-routing policy is the correctness fix.
+Exposing the existing =turn-retrying= lifecycle edge makes transient attempts
+legible, but does not prevent the duplicate turn.  Preserving the routing
+policy remains the correctness fix for this report.
 
-No fix was applied during this diagnosis.  The running Emacs was inspected
-only through bounded read-only probes and was not reloaded.
+* Partial Fix
+
+- =turn-retrying= is now durable audit activity.  Its normalized provider error,
+  structured details, attempt number, and delay are retained through restart;
+  credentials are redacted and unusually large details fall back to an
+  explicitly truncated telemetry preview.
+- Board runtime publishes that durable retry edge instead of filtering it out.
+- Chat keeps a provider error distinct from a terminal turn failure.  When the
+  harness schedules a retry, the row reads =Provider attempt failed ...; retry
+  ...= and includes the retained error.  Only a terminal =turn-failed= event can
+  turn the row into =Thought failed=.
+- Org Canvas and the starter shell pass the same retry activity through their
+  existing chat presentation path.
+
+The primary restored-routing defect remains open.  The running Emacs was not
+reloaded.
+
+* Partial-Fix Validation
+
+- Harness, board-runtime, and chat suites: 551 passed, 1 skipped, 0 unexpected.
+- Starter shell suite: 24 passed, 0 unexpected.  Focused Org Canvas retry and
+  scheduled-render coverage: 2 passed, 0 unexpected.
+- Focused graphical retry presentation: 1 passed, 0 unexpected.  The captured
+  frame visibly contains the retry schedule and retained provider error and no
+  =Thought failed= text.
+
+* Architecture Self-Check
+
+1. This is independently useful: retries are truthful and diagnosable even
+   before the separate restored-routing defect is fixed.
+2. It moves toward shell-neutral lifecycle semantics with presentation owned by
+   each shell.
+3. The retry decision and error are stable harness facts; wording remains local
+   to chat and can change reversibly.
+4. The harness owns retry policy and error normalization, board runtime owns
+   publication, and chat owns rendering.  Each responsibility has one reason to
+   change.
+5. Coupling is reduced to the existing narrow =turn-retrying= event contract;
+   shells do not duplicate retry policy.
+6. Dependencies still flow from presentation toward the stable harness event
+   contract, never from harness policy toward a shell.
+7. Durable append and board publication remain at their existing runtime
+   boundaries; chat performs no lifecycle side effects.
+8. The only added state is one bounded durable audit entry per retry, owned by
+   the session activity log for the session's normal lifetime.
+9. Runtime cost is limited to bounded redaction and one projection on the
+   exceptional retry path; ordinary turns do no additional work.
+10. =turn-retrying= is a real lifecycle event already emitted by the harness,
+    not a speculative interface.
+11. Old histories without retry activity still render provider attempt errors;
+    no compatibility branch or fallback is required.
+12. The inaccurate generic =rate limited= retry label was removed.
+13. Expected retry errors are retained and presented; terminal failures still
+    surface through =turn-failed= rather than being swallowed.
+14. Harness, board, shared chat, starter, Org Canvas, and graphical tests cover
+    the behavior at their respective boundaries.
