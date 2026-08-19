@@ -195,6 +195,7 @@ Operations accepted before this commit may continue to completion."
 
 (defconst e-board-runtime--visible-harness-activity-types
   '(turn-started provider-request-started provider-request-finished
+    turn-retrying
     tool-started tool-finished action-started action-finished action-failed
     hook-audit turn-steered compaction-started compaction-finished
     compaction-failed)

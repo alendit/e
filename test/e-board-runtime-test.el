@@ -1896,6 +1896,34 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
+(ert-deftest e-board-runtime-test-retrying-activity-retains-bounded-error ()
+  "Retry activity publishes its redacted error and retry schedule."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (participant "participant"))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment (e-board-runtime-attach
+                          board harness "session" :participant-id participant))
+             (source-board (e-board-registry-board-source-board board)))
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make
+          :type 'turn-retrying :session-id "session" :turn-id "turn"
+          :payload '(:error "503 upstream; token=secret-value"
+                     :details (:status 503 :authorization "Bearer secret")
+                     :attempt 2 :backoff-seconds 4.0)
+          :activity-entry-id "retry-event"))
+        (let ((activity (car (e-board-messages source-board))))
+          (should (eq (e-board-message-activity-kind activity) 'turn-retrying))
+          (should
+           (equal
+            (e-board-message-attributes activity)
+            '(:error "503 upstream; token=[REDACTED]"
+              :details (:status 503 :authorization "[REDACTED]")
+              :attempt 2 :backoff-seconds 4.0
+              :source-event-id "retry-event"))))))))
+
 (ert-deftest e-board-runtime-test-reasoning-deltas-coalesce-on-board ()
   "Latest reasoning is board-visible without appending every high-rate delta."
   (e-board-runtime-test--with-empty-state

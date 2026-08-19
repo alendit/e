@@ -952,6 +952,7 @@ and before a queued turn scheduled from that terminal edge can start."
 
 (defconst e-harness--durable-activity-event-types
   '(turn-started provider-request-started provider-request-finished
+    turn-retrying
     reasoning-delta reasoning-raw-delta
     tool-started tool-finished action-started action-finished action-failed
     hook-audit turn-finished token-usage
@@ -964,6 +965,7 @@ and before a queued turn scheduled from that terminal edge can start."
   '((turn-started . audit)
     (provider-request-started . audit)
     (provider-request-finished . audit)
+    (turn-retrying . audit)
     (reasoning-delta . presentation-log)
     (reasoning-raw-delta . presentation-log)
     (tool-started . audit)
@@ -1328,6 +1330,23 @@ Apply TRANSFORM when supplied."
   "Return redacted VALUE when it is a string."
   (and (stringp value) (e-telemetry-redact-string value)))
 
+(defun e-harness--safe-error-activity-string (value)
+  "Return redacted, bounded error string VALUE."
+  (when (stringp value)
+    (truncate-string-to-width
+     (e-telemetry-redact-string value)
+     e-telemetry-preview-max-bytes nil nil "...")))
+
+(defun e-harness--safe-error-activity-details (value)
+  "Return redacted error details VALUE, bounding unusually large values.
+Ordinary compact provider plists retain their useful structure.  A large or
+cyclic value becomes an explicit bounded telemetry preview instead of making a
+board activity message unpublishable."
+  (let ((preview (e-telemetry-preview value)))
+    (if (plist-get preview :truncated)
+        preview
+      (e-telemetry-redact-value value))))
+
 (defun e-harness--tool-cause-activity-projection (cause)
   "Return a narrow redacted durable projection of tool CAUSE."
   (when (listp cause)
@@ -1399,6 +1418,29 @@ Apply TRANSFORM when supplied."
       (setq projected (append projected (list :diagnostics diagnostics))))
     (append projected (e-harness--request-cause-activity-fields payload))))
 
+(defun e-harness--retry-activity-projection (payload)
+  "Return redacted durable retry lifecycle PAYLOAD.
+The retry error is durable diagnostic evidence.  Keep its structured details
+while redacting credentials, and retain only the retry scheduler's scalar
+fields outside that error contract."
+  (let (projected)
+    (setq projected
+          (append projected
+                  (e-harness--activity-field
+                   payload :error #'stringp
+                   #'e-harness--safe-error-activity-string)))
+    (when (and (listp payload) (plist-member payload :details))
+      (setq projected
+            (append projected
+                    (list :details
+                          (e-harness--safe-error-activity-details
+                           (plist-get payload :details))))))
+    (dolist (key '(:attempt :backoff-seconds :reset-wait))
+      (setq projected
+            (append projected
+                    (e-harness--activity-field payload key #'numberp))))
+    projected))
+
 (defun e-harness--token-usage-activity-projection (payload)
   "Return a narrow durable projection of token-usage PAYLOAD."
   (let (projected)
@@ -1423,6 +1465,7 @@ Apply TRANSFORM when supplied."
     ('tool-finished (e-harness--compact-tool-finished-payload payload))
     ((or 'provider-request-started 'provider-request-finished)
      (e-harness--provider-request-activity-projection payload))
+    ('turn-retrying (e-harness--retry-activity-projection payload))
     ('token-usage (e-harness--token-usage-activity-projection payload))
     (_ payload)))
 

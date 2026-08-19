@@ -788,7 +788,19 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (should (= (car counter) 3))
     (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
       (should (= 2 (seq-count (lambda (ty) (eq ty 'turn-retrying)) types)))
-      (should-not (memq 'turn-failed types)))))
+      (should-not (memq 'turn-failed types)))
+    (let ((retry-events
+           (seq-filter
+            (lambda (event)
+              (eq (plist-get event :event-type) 'turn-retrying))
+            (e-harness-session-activity-events harness "session-1"))))
+      (should (= (length retry-events) 2))
+      (dolist (event retry-events)
+        (let ((payload (plist-get event :payload)))
+          (should (equal (plist-get payload :error)
+                         "429: Rate limit exceeded for api_key:[REDACTED]"))
+          (should (equal (plist-get payload :details) '(:status 429)))
+          (should (numberp (plist-get payload :backoff-seconds))))))))
 
 (ert-deftest e-harness-test-rate-limited-turn-fails-after-budget ()
   "Retries stop once the elapsed budget is exhausted, settling turn-failed."
