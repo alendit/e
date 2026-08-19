@@ -293,6 +293,7 @@ compile files, run startup hooks, or interrupt active work."
                   "lisp/shells/e-canvas.el"
                   "lisp/shells/e-org-canvas.el"
                   "lisp/shells/e-debug.el"
+                  "lisp/dev/e-dev-probe.el"
                   "lisp/dev/e-dev-profile.el"
                   "lisp/dev/e-dev-perf.el"
                   "lisp/dev/e-dev.el")))

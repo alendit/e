@@ -97,6 +97,7 @@ Test processes may bind this to nil while placing source first in
 
 (let ((load-prefer-newer e-load-prefer-newer))
   (require 'e-core)
+  (require 'e-dev-probe)
   (require 'e-ui-work)
   (require 'e-context-budget)
   (require 'e-process-reporting)
