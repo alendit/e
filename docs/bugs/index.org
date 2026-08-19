@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| New    | restored-board-participant-routing-policy/ | Restored board participant loses its routing policy |
 | Closed | session-persistence-writer-replacement-gap/ | Session persistence writer replacement loses initial Daily records |
 | Closed | e-chat-intermediate-assistant-summary-flicker/ | Intermediate assistant message flickers settled summary during active turn |
 | Closed | e-chat-surface-constituent-overwritten/ | e-chat surface constituent overwritten by generic buffer display |

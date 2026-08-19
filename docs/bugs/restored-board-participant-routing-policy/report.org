@@ -1,0 +1,20 @@
+#+title: Restored board participant loses its routing policy
+#+startup: overview
+
+* Report
+
+After restarting Emacs, a Grimoire Daily chat showed several consecutive
+=Thought failed after ...= rows for one prompt.
+
+* Expected
+
+The interactive Daily participant alone should receive ordinary =main= chat
+input.  Its background update participant should remain restricted to its
+self-routed =grimoire-update= input after session restoration.
+
+* Actual
+
+One ordinary chat prompt started turns in both the interactive Daily session
+and its private background update session.  Provider retries from both turns
+were merged into the visible input's activity, producing several apparently
+independent failure rows even though both turns eventually succeeded.

@@ -1,0 +1,69 @@
+#+title: Investigation: Restored board participant loses its routing policy
+#+startup: overview
+
+* Live Evidence
+
+A bounded read-only probe of the running Emacs found two active bindings on
+board =brd_01M0CM40TACCWQKE54ATDZ6EJB=:
+
+- interactive Daily session =20260819T090231-836e450c6b4d=;
+- background Org Canvas/update session =20260819T090232-04fe6b5fe275=.
+
+Both restored bindings had =default-tags= set to =(main)=, no exact default
+target, and an active =(:tags (main))= pickup subscription.  The durable record
+for the second session identifies it as the Org Canvas for the same Daily file
+and records the shared board ID and principal.
+
+One visible input, =msg_5182=, consequently produced two private source turns,
+one per participant.  The interactive turn had three failed provider requests
+before succeeding; the update turn independently had three failed provider
+requests before succeeding.  Both private turns emitted =turn-finished=, not
+=turn-failed=.
+
+The provider request lifecycle retained only =status= and elapsed time for the
+failed attempts.  It did not retain the transient error detail after the
+successful retry, so the exact upstream failure cannot be recovered from the
+current projection.
+
+* Source Evidence
+
+=e-chat-service-create-participant= accepts participant-specific routing and
+installs it in the process-local binding.  Grimoire creates the Daily update
+participant with a =grimoire-update= pickup selector, self-only observer,
+=grimoire-update= default tags, and =:self= default target.
+
+The chat service persists only =board-id= and =principal= in
+=board-session-state=.  On restart, =e-chat-service--bind-session= reconstructs
+the binding by calling =e-chat-service--install-participant-binding= with only
+those two fields.  That installer therefore applies its generic defaults:
+=(:tags (main))= pickup and observer selectors, =(main)= default tags, no exact
+target, and a newly generated participant identity.
+
+The background participant consequently stops being private after every
+restart and begins consuming ordinary interactive chat input.
+
+There is a second presentation defect which amplifies the symptom.
+=e-board-runtime--visible-harness-activity-types= publishes provider request
+failures but omits =turn-retrying=.  The chat shell has a dedicated
+=turn-retrying= status renderer, but board-backed chat never receives that
+event.  It therefore renders each retryable provider failure as
+=Thought failed after ...= without explaining that the same turn is being
+retried.  Activity from both private turns is correlated to the same causal
+board input, so their retry rows appear together.
+
+* Conclusion
+
+The primary defect belongs to the board-backed chat application service.  A
+participant's routing policy is durable session identity: restoration must
+recreate the same participant ID, pickup selector, observer selector, default
+tags, and default target instead of silently substituting main-chat defaults.
+This must be stored and restored by =e-chat-service=; callers such as Grimoire
+should not need a restart hook that re-specializes the binding.
+
+The retry-status omission is an independent board activity projection defect.
+Exposing the existing =turn-retrying= lifecycle edge would make transient
+attempts legible, but it would not prevent the duplicate turn.  Preserving the
+routing policy is the correctness fix.
+
+No fix was applied during this diagnosis.  The running Emacs was inspected
+only through bounded read-only probes and was not reloaded.
