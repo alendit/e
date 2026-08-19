@@ -27,6 +27,13 @@ It never atomizes an internal node containing unrelated windows.
 
 No harness, session, capability, backend, or durable workspace state changed.
 
+During transcript teardown, the chat shell now releases the visible transcript
+and composer's soft dedication before either buffer dies.  Otherwise Emacs
+deletes an atomic constituent and its sibling while =kill-buffer= is still
+traversing a second transcript view, leaving a dead window in the traversal.
+Dedication is ephemeral presentation state and no longer has a purpose once
+the owning transcript is being killed.
+
 * Validation
 
 - Added a focused =C-x 0= regression proving both chat windows close, the
@@ -34,9 +41,13 @@ No harness, session, capability, backend, or durable workspace state changed.
   resurrect the composer.
 - Added a window-state restoration regression proving the restored exact pair
   regains one shared atom root.
-- Focused surface tests passed: 5 tests, 0 unexpected.
-- The full chat suite passed: 337 tests, 0 unexpected, 1 optional Markdown
-  rendering skip.
+- Added a multi-view teardown regression proving that killing a transcript
+  cannot invalidate Emacs's window traversal while its composer is removed.
+- The full chat suite passed: 354 passed, 0 unexpected, 1 optional Markdown
+  rendering skip.  The complete Org Canvas suite passed: 70 passed, 0
+  unexpected.
+- Complete repository suite: 2,189 passed, 0 unexpected, 2 optional skips.
+- Complete graphical suite: 26 passed, 0 unexpected.
 
 * Architecture self-check
 

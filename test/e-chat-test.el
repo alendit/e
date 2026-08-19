@@ -203,6 +203,35 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-killing-duplicated-transcript-tears-down-composer ()
+  "Killing a multiply displayed transcript safely tears down its atom."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-pair-kill"))
+         first-transcript-window second-transcript-window composer-window
+         composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq first-transcript-window (selected-window))
+          (set-window-buffer first-transcript-window buffer)
+          (setq second-transcript-window
+                (split-window first-transcript-window nil 'right))
+          (set-window-buffer second-transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer
+                   second-transcript-window)))
+          (setq composer (window-buffer composer-window))
+          (should (= (length (get-buffer-window-list buffer nil t)) 2))
+          (should (eq (window-dedicated-p composer-window) 'soft))
+          (kill-buffer buffer)
+          (setq buffer nil)
+          (should-not (buffer-live-p composer)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-delete-other-windows-keeps-atomic-surface ()
   "Native C-x 1 keeps both constituents and removes external windows."
   (let* ((e-chat--surface-composition-enabled t)

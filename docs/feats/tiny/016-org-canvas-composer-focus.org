@@ -14,4 +14,4 @@ shell already owns composer focus and insert-state policy.
 
 * Validation
 
-- =eldev test -f test/e-org-canvas-test.el= (69 tests).
+- =eldev test -f test/e-org-canvas-test.el=: 70 passed, 0 unexpected.

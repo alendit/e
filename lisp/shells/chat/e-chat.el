@@ -1526,8 +1526,19 @@ cycle."
 
 (defun e-chat--surface-kill-composer ()
   "Kill the composer buffer paired with the current transcript buffer."
+  ;; Release both constituents before either buffer dies.  A soft-dedicated
+  ;; atomic constituent is deleted when its buffer dies; deleting one also
+  ;; deletes its sibling while `kill-buffer' may still be traversing another
+  ;; visible transcript view.
+  (dolist (window (get-buffer-window-list (current-buffer) nil t))
+    (set-window-dedicated-p window nil))
   (when-let ((composer e-chat--surface-composer-buffer))
     (when (buffer-live-p composer)
+      ;; The surface is already being torn down.  Releasing its ephemeral
+      ;; dedication lets Emacs replace both buffers without mutating the window
+      ;; tree out from under that traversal.
+      (dolist (window (get-buffer-window-list composer nil t))
+        (set-window-dedicated-p window nil))
       (kill-buffer composer)))
   (setq e-chat--surface-composer-buffer nil))
 
