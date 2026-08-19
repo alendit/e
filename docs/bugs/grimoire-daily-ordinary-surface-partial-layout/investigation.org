@@ -60,6 +60,11 @@ helper still defines a complete surface in terms of atomic windows, while its
 e-chat consumer now defines the complete surface by buffer ownership and
 ordinary adjacency.
 
+The earlier decision to remove the atom was based on an incomplete diagnosis.
+=persp-mode='s writable window state had dropped the built-in =window-atom=
+parameter because it was not registered as persistent.  e-chat's subsequent
+repair hooks, rather than native atomic structure itself, raced restoration.
+
 * Graphical reproduction
 
 The existing Grimoire graphical regression
@@ -74,15 +79,35 @@ reproduced =Window ... too small for splitting=.  Reopening with the transcript
 selected left four windows: the daily document twice, the transcript, and the
 composer.  No live Emacs state was used or changed by these tests.
 
-* Conclusion and next step
+* Fix
 
 The immediate cause is the foreground =grimoire-daily-update= display path
 partially replacing a non-atomic e-chat surface.  The successful background
 =grimoire-daily-tick= only followed that failure and did not cause or repair the
 layout.
 
-Keep this bug open.  A repair should re-establish one narrow cross-shell
-replacement contract for ordinary composed surfaces, update the stale Grimoire
-graphical fixture to current e-chat APIs, and prove that replacement either
-completes with one document/transcript/composer layout or leaves the original
-window tree unchanged on failure.  The running Emacs was not reloaded.
+The repair is confined to the semantically changed chat shell:
+
+- e-chat registers =(window-atom . writable)= and creates the
+  transcript/composer pair with =display-buffer-in-atom-window=;
+- workspace window-state restoration now preserves that native structure;
+- e-chat removes its ordinary-pair deletion emulation; and
+- =e-window-surface-replace= and Grimoire remain unchanged.  The existing
+  generic helper again sees and replaces the complete native surface.
+
+* Regression and closure
+
+=e-chat-behavior-test-native-surface-replaces-as-one-unit= opens a real composed
+chat beside an unrelated window, selects its composer, and calls the generic
+replacement API.  It proves both chat constituents disappear, the returned
+ordinary window occupies the complete former atom, and the unrelated window is
+unchanged.  This is the structural operation used by the Grimoire foreground
+display path.
+
+The real =persp-mode= graphical tests additionally prove the atom survives
+workspace round trips and native deletion.  Close this bug: no Grimoire,
+workspace, harness, or generic surface API learned any chat-specific behavior.
+The complete isolated graphical suite passed all 21 tests.  The focused
+chat/surface ERT selection passed 349 tests with two optional-dependency skips,
+and focused plus full compilation passed.  The user's running Emacs was not
+reloaded.

@@ -192,7 +192,7 @@
           2.0 "unrelated workspace window configuration restored"))))))
 
 (ert-deftest e-workspace-behavior-test-chat-split-delete-survives-round-trip ()
-  "Chat-focused split and delete commands preserve both perspective trees."
+  "Native atomic chat structure survives a perspective round trip."
   (skip-unless (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
@@ -210,6 +210,10 @@
        (persp-add-buffer transcript (get-current-persp))
        (persp-add-buffer (window-buffer (plist-get fixture :composer-window))
                          (get-current-persp))
+       (should (eq (window-atom-root
+                    (plist-get fixture :transcript-window))
+                   (window-atom-root
+                    (plist-get fixture :composer-window))))
        (should (eq (key-binding (kbd "C-x 3"))
                    #'e-chat-surface-split-window-right))
        (e-graphical-test-send-keys "C-x 3")
@@ -249,9 +253,11 @@
        (let* ((surface
                (e-chat-behavior-test--surface-windows transcript))
               (composer-window (cdr surface)))
+         (should (eq (window-atom-root (car surface))
+                     (window-atom-root composer-window)))
          (select-window composer-window)
          (should (eq (key-binding (kbd "C-x 0"))
-                     #'e-chat-surface-delete-window))
+                     #'e-persp-test-config-close-window-or-workspace))
          (should (equal (e-chat--selected-chat-surface)
                         (cons transcript (car surface))))
          (e-graphical-test-send-keys "C-x 0")
@@ -284,17 +290,16 @@
                 (composer-window (plist-get fixture :composer-window))
                 (composer (window-buffer composer-window))
                 (source-persp (get-current-persp)))
-           ;; Both presentation buffers belong to the same workspace.  The
-           ;; composer is internal, but persp must retain it while saving and
-           ;; restoring the surface's ordinary sibling windows.
+           ;; Both presentation buffers and their native atom belong to the
+           ;; same workspace.  Persp retains the atom through writable window
+           ;; state without knowing that the surface belongs to e-chat.
            (should (persp-contain-buffer-p transcript source-persp))
            (should (persp-contain-buffer-p composer source-persp))
            (should (eq (selected-window) composer-window))
-           ;; Window-state restoration must never have to resize through an
-           ;; opaque atomic subtree owned by the chat shell.
-           (should-not
-            (window-atom-root (plist-get fixture :transcript-window)))
-           (should-not (window-atom-root composer-window))
+           (should
+            (eq (window-atom-root
+                 (plist-get fixture :transcript-window))
+                (window-atom-root composer-window)))
            (e-graphical-test-capture-automatic-transition
             "workspace-leave-chat-surface"
             (lambda ()

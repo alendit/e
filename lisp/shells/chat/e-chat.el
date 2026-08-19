@@ -40,6 +40,9 @@
 (require 'e-ui-work)
 (require 'e-workspaces)
 
+;; Writable workspace snapshots must retain Emacs's native surface structure.
+(add-to-list 'window-persistent-parameters '(window-atom . writable))
+
 (declare-function markdown-mode "markdown-mode")
 (declare-function org-mode "org")
 (declare-function +workspace/display "ext:doom-workspaces")
@@ -1274,20 +1277,19 @@ for audit, then clears it when the user returns to the composer.")
   "Keymap for `e-chat-mode'.")
 
 (defun e-chat--make-surface-command-map (&optional map)
-  "Return high-priority MAP for structural chat-surface commands.
-Workspace minor modes commonly remap `delete-window'.  These default keys and
-command remappings must remain owned by the selected chat surface even when a
-host minor-mode map has precedence over its major-mode map."
+  "Return high-priority MAP for chat-specific surface commands.
+Native atomic windows own structural delete semantics.  This map only keeps
+chat focus and external-split policy above host minor-mode remappings."
   (let ((map (or map (make-sparse-keymap))))
+    ;; Clear ordinary-pair bindings when refreshing a map created by an older
+    ;; loaded e-chat version.
+    (define-key map (kbd "C-x 0") nil)
+    (define-key map (kbd "C-x 1") nil)
+    (define-key map [remap delete-window] nil)
+    (define-key map [remap delete-other-windows] nil)
     (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
-    (define-key map (kbd "C-x 0") #'e-chat-surface-delete-window)
-    (define-key map (kbd "C-x 1") #'e-chat-surface-delete-other-windows)
     (define-key map (kbd "C-x 2") #'e-chat-surface-split-window-below)
     (define-key map (kbd "C-x 3") #'e-chat-surface-split-window-right)
-    (define-key map [remap delete-window]
-                #'e-chat-surface-delete-window)
-    (define-key map [remap delete-other-windows]
-                #'e-chat-surface-delete-other-windows)
     (define-key map [remap split-window-below]
                 #'e-chat-surface-split-window-below)
     (define-key map [remap split-window-right]
@@ -1631,17 +1633,32 @@ composer buffer; transcript rendering never calls it."
          (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
 
 (defun e-chat--surface-composer-window (&optional transcript-window)
-  "Return the composer directly below TRANSCRIPT-WINDOW, if any.
-The composer buffer owns transcript identity; adjacency is the complete
-ephemeral window-pair representation.  This lookup never changes the host
+  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
+The composer buffer owns transcript identity.  Native atomic structure and
+vertical adjacency identify its visible constituent without changing the host
 window tree."
   (setq transcript-window (or transcript-window (selected-window)))
   (when (and (window-live-p transcript-window)
              (buffer-live-p e-chat--surface-composer-buffer))
+    (when-let ((atom-root (window-atom-root transcript-window)))
+      (cl-find-if
+       (lambda (candidate)
+         (and (eq atom-root (window-atom-root candidate))
+              (e-chat--surface-window-directly-below-p
+               transcript-window candidate)))
+       (get-buffer-window-list e-chat--surface-composer-buffer nil t)))))
+
+(defun e-chat--surface-legacy-composer-window (&optional transcript-window)
+  "Return an adjacent pre-atom composer for TRANSCRIPT-WINDOW, if any.
+This recognizes only the ordinary representation shipped immediately before
+native atom persistence.  It never changes the host window tree."
+  (setq transcript-window (or transcript-window (selected-window)))
+  (when (and (window-live-p transcript-window)
+             (not (window-atom-root transcript-window))
+             (buffer-live-p e-chat--surface-composer-buffer))
     (cl-find-if
      (lambda (candidate)
-       (and (eq (window-frame candidate)
-                (window-frame transcript-window))
+       (and (not (window-atom-root candidate))
             (e-chat--surface-window-directly-below-p
              transcript-window candidate)))
      (get-buffer-window-list e-chat--surface-composer-buffer nil t))))
@@ -1714,49 +1731,12 @@ that transient internal view before the command returns."
 (defun e-chat-surface-split-window-below ()
   "Split below the complete composed surface."
   (interactive)
-  (e-chat--surface-split-window #'split-root-window-below))
+  (e-chat--surface-split-window #'split-window-below))
 
 (defun e-chat-surface-split-window-right ()
   "Split right of the complete composed surface."
   (interactive)
-  (e-chat--surface-split-window #'split-root-window-right))
-
-(defun e-chat-surface-delete-window ()
-  "Delete the selected composed chat surface as one presentation unit."
-  (interactive)
-  (let* ((surface (e-chat--selected-chat-surface))
-         (transcript-window (cdr-safe surface))
-         (composer-window
-          (and surface
-               (with-current-buffer (car surface)
-                 (e-chat--surface-composer-window transcript-window)))))
-    (if (not (and (window-live-p transcript-window)
-                  (window-live-p composer-window)))
-        (delete-window)
-      (unless (cl-some
-               (lambda (window)
-                 (not (memq window (list transcript-window composer-window))))
-               (window-list (window-frame transcript-window) 'no-minibuf))
-        (user-error "Cannot delete the sole e-chat surface"))
-      (delete-window composer-window)
-      (delete-window transcript-window))))
-
-(defun e-chat-surface-delete-other-windows ()
-  "Delete every window outside the selected composed chat surface."
-  (interactive)
-  (let* ((surface (e-chat--selected-chat-surface))
-         (transcript-window (cdr-safe surface))
-         (composer-window
-          (and surface
-               (with-current-buffer (car surface)
-                 (e-chat--surface-composer-window transcript-window)))))
-    (if (not (and (window-live-p transcript-window)
-                  (window-live-p composer-window)))
-        (delete-other-windows)
-      (dolist (window
-               (window-list (window-frame transcript-window) 'no-minibuf))
-        (unless (memq window (list transcript-window composer-window))
-          (delete-window window))))))
+  (e-chat--surface-split-window #'split-window-right))
 
 (defun e-chat--surface-fit-composer-window (&optional composer-window)
   "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
@@ -1775,14 +1755,28 @@ When SELECT is non-nil, select the composer window."
                                 (get-buffer-window transcript t)))
          composer-window)
     (when (window-live-p transcript-window)
+      ;; Upgrade already-open or persisted ordinary pairs locally.  Removing
+      ;; the legacy constituent before native creation avoids absorbing an
+      ;; unrelated sibling and keeps workspace adapters unaware of e-chat.
+      (when-let ((legacy-window
+                  (e-chat--surface-legacy-composer-window transcript-window)))
+        (delete-window legacy-window))
       (setq composer-window
             (or (e-chat--surface-composer-window transcript-window)
                 (let ((window
-                       (split-window
-                        transcript-window
-                        (- e-chat-composer-window-min-height)
-                        'below)))
-                  (set-window-buffer window composer)
+                       (display-buffer
+                        composer
+                        `((display-buffer-in-atom-window)
+                          (window . ,transcript-window)
+                          (side . below)
+                          (window-height
+                           . ,e-chat-composer-window-min-height)))))
+                  (unless (and (window-live-p window)
+                               (eq (window-buffer window) composer)
+                               (window-atom-root transcript-window)
+                               (eq (window-atom-root transcript-window)
+                                   (window-atom-root window)))
+                    (error "Could not create atomic e-chat composer window"))
                   window)))
       (e-chat--surface-fit-composer-window composer-window)
       (when select

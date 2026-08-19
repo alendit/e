@@ -24,7 +24,7 @@ State values for coding agents:
 | Closed | project-local-layer-enable-poisons-harness/ | Project-local layer enable poisons the chat harness |
 | Closed | openai-replay-null-reasoning-summary/ | OpenAI full replay sends a null reasoning summary |
 | Closed | grimoire-daily-selected-chat-resize/ | Grimoire daily fails from a selected chat composer |
-| New    | grimoire-daily-ordinary-surface-partial-layout/ | Grimoire foreground daily corrupts an ordinary composed chat layout |
+| Closed | grimoire-daily-ordinary-surface-partial-layout/ | Grimoire foreground daily corrupts an ordinary composed chat layout |
 | Closed | e-chat-new-missing-annotations/ | e-chat-new cannot load e-annotations |
 | Closed | openai-websocket-cross-turn-instructions-replay/ | OpenAI WebSocket cross-turn instructions force full replay |
 | Closed | openai-websocket-retry-keeps-active-request/ | OpenAI WebSocket retry keeps failed request active |

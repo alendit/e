@@ -22,6 +22,7 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-anthropic)
+(require 'e-window-surfaces)
 (require 'evil)
 (require 'persp-mode)
 (setq persp-auto-save-opt 0
@@ -437,9 +438,13 @@ than the invisible insertion position."
           (setq fixture (e-chat-behavior-test--open-surface t))
           (let* ((composer-window (plist-get fixture :composer-window))
                  (composer (window-buffer composer-window))
+                 (transcript-window (plist-get fixture :transcript-window))
                  (outside-window
                   (get-buffer-window "*e graphical outside*" nil)))
             (should (eq (selected-window) composer-window))
+            (should (eq (window-atom-root transcript-window)
+                        (window-atom-root composer-window)))
+            (should (eq (key-binding (kbd "C-x 0")) #'delete-window))
             (with-current-buffer (window-buffer composer-window)
               (should (derived-mode-p 'e-chat-composer-mode)))
             (should (window-live-p outside-window))
@@ -452,6 +457,37 @@ than the invisible insertion position."
             (should-not (memq (window-buffer outside-window)
                               (list (plist-get fixture :transcript)
                                     composer)))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-native-surface-replaces-as-one-unit ()
+  "A consumer replaces a selected chat constituent without chat knowledge."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface t))
+          (let* ((transcript-window (plist-get fixture :transcript-window))
+                 (composer-window (plist-get fixture :composer-window))
+                 (outside-window
+                  (get-buffer-window "*e graphical outside*" nil))
+                 (surface-root (window-atom-root composer-window))
+                 (surface-edges (window-edges surface-root))
+                 replacement)
+            (should (eq surface-root
+                        (window-atom-root transcript-window)))
+            (select-window composer-window)
+            (e-graphical-test-capture-automatic-transition
+             "chat-native-surface-replace"
+             (lambda ()
+               (setq replacement (e-window-surface-replace))))
+            (should (window-live-p replacement))
+            (should-not (window-live-p transcript-window))
+            (should-not (window-live-p composer-window))
+            (should-not (window-atom-root replacement))
+            (should (equal (window-edges replacement) surface-edges))
+            (should (window-live-p outside-window))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer ()
@@ -944,6 +980,8 @@ than the invisible insertion position."
                (let ((windows
                       (e-chat-behavior-test--surface-windows transcript)))
                  (and windows
+                      (eq (window-atom-root (car windows))
+                          (window-atom-root (cdr windows)))
                       (eq (selected-window) (cdr windows)))))
              3.0 "persp-restored chat surface with focused composer")))
       (when (bound-and-true-p persp-mode)

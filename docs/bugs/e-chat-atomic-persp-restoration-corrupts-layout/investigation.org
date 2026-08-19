@@ -24,34 +24,36 @@ a splitability predicate, and a reentrancy flag guarded that repair path.
 
 * Root cause
 
-The atomic subtree was not a stable boundary shared with =persp-mode=.
-=persp-mode= saves and reconstructs ordinary window state and resizes leaves as
-it restores a perspective.  e-chat made two of those leaves opaque to resize,
-then ran structural repair callbacks before the host restore had settled.  The
-resize error was primary; =Could not create ... composer window= was the
-follow-on attempt to split the already inconsistent tree.
+The original conclusion that atomic windows were intrinsically incompatible
+with =persp-mode= was incomplete.  Emacs represents an atom with the built-in
+=window-atom= parameter.  =persp-mode= saves writable window state with
+=window-state-get=, but Emacs only includes parameters registered with the
+=writable= persistence policy.  =window-atom= was not registered, so the saved
+tree silently lost the property that made its transcript/composer subtree one
+structural unit.
 
-The duplicated composer was therefore not durable session corruption and did
-not require SQLite-backed session storage.  It was presentation state modeled
-at the wrong structural level.
+e-chat then tried to infer and recreate the missing atom during restoration
+through pair caches and repair hooks.  Those mutations raced =persp-mode='s
+own reconstruction and resizing.  The resize error was primary;
+=Could not create ... composer window= was the follow-on attempt to repair the
+already inconsistent tree.  The durable session was never corrupt.
 
 * Fix
 
-- The transcript and composer are ordinary adjacent sibling windows.  Neither
-  window has an atom, custom ownership parameter, or pair-cache entry.
-- The composer buffer's existing transcript-buffer link is the sole ownership
-  fact.  Visible pairing is derived from buffer identity and adjacency without
-  mutating the window tree.
-- Composer creation for a generically selected transcript is scheduled after
-  =window-buffer-change-functions=, through the existing coalesced UI-work
-  boundary.  The buffer-list hook, perspective repair hook, splitability
-  predicate, restoration reentrancy flag, atom repair, duplicate scavenger,
-  and pair-cache pruning were removed.
-- Both presentation buffers are admitted to the transcript's workspace, and a
-  session rename updates both buffer names.
-- A small high-priority surface command map preserves whole-surface =C-x 0=,
-  =C-x 1=, =C-x 2=, =C-x 3=, and =C-x o= behavior when a workspace minor mode
-  remaps the same commands.  The saved window representation remains ordinary.
+- e-chat registers =(window-atom . writable)= in
+  =window-persistent-parameters= before any chat surface can be saved.
+- Composer creation uses =display-buffer-in-atom-window=.  Transcript and
+  composer are again one native atomic surface.
+- Writable =window-state-get=/=window-state-put= round trips now preserve that
+  native structure directly.  =persp-mode= remains unaware of e-chat.
+- The pair cache, custom composer window parameter, restoration repair hooks,
+  duplicate scavenger, and re-atomization path remain removed.
+- The ordinary-pair =C-x 0= and =C-x 1= implementations were removed.  Native
+  structural commands and generic host wrappers operate on the atom.  e-chat
+  retains only its semantic focus-cycle and external split-buffer policy.
+- A narrow e-chat display-time migration replaces an already-open or persisted
+  ordinary composer constituent with the native atom.  No workspace hook or
+  generic component participates.
 
 The composer-fitting reentrancy guard remains because
 =fit-window-to-buffer= can synchronously invoke the window-configuration hook
@@ -60,60 +62,58 @@ to recover an invalid structural representation.
 
 * Regression
 
-=e-workspace-behavior-test-chat-surface-restores-clean-target= uses the default
-isolated graphical harness with real =persp-mode=.  It creates a target
-perspective with a small lower pane, opens a composed chat in another
-perspective, and proves:
+=e-workspace-behavior-test-chat-split-delete-survives-round-trip= uses real
+=persp-mode= and proves the transcript/composer atom survives repeated workspace
+switches with exact normalized geometry.  It then invokes the fixture's generic
+workspace close command and proves native deletion removes the whole atom.
 
-- transcript and composer are members of the source perspective;
-- neither constituent has an atomic root;
-- switching away restores the target's exact selected buffer and normalized
-  window geometry; and
-- neither chat buffer remains visible in the target perspective.
-
-The existing graphical split/delete round trip now also asserts that the chat
-surface command wins over the perspective minor-mode remapping after restore.
-Focused ERT coverage proves ordinary-pair creation, deletion, splitting,
-window-state recovery, deferred generic activation, and reload draft retention.
+=e-workspace-behavior-test-chat-surface-restores-clean-target= proves switching
+away from an atomic chat still restores an unrelated perspective exactly.
+=e-chat-behavior-test-persp-switch-restores-focused-surface= independently
+proves the atom and selected composer survive a real round trip.  Focused ERT
+coverage proves writable state restoration, native deletion, splitting,
+generic activation, and reload draft retention.
 
 * Validation
 
-- The complete isolated graphical suite passed: 20 tests, 0 unexpected.
-- The complete repository ERT suite passed: 2162 tests, 0 unexpected, with 2
-  optional dependency skips.
-- Warning-as-error focused compilation and full =eldev compile= passed.
-- =git diff --check= passed.
-- The user's running Emacs was inspected only with bounded read-only probes and
-  was not reloaded or modified.
+- Focused native deletion, replacement, and perspective graphical tests passed:
+  3 tests, 0 unexpected.
+- The complete graphical suite passed: 21 tests, 0 unexpected.
+- The complete chat and chat-surface ERT selection passed: 349 tests, 347
+  expected passes and 2 optional-dependency skips.
+- The repository suite ran 2,165 tests.  Its six unexpected results were
+  unrelated loopback HTTP fixtures blocked by the sandbox; rerunning exactly
+  those six with loopback access passed 6/6.  The remaining run had 2 optional
+  dependency skips.
+- Focused and full =eldev compile= passed, as did =git diff --check=.
+- The user's running Emacs was not reloaded or modified.
 
 * Architecture self-check
 
-1. This slice independently stops e-chat from corrupting workspace restores.
-2. It moves toward a presentation shell that composes ordinary host windows
-   without imposing a private structural model on the workspace adapter.
-3. Host restore timing is uncertain and kept behind one deferred callback;
-   buffer ownership and adjacency are stable enough to model directly.
-4. e-chat owns its buffer relationship and surface commands; =persp-mode= owns
-   perspective window-state restoration.
-5. Coupling is reduced by removing atom metadata, pair caches, custom window
-   parameters, and perspective-specific repair callbacks.
+1. This slice independently restores native surface behavior and reliable
+   workspace round trips.
+2. It moves toward presentation-owned composition using Emacs's structural
+   primitive rather than shell-level emulation.
+3. Writable parameter persistence was uncertain and was resolved with focused
+   native and graphical evidence; no speculative boundary was added.
+4. e-chat owns creation and persistence of its presentation surface;
+   =persp-mode= owns generic window-state restoration.
+5. Coupling is reduced by removing ordinary-pair command emulation without
+   adding any chat-specific workspace integration.
 6. No harness, session, provider, or capability dependency points toward the
    presentation or workspace adapter.
-7. Split, delete, focus, fitting, and workspace admission remain at shell and
-   adapter edges; core session policy has no window side effects.
+7. Emacs owns structural split and delete effects.  Focus, external split-buffer
+   choice, fitting, and workspace admission remain at shell edges.
 8. Buffer ownership lasts for the composer buffer lifetime.  Window geometry,
    selection, and activation work are ephemeral and rebuildable.  No durable
    state was added.
-9. Pair lookup scans only visible windows for one known buffer.  Restoration
-   no longer runs reconciliation scans or atom mutation.
-10. The buffer-owner link and ordinary vertical adjacency substitute directly
-    for every supported composed surface; no implementation weakens them.
-11. Existing workspace and native command behavior remains supported through
-    explicit surface commands.  The obsolete atomic representation is removed.
-12. Removed legacy code includes atom creation/repair, pair-cache state,
-    ownership parameters, duplicate cleanup, split guards, and two restore
-    hooks.
-13. Deferred work handles the expected post-redisplay boundary.  Unexpected
-    split, delete, and host restoration errors still surface.
-14. Unit tests isolate pair and command policy; the graphical regression proves
-    the real =persp-mode= transition and exact target layout.
+9. Persistence adds one small parameter per atom constituent; restoration no
+   longer runs reconciliation scans or atom mutation.
+10. =window-atom= is the real substitutable structural contract.
+11. Existing workspace behavior is preserved; obsolete ordinary-pair command
+    implementations are removed, with one explicit migration for saved pairs.
+12. Removed legacy code includes both successive workarounds: repair hooks and
+    shell-level delete emulation.
+13. Unexpected split, delete, and host restoration errors still surface.
+14. Unit tests isolate persistence and command behavior; graphical regressions
+    prove real =persp-mode= transitions and exact target layout.

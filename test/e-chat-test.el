@@ -170,7 +170,7 @@ tests, matching how the buffer behaves when shown to a user."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-delete-composer-window-closes-surface-pair ()
-  "C-x 0 in the composer closes both ordinary surface windows."
+  "Native C-x 0 in the composer closes the complete atomic surface."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-delete"))
@@ -186,17 +186,50 @@ tests, matching how the buffer behaves when shown to a user."
           (with-current-buffer buffer
             (setq composer-window
                   (e-chat--surface-display-composer transcript-window t)))
-          (should-not (window-atom-root transcript-window))
-          (should-not (window-atom-root composer-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
           (with-selected-window composer-window
             (should (eq (key-binding (kbd "C-x 0"))
-                        #'e-chat-surface-delete-window))
+                        #'delete-window))
             (call-interactively (key-binding (kbd "C-x 0"))))
           (should-not (window-live-p transcript-window))
           (should-not (window-live-p composer-window))
           (should (window-live-p external-window))
           (should (eq (selected-window) external-window))
           (should-not (get-buffer-window buffer t)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-delete-other-windows-keeps-atomic-surface ()
+  "Native C-x 1 keeps both constituents and removes external windows."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-atom-delete-others"))
+         (external-buffer (generate-new-buffer " *e-chat other external*"))
+         transcript-window composer-window external-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (setq external-window (split-window transcript-window nil 'right))
+          (set-window-buffer external-window external-buffer)
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t)))
+          (with-selected-window composer-window
+            (should (eq (key-binding (kbd "C-x 1"))
+                        #'delete-other-windows))
+            (call-interactively (key-binding (kbd "C-x 1"))))
+          (should (window-live-p transcript-window))
+          (should (window-live-p composer-window))
+          (should-not (window-live-p external-window))
+          (should (= (length (window-list nil 'nomini)) 2))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window))))
       (set-window-configuration configuration)
       (when (buffer-live-p external-buffer)
         (kill-buffer external-buffer))
@@ -222,6 +255,8 @@ tests, matching how the buffer behaves when shown to a user."
             (setq composer-window
                   (e-chat--surface-display-composer transcript-window t)))
           (setq composer (window-buffer composer-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
           (cl-letf (((symbol-function 'e-workspace-current)
                      (lambda (&optional _frame) workspace))
                     ((symbol-function 'e-workspace-buffer-member-p)
@@ -250,7 +285,9 @@ tests, matching how the buffer behaves when shown to a user."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-window-state-restoration-recovers-surface-pair ()
-  "Restored transcript/composer siblings recover their derived pair cache."
+  "Writable window state restores the native atomic chat surface."
+  (should (eq (cdr (assq 'window-atom window-persistent-parameters))
+              'writable))
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-restoration"))
@@ -277,11 +314,43 @@ tests, matching how the buffer behaves when shown to a user."
           (with-current-buffer buffer
             (should (eq (e-chat--surface-composer-window transcript-window)
                         composer-window)))
-          (should-not (window-atom-root transcript-window))
-          (should-not (window-atom-root composer-window)))
+          (should (window-atom-root transcript-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window))))
       (set-window-configuration configuration)
       (when (buffer-live-p external-buffer)
         (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-legacy-ordinary-surface-upgrades-to-atom ()
+  "Displaying a persisted ordinary pair upgrades it inside the chat shell."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-legacy-pair-upgrade"))
+         transcript-window legacy-window composer-window composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer (e-chat--surface-ensure-composer)))
+          (setq legacy-window
+                (split-window transcript-window
+                              (- e-chat-composer-window-min-height)
+                              'below))
+          (set-window-buffer legacy-window composer)
+          (should-not (window-atom-root transcript-window))
+          (should-not (window-atom-root legacy-window))
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window)))
+          (should-not (window-live-p legacy-window))
+          (should (eq (window-buffer composer-window) composer))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window))))
+      (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1718,15 +1787,15 @@ must drop any revealed hidden blocks."
           (should (buffer-live-p composer))
           (should (eq (window-buffer (selected-window)) composer))
           (should (eq (get-buffer-window buffer t) window))
-          (should-not (window-atom-root window))
-          (should-not (window-atom-root (selected-window))))
+          (should (eq (window-atom-root window)
+                      (window-atom-root (selected-window)))))
       (when (buffer-live-p origin)
         (kill-buffer origin))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-reload-preserves-composed-surface-pair ()
-  "Reload preserves the ordinary pair and its composer draft."
+  "Reload preserves the atomic pair and its composer draft."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-reload-composed-surface"))
@@ -1748,7 +1817,7 @@ must drop any revealed hidden blocks."
             (should (= (length
                         (get-buffer-window-list composer nil t))
                        1))
-            ;; Reinitializing `e-chat-mode' leaves the ordinary window pair and
+            ;; Reinitializing `e-chat-mode' leaves the atomic window pair and
             ;; composer buffer alive; no window cache needs reconstruction.
             (e-chat--attach-buffer
              buffer e-chat-harness e-chat-session-id
@@ -5682,8 +5751,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (with-current-buffer buffer
             (setq composer-window
                   (e-chat--surface-display-composer transcript-window)))
-          (should-not (window-atom-root transcript-window))
-          (should-not (window-atom-root composer-window))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
           ;; Entering through the transcript routes input to the composer.
           (select-window external-window)
           (set-frame-parameter nil e-chat--selected-surface-frame-parameter nil)
@@ -9971,10 +10040,17 @@ The context-window denominator comes from the live provider lookup
         (e-chat-mode-map (make-sparse-keymap))
         (e-chat-block-view-mode-map (make-sparse-keymap))
         (e-chat-tool-list-mode-map (make-sparse-keymap))
-        (e-chat-tool-output-mode-map (make-sparse-keymap)))
+        (e-chat-tool-output-mode-map (make-sparse-keymap))
+        (e-chat--surface-command-map (make-sparse-keymap)))
     (define-key e-chat-response-navigation-mode-map
                 (kbd "RET")
                 'e-chat-response-navigation-expand)
+    (define-key e-chat--surface-command-map
+                (kbd "C-x 0")
+                'e-chat-surface-delete-window)
+    (define-key e-chat--surface-command-map
+                [remap delete-window]
+                'e-chat-surface-delete-window)
     (e-chat--refresh-keymaps)
     (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "RET"))
                 'e-chat-response-navigation-activate))
@@ -9991,7 +10067,10 @@ The context-window denominator comes from the live provider lookup
     (should (eq (lookup-key e-chat-mode-map (kbd "M-y"))
                 'e-chat-copy-latest-response))
     (should (eq (lookup-key e-chat-mode-map (kbd "M-o"))
-                'e-chat-open-latest-response))))
+                'e-chat-open-latest-response))
+    (should-not (lookup-key e-chat--surface-command-map (kbd "C-x 0")))
+    (should-not
+     (lookup-key e-chat--surface-command-map [remap delete-window]))))
 
 (ert-deftest e-chat-test-context-mode-binds-default-reference-shortcuts ()
   "The global context keymap binds latest and picker insertion shortcuts."
