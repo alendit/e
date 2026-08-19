@@ -1923,6 +1923,58 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reload-refreshes-every-visible-surface-instance ()
+  "Reload protects and repairs every visible atom for one transcript buffer."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-reload-visible-surfaces"))
+         first-transcript-window second-transcript-window composer windows)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq first-transcript-window (selected-window))
+          (setq second-transcript-window
+                (split-window first-transcript-window nil 'right))
+          (set-window-buffer first-transcript-window buffer)
+          (set-window-buffer second-transcript-window buffer)
+          (with-current-buffer buffer
+            (e-chat--surface-display-composer first-transcript-window)
+            (e-chat--surface-display-composer second-transcript-window)
+            (setq composer e-chat--surface-composer-buffer))
+          (setq windows
+                (append (get-buffer-window-list buffer nil t)
+                        (get-buffer-window-list composer nil t)))
+          (should (= (length windows) 4))
+          (dolist (window windows)
+            (set-window-dedicated-p window nil))
+          ;; Model an old persisted atom whose composer slot was overwritten.
+          (let ((damaged-composer-window
+                 (e-chat--surface-composer-slot-window
+                  first-transcript-window)))
+            (set-window-buffer damaged-composer-window
+                               (get-buffer-create "*e-chat reload intruder*")))
+          (with-current-buffer buffer
+            (e-chat--attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id))
+          (setq windows
+                (append (get-buffer-window-list buffer nil t)
+                        (get-buffer-window-list composer nil t)))
+          (should (= (length windows) 4))
+          (dolist (window windows)
+            (should (eq (window-dedicated-p window) 'soft)))
+          (dolist (transcript-window
+                   (get-buffer-window-list buffer nil t))
+            (with-current-buffer buffer
+              (should (window-live-p
+                       (e-chat--surface-composer-window
+                        transcript-window))))))
+      (set-window-configuration configuration)
+      (when-let ((intruder (get-buffer "*e-chat reload intruder*")))
+        (kill-buffer intruder))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-after-display-active-turn-focuses-latest-output ()
   "Displaying a running chat tails to the active output, not stale scrollback."
   (let ((buffer (e-chat-test--buffer nil "chat-display-active-output"))

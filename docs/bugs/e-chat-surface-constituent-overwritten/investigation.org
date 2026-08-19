@@ -59,12 +59,19 @@ by its position inside the chat atom and restores the composer in that slot.
 This migration is local to surface display and does not add restoration hooks or
 cross-component policy.
 
+Development reload refreshes every visible window of a transcript buffer, not
+just an arbitrary first view.  This makes the migration complete when an old
+frame already contains duplicate surface instances like the reported one.
+
 * Regression
 
 - Focused ERT reproduces an unrelated =pop-to-buffer= and proves both chat
   buffers remain visible and dedicated while the popup opens outside the atom.
 - Focused ERT models a persisted atom whose lower constituent was overwritten
   and proves display repairs the same slot rather than adding a third leaf.
+- Focused ERT creates two visible atoms for one transcript, damages one, clears
+  ownership on all four leaves, and proves reload repairs and softly dedicates
+  every instance.
 - Existing native split, =C-x 0=, =C-x 1=, reload, and writable window-state
   tests now also cover dedication and ordinary outside windows.
 - A graphical regression captures the before/after popup transition and checks
@@ -74,14 +81,15 @@ cross-component policy.
 
 - The focused structural ERT selection passed 8/8 before the soft-dedication
   refinement; the final ownership, repair, split, and persistence selection
-  passed 4/4 with exact =soft= assertions.
+  passed 4/4 with exact =soft= assertions, and the multi-instance reload
+  regression passed independently.
 - The graphical popup regression passed with captured before/after PNG, SVG,
   and state sidecars; visual inspection and the state file showed the intact
   transcript/composer atom plus one ordinary selected popup window.
 - The complete graphical suite passed 22/22, including native deletion,
   surface replacement, perspective round trips, and deletion of an updating
   chat workspace.
-- The complete chat and chat-surface ERT selection passed 351 tests: 349
+- The complete chat and chat-surface ERT selection passed 352 tests: 350
   expected passes and 2 optional-dependency skips.
 - Full =eldev compile= and =git diff --check= passed.
 - The user's running Emacs was inspected only with a bounded read-only probe;

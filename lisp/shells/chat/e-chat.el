@@ -1765,6 +1765,15 @@ teardown or state restoration to replace the buffer without chat knowledge."
   (set-window-dedicated-p transcript-window 'soft)
   (set-window-dedicated-p composer-window 'soft))
 
+(defun e-chat--surface-refresh-visible-windows ()
+  "Restore every visible instance of the current transcript surface.
+One transcript buffer may be shown in multiple windows.  Refresh each instance
+locally so reload upgrades old undedicated or overwritten atoms without any
+workspace or generic display component knowing about chat composition."
+  (dolist (transcript-window
+           (get-buffer-window-list (current-buffer) nil t))
+    (e-chat--surface-display-composer transcript-window)))
+
 (defun e-chat--surface-display-composer (&optional transcript-window select)
   "Display the current transcript's composer below TRANSCRIPT-WINDOW.
 When SELECT is non-nil, select the composer window."
@@ -9094,7 +9103,9 @@ When SESSION-ID is nil, create a private execution session for the participant."
       (when (e-chat--surface-transcript-p)
         (setq-local buffer-read-only t))
       (e-chat--restore-output-tail-windows
-       output-tail-windows)))
+       output-tail-windows)
+      (when (e-chat--surface-transcript-p)
+        (e-chat--surface-refresh-visible-windows))))
     buffer))
 
 (defun e-chat-reload-buffers ()
