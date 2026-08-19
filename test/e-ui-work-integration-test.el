@@ -92,9 +92,12 @@
                                   (list :role 'assistant
                                         :turn-id turn-id
                                         :content markdown))))
-            (should-not (e-ui-work-pending buffer
-                                           :owner 'progress-indicator
-                                           :key turn-id))
+            ;; Durable assistant output precedes terminal lifecycle on the
+            ;; board.  Output alone must not settle progress; otherwise the UI
+            ;; flickers between a final summary and live progress.
+            (should (e-ui-work-pending buffer
+                                       :owner 'progress-indicator
+                                       :key turn-id))
             (should (e-ui-work-pending buffer :owner 'markdown-presentation))
             (e-ui-work-integration--drain buffer :owner 'markdown-presentation)
             (should-not (e-ui-work-pending buffer :owner 'markdown-presentation))
@@ -104,8 +107,11 @@
                    :turn-id turn-id
                    :created-at (float-time)
                    :payload nil))
-              (e-ui-work-integration--drain buffer)
-              (should-not (e-ui-work-pending buffer)))))
+            (should-not (e-ui-work-pending buffer
+                                           :owner 'progress-indicator
+                                           :key turn-id))
+            (e-ui-work-integration--drain buffer)
+            (should-not (e-ui-work-pending buffer)))))
       (set-window-configuration window-configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

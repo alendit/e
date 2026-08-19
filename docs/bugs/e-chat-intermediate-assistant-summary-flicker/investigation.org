@@ -62,7 +62,11 @@ reconstructs already-settled state.
 - Focused ERT reproduction: passed.  Two assistant messages keep one turn's
   progress active and render no =Turn took= text until =turn-finished=; the
   terminal event renders exactly one summary.
-- Complete =test/e-chat-test.el=: 350 passed, 0 unexpected, 1 existing skip.
+- The async UI integration test now asserts the same boundary: assistant
+  output leaves the progress interval live, and =turn-finished= cancels it.
+- Complete repository suite: 2,189 passed, 0 unexpected, 2 optional skips.
+- Complete graphical suite: 26 passed, 0 unexpected.
+- Complete =test/e-chat-test.el=: 354 passed, 0 unexpected, 1 existing skip.
 - Focused graphical test with screenshot capture: passed.  The intermediate
   frame visibly contains =Initial answer= plus live =Thinking= and no summary;
   the terminal frame contains one =Turn took= summary.
