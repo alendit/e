@@ -1,0 +1,22 @@
+#+title: Grimoire Foreground Daily Corrupts an Ordinary Composed Chat Layout
+#+startup: overview
+
+* Report
+
+The user reported on 2026-08-19 that retrying a Grimoire daily update from its
+active e-chat left a corrupted frame layout.  The daily Org document remained
+in the large upper window, the chat transcript remained below it, and a second
+small view of the same daily document occupied the composer slot.  The
+dedicated e-chat composer was no longer visible.
+
+The user repaired the layout before live inspection, so the screenshot and the
+durable session activity are the evidence for the corrupt state.  The running
+Emacs was otherwise inspected only with bounded read-only probes.
+
+* Expected
+
+Opening the foreground daily layout from an existing composed chat should
+replace that selected transcript/composer surface as one presentation unit.
+The resulting layout should contain one daily document, one chat transcript,
+and its dedicated composer.  A failed update should not leave a partially
+mutated window tree.
