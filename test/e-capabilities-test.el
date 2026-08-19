@@ -396,6 +396,19 @@
     (should-error (e-action-create :handler #'ignore))
     (should (eq (e-capabilities-action-spec capability :submit) descriptor))))
 
+(ert-deftest e-capabilities-test-create-rejects-non-string-instructions ()
+  "Capability instructions are optional prose, never structured content."
+  (should-error
+   (e-capability-create
+    :id 'invalid
+    :name "Invalid"
+    :instructions '("first" "second"))
+   :type 'wrong-type-argument)
+  (should-error
+   (e-capability-create
+    'invalid "Invalid" '("first" "second") nil nil nil)
+   :type 'wrong-type-argument))
+
 (provide 'e-capabilities-test)
 
 ;;; e-capabilities-test.el ends here

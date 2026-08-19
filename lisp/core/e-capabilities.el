@@ -115,18 +115,24 @@ RUNNER is called as (RUNNER ARGUMENTS CONTEXT)."
   handler)
 
 (defun e-capability-create (&rest args)
-  "Create an e capability from keyword ARGS."
-  (if (keywordp (car args))
-      (apply #'e-capability--create args)
-    (pcase-let ((`(,id ,name ,instructions ,tools ,context-providers ,actions)
-                 args))
-      (e-capability--create
-       :id id
-       :name name
-       :instructions instructions
-       :tools tools
-       :context-providers context-providers
-       :actions actions))))
+  "Create an e capability from keyword or legacy positional ARGS.
+The instructions value must be nil or a string of model-facing prose."
+  (let ((instructions (if (keywordp (car args))
+                          (plist-get args :instructions)
+                        (nth 2 args))))
+    (unless (or (null instructions) (stringp instructions))
+      (signal 'wrong-type-argument (list 'stringp instructions)))
+    (if (keywordp (car args))
+        (apply #'e-capability--create args)
+      (pcase-let ((`(,id ,name ,instructions ,tools ,context-providers ,actions)
+                   args))
+        (e-capability--create
+         :id id
+         :name name
+         :instructions instructions
+         :tools tools
+         :context-providers context-providers
+         :actions actions)))))
 
 (put 'e-capability-create 'compiler-macro nil)
 (put 'e-action-create 'compiler-macro nil)

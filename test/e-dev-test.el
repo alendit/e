@@ -77,6 +77,9 @@
          (mark (plist-get actions :mark-reload-required))
          (status (plist-get actions :reload-required-status)))
     (should capability)
+    (should (stringp (e-capability-instructions capability)))
+    (should (string-match-p "mark-reload-required"
+                            (e-capability-instructions capability)))
     (should (e-action-p mark))
     (should (e-action-p status))
     (let* ((handle (e-work-start
@@ -91,6 +94,34 @@
            (result (e-work-handle-result handle)))
       (should (eq (plist-get result :required) t))
       (should (= (plist-get result :count) 1)))))
+
+(ert-deftest e-dev-test-gpt56-serializes-instructions-as-text ()
+  "The real e-dev capability maps to a string-valued Responses text block."
+  (let* ((capability
+          (cl-find-if
+           (lambda (candidate)
+             (eq (e-capability-id candidate) 'e-dev))
+           (e-layer-capabilities (e-dev-layer-create))))
+         (context (e-capabilities-context (list capability)))
+         (messages (plist-get context :messages))
+         (segments (plist-get context :segments))
+         (body
+          (e-openai-codex-request-body
+           :messages messages
+           :options
+           (list :model "gpt-5.6-sol"
+                 :prompt-cache-key "e-dev-test"
+                 :segments segments)))
+         (input (append (plist-get body :input) nil))
+         (text-blocks
+          (cl-loop for item in input
+                   append (append (plist-get item :content) nil))))
+    (should (= (length input) 1))
+    (should (equal (plist-get (car input) :role) "developer"))
+    (should (= (length text-blocks) 1))
+    (should (cl-every (lambda (block)
+                        (stringp (plist-get block :text)))
+                      text-blocks))))
 
 (ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
   "Reload loads the MVP modules and restores their entry points."

@@ -126,17 +126,54 @@ The semantic owner is =e-dev-layer=:
    component contract rather than silently stringifying arbitrary values in a
    provider adapter.
 
-No runtime fix was applied during this investigation.
+* Fix applied
+
+- =e-dev-layer--reload-capability-create= now joins its three paragraphs into
+  one string owned by the =e-dev= capability.
+- =e-capability-create= now enforces the existing contract that
+  =:instructions= is nil or string prose.  Invalid capability definitions fail
+  at construction rather than leaking structured content into a backend.
+- =e-dev-test-gpt56-serializes-instructions-as-text= sends the real =e-dev=
+  capability context through the GPT-5.6 segmented request builder and proves
+  its Responses =text= block is a string.
+- Unit coverage also checks the =e-dev= instruction type and both the keyword
+  and legacy positional capability constructors.
 
 * Verification performed
 
-The existing focused context-inspection suite still passes:
+Before the fix, all three new focused regressions failed on the list-valued
+instruction.  After the fix:
 
 #+begin_src shell
-eldev test -f test/e-context-inspection-test.el
+eldev test -f test/e-capabilities-test.el -f test/e-dev-test.el \
+  e-capabilities-test-create-rejects-non-string-instructions \
+  e-dev-test-dev-layer-exposes-reload-required-actions \
+  e-dev-test-gpt56-serializes-instructions-as-text
 #+end_src
 
-Result: 8 tests run; 8 results as expected; 0 unexpected.  This confirms the
-current suite does not assert the instruction content type or its OpenAI wire
-encoding, which is the missing regression coverage described above.
+Result: 3 tests run; 3 results as expected; 0 unexpected.
 
+#+begin_src shell
+eldev test -f test/e-capabilities-test.el -f test/e-dev-test.el \
+  -f test/e-openai-test.el -f test/e-context-inspection-test.el
+#+end_src
+
+Result: 152 tests run; 152 results as expected; 0 unexpected.  The two local
+socket transport tests were run outside the process sandbox because the sandbox
+correctly disallows binding their loopback server sockets.
+
+#+begin_src shell
+eldev compile -W lisp/core/e-capabilities.el lisp/layers/e-dev-layer.el
+#+end_src
+
+Result: both changed Lisp files byte-compiled with warnings treated as errors.
+
+The repository-wide =eldev test= run executed 2,186 tests: 2,181 results were as
+expected, 2 were skipped, and 3 unrelated graphical focus/timer integration
+tests failed.  Those same three tests reproduce when run in isolation and do
+not exercise the changed capability/request path: two =e-org-canvas= tests fail
+while killing a composer displayed in an already-dead window, and
+=e-ui-work-integration-test-chat-settled-turn-leaves-no-pending-ui-work= finds a
+cancelled progress handle still registered as pending.  No code on those paths
+is changed by this fix; the complete capability, dev, context inspection, and
+OpenAI suites above remain green.

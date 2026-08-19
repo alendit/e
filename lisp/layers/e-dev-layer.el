@@ -68,9 +68,11 @@
    :id 'e-dev
    :name "e Dev"
    :instructions
-   (list
+   (concat
     "When editing e from inside e, do not call `e-dev-reload' during an active turn."
+    "\n\n"
     "Use the `e-dev' action `mark-reload-required' when a full reload is needed, and let the user run `M-x e-dev-reload' when idle."
+    "\n\n"
     "Only mark a full reload for changes that cannot be applied safely by a lightweight scoped reload path.")
    :actions (e-dev-layer--reload-actions)))
 

@@ -3,6 +3,10 @@
 
 * Report
 
+Status: fixed.  The =e-dev= capability now contributes one instruction string,
+and capability construction rejects non-string instructions before context or
+provider serialization.
+
 On a recent =gpt-5.6-sol= chat turn, the provider rejected the request before
 generation with:
 
@@ -24,4 +28,3 @@ LiteLLM then reported that no fallback model group was configured for
 Every backend-neutral ordinary message contributed by a capability should have
 string content, and the OpenAI Responses adapter should therefore emit a string
 for every =input[*].content[*].text= field.
-
