@@ -59,6 +59,9 @@ When READ-ONLY is non-nil, buffer resources only support reads."
       (accept-process-output nil 0.01))
     value))
 
+(defconst e-emacs-tools-test--external-process-timeout 5.0
+  "Test deadline for a separate batch Emacs process to settle.")
+
 (ert-deftest e-emacs-tools-test-list-buffers-reports-buffer-metadata ()
   "The list-buffers tool returns live buffer metadata."
   (let ((registry (e-tools-registry-create))
@@ -678,7 +681,7 @@ point, so the test loop must yield rather than spin the CPU."
     (should (e-emacs-tools-test--wait-until
              (lambda ()
                (eq (plist-get (e-elisp-job-result job-id) :status) 'ok))
-             2.0))
+             e-emacs-tools-test--external-process-timeout))
     (let ((result (e-elisp-job-result job-id)))
       (should (eq (plist-get result :status) 'ok))
       (should (string-match-p "done" (plist-get result :content))))))
@@ -705,12 +708,12 @@ point, so the test loop must yield rather than spin the CPU."
                   (list :job_id job-id)
                   (list :harness harness :session-id session-id))
                  :content)))
-             2.0))
+             e-emacs-tools-test--external-process-timeout))
     (should (e-emacs-tools-test--wait-until
              (lambda ()
                (memq (plist-get (e-elisp-job-result job-id) :status)
                      '(ok error)))
-             2.0))))
+             e-emacs-tools-test--external-process-timeout))))
 
 (ert-deftest e-emacs-tools-test-elisp-job-action-timeout-kills-worker ()
   "elisp-job action marks timed-out worker processes as errors."
@@ -725,7 +728,7 @@ point, so the test loop must yield rather than spin the CPU."
     (should (e-emacs-tools-test--wait-until
              (lambda ()
                (eq (plist-get (e-elisp-job-result job-id) :status) 'error))
-             2.0))
+             e-emacs-tools-test--external-process-timeout))
     (let ((result (e-elisp-job-result job-id)))
       (should (string-match-p "timed out after 0.1 seconds"
                               (plist-get result :content))))))
