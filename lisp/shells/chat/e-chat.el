@@ -209,37 +209,10 @@ The complete reasoning text remains available from response details."
   :type 'natnum
   :group 'e-chat)
 
-(defcustom e-chat-model-context-token-limits
-  '(("gpt-5.6" . 353400)
-    ("gpt-5.6-sol" . 353400)
-    ("gpt-5.6-terra" . 353400)
-    ("gpt-5.6-luna" . 353400)
-    ("gpt-5.5" . 258400)
-    ("gpt-5.4" . 1050000)
-    ("gpt-5.4-pro" . 1050000)
-    ("gpt-5.3-codex" . 400000)
-    ("gpt-5.3-codex-spark" . 400000)
-    ("gpt-5.2" . 400000)
-    ("gpt-5.1" . 400000)
-    ("gpt-5.1-codex" . 400000)
-    ("gpt-5-codex" . 400000)
-    ("gpt-5-mini" . 400000)
-    ("gpt-5-nano" . 400000)
-    ("gpt-5" . 400000)
-    ("gpt-5-chat-latest" . 128000)
-    ("claude-fable-5" . 1000000)
-    ("claude-mythos-5" . 1000000)
-    ("claude-opus-4-8" . 1000000)
-    ("claude-opus-4-7" . 1000000)
-    ("claude-opus-4-6" . 1000000)
-    ("claude-opus-4-5" . 1000000)
-    ("claude-sonnet-4-6" . 1000000)
-    ("claude-sonnet-4-5" . 200000)
-    ("claude-haiku-4-5" . 200000))
-  "Alist mapping model names to maximum context tokens.
-The mode line uses this presentation-owned table for context usage display."
-  :type '(alist :key-type string :value-type integer)
-  :group 'e-chat)
+(define-obsolete-variable-alias
+  'e-chat-model-context-token-limits
+  'e-context-budget-model-token-limits
+  "0.1.0")
 
 (defcustom e-chat-context-token-estimate-bytes-per-token 4.0
   "Approximate UTF-8 bytes per token for mode-line context estimates."
@@ -7975,36 +7948,12 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
    "e-chat" model effort used-tokens max-tokens approximate))
 
 (defun e-chat--model-context-token-limit (model)
-  "Return configured max context tokens for MODEL, or nil."
-  (e-context-status-model-token-limit
-   model e-chat-model-context-token-limits))
+  "Return the configured max context tokens for MODEL, or nil."
+  (e-context-status-model-token-limit model))
 
 (defun e-chat--model-context-window (model)
-  "Return MODEL's context window in tokens from the live provider, or nil.
-Reads the Anthropic gateway catalog cache and starts an async refresh when the
-catalog is missing.  There is no static fallback, so the mode line shows `?'
-until the gateway cache is populated or when MODEL is not listed."
-  (when (and (stringp model) (fboundp 'e-anthropic-context-window))
-    (or (e-anthropic-context-window model)
-        (progn
-          (when (fboundp 'e-anthropic-refresh-context-window-cache)
-            (ignore-errors
-              (e-anthropic-refresh-context-window-cache)))
-          nil))))
-
-(defun e-chat--context-window-cache-updated (&rest _)
-  "Refresh visible chat status after an async model catalog update."
-  (dolist (buffer (buffer-list))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (derived-mode-p 'e-chat-mode)
-          (e-chat--invalidate-mode-line-context-estimate)
-          (setq-local e-chat--mode-line-status-dirty t)
-          (when (e-chat--redraw-visible-p)
-            (e-chat--request-mode-line-status-refresh nil t)))))))
-
-(add-hook 'e-anthropic-context-window-cache-updated-hook
-          #'e-chat--context-window-cache-updated)
+  "Return MODEL's configured context window in tokens, or nil."
+  (e-chat--model-context-token-limit model))
 
 (defun e-chat--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."

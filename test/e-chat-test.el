@@ -9311,12 +9311,6 @@ gamma
                    353400)))
   (should (equal (e-chat--model-context-token-limit "gpt-5.5")
                  258400))
-  ;; Anthropic models resolve a context limit too (Claude Opus/Sonnet/Fable are
-  ;; 1M, Haiku is 200K) so the mode line shows a denominator, not "?".
-  (should (equal (e-chat--model-context-token-limit "claude-opus-4-8")
-                 1000000))
-  (should (equal (e-chat--model-context-token-limit "claude-haiku-4-5")
-                 200000))
   (should
    (equal
     (e-chat--format-mode-line-status "gpt-5.5" "high" 18000 400000 t)
@@ -9326,10 +9320,21 @@ gamma
     (e-chat--format-mode-line-status "gpt-5.5" "high" 40000 258400 nil)
     "e-chat gpt-5.5/high 15% (40k/258k tok)")))
 
+(ert-deftest e-chat-test-mode-line-window-uses-configured-limit ()
+  "The mode line ignores a larger provider maximum when e has a lower limit."
+  (let ((e-context-budget-model-token-limits
+         '(("gpt-5.6-sol" . 353400)))
+        (provider-calls 0))
+    (cl-letf (((symbol-function 'e-anthropic-context-window)
+               (lambda (_model)
+                 (setq provider-calls (1+ provider-calls))
+                 1050000)))
+      (should (equal (e-chat--model-context-window "gpt-5.6-sol")
+                     353400))
+      (should (= provider-calls 0)))))
+
 (ert-deftest e-chat-test-mode-line-status-uses-session-context ()
-  "Attached chat buffers show session model, effort, and token context.
-The context-window denominator comes from the live provider lookup
-\(`e-chat--model-context-window'), which queries the gateway; stub it here."
+  "Attached chat buffers use the session model and configured context limit."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
@@ -9386,7 +9391,7 @@ The context-window denominator comes from the live provider lookup
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-mode-line-status-unknown-window-shows-question-mark ()
-  "When the provider lookup returns nil, the mode line shows `?', no fallback."
+  "When no model limit is configured, the mode line shows `?'."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create

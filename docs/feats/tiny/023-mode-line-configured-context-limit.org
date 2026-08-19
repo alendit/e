@@ -1,0 +1,21 @@
+#+title: Mode line uses the configured context limit
+#+startup: overview
+
+* Status
+
+Done.
+
+* Change
+
+Use =e-context-budget-model-token-limits= as the chat mode-line denominator.
+Keep =e-chat-model-context-token-limits= as an obsolete alias so existing configuration continues to set the shared limit.
+Do not replace the configured runtime limit with the provider catalog's larger model maximum.
+Show an unknown denominator when the active model has no configured limit.
+
+This is tiny because it changes only the denominator source used by existing context-status rendering.
+
+* Validation
+
+- All 350 =e-chat-test.el= tests pass, with one unrelated skipped Markdown-rendering test.
+- The regression test proves that a configured =353400= limit wins when provider metadata reports =1050000=.
+- =e-chat.el= byte-compiles with warnings treated as errors.
