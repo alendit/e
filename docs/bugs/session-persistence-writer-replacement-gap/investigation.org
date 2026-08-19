@@ -1,0 +1,97 @@
+#+title: Session Persistence Writer Replacement Gap Investigation
+#+startup: overview
+
+* Evidence
+
+Bounded inspection of the running Emacs found two session-writer stderr
+buffers.  The exited writer reported:
+
+#+begin_example
+Error: Cannot find module '/Users/dvorona/projects/org/grimoire/e-session-writer.mjs'
+#+end_example
+
+The surviving writer used the correct bundled path
+=/Users/dvorona/projects/elisp/e/lisp/core/e-session-writer.mjs=.  Emacs
+finished initialization at =17:46:50Z=, the missing =session-info= entry was
+created at =17:47:00Z=, and the surviving writer started at =17:47:01Z=.
+
+The live controller retained five unacknowledged =session-info= append commands
+at the head of its outbox with no retry pending.  Their entry ids were absent
+from the journal, while later commands from the same controller instance were
+durable.  The missing checkpoint id was the fifth retained append.  The live
+session therefore referenced an entry which the failed writer never appended.
+
+Source inspection found two interacting defects:
+
+1. =e-session-persistence--directory= resolved its library at writer-start
+   time and preferred the current buffer's =buffer-file-name=.  Starting the
+   writer while a Grimoire file was current therefore constructed a nonexistent
+   writer path in the Grimoire checkout.
+2. =e-session-persistence--submit= sent each new command directly after
+   =--ensure=.  If =--ensure= replaced a failed process, the new command could
+   reach the replacement before older commands retained in the outbox.  The
+   writer then correctly rejected a checkpoint manifest containing an entry
+   absent from durable history.
+
+* Resolution
+
+Session persistence now captures its owning library directory when the module
+loads.  Runtime writer discovery no longer consults =buffer-file-name= or
+=default-directory=, so shell and project buffers cannot redirect the bundled
+writer path.
+
+A submission now compares the writer process before and after =--ensure=.  A
+new process is a replay boundary: the controller resets the existing paged
+outbox cursor to its head and replays every unacknowledged command in order,
+including the newest command at the tail.  Commands appended while a paged
+replay is active remain owned by that cursor instead of bypassing it.  The
+writer's stable command ids retain the existing duplicate suppression.
+
+* Validation
+
+- The two focused regressions failed before the implementation and passed
+  afterward.
+- The persistence suite passed: 23 tests, 0 unexpected.
+- The combined session and persistence suites passed: 117 tests, 0
+  unexpected.
+- Byte compilation of =e-session-persistence.el= passed with warnings treated
+  as errors, and =git diff --check= passed.
+- The unrestricted full suite ran 2,180 tests with 2,175 expected results, 3
+  unrelated unexpected results, and 2 optional skips.  The two Org Canvas
+  dead-window cleanup failures and one cancelled UI-work retention failure each
+  reproduce in isolation and do not exercise session persistence.
+- The replacement regression uses one-command replay pages and proves that a
+  third command appended during replay remains behind both older commands.
+- The writer-path regression binds an unrelated file and default directory and
+  still resolves the writer beside =e-session-persistence.el=.
+- The running Emacs was inspected read-only and was not reloaded or modified.
+
+* Architecture self-check
+
+1. This slice prevents real record loss and leaves persistence safer even if no
+   further recovery work is built.
+2. It moves toward one persistence-owned ordered durability lane across writer
+   process generations.
+3. Writer implementation changes remain local and reversible; the stable
+   contracts are library-owned bundle discovery and ordered outbox replay.
+4. The session persistence controller owns process lifecycle, submission order,
+   and replay.  Chat shells remain unaware of the writer.
+5. Coupling is reduced: writer discovery no longer depends on whichever user
+   buffer happens to be current, and no public interface changes.
+6. Session policy still depends only on its persistence controller; no stable
+   component gains a dependency on chat, Grimoire, or UI state.
+7. Node process creation remains the persistence adapter's side effect.
+8. No durable state is added.  The existing outbox cursor temporarily owns a
+   replacement replay and is discarded as soon as it reaches the tail.
+9. Normal submissions still make one pipe write.  Replacement replay retains
+   the existing bounded page size and event-loop yielding.
+10. The replay boundary is semantically real: a new process cannot know which
+    commands the previous process acknowledged durably.
+11. Journal, checkpoint, and writer protocol formats are unchanged.  Stable
+    command-id deduplication preserves compatibility with replay.
+12. Current-buffer and default-directory fallbacks were removed from bundled
+    writer discovery.
+13. Expected transport failures stay in the outbox retry path; deterministic
+    writer rejections continue to surface visibly.
+14. Focused tests prove path ownership and cross-generation ordering without a
+    chat shell or the user's running Emacs.

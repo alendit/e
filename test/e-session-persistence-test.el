@@ -13,6 +13,15 @@
   "The packaged runtime includes the writer beside its owning Lisp module."
   (should (file-readable-p (e-session-persistence--writer-script))))
 
+(ert-deftest e-session-persistence-test-writer-script-ignores-current-buffer ()
+  "Writer discovery remains anchored to its library from unrelated buffers."
+  (let* ((library (file-truename (locate-library "e-session-persistence")))
+         (expected (expand-file-name "e-session-writer.mjs"
+                                     (file-name-directory library)))
+         (buffer-file-name "/tmp/unrelated-project/daily.org")
+         (default-directory "/tmp/unrelated-project/"))
+    (should (equal (e-session-persistence--writer-script) expected))))
+
 (defun e-session-persistence-test--await-durable (store)
   "Wait in this test process for STORE's asynchronous durability boundary."
   (let ((deadline (+ (float-time) 5.0)) done failure)
@@ -164,6 +173,50 @@
       (funcall continuation)
       (should (equal sent '("three")))
       (should-not (e-session-persistence-retry-cursor controller)))))
+
+(ert-deftest e-session-persistence-test-replacement-replays-before-new-command ()
+  "A replacement writer receives pending commands before the newest command."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "replacement"))
+         (e-session-persistence-retry-page-size 1)
+         (current-process 'writer-one)
+         continuations
+         sent)
+    (setf (e-session-persistence-process controller) current-process)
+    (cl-letf (((symbol-function 'e-session-persistence--ensure)
+               (lambda (target)
+                 (setf (e-session-persistence-process target) current-process)
+                 current-process))
+              ((symbol-function 'e-session-persistence--send)
+               (lambda (target command)
+                 (push (list (e-session-persistence-process target)
+                             (plist-get
+                              (e-session-persistence-command-request command)
+                              :id))
+                       sent)))
+              ((symbol-function 'e-session-persistence--live-p)
+               (lambda (_target) t))
+              ((symbol-function 'run-at-time)
+               (lambda (_seconds _repeat function &rest arguments)
+                 (push (lambda () (apply function arguments)) continuations)
+                 (timer-create))))
+      (e-session-persistence--submit controller (list :op "first"))
+      (setq current-process 'writer-two)
+      (e-session-persistence--submit controller (list :op "second"))
+      (e-session-persistence--submit controller (list :op "third"))
+      (should
+       (equal (nreverse (copy-sequence sent))
+              '((writer-one "replacement:1")
+                (writer-two "replacement:1"))))
+      (while continuations
+        (funcall (pop continuations)))
+      (should
+       (equal (nreverse sent)
+              '((writer-one "replacement:1")
+                (writer-two "replacement:1")
+                (writer-two "replacement:2")
+                (writer-two "replacement:3")))))))
 
 (ert-deftest e-session-persistence-test-writer-commits-journal-and-catalog ()
   "The writer owns durable JSONL and catalog work outside the Emacs mutation path."

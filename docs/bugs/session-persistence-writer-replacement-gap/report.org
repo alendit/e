@@ -1,0 +1,16 @@
+#+title: Session Persistence Writer Replacement Loses Initial Daily Records
+#+startup: overview
+
+* Report
+
+The user reported this warning after opening a fresh Grimoire Daily chat:
+
+#+begin_example
+Error (e-session-persistence): Session persistence error:
+"Checkpoint entry 01M0DJ4CDDW2BDQ4T0XQ1T7T78 is absent from 20260819T090231-836e450c6b4d"
+#+end_example
+
+Expected behavior: opening a chat from any file-visiting buffer starts the
+bundled persistence writer from its owning library, and replacing a failed
+writer preserves the submission order of every unacknowledged record before a
+checkpoint can observe it.

@@ -70,12 +70,18 @@
   "One validated writer request and its immutable wire representation."
   request wire)
 
+(defconst e-session-persistence--library-directory
+  (file-name-directory
+   (file-truename
+    (or load-file-name
+        (locate-library "e-session-persistence")
+        (signal 'e-session-persistence-error
+                (list "Cannot locate e-session-persistence library")))))
+  "Directory containing the loaded session persistence library.")
+
 (defun e-session-persistence--directory ()
   "Return the directory containing this library."
-  (file-name-directory
-   (file-truename (or load-file-name buffer-file-name
-                      (locate-library "e-session-persistence")
-                      default-directory))))
+  e-session-persistence--library-directory)
 
 (defun e-session-persistence--writer-script ()
   "Return the bundled writer program path."
@@ -292,6 +298,23 @@ reload; new submissions always prepare once before entering the outbox."
       (set-process-query-on-exit-flag (e-session-persistence-process controller) nil)))
   (e-session-persistence-process controller))
 
+(defun e-session-persistence--send-submitted-command (controller command)
+  "Send COMMAND without overtaking work queued before a writer replacement."
+  (let ((previous-process (e-session-persistence-process controller)))
+    (e-session-persistence--ensure controller)
+    (cond
+     ((not (eq previous-process
+               (e-session-persistence-process controller)))
+      ;; A new pipe has no knowledge of the old pipe's unacknowledged writes.
+      ;; Replay the complete ordered outbox, including COMMAND at its tail.
+      (setf (e-session-persistence-retry-cursor controller)
+            (e-session-persistence-outbox-head controller))
+      (e-session-persistence--resend-page controller))
+     ;; A paged replay already owns every command appended at its tail.
+     ((e-session-persistence-retry-cursor controller))
+     (t
+      (e-session-persistence--send controller command)))))
+
 (defun e-session-persistence--submit (controller operation &optional on-done on-error)
   "Queue OPERATION for CONTROLLER and return its stable command id."
   (let* ((sequence (cl-incf (e-session-persistence-next-sequence controller)))
@@ -320,9 +343,7 @@ reload; new submissions always prepare once before entering the outbox."
     (e-session--adjust-unsettled-writes
      (e-session-persistence-store controller) 1)
     (condition-case err
-        (progn
-          (e-session-persistence--ensure controller)
-          (e-session-persistence--send controller command))
+        (e-session-persistence--send-submitted-command controller command)
       (error
        (setf (e-session-persistence-last-error controller) err)
        (e-session-persistence--restart-later controller)))
