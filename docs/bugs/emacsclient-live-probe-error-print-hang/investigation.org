@@ -1,0 +1,123 @@
+#+title: emacsclient live probe error printing hang investigation
+#+startup: overview
+
+* Evidence
+
+The affected Emacs process was PID =28174=.  Before sampling it used 100 percent
+CPU and had a 16.6 GB physical footprint.  A two-second macOS sample was written
+to =/tmp/e-emacs-hang-20260819.txt=.  Every sampled main-thread stack was in:
+
+#+begin_example
+server-process-filter
+  server-execute
+    server-return-error
+      error-message-string
+        print_error_message
+          print_object
+#+end_example
+
+The pending client was the diagnostic request itself.  Killing that client did
+not stop Emacs because the server was still constructing the error string
+before it could send a response.  An attempted generic Unix interrupt then
+terminated this Emacs build instead of safely unwinding the request.
+
+The installed Emacs =server.el= confirms both unsafe boundaries:
+
+- =server-eval-and-print= applies unbounded =pp= to every successful eval
+  result;
+- =server-return-error= calls =error-message-string= three times on the raw
+  condition.
+
+A client-side =--timeout=2= bounds only how long =emacsclient= waits.  It does
+not cancel an eval already queued or running on Emacs's single UI thread.
+
+This is a recurring failure class.  The existing
+=e-chat-turn-finished-misses-final-assistant= investigation recorded an Emacs
+process stuck in =server-eval-and-print= and recursive =pp-fill=.  The
+=openai-websocket-diagnostic-format-freeze= investigation similarly required a
+bounded printer at an asynchronous live-process boundary.
+
+* Root Cause
+
+Repository guidance treated a small intended result as a bounded operation.
+That omitted the failure path: a struct accessor or stale runtime-object error
+can retain the complete object in its condition data, after which Emacs's
+server prints that graph without depth, length, cycle, or byte limits.
+
+Arbitrary live eval cannot be made safe with a client timeout or a recommendation
+to return scalars.  The supported diagnostic interface must not accept
+arbitrary Lisp.
+
+* Fix
+
+=lisp/dev/e-dev-probe.el= now owns one fixed read-only live-diagnostic
+boundary.  =e-dev-live-probe= supports only these named operations:
+
+- =ping=
+- =selected=
+- =chat=
+- =windows=
+- =symbol SYMBOL=
+
+Each operation constructs a bounded projection.  The boundary caps container
+depth, per-container items, total inspected nodes, string length, and window
+count; tracks cycles; validates types before accessors; and catches both
+=error= and =quit=.  Errors retain their condition symbol, standard message,
+and bounded detail preview without returning raw condition data to
+=server-return-error=.
+
+=scripts/e-live-probe= is the external command boundary.  It validates its
+fixed operation and symbol grammar, sends exactly one guarded eval, and uses
+=emacsclient --timeout=2=.  If the updated function is unavailable it returns a
+small data result rather than raising a server error.
+
+The repository's agent and review guidance now forbids raw diagnostic
+=emacsclient --eval=.  A timed-out probe switches the investigation to bounded
+OS inspection, and no signal may be sent to the user's Emacs without explicit
+approval.  Full reload remains a separate explicitly authorized operation.
+
+No global advice is installed around Emacs server functions, so unrelated
+Emacs clients and components do not depend on =e='s development policy.
+
+* Validation
+
+- =eldev test -f test/e-dev-probe-test.el -f test/e-dev-test.el=: 16/16
+  expected results, zero unexpected.
+- =eldev compile=: passed, including =lisp/dev/e-dev-probe.el=.
+- =bash -n scripts/e-live-probe e2e/run-live-probe-tests.sh=: passed.
+- =bash e2e/run-live-probe-tests.sh=: passed against a disposable named daemon.
+- The daemon E2E injected a cyclic =wrong-type-argument= containing a
+  self-referential vector.  The CLI returned a bounded 131-byte condition
+  preview and the daemon remained responsive.
+- =git diff --check=: passed for the implementation slice.
+
+The user's running Emacs was not reloaded.  After it had been restarted, one
+accidental default-socket invocation performed only the wrapper's fixed
+=fboundp= availability check and returned =e-dev-live-probe-unavailable=; no
+state was changed and no further live requests were issued.
+
+* Architecture Self-Check
+
+1. The package is safer if work stops here because supported live diagnostics
+   no longer expose arbitrary eval or raw runtime objects.
+2. It moves toward named operational diagnostics with explicit contracts.
+3. Probe names are stable; additional diagnostic fields remain local and
+   reversible inside their owning projection.
+4. =e-dev-probe= owns external development diagnostics and has no runtime or
+   presentation policy responsibility.
+5. Coupling is reduced to one narrow CLI/function contract.
+6. Core, shells, providers, and adapters do not depend on the diagnostic
+   implementation.
+7. Socket selection and client timeout remain in the shell adapter.
+8. No state is persisted or mutated.
+9. Every projection has explicit work bounds; the server never receives an
+   unbounded result or condition.
+10. There is no shared implementation interface or speculative extension
+    hierarchy.
+11. Raw diagnostic eval is intentionally removed from the supported workflow;
+    full reload retains its explicit compatibility exception.
+12. Normative direct-eval guidance is removed.
+13. Expected and unexpected errors surface as bounded condition diagnostics;
+    raw object graphs cannot escape.
+14. Focused ERT and a disposable-server E2E prove the boundary independently
+    of the user's running Emacs.

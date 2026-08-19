@@ -217,10 +217,13 @@ For user-facing or runtime-visible features, the review must play through the
 important use cases in the running Emacs.  Batch tests prove invariants; they do
 not prove that the user experience is coherent, visually legible, or responsive.
 
-Use =emacsclient --eval= from the repo root to set up and inspect scenarios.
-Prefer direct, bounded expressions.  Inspect the actual selected window when
-the visual state matters, for example =(window-buffer (selected-window))=,
-rather than assuming the server's current buffer is the user's visible buffer.
+Use =scripts/e-live-probe= from the repo root to inspect the user's running
+Emacs.  The =selected=, =chat=, and =windows= probes inspect the actual selected
+window and its presentation-owned state without exposing arbitrary evaluation.
+Do not use raw =emacsclient --eval= for live diagnostics.  Set up reproducible
+scenarios in the isolated graphical test harness; when an existing user-only
+state cannot be reproduced, ask the user to drive it and inspect it through the
+fixed probes.
 
 When an app surface is attached to the Codex session, use it to visually inspect
 the result after driving Emacs.  Check the real buffer/window/app state, not
@@ -265,13 +268,16 @@ For Emacs Lisp runtime changes, include:
 - focused ERT selectors or files relevant to the feature;
 - broader affected test files or full suite when warranted;
 - =git diff --check= or equivalent whitespace validation for doc/code edits;
-- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"= result;
-- one bounded live probe when the behavior is observable in the running Emacs;
+- an explicitly user-authorized =e-dev-reload= result when live reload was
+  actually required;
+- one =scripts/e-live-probe= result when the behavior is observable in the
+  running Emacs;
 - one visual playthrough summary for each user-facing flow that could regress
   UX, focus, window layout, transient display, status reporting, or cleanup.
 
-Keep live probes narrow and scalar.  Avoid broad dumps of registries,
-buffer-locals, or session state.
+If =scripts/e-live-probe= times out, stop sending Emacs requests and switch to
+bounded OS process inspection.  Do not signal the user's Emacs without explicit
+approval.
 
 Use profiling when interaction feels slow, when a plan promises performance
 improvement, when review use cases involve large inputs, or when repeated

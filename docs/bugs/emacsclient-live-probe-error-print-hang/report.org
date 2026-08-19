@@ -1,0 +1,14 @@
+#+title: emacsclient live probe error printing hangs Emacs
+#+startup: overview
+
+* Report
+
+During diagnosis of an active chat turn, a supposedly scalar
+=emacsclient --eval= probe raised an error containing a live runtime object.
+Emacs became unresponsive at 100 percent CPU and grew to a 16.6 GB physical
+footprint while attempting to format the error for the client.
+
+The expected behavior is that external diagnostic inspection cannot make the
+user's UI Emacs recursively print live runtime state.  A timed-out diagnostic
+must also stop further Emacs requests rather than prompting retries or process
+signals.
