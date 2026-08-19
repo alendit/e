@@ -38,8 +38,9 @@ git diff --check
 352 expected, 0 unexpected, 1 skipped in the complete chat test file.
 25/25 graphical behavior tests passed, including both new regressions.
 Full repository run: 2179 expected, 3 unexpected, 2 skipped out of 2184.
-The three failures are existing whole-suite shared window/timer-state failures;
-all three pass together when selected in isolation.
+The three failures are whole-suite shared window/timer-state failures; all
+three pass together when selected in isolation.  This run did not establish
+whether they predate the feature.
 Compilation completed with existing test warnings.  Whitespace check passed.
 #+end_example
 
