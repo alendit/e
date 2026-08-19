@@ -735,30 +735,14 @@ than the invisible insertion position."
           (e-chat-behavior-test--assert-tail-near-bottom fixture))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
-(ert-deftest e-chat-behavior-test-focused-composer-shows-model-context-fill ()
-  "Async catalog fill reaches the focused composer's visible mode line."
+(ert-deftest e-chat-behavior-test-focused-composer-shows-configured-context-limit ()
+  "The focused composer shows the configured model context limit."
   (skip-unless (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
-        (e-anthropic--context-window-cache (make-hash-table :test 'equal))
-        (e-anthropic--context-window-refresh-requests
-         (make-hash-table :test 'equal))
-        (e-anthropic--context-window-failure-cache
-         (make-hash-table :test 'equal))
-        (catalog-calls 0)
         fixture)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-anthropic--headers)
-                   (lambda (&rest _) nil))
-                  ((symbol-function 'e-anthropic--http-get-start)
-                   (lambda (&rest args)
-                     (cl-incf catalog-calls)
-                     (let ((complete (plist-get args :on-complete)))
-                       (run-at-time
-                        0.05 nil complete
-                        "{\"data\":[{\"id\":\"gpt-5.6-sol\",\"max_input_tokens\":353400}]}"))
-                     (e-backend-request-create
-                      :metadata '(:test graphical-catalog)))))
+        (progn
           (setq fixture (e-chat-behavior-test--open-surface))
           (let ((composer-window (plist-get fixture :composer-window)))
             (e-graphical-test-wait-until
@@ -768,7 +752,7 @@ than the invisible insertion position."
                        composer-window)))
                  (and (string-match-p "gpt-5\\.6-sol/high" text)
                       (string-match-p "/353k tok" text))))
-             2.0 "focused composer model and context-fill mode line")
+             2.0 "focused composer model and configured context limit")
             (should (eq (selected-window) composer-window))
             (e-chat-behavior-test--submit fixture "context status prompt")
             (e-graphical-test-stream-emit
@@ -815,7 +799,6 @@ than the invisible insertion position."
                    (plist-get fixture :harness)
                    (plist-get fixture :session-id)))))))
             (should (eq (selected-window) composer-window))))
-          (should (= catalog-calls 1))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll ()
