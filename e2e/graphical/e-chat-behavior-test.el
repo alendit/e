@@ -490,6 +490,42 @@ than the invisible insertion position."
             (should (window-live-p outside-window))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-popup-preserves-dedicated-surface ()
+  "A generic pop-up opens outside the owned atomic chat surface."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        (popup (get-buffer-create "*e graphical popup*"))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let* ((transcript (plist-get fixture :transcript))
+                 (transcript-window (plist-get fixture :transcript-window))
+                 (composer-window (plist-get fixture :composer-window))
+                 (composer (window-buffer composer-window))
+                 popup-window)
+            (select-window composer-window)
+            (e-graphical-test-capture-automatic-transition
+             "chat-generic-popup"
+             (lambda ()
+               (pop-to-buffer popup)
+               (setq popup-window (selected-window))))
+            (should (window-live-p transcript-window))
+            (should (window-live-p composer-window))
+            (should (eq (window-buffer transcript-window) transcript))
+            (should (eq (window-buffer composer-window) composer))
+            (should (eq (window-dedicated-p transcript-window) 'soft))
+            (should (eq (window-dedicated-p composer-window) 'soft))
+            (should (eq (window-atom-root transcript-window)
+                        (window-atom-root composer-window)))
+            (should-not (memq popup-window
+                              (list transcript-window composer-window)))
+            (should-not (window-atom-root popup-window))))
+      (when (buffer-live-p popup)
+        (kill-buffer popup))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer ()
   "Reload refreshes a retained chat endpoint without losing composer state."
   (skip-unless (display-graphic-p))

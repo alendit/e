@@ -1,0 +1,119 @@
+#+title: e-chat Surface Constituent Overwrite Investigation
+#+startup: overview
+
+* Evidence
+
+A bounded live probe recorded four windows in the affected frame:
+
+- one atom contained the chat transcript above =*Messages*=;
+- a second atom contained the same transcript above its composer;
+- every constituent reported =window-dedicated-p= as nil.
+
+This matches the screenshot: native atomic structure survived, but an unrelated
+buffer replaced the lower constituent in one surface.  A focused ERT
+reproduction then opened an unrelated buffer with plain =pop-to-buffer= while
+the composer was selected.  Before the fix, the command reused and overwrote a
+chat constituent.
+
+* Root cause
+
+=window-atom= and window dedication express different contracts.  Atomicity
+makes structural operations treat transcript and composer as one unit; it does
+not reserve either leaf for its current buffer.  e-chat created and persisted a
+native atom but left both leaves non-dedicated, so generic =display-buffer= and
+=pop-to-buffer= policy could legally reuse either one.
+
+The visible duplication is not the corruption itself.  Emacs may display the
+same buffer in another window, and selecting another transcript view can cause
+e-chat to complete that view into another composed surface.  The corruption is
+that a generic display operation can subsequently replace a leaf inside either
+surface.
+
+* Fix
+
+e-chat now softly dedicates both transcript and composer windows after their
+native atom has been created or found.  This is presentation-owned state in the
+chat shell.  Generic display code and workspace adapters remain unaware of
+e-chat.
+
+The two native mechanisms remain complementary:
+
+- =window-atom= owns structural split and deletion behavior, including native
+  =C-x 0= and =C-x 1= semantics;
+- soft window dedication prevents generic display policy from replacing either
+  owned constituent while still permitting explicit host replacement during
+  workspace teardown or state restoration.
+
+A split outside the dedicated atom remains an ordinary, non-dedicated host
+window, so generic consumers can display their buffers there without chat
+command replication.
+
+Strong dedication was rejected by the complete graphical suite: it prevented
+=persp-mode= from explicitly replacing a transcript buffer while deleting its
+workspace.  Soft dedication has the required narrower contract: generic
+display policy skips the owned leaves, while an explicit host replacement can
+still tear down or restore the window state normally.
+
+For already-saved damaged window state, e-chat identifies the lower constituent
+by its position inside the chat atom and restores the composer in that slot.
+This migration is local to surface display and does not add restoration hooks or
+cross-component policy.
+
+* Regression
+
+- Focused ERT reproduces an unrelated =pop-to-buffer= and proves both chat
+  buffers remain visible and dedicated while the popup opens outside the atom.
+- Focused ERT models a persisted atom whose lower constituent was overwritten
+  and proves display repairs the same slot rather than adding a third leaf.
+- Existing native split, =C-x 0=, =C-x 1=, reload, and writable window-state
+  tests now also cover dedication and ordinary outside windows.
+- A graphical regression captures the before/after popup transition and checks
+  the exact buffers, atom roots, dedication, and external popup leaf.
+
+* Validation
+
+- The focused structural ERT selection passed 8/8 before the soft-dedication
+  refinement; the final ownership, repair, split, and persistence selection
+  passed 4/4 with exact =soft= assertions.
+- The graphical popup regression passed with captured before/after PNG, SVG,
+  and state sidecars; visual inspection and the state file showed the intact
+  transcript/composer atom plus one ordinary selected popup window.
+- The complete graphical suite passed 22/22, including native deletion,
+  surface replacement, perspective round trips, and deletion of an updating
+  chat workspace.
+- The complete chat and chat-surface ERT selection passed 351 tests: 349
+  expected passes and 2 optional-dependency skips.
+- Full =eldev compile= and =git diff --check= passed.
+- The user's running Emacs was inspected only with a bounded read-only probe;
+  it was not reloaded or modified.
+
+* Architecture self-check
+
+1. This slice prevents data-entry UI from disappearing and repairs already
+   persisted instances of the same damage.
+2. It moves toward a presentation-owned native surface whose structural and
+   buffer-ownership contracts are both expressed with Emacs primitives.
+3. Popup policy is variable, but the stable fact is that both chat leaves are
+   owned.  The uncertain policy remains outside e-chat; no extension layer was
+   added.
+4. The chat shell owns its transcript/composer windows because they are one
+   interaction surface with one reason to change.
+5. Coupling is reduced: generic display and workspace components need no chat
+   branch, and e-chat does not reproduce their buffer-display operations.
+6. No harness, session, backend, workspace, or generic window dependency points
+   toward chat presentation policy.
+7. Generic display and structural side effects remain in Emacs; e-chat only
+   declares ownership and repairs its own known slot.
+8. Dedication is ephemeral window state with the same lifetime as the visible
+   surface.  It is rebuilt on display and persists naturally with window state.
+9. The change adds constant work on surface display and no scans outside one
+   frame's small window list during legacy repair.
+10. =window-atom= and window dedication are real, independent native contracts;
+    neither asks other components to implement a narrowed interface.
+11. Native window commands and persisted workspace behavior remain compatible.
+12. No new legacy command emulation is needed; the existing narrow saved-state
+    repair now handles overwritten lower constituents as well as ordinary pairs.
+13. Expected legacy corruption is repaired locally.  Unexpected atom creation,
+    split, deletion, and display errors still surface.
+14. Unit tests isolate ownership and repair; graphical tests prove the real
+    display transition; existing structural tests cover native commands.

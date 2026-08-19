@@ -272,6 +272,10 @@ tests, matching how the buffer behaves when shown to a user."
                     (call-interactively (key-binding (kbd "C-x 3"))))))
           (should (window-live-p external-window))
           (should (eq (window-buffer external-window) replacement))
+          (should (eq (window-dedicated-p transcript-window) 'soft))
+          (should (eq (window-dedicated-p composer-window) 'soft))
+          (should-not (window-dedicated-p external-window))
+          (should-not (window-atom-root external-window))
           (with-current-buffer buffer
             (should (eq (e-chat--surface-composer-window transcript-window)
                         composer-window)))
@@ -281,6 +285,75 @@ tests, matching how the buffer behaves when shown to a user."
       (set-window-configuration configuration)
       (when (buffer-live-p replacement)
         (kill-buffer replacement))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-unrelated-pop-to-buffer-preserves-surface-windows ()
+  "Generic pop-up display cannot replace either chat surface constituent."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-popup-window-ownership"))
+         (popup (generate-new-buffer "*e-chat unrelated popup*"))
+         transcript-window composer-window popup-window composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window t)))
+          (setq composer (window-buffer composer-window))
+          (pop-to-buffer popup)
+          (setq popup-window (selected-window))
+          (should (window-live-p transcript-window))
+          (should (window-live-p composer-window))
+          (should (eq (window-buffer transcript-window) buffer))
+          (should (eq (window-buffer composer-window) composer))
+          (should (eq (window-dedicated-p transcript-window) 'soft))
+          (should (eq (window-dedicated-p composer-window) 'soft))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
+          (should-not (memq popup-window
+                            (list transcript-window composer-window)))
+          (should-not (window-atom-root popup-window)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p popup)
+        (kill-buffer popup))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-display-repairs-overwritten-composer-constituent ()
+  "Redisplaying a saved damaged atom restores its composer slot in place."
+  (let* ((e-chat--surface-composition-enabled t)
+         (configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-repair-composer-slot"))
+         (intruder (generate-new-buffer "*e-chat composer intruder*"))
+         transcript-window composer-window repaired-window composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat--surface-display-composer transcript-window)))
+          (setq composer (window-buffer composer-window))
+          ;; Model a corrupted window state produced before surface leaves were
+          ;; dedicated.  The atom itself remains structurally intact.
+          (set-window-dedicated-p composer-window nil)
+          (set-window-buffer composer-window intruder)
+          (with-current-buffer buffer
+            (setq repaired-window
+                  (e-chat--surface-display-composer transcript-window)))
+          (should (eq repaired-window composer-window))
+          (should (eq (window-buffer composer-window) composer))
+          (should (eq (window-dedicated-p transcript-window) 'soft))
+          (should (eq (window-dedicated-p composer-window) 'soft))
+          (should (= (length (window-list nil 'nomini)) 2)))
+      (set-window-configuration configuration)
+      (when (buffer-live-p intruder)
+        (kill-buffer intruder))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -311,6 +384,8 @@ tests, matching how the buffer behaves when shown to a user."
           (setq composer-window (get-buffer-window composer t))
           (should (window-live-p transcript-window))
           (should (window-live-p composer-window))
+          (should (eq (window-dedicated-p transcript-window) 'soft))
+          (should (eq (window-dedicated-p composer-window) 'soft))
           (with-current-buffer buffer
             (should (eq (e-chat--surface-composer-window transcript-window)
                         composer-window)))

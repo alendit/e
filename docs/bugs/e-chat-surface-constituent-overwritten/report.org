@@ -1,0 +1,20 @@
+#+title: e-chat Surface Constituent Overwritten by Generic Buffer Display
+#+startup: overview
+
+* Report
+
+An atomic composed chat surface intermittently loses its composer when another
+buffer opens.  In the reported frame, =*Messages*= occupied the lower leaf of
+an otherwise intact transcript/composer atom.  The same frame also contained a
+second intact view of the chat surface.
+
+The failure is presentation-only: the transcript, composer buffer, and durable
+chat session remain live, but the composer is no longer visible in the damaged
+surface.
+
+* Expected behavior
+
+The transcript and composer are owned leaves of one native atomic chat surface.
+Generic buffer display may create or reuse windows outside that surface, but it
+must not replace either owned leaf.  Native structural commands such as
+=C-x 0=, =C-x 1=, and split commands must continue to operate normally.

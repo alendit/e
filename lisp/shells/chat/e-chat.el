@@ -1632,21 +1632,30 @@ composer buffer; transcript rendering never calls it."
          (= (nth 2 transcript-edges) (nth 2 composer-edges))
          (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
 
-(defun e-chat--surface-composer-window (&optional transcript-window)
-  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
-The composer buffer owns transcript identity.  Native atomic structure and
-vertical adjacency identify its visible constituent without changing the host
-window tree."
+(defun e-chat--surface-composer-slot-window (&optional transcript-window)
+  "Return TRANSCRIPT-WINDOW's lower atomic constituent, if one exists.
+This identifies the presentation-owned slot structurally even when an older
+window state contains the wrong buffer there."
   (setq transcript-window (or transcript-window (selected-window)))
-  (when (and (window-live-p transcript-window)
-             (buffer-live-p e-chat--surface-composer-buffer))
+  (when (window-live-p transcript-window)
     (when-let ((atom-root (window-atom-root transcript-window)))
       (cl-find-if
        (lambda (candidate)
          (and (eq atom-root (window-atom-root candidate))
               (e-chat--surface-window-directly-below-p
                transcript-window candidate)))
-       (get-buffer-window-list e-chat--surface-composer-buffer nil t)))))
+       (window-list (window-frame transcript-window)
+                    'nomini transcript-window)))))
+
+(defun e-chat--surface-composer-window (&optional transcript-window)
+  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
+The composer buffer owns transcript identity.  Native atomic structure and
+vertical adjacency identify its visible constituent without changing the host
+window tree."
+  (when (buffer-live-p e-chat--surface-composer-buffer)
+    (when-let ((slot (e-chat--surface-composer-slot-window transcript-window)))
+      (and (eq (window-buffer slot) e-chat--surface-composer-buffer)
+           slot))))
 
 (defun e-chat--surface-legacy-composer-window (&optional transcript-window)
   "Return an adjacent pre-atom composer for TRANSCRIPT-WINDOW, if any.
@@ -1746,6 +1755,16 @@ that transient internal view before the command returns."
                           e-chat-composer-window-min-height
                           nil nil t)))
 
+(defun e-chat--surface-dedicate-windows (transcript-window composer-window)
+  "Reserve TRANSCRIPT-WINDOW and COMPOSER-WINDOW for their chat buffers.
+The native atom owns structural split and deletion semantics.  Window
+dedication separately prevents generic display commands from replacing either
+constituent; windows split outside the atom remain ordinary host windows.
+Soft dedication still permits an explicit host operation such as workspace
+teardown or state restoration to replace the buffer without chat knowledge."
+  (set-window-dedicated-p transcript-window 'soft)
+  (set-window-dedicated-p composer-window 'soft))
+
 (defun e-chat--surface-display-composer (&optional transcript-window select)
   "Display the current transcript's composer below TRANSCRIPT-WINDOW.
 When SELECT is non-nil, select the composer window."
@@ -1763,6 +1782,16 @@ When SELECT is non-nil, select the composer window."
         (delete-window legacy-window))
       (setq composer-window
             (or (e-chat--surface-composer-window transcript-window)
+                (when-let ((slot
+                            (e-chat--surface-composer-slot-window
+                             transcript-window)))
+                  ;; Repair persisted corruption produced before constituents
+                  ;; were dedicated.  The atom already proves this is the
+                  ;; chat-owned lower slot, so replace it instead of adding a
+                  ;; third constituent.
+                  (set-window-dedicated-p slot nil)
+                  (set-window-buffer slot composer)
+                  slot)
                 (let ((window
                        (display-buffer
                         composer
@@ -1778,6 +1807,7 @@ When SELECT is non-nil, select the composer window."
                                    (window-atom-root window)))
                     (error "Could not create atomic e-chat composer window"))
                   window)))
+      (e-chat--surface-dedicate-windows transcript-window composer-window)
       (e-chat--surface-fit-composer-window composer-window)
       (when select
         (select-window composer-window)))
