@@ -5380,16 +5380,10 @@ STATUS defaults to `done'."
         (plist-put round :retry-attempt (plist-get payload :attempt))
         (plist-put round :retry-backoff-seconds
                    (plist-get payload :backoff-seconds))
-        (plist-put round :error (plist-get payload :error))
-        (plist-put round :error-details (plist-get payload :details)))
+        (plist-put round :error (plist-get payload :error)))
       (when entry
         (plist-put entry :title "Provider attempt")
         (plist-put entry :status 'retrying)
-        (plist-put entry :retry-attempt (plist-get payload :attempt))
-        (plist-put entry :retry-backoff-seconds
-                   (plist-get payload :backoff-seconds))
-        (plist-put entry :error (plist-get payload :error))
-        (plist-put entry :error-details (plist-get payload :details))
         (when round
           (plist-put entry :content (e-chat--round-thought-text round))))
       record)))

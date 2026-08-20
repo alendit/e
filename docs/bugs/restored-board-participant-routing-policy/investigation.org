@@ -91,6 +91,15 @@ reloaded.
   frame visibly contains the retry schedule and retained provider error and no
   =Thought failed= text.
 
+* Presentation cleanup
+
+The chat shell now keeps retry attempt, delay, and visible error only on the
+semantic provider round that renders them.
+It no longer copies those values, or structured error details, into the
+derived intermittent entry where nothing reads them.
+Structured error details remain in durable harness activity; this cleanup does
+not discard diagnostic evidence or change retry presentation.
+
 * Architecture Self-Check
 
 1. This is independently useful: retries are truthful and diagnosable even
