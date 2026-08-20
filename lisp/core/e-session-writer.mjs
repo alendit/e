@@ -85,25 +85,17 @@ async function writeAtomicJson(target, value) {
   await fs.rename(temporary, target);
 }
 
-async function knownCommands(directory, sessionId) {
-  const known = { exact: new Set() };
+async function knownCommandIds(directory, sessionId) {
+  let ids = new Set();
   const dir = await sessionsDirectory(directory);
   const journal = path.join(dir, `${sessionId}.jsonl`);
   try {
     const contents = await journalRecordsAfter(journal, 0);
-    known.exact = commandIds(contents.records);
+    ids = commandIds(contents.records);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  return known;
-}
-
-function commandKnown(known, id) {
-  return known.exact.has(id);
-}
-
-function rememberCommand(known, id) {
-  known.exact.add(id);
+  return ids;
 }
 
 const ENTRY_RECORD_TYPES = new Set([
@@ -332,12 +324,11 @@ async function handle(request) {
   }
   if (request.op === "append") {
     const sessionId = request["session-id"];
-    const known = await knownCommands(directory, sessionId);
-    if (!commandKnown(known, request.id)) {
+    const knownIds = await knownCommandIds(directory, sessionId);
+    if (!knownIds.has(request.id)) {
       const dir = await sessionsDirectory(directory);
       const record = { ...request.record, "writer-command-id": request.id };
       await fs.appendFile(path.join(dir, `${sessionId}.jsonl`), JSON.stringify(record) + "\n", "utf8");
-      rememberCommand(known, request.id);
       if (record.type === "session") await ensureInitialCheckpoint(directory, sessionId, record);
     }
   } else if (request.op === "checkpoint") {

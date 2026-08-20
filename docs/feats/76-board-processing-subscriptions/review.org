@@ -477,6 +477,20 @@ append order.
   warnings treated as errors.
 - =git diff --check=: passed.
 
+* Post-review persistence cleanup
+
+The exact command identity remains =<writer-instance>:<local-sequence>=, but
+the request no longer sends the local sequence as a second, unused field.  The
+writer now works directly with the exact-ID set rebuilt from the journal and
+does not mutate that short-lived set after the append.  No process-local cache
+or sequence high-watermark remains.
+
+- =node --test test/e-session-writer-test.mjs=: 9/9 passed.
+- =eldev test -f test/e-session-persistence-test.el=: 23/23 passed.
+- =eldev compile -f -W lisp/core/e-session-persistence.el=: passed with
+  warnings treated as errors.
+- =git diff --check=: passed.
+
 * Completion
 
 All implementation findings in this review are resolved.  The parent retains

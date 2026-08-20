@@ -322,7 +322,7 @@ reload; new submissions always prepare once before entering the outbox."
          ;; counter would collide with a prior controller's acknowledged work.
          (id (format "%s:%d" (e-session-persistence-instance-id controller)
                      sequence))
-         (request (append (list :id id :sequence sequence
+         (request (append (list :id id
                                 :directory (e-session-store-directory
                                             (e-session-persistence-store controller)))
                           operation))
