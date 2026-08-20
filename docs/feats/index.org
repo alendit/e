@@ -95,4 +95,4 @@ Status values for coding agents:
 | 82 | Done        | 82-board-native-subagent-supervision/         | Board-Native Subagent Supervision                     |
 | 83 | Done        | 83-project-local-action-capabilities/       | Project-Local Action Capabilities                    |
 | 84 | Done        | 84-trace-driven-hot-path-remediation/       | Trace-Driven Hot Path Remediation                    |
-| 85 | In-progress | 85-default-projects/                        | Default Projects                                     |
+| 85 | Done        | 85-default-projects/                        | Default Projects                                     |

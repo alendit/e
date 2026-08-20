@@ -1,0 +1,107 @@
+#+title: Review: Default Projects
+#+startup: overview
+
+* Status
+
+Done.
+
+* Scope reviewed
+
+- The =e-default-projects= setting, normalized projection, workspace-root
+  composition, project-local trust, and startup priming.
+- Core, project-local, startup/reload, and file-resource tests.
+- Real Grimoire project-layer loading in a fresh Eldev Emacs process.
+- The Doom =config.org= integration and its tangled =config.el= output.
+
+* Review loop
+
+** DONE Medium: Startup priming initially preceded byte-recompile policy
+
+*** Problem
+
+Grimoire moved from project-entry priming to startup priming, but
+=e-project-local-auto-byte-recompile= was still assigned in Doom's
+=use-package! e= =:config= block.  Package startup runs before =:config=, so
+the first implementation could load Grimoire without applying the documented
+stale-bytecode policy.
+
+*** Change
+
+Moved both =e-default-projects= and
+=e-project-local-auto-byte-recompile= into the =:init= block.  Grimoire is no
+longer duplicated in =e-project-local-allowed-roots= because default-project
+membership is itself the explicit trust declaration.
+
+*** Evidence
+
+The real-project batch startup loaded the Grimoire topic layer and exposed both
+=grimoire-daily= and =grimoire-topic-open=.  Retangling =config.org= regenerated
+the committed =config.el=, and the file reads completely in batch Emacs.
+
+* Plan coverage
+
+- Slice 1: =e-default-projects= and ordered normalization are implemented.
+- Slice 2: specific workspace extras precede de-duplicated global defaults.
+- Slice 3: default projects pass the project-local trust gate and prime in
+  startup order through the existing transactional loader.
+- Slice 4: Grimoire is configured before package load in Doom commit =de3ab85=;
+  the separate e/hyper allowlist and Grimoire-specific extra roots remain.
+
+* Verification
+
+#+begin_src sh
+eldev test -f test/e-test.el -f test/e-dev-test.el -f test/e-base-tools-test.el -f test/e-harness-test.el -f test/e-project-local-test.el
+#+end_src
+
+#+begin_example
+Ran 247 tests, 247 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+eldev compile -W -f lisp/core/e-harness.el lisp/layers/project-local/e-project-local.el
+#+end_src
+
+#+begin_example
+ELC lisp/layers/project-local/e-project-local.el
+ELC lisp/core/e-harness.el
+#+end_example
+
+#+begin_src sh
+eldev -S '(setq e-default-projects (list (expand-file-name "~/projects/org/grimoire/")))' eval '(list :roots (e-default-project-roots) :daily-command (commandp (quote grimoire-daily)) :topic-command (commandp (quote grimoire-topic-open)))'
+#+end_src
+
+#+begin_example
+(:roots ("/Users/dvorona/projects/org/grimoire/") :daily-command t :topic-command t)
+#+end_example
+
+Both repository diffs passed =git diff --check=.  Batch Emacs read the tangled
+Doom =config.el= successfully, and Org Babel tangled all 22 Emacs Lisp blocks
+from =config.org=.
+
+* Architecture review
+
+The harness owns only stable root policy and its pure projection.  The
+project-local layer owns trusted code loading and startup side effects.  The
+machine-specific Grimoire path remains in user configuration.  No session
+record, compatibility path, or fallback loader was added; roots are derived
+from current configuration on demand.
+
+The design self-check in =plan.org= remains accurate.  The only review finding
+was the configuration timing issue above, which is resolved.
+
+* UX and performance playthrough
+
+There is no new interactive surface.  Startup with one real default project
+completed in the isolated batch process and made Grimoire commands available.
+Workspace-root composition remains a linear pass over short configuration
+lists, with focused tests covering ordering and de-duplication.
+
+* Live reload
+
+The user's running Emacs was left unchanged.  =e-harness.el= is core runtime
+and the Doom setting must exist before package startup, so a full Emacs restart
+is required; =e-dev-reload= is not an applicable completion step.
+
+* Unresolved
+
+None.
