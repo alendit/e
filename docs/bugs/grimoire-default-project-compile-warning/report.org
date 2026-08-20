@@ -1,0 +1,10 @@
+#+title: Grimoire default-project compile warning
+
+After configuring Grimoire as an =e-default-projects= entry, startup byte
+compilation displays a warning for
+=.e/layers/topic/test/topic-session-test.el=: the function
+=grimoire-topic--passive-bootstrap-prompt= is not known to be defined.
+
+The user supplied a screenshot of the live compilation buffer showing the
+warning at =topic-session-test.el:95:29= after Grimoire's project-local files
+were compiled during startup.

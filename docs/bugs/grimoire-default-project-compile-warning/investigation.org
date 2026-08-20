@@ -1,0 +1,59 @@
+#+title: Grimoire default-project compile warning investigation
+
+* Evidence
+
+- The supplied live screenshot shows the startup compilation buffer warning at
+  =topic-session-test.el:95:29=.
+- =scripts/e-live-probe selected= could not connect because the running Emacs
+  has no server socket.  Per the live-probe policy, no second Emacs request was
+  attempted.
+- Source inspection found
+  =grimoire-topic--passive-bootstrap-prompt= defined in Grimoire's
+  =.e/layers/topic/shells/topic.el= and referenced twice by
+  =topic-session-test.el=.
+- The test loads =shells/topic.el= with =load-file=, but its declaration block
+  omits this function.  Runtime loading therefore works while byte compilation
+  cannot establish that the function exists.
+
+* Reproduction
+
+Warning-as-error compilation fails before the fix:
+
+#+begin_src sh
+E_LISP_DIR=/Users/dvorona/projects/elisp/e/lisp emacs -Q --batch --eval '(setq byte-compile-error-on-warn t)' -l .e/layers/topic/test/test-helper.el --eval '(grimoire-test-add-e-load-path)' -f batch-byte-compile .e/layers/topic/test/topic-session-test.el
+#+end_src
+
+#+begin_example
+topic-session-test.el:95:29: Error: the function
+‘grimoire-topic--passive-bootstrap-prompt’ is not known to be defined.
+#+end_example
+
+* Conclusion
+
+This is a test-layer compiler declaration gap, exposed because default-project
+startup now compiles Grimoire eagerly.  It is not a missing runtime function or
+a default-project loading defect.
+
+The narrow fix is a =declare-function= entry in =topic-session-test.el= beside
+the other functions loaded from =../shells/topic.el=.
+
+* Resolution
+
+Added the missing declaration beside the other functions loaded from
+=../shells/topic.el=:
+
+#+begin_src emacs-lisp
+(declare-function grimoire-topic--passive-bootstrap-prompt "../shells/topic.el")
+#+end_src
+
+Repository-side verification passed:
+
+- Warning-as-error byte compilation of =topic-session-test.el= completed
+  without output.
+- All 11 focused =grimoire-topic-session-test-= ERT tests passed.
+- A forced warning-as-error compile of all Grimoire project-local Emacs Lisp
+  through =e-project-local-byte-compile-project= completed without output.
+
+The running Emacs was left unchanged.  No reload is needed for this test-only
+compiler declaration; its effect will be visible the next time Grimoire's
+project-local files are compiled.
