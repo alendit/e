@@ -73,6 +73,38 @@ Regression coverage:
 - =git diff --check=: passed before documentation was added and is rerun at
   handoff.
 
+* Later simplification
+
+The initial repair stored both follow intent and the window start, then made
+every redraw decide whether the saved geometry invalidated that intent.  It
+also special-cased a selected transcript point inside the running-status block.
+Those mechanisms overlapped with the pre/post-command owner and made rendering
+another source of viewport policy.
+
+The follow model now has one source of truth:
+
+- each transcript window stores only follow versus scrollback;
+- generic pre/post-command observation compares the paired transcript's start
+  and point before and after any user command, including commands issued from
+  the composer;
+- movement toward older output unpins, movement toward newer output repins
+  once the viewport reaches the tail, and unrelated commands preserve intent;
+- redraw and terminal-event paths only consume the decision;
+- a new or reused window with no decision derives its initial state from its
+  physical viewport.
+
+The running-status offset snapshot remains necessary and separate: it preserves
+a reading position inside text that is replaced during a transient redraw.  The
+window-scoped short-output overlay also remains because it provides actual
+bottom alignment rather than follow-state inference.
+
+Validation after the simplification:
+
+- focused viewport ERT: 7 passed;
+- full =e-chat= ERT: 340 passed and 1 optional Markdown skip;
+- full repository ERT: 2,187 passed and 2 expected skips;
+- full graphical suite: 26 passed.
+
 * Architecture self-check
 
 1. This slice is independently useful: it restores deliberate scrollback and

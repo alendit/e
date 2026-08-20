@@ -801,9 +801,8 @@ workspace transition has finished changing the window tree."
 
 (e-chat--ensure-window-selection-hook)
 
-(defconst e-chat--output-follow-command-window-parameter
-  'e-chat-output-follow-command-state
-  "Window parameter holding the viewport captured before one user command.")
+(defvar-local e-chat--output-follow-command-state nil
+  "Paired transcript viewport captured before the current user command.")
 
 (defcustom e-chat-composer-window-min-height 5
   "Minimum height of an e chat composer window.
@@ -2492,62 +2491,50 @@ PRESERVE-FOCUS retains composer point when the current buffer is the composer."
          (e-chat--composer-edit-command-p this-command))
     (e-chat--show-composer))))
 
-(defun e-chat--refresh-selected-output-follow-state ()
-  "Refresh the selected transcript viewport's follow intent after navigation."
-  (when-let* ((surface (e-chat--selected-chat-surface))
-              (transcript (car surface))
-              (window (cdr surface)))
-    (let ((command-state
-           (window-parameter
-            window e-chat--output-follow-command-window-parameter)))
-      (unwind-protect
-          (with-current-buffer transcript
-            (when (e-chat--running-status-bounds)
-              (let* ((state (e-chat--window-output-follow-state window))
-                     (current-start (window-start window))
-                     (command-start
-                      (and (eq (plist-get command-state :buffer) transcript)
-                           (plist-get command-state :window-start))))
-                (cond
-                 ;; Moving toward older output is explicit scrollback even
-                 ;; while a small movement leaves the live tail visible.
-                 ((and (integer-or-marker-p command-start)
-                       (< current-start command-start))
-                  (e-chat--set-window-output-follow-state window nil))
-                 ;; Moving toward newer output repins only after the viewport
-                 ;; physically reaches the tail.  An unchanged viewport (for
-                 ;; example composer typing after a resize) keeps its intent.
-                 ((and (integer-or-marker-p command-start)
-                       (> current-start command-start))
-                  (e-chat--set-window-output-follow-state
-                   window
-                   (e-chat--window-reaches-output-p
-                    window (e-chat--output-follow-position))))
-                 ;; Preserve the old fallback for callers outside a command
-                 ;; loop, including host viewport restoration.
-                 ((and (null command-start)
-                       (or (null state)
-                           (not (equal (plist-get state :window-start)
-                                       current-start))))
-                  (e-chat--set-window-output-follow-state
-                   window
-                   (e-chat--window-reaches-output-p
-                    window (e-chat--output-follow-position))))))))
-        (set-window-parameter
-         window e-chat--output-follow-command-window-parameter nil)))))
+(defun e-chat--update-output-follow-after-command ()
+  "Update paired transcript follow intent after a viewport-moving command."
+  (let ((state e-chat--output-follow-command-state))
+    (setq e-chat--output-follow-command-state nil)
+    (when-let* ((state state)
+              (transcript (plist-get state :buffer))
+              ((buffer-live-p transcript))
+              (window (plist-get state :window))
+              ((window-live-p window))
+              ((eq (window-buffer window) transcript)))
+      (with-current-buffer transcript
+        (let ((old-start (plist-get state :window-start))
+              (old-point (plist-get state :window-point))
+              (start (window-start window))
+              (point (window-point window)))
+          (cond
+           ;; Any movement toward older output is deliberate scrollback, even
+           ;; when a tall viewport still happens to contain the live tail.
+           ((or (< start old-start)
+                (and (= start old-start) (< point old-point)))
+            (e-chat--set-window-output-follow window nil))
+           ;; Movement toward newer output repins only once the viewport reaches
+           ;; the tail.  Commands which do not move the viewport preserve intent.
+           ((or (> start old-start) (> point old-point))
+            (e-chat--set-window-output-follow
+             window
+             (e-chat--window-reaches-output-p
+              window (e-chat--output-follow-position))))))))))
 
 (defun e-chat--capture-selected-output-follow-command ()
   "Capture the selected transcript viewport before a user command."
+  (setq e-chat--output-follow-command-state nil)
   (when-let* ((surface (e-chat--selected-chat-surface))
               (transcript (car surface))
               (window (cdr surface)))
-    (set-window-parameter
-     window e-chat--output-follow-command-window-parameter
-     (list :buffer transcript :window-start (window-start window)))))
+    (setq e-chat--output-follow-command-state
+          (list :buffer transcript
+                :window window
+                :window-start (window-start window)
+                :window-point (window-point window)))))
 
 (defun e-chat--post-command ()
   "Maintain composer and transcript viewport invariants after commands."
-  (e-chat--refresh-selected-output-follow-state)
+  (e-chat--update-output-follow-after-command)
   (when e-chat--composer-scroll-needed
     (setq e-chat--composer-scroll-needed nil)
     (when (e-chat--point-in-composer-p)
@@ -5427,27 +5414,6 @@ When RECORD is nil, clear only buffer-local status markers."
              (<= position (cdr bounds)))
     (- position (car bounds))))
 
-(defun e-chat--composer-focus-position ()
-  "Return the desired composer focus position, or nil."
-  (and (markerp e-chat--composer-start-marker)
-       (marker-position e-chat--composer-start-marker)
-       (point-max)))
-
-(defun e-chat--composer-focused-p ()
-  "Return non-nil when point is in the composer input."
-  (when-let ((position (and (markerp e-chat--composer-start-marker)
-                            (marker-position e-chat--composer-start-marker))))
-    (>= (point) position)))
-
-(defun e-chat--composer-focus-visible-p (window)
-  "Return non-nil when composer focus is visible in WINDOW."
-  (and (window-live-p window)
-       (e-chat--composer-focused-p)
-       (let ((position (point)))
-         (or (pos-visible-in-window-p position window)
-             (and (<= (window-start window) position)
-                  (<= position (window-end window t)))))))
-
 (defun e-chat--transcript-windows ()
   "Return every live window currently displaying this transcript buffer."
   (get-buffer-window-list (current-buffer) nil t))
@@ -5500,23 +5466,13 @@ When RECORD is nil, clear only buffer-local status markers."
       (overlay-put overlay e-chat--output-bottom-spacer-property window)
       (overlay-put overlay 'before-string (make-string lines ?\n)))))
 
-(defun e-chat--window-output-follow-state (window)
-  "Return WINDOW's follow state for the current transcript, or nil.
-The state belongs to the window because one chat may be visible in several
-viewports with different reading positions.  It intentionally dies with the
-window configuration rather than being persisted as session state."
-  (let ((state (window-parameter window e-chat--output-follow-window-parameter)))
-    (and (eq (plist-get state :buffer) (current-buffer)) state)))
-
-(defun e-chat--set-window-output-follow-state (window follow)
+(defun e-chat--set-window-output-follow (window follow)
   "Record whether WINDOW should FOLLOW the current transcript's live output."
   (unless follow
     (e-chat--clear-output-bottom-spacer window))
   (set-window-parameter
    window e-chat--output-follow-window-parameter
-   (list :buffer (current-buffer)
-         :follow follow
-         :window-start (window-start window))))
+   (cons (current-buffer) follow)))
 
 (defun e-chat--window-reaches-output-p (window tail)
   "Return non-nil when WINDOW's current viewport visibly reaches TAIL."
@@ -5526,35 +5482,23 @@ window configuration rather than being persisted as session state."
        (>= (window-end window t) tail)))
 
 (defun e-chat--output-follow-position ()
-  "Return the position that represents the visible output tail.
-In a combined chat buffer this includes the composer at the end of the
-transcript.  A composed transcript has its composer elsewhere, so its live
-tail is the active status instead."
-  (or (and (not (e-chat--surface-transcript-p))
-           (e-chat--composer-focus-position))
-      (cdr (e-chat--running-status-bounds))
+  "Return the position that represents the visible transcript tail."
+  (or (cdr (e-chat--running-status-bounds))
       (point-max)))
 
-(defun e-chat--window-follows-output-p (window tail bounds)
-  "Return non-nil when WINDOW visibly reaches transcript TAIL.
-This deliberately describes the viewport, rather than selected window or
-point: a composer may be focused while its paired transcript is following
-live output, and a user reading older output must retain that scrollback."
+(defun e-chat--window-follows-output-p (window)
+  "Return whether WINDOW follows the current transcript's live output.
+Follow intent is explicit after the user moves a viewport.  A new or reused
+window derives its initial intent from whether it currently reaches the tail."
   (and (window-live-p window)
        (eq (window-buffer window) (current-buffer))
-       (if-let ((state (e-chat--window-output-follow-state window)))
-           (and (plist-get state :follow)
-                (or (equal (plist-get state :window-start)
-                           (window-start window))
-                    (e-chat--window-reaches-output-p window tail)))
-         (e-chat--window-reaches-output-p window tail))
-       ;; A selected transcript whose point is inside the changing status is
-       ;; an explicit reading position, even when a tall window happens to
-       ;; include the status tail.  A separately focused composer does not
-       ;; carry that intent, so its transcript follows by viewport alone.
-       (or (not (eq window (selected-window)))
-           (not (e-chat--position-running-offset (window-point window)
-                                                  bounds)))))
+       (let ((state
+              (window-parameter window
+                                e-chat--output-follow-window-parameter)))
+         (if (and (consp state) (eq (car state) (current-buffer)))
+             (cdr state)
+           (e-chat--window-reaches-output-p
+            window (e-chat--output-follow-position))))))
 
 (defun e-chat--follow-output-window (window position)
   "Place POSITION near the bottom of transcript WINDOW without selecting it."
@@ -5588,7 +5532,7 @@ live output, and a user reading older output must retain that scrollback."
         (progn
           (set-window-point window position)
           (set-window-start window start t)))
-      (e-chat--set-window-output-follow-state window t))))
+      (e-chat--set-window-output-follow window t))))
 
 (defun e-chat--capture-output-tail-windows ()
   "Return visible transcript windows physically positioned at the output tail."
@@ -5603,12 +5547,8 @@ live output, and a user reading older output must retain that scrollback."
   "Return transcript windows following the current live output boundary.
 Unlike full projection replacement, an incremental terminal event must retain
 the explicit window-local follow decision across transient status removal."
-  (let ((tail (e-chat--output-follow-position))
-        (bounds (e-chat--running-status-bounds)))
-    (cl-remove-if-not
-     (lambda (window)
-       (e-chat--window-follows-output-p window tail bounds))
-     (e-chat--transcript-windows))))
+  (cl-remove-if-not #'e-chat--window-follows-output-p
+                    (e-chat--transcript-windows)))
 
 (defun e-chat--restore-output-tail-windows (windows)
   "Move still-live transcript WINDOWS to the current output tail."
@@ -5621,15 +5561,13 @@ the explicit window-local follow decision across transient status removal."
 Windows already showing the old output tail follow the new tail.  Every other
 window retains its scroll position, including when the composer is focused."
   (when-let ((bounds (e-chat--running-status-bounds)))
-    (let ((end (e-chat--output-follow-position))
-          (point-offset (e-chat--position-running-offset (point) bounds)))
+    (let ((point-offset (e-chat--position-running-offset (point) bounds)))
       (list
        :point-offset point-offset
        :windows
        (mapcar
         (lambda (window)
-          (let ((follow-output (e-chat--window-follows-output-p window end bounds)))
-            (e-chat--set-window-output-follow-state window follow-output)
+          (let ((follow-output (e-chat--window-follows-output-p window)))
             (list :window window
                 :follow-output follow-output
                 :window-point-offset

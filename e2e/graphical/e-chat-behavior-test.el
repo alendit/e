@@ -328,7 +328,7 @@ than the invisible insertion position."
                           :start (window-start window)
                           :end (window-end window t)
                           :point (window-point window)
-                          :follow (e-chat--window-output-follow-state window)
+                          :follow (e-chat--window-follows-output-p window)
                           :output (e-chat--output-follow-position)
                           :bounds (e-chat--running-status-bounds)))
                    (and (eq (window-buffer window) transcript)
@@ -985,9 +985,7 @@ than the invisible insertion position."
               (should (< (window-start window) following-start))
               (with-current-buffer transcript
                 (should (>= (window-end window t) old-tail))
-                (should-not
-                 (plist-get (e-chat--window-output-follow-state window)
-                            :follow))))
+                (should-not (e-chat--window-follows-output-p window))))
             (let ((scrolled-start (window-start window)))
               (e-chat-behavior-test--emit
                fixture '(:type reasoning-delta :content " stream update two")
@@ -997,9 +995,7 @@ than the invisible insertion position."
                           (plist-get fixture :composer-window))))
             (e-graphical-test-send-keys "C-u 1 C-M-v")
             (with-current-buffer transcript
-              (should
-               (plist-get (e-chat--window-output-follow-state window)
-                          :follow)))
+              (should (e-chat--window-follows-output-p window)))
             (e-chat-behavior-test--emit
              fixture '(:type reasoning-delta :content " stream update three")
              "stream update three")

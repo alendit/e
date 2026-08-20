@@ -8,6 +8,12 @@ viewport following the live tail advances when progress redraws.  Navigating a
 transcript records that viewport as reading scrollback, so later progress does
 not change its position.  The separate composer may remain focused throughout.
 
+The window owns one explicit presentation decision: follow or scrollback.
+Pre/post-command hooks observe generic Emacs viewport movement from either
+surface constituent and update that decision.  Rendering consumes it without
+re-inferring intent from saved window geometry.  New windows derive their
+initial decision from whether they already show the output tail.
+
 In a composed chat, =C-x o= treats the transcript and composer as one surface
 and skips both when moving to another window.  Use the chat navigation command
 to intentionally enter the transcript.

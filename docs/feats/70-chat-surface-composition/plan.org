@@ -72,10 +72,11 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
   release are upgraded once when e-chat next displays their composer.  This
   compatibility path is local to the shell and can be removed after that
   representation no longer needs migration support.
-- Each transcript window owns ephemeral pinned-output state.  New turn output
-  stays near the bottom while pinned, scrolling the transcript from either
-  constituent unpins it, and returning the viewport to the output tail repins
-  it.  Later activity redraws preserve an unpinned scrollback position.
+- Each transcript window owns one ephemeral follow decision.  Generic
+  pre/post-command observation updates it when scrolling from either
+  constituent; renderers consume it without reinterpreting saved geometry.
+  New turn output stays near the bottom while following, returning to the tail
+  repins it, and later activity redraws preserve explicit scrollback.
 - A short pinned transcript is bottom-aligned with a window-scoped presentation
   overlay above its output.  Unpinning removes the overlay; no spacer text is
   written to the transcript or durable session state.
