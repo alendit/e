@@ -15,9 +15,7 @@
 
 (ert-deftest e-session-persistence-test-writer-script-ignores-current-buffer ()
   "Writer discovery remains anchored to its library from unrelated buffers."
-  (let* ((library (file-truename (locate-library "e-session-persistence")))
-         (expected (expand-file-name "e-session-writer.mjs"
-                                     (file-name-directory library)))
+  (let* ((expected (e-session-persistence--writer-script))
          (buffer-file-name "/tmp/unrelated-project/daily.org")
          (default-directory "/tmp/unrelated-project/"))
     (should (equal (e-session-persistence--writer-script) expected))))

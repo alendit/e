@@ -491,6 +491,17 @@ or sequence high-watermark remains.
   warnings treated as errors.
 - =git diff --check=: passed.
 
+The complete package-mode suite also exercises =e-dev= before persistence.
+Because that legitimately reloads the checkout source while =locate-library=
+still resolves the installed package, the current-buffer regression test now
+compares writer discovery before and after changing buffer context instead of
+assuming those two library origins must match.  The separate bundled-writer
+test continues to require a readable helper.
+
+- =eldev -p -dtT test=: 2,200 tests, 2,198 expected passes, 2 expected skips,
+  0 unexpected.
+- =bash e2e/run-graphical-tests.sh=: 26/26 passed.
+
 * Completion
 
 All implementation findings in this review are resolved.  The parent retains
