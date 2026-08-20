@@ -1057,72 +1057,18 @@ Set to 0 to disable jitter (backoff becomes fully deterministic)."
   :group 'e)
 
 (defcustom e-harness-retry-reset-max-wait-seconds 900.0
-  "Maximum seconds to wait for a rate-limit reset named in a retryable error.
-When a retryable error states a concrete reopen time (an absolute \"resets at\"
-timestamp or a relative \"try again in Ns\"), the harness waits until that time
-instead of using blind exponential backoff, and a wait shorter than this cap
-extends the retry budget so a turn is not abandoned minutes before capacity
-returns.  This bounds how long a single named reset may stall a turn; a reset
-farther out than this falls back to ordinary backoff.  Set to 0 to ignore reset
-hints entirely."
+  "Maximum seconds to honor an adapter-normalized retry reset delay.
+When a backend adapter supplies `:retry-after-seconds', the harness waits that
+long instead of using blind exponential backoff, and a wait shorter than this
+cap extends the retry budget so a turn is not abandoned minutes before
+capacity returns.  A delay farther out falls back to ordinary backoff.  Set to
+0 to ignore reset hints entirely."
   :type 'number
   :group 'e)
 
-(defconst e-harness--retryable-error-patterns
-  '("rate limit"
-    "rate_limit_error"
-    "too many requests"
-    "overloaded"
-    "overloaded_error"
-    "api_error"
-    "internal_server_error"
-    "server_error"
-    "service unavailable"
-    "bad gateway"
-    "gateway time"
-    "request timed out"
-    "idle timed out"
-    "connection termination"
-    "connection reset"
-    "reset by peer"
-    "connect error"
-    "before headers"
-    "disconnect"
-    "broken pipe"
-    "premature")
-  "Lower-cased substrings marking a transient, retryable backend error.
-These cover rate limiting, provider server/overload errors, and transport-level
-failures such as the Envoy \"upstream connect error or disconnect/reset before
-headers\" body returned when a connection is reset before a stream starts.")
-
-(defun e-harness--retryable-status-p (status)
-  "Return non-nil when HTTP STATUS marks a transient, retryable failure.
-408 (request timeout), 409 (conflict), 429 (rate limit), and every 5xx server
-error (500, 502, 503, 504, the 529 Anthropic overload code) are retryable, in
-line with provider retry guidance.  Other 4xx client errors are genuine faults
-and are not retried."
-  (and (numberp status)
-       (or (= status 408)
-           (= status 409)
-           (= status 429)
-           (>= status 500))))
-
-(defun e-harness--retryable-error-p (message details)
-  "Return non-nil when a backend error (MESSAGE, DETAILS) should be retried.
-Retryable errors are transient: rate limiting (HTTP 429), provider overload
-or server errors, and transport resets that drop the connection before or
-during a stream.  Malformed requests and other genuine client faults are not
-retried."
-  (let ((text (downcase (or message ""))))
-    (or (string-match-p "\\(^\\|[^0-9]\\)429\\([^0-9]\\|$\\)" (or message ""))
-        (string-match-p "\\(^\\|[^0-9]\\)529\\([^0-9]\\|$\\)" (or message ""))
-        (seq-some (lambda (pat) (string-match-p (regexp-quote pat) text))
-                  e-harness--retryable-error-patterns)
-        (let ((status (and (listp details)
-                           (or (plist-get details :status)
-                               (plist-get details :status-code)
-                               (plist-get details :code)))))
-          (e-harness--retryable-status-p status)))))
+(defun e-harness--retryable-error-p (details)
+  "Return non-nil when adapter-normalized DETAILS permit a retry."
+  (and (listp details) (eq (plist-get details :retryable) t)))
 
 (defun e-harness--retry-backoff-seconds (attempt)
   "Return the backoff delay in seconds before retry ATTEMPT (1-based).
@@ -1138,46 +1084,14 @@ The delay grows geometrically and is capped at
                    0)))
     (+ base jitter)))
 
-(defun e-harness--retry-reset-seconds (message details &optional now)
-  "Return seconds to wait for a rate-limit reset named in a retryable error.
-MESSAGE and DETAILS are the backend error text and structured payload.  Return
-a positive delay when the error names a concrete reopen — a structured
-`:retry-after' delay, a relative \"try again in Ns\", or an absolute
-\"resets at <ISO-8601 UTC>\" timestamp — else nil.  NOW defaults to the current
-time and is injectable for tests.  A reset in the past yields a small positive
-delay so the immediate retry still clears the window boundary; a delay past
-`e-harness-retry-reset-max-wait-seconds' yields nil so the caller falls back to
-ordinary backoff."
+(defun e-harness--retry-reset-seconds (details)
+  "Return the bounded adapter-normalized reset delay from DETAILS.
+The harness owns only the maximum wait policy.  Provider headers, payloads,
+and message text are interpreted by the backend adapter and supplied as
+`:retry-after-seconds'."
   (when (> e-harness-retry-reset-max-wait-seconds 0)
-    (let* ((now (or now (float-time)))
-           (text (or message ""))
-           (seconds
-            (cond
-             ;; Structured provider hint wins: an explicit Retry-After delay.
-             ((and (listp details)
-                   (let ((after (or (plist-get details :retry-after)
-                                    (plist-get details :retry-after-seconds))))
-                     (and (numberp after) after))))
-             ;; "try again in 30s" / "retry after 12 seconds".
-             ((string-match
-               "\\(?:try again in\\|retry after\\|retry in\\)[^0-9]*\\([0-9]+\\(?:\\.[0-9]+\\)?\\)[[:space:]]*\\(m\\|min\\|s\\|sec\\|seconds?\\|minutes?\\)?"
-               (downcase text))
-              (let ((n (string-to-number (match-string 1 (downcase text))))
-                    (unit (match-string 2 (downcase text))))
-                (if (and unit (string-prefix-p "m" unit)) (* n 60.0) n)))
-             ;; "Limit resets at: 2026-07-03 08:23:02 UTC" (absolute UTC time).
-             ((string-match
-               "resets? at[:[:space:]]+\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[T[:space:]][0-9]\\{2\\}:[0-9]\\{2\\}\\(?::[0-9]\\{2\\}\\)?\\)"
-               text)
-              (let* ((stamp (replace-regexp-in-string
-                             "T" " " (match-string 1 text)))
-                     ;; The provider states these in UTC; parse as UTC.
-                     (parsed (ignore-errors
-                               (float-time
-                                (encode-time
-                                 (parse-time-string
-                                  (concat stamp " +0000")))))))
-                (and parsed (- parsed now)))))))
+    (let ((seconds (and (listp details)
+                        (plist-get details :retry-after-seconds))))
       (when (numberp seconds)
         (let ((wait (max 1.0 seconds)))
           (when (<= wait e-harness-retry-reset-max-wait-seconds)
@@ -3170,14 +3084,14 @@ cancellation.  SESSION-ID identifies the session."
              ;; reopen extend the budget so the turn is not abandoned minutes
              ;; before capacity returns.
              (when (and (> e-harness-retry-max-elapsed-seconds 0)
-                        (e-harness--retryable-error-p message details))
+                        (e-harness--retryable-error-p details))
                (let* ((now (float-time))
                       (deadline (or (plist-get entry :retry-deadline)
                                     (+ now
                                        e-harness-retry-max-elapsed-seconds)))
                       (attempt (1+ (or (plist-get entry :retry-attempt) 0)))
                       (reset-wait
-                       (e-harness--retry-reset-seconds message details now))
+                       (e-harness--retry-reset-seconds details))
                       (wait (or reset-wait
                                 (e-harness--retry-backoff-seconds attempt)))
                       ;; A known reset can push the deadline out (bounded by
@@ -3202,8 +3116,13 @@ cancellation.  SESSION-ID identifies the session."
             (finish-error
              (err)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-               (let ((message (e-harness--backend-error-message err))
-                     (details (e-harness--backend-error-details err)))
+               (let* ((message (e-harness--backend-error-message err))
+                      (details
+                       (e-backend-normalize-error-details
+                        (e-harness-backend harness)
+                        message
+                        (e-harness--backend-error-details err)
+                        err)))
                  (unless (maybe-retry-error message details)
                    (plist-put entry :status 'error)
                    (plist-put entry :condition err)

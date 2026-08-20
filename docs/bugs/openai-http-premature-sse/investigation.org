@@ -159,3 +159,12 @@ suite.
     malformed and unexpected parser errors still surface.
 14. Parser, complete-response, harness-retry, full-suite, and credentialed live
     tests prove the behavior at successively wider boundaries.
+
+* 2026-08-20 ownership cleanup
+
+Retry classification now lives in each backend adapter.  OpenAI and Anthropic
+normalize provider status, error codes, transport text, and retry timing into
+=:retryable=, =:retry-reason=, and =:retry-after-seconds=.  The backend contract
+exposes only that narrow normalization seam; the harness consumes the result
+and owns retry budget, backoff, and maximum-wait policy without knowing provider
+error vocabulary.

@@ -23,10 +23,28 @@
                (:conc-name e-backend--))
   name
   stream
-  start)
+  start
+  normalize-error-details)
 
 (defvar e-backend--request-start-callback nil
   "Dynamically scoped callback for backend request handles.")
+
+(defun e-backend-normalize-error-details (backend message details condition)
+  "Return BACKEND-normalized error DETAILS.
+MESSAGE is the compact backend error text and CONDITION is the original Emacs
+condition.  Adapters use this boundary to add provider-owned retry metadata
+such as `:retryable', `:retry-reason', and `:retry-after-seconds'.  Backends
+without a normalizer preserve DETAILS unchanged."
+  (let ((normalizer (and (e-backend-p backend)
+                         (e-backend--normalize-error-details backend))))
+    (cond
+     ;; Stream items cross the adapter boundary with normalized details
+     ;; already.  Trust that explicit decision instead of reclassifying it
+     ;; after the loop has wrapped the original provider condition.
+     ((and (listp details) (plist-member details :retryable)) details)
+     ((functionp normalizer)
+      (funcall normalizer message details condition))
+     (t details))))
 
 (defun e-backend-note-request-started (request)
   "Publish REQUEST as the active provider request for the current stream."

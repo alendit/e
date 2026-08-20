@@ -36,6 +36,114 @@
 (define-error 'e-anthropic-request-timeout "Anthropic request timed out")
 (define-error 'e-anthropic-backend-error "Anthropic backend request failed")
 
+(defconst e-anthropic--retryable-error-patterns
+  '("rate limit" "rate_limit_error" "too many requests"
+    "overloaded" "overloaded_error" "api_error"
+    "internal_server_error" "server_error" "service unavailable"
+    "bad gateway" "gateway time" "request timed out" "idle timed out"
+    "connection termination" "connection reset" "reset by peer"
+    "connect error" "before headers" "disconnect" "broken pipe"
+    "premature")
+  "Anthropic and gateway error fragments that identify transient failures.")
+
+(defun e-anthropic--retryable-status-p (status)
+  "Return non-nil when Anthropic HTTP STATUS permits a retry."
+  (and (numberp status)
+       (or (memq status '(408 409 429)) (>= status 500))))
+
+(defun e-anthropic--retry-after-from-text (message &optional now)
+  "Return provider retry delay parsed from MESSAGE, or nil.
+NOW defaults to the current time and is injectable for tests."
+  (let ((text (downcase (or message "")))
+        (now (or now (float-time))))
+    (cond
+     ((string-match
+       "\\(?:try again in\\|retry after\\|retry in\\)[^0-9]*\\([0-9]+\\(?:\\.[0-9]+\\)?\\)[[:space:]]*\\(m\\|min\\|s\\|sec\\|seconds?\\|minutes?\\)?"
+       text)
+      (let ((number (string-to-number (match-string 1 text)))
+            (unit (match-string 2 text)))
+        (if (and unit (string-prefix-p "m" unit))
+            (* number 60.0)
+          number)))
+     ((string-match
+       "resets? at[:[:space:]]+\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[T[:space:]][0-9]\\{2\\}:[0-9]\\{2\\}\\(?::[0-9]\\{2\\}\\)?\\)"
+       text)
+      (let* ((stamp (replace-regexp-in-string
+                     "T" " " (match-string 1 text)))
+             (parsed (ignore-errors
+                       (float-time
+                        (encode-time
+                         (parse-time-string (concat stamp " +0000")))))))
+        (and parsed (- parsed now)))))))
+
+(defun e-anthropic--error-type (details)
+  "Return an Anthropic error type from DETAILS, when present."
+  (let ((error (and (listp details) (plist-get details :error))))
+    (or (and (listp details) (plist-get details :error-type))
+        (and (listp error) (or (plist-get error :type)
+                               (plist-get error :code))))))
+
+(defun e-anthropic--normalize-error-details (message details condition)
+  "Return Anthropic-owned normalized retry metadata for an error.
+MESSAGE, DETAILS, and CONDITION are the backend error surfaces received by the
+provider-neutral backend contract."
+  (let* ((normalized (if (listp details) (copy-tree details) nil))
+         (text (downcase (or message "")))
+         (status (or (plist-get normalized :status)
+                     (plist-get normalized :status-code)))
+         (error-type (downcase
+                      (format "%s" (or (e-anthropic--error-type normalized)
+                                          ""))))
+         (timeout-p (eq (car-safe condition) 'e-anthropic-request-timeout))
+         (pattern (seq-find (lambda (candidate)
+                              (string-match-p (regexp-quote candidate) text))
+                            e-anthropic--retryable-error-patterns))
+         (reason
+          (cond
+           ((or (equal status 429)
+                (string-match-p "rate[_ -]?limit" error-type)
+                (member pattern '("rate limit" "rate_limit_error"
+                                  "too many requests")))
+            'rate-limit)
+           ((or timeout-p (equal status 408)
+                (member pattern '("request timed out" "idle timed out")))
+            'timeout)
+           ((equal pattern "premature") 'premature-stream)
+           ((equal status 409) 'conflict)
+           ((or (e-anthropic--retryable-status-p status)
+                (string-match-p
+                 "\\(?:overloaded\\|api_error\\|server_error\\)" error-type)
+                (member pattern '("overloaded" "overloaded_error" "api_error"
+                                  "internal_server_error" "server_error"
+                                  "service unavailable" "bad gateway"
+                                  "gateway time")))
+            'provider-unavailable)
+           (pattern 'transport)))
+         (retry-after
+          (or (plist-get normalized :retry-after-seconds)
+              (plist-get normalized :retry-after)
+              (e-anthropic--retry-after-from-text message))))
+    (setq normalized (plist-put normalized :retryable (and reason t)))
+    (when reason
+      (setq normalized (plist-put normalized :retry-reason reason)))
+    (when (numberp retry-after)
+      (setq normalized
+            (plist-put normalized :retry-after-seconds retry-after)))
+    normalized))
+
+(defun e-anthropic--normalize-backend-error-item (item)
+  "Return backend error ITEM with Anthropic-normalized payload details."
+  (if (not (eq (plist-get item :type) 'backend-error))
+      item
+    (let ((normalized (copy-tree item)))
+      (plist-put
+       normalized :payload
+       (e-anthropic--normalize-error-details
+        (plist-get normalized :content)
+        (plist-get normalized :payload)
+        nil))
+      normalized)))
+
 (defgroup e-anthropic nil
   "Anthropic Messages backend adapter for e."
   :group 'e
@@ -1071,6 +1179,7 @@ before the terminal success item so the harness can persist the cache state."
   (let ((candidate (e-anthropic--anchor-candidate-item context))
         emitted-candidate)
     (dolist (item (e-anthropic-parse-stream response))
+      (setq item (e-anthropic--normalize-backend-error-item item))
       (when (and candidate
                  (not emitted-candidate)
                  (eq (plist-get item :type) 'done))
@@ -1133,6 +1242,7 @@ MODEL is the backend-local default when turn options omit `:model'."
   (let ((provider (or provider e-anthropic-default-provider)))
     (e-backend-create
      :name (or name (e-anthropic-provider-name provider))
+     :normalize-error-details #'e-anthropic--normalize-error-details
      :stream
      (cl-function
       (lambda (&key messages options on-item)

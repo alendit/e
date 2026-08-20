@@ -33,6 +33,118 @@
 (define-error 'e-openai-provider-invalid "OpenAI provider profile is invalid")
 (define-error 'e-openai-request-timeout "OpenAI/Codex request timed out")
 
+(defconst e-openai--retryable-error-patterns
+  '("rate limit" "rate_limit_error" "too many requests"
+    "overloaded" "overloaded_error" "api_error"
+    "internal_server_error" "server_error" "service unavailable"
+    "bad gateway" "gateway time" "request timed out" "idle timed out"
+    "connection termination" "connection reset" "reset by peer"
+    "connect error" "before headers" "disconnect" "broken pipe"
+    "premature")
+  "OpenAI and gateway error fragments that identify transient failures.")
+
+(defun e-openai--retryable-status-p (status)
+  "Return non-nil when OpenAI HTTP STATUS permits a retry."
+  (and (numberp status)
+       (or (memq status '(408 409 429)) (>= status 500))))
+
+(defun e-openai--retry-after-from-text (message &optional now)
+  "Return provider retry delay parsed from MESSAGE, or nil.
+NOW defaults to the current time and is injectable for tests."
+  (let ((text (downcase (or message "")))
+        (now (or now (float-time))))
+    (cond
+     ((string-match
+       "\\(?:try again in\\|retry after\\|retry in\\)[^0-9]*\\([0-9]+\\(?:\\.[0-9]+\\)?\\)[[:space:]]*\\(m\\|min\\|s\\|sec\\|seconds?\\|minutes?\\)?"
+       text)
+      (let ((number (string-to-number (match-string 1 text)))
+            (unit (match-string 2 text)))
+        (if (and unit (string-prefix-p "m" unit))
+            (* number 60.0)
+          number)))
+     ((string-match
+       "resets? at[:[:space:]]+\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[T[:space:]][0-9]\\{2\\}:[0-9]\\{2\\}\\(?::[0-9]\\{2\\}\\)?\\)"
+       text)
+      (let* ((stamp (replace-regexp-in-string
+                     "T" " " (match-string 1 text)))
+             (parsed (ignore-errors
+                       (float-time
+                        (encode-time
+                         (parse-time-string (concat stamp " +0000")))))))
+        (and parsed (- parsed now)))))))
+
+(defun e-openai--error-code (details)
+  "Return an OpenAI error code or type from DETAILS, when present."
+  (let* ((error (and (listp details) (plist-get details :error)))
+         (response (and (listp details) (plist-get details :response)))
+         (response-error (and (listp response) (plist-get response :error))))
+    (or (and (listp details) (plist-get details :error-type))
+        (and (listp error) (or (plist-get error :code)
+                               (plist-get error :type)))
+        (and (listp response-error)
+             (or (plist-get response-error :code)
+                 (plist-get response-error :type))))))
+
+(defun e-openai--normalize-error-details (message details condition)
+  "Return OpenAI-owned normalized retry metadata for an error.
+MESSAGE, DETAILS, and CONDITION are the backend error surfaces received by the
+provider-neutral backend contract."
+  (let* ((normalized (if (listp details) (copy-tree details) nil))
+         (text (downcase (or message "")))
+         (status (or (plist-get normalized :status)
+                     (plist-get normalized :status-code)))
+         (code (e-openai--error-code normalized))
+         (code-text (downcase (format "%s" (or code ""))))
+         (timeout-p (eq (car-safe condition) 'e-openai-request-timeout))
+         (pattern (seq-find (lambda (candidate)
+                              (string-match-p (regexp-quote candidate) text))
+                            e-openai--retryable-error-patterns))
+         (reason
+          (cond
+           ((or (equal status 429)
+                (string-match-p "rate[_ -]?limit" code-text)
+                (member pattern '("rate limit" "rate_limit_error"
+                                  "too many requests")))
+            'rate-limit)
+           ((or timeout-p (equal status 408)
+                (member pattern '("request timed out" "idle timed out")))
+            'timeout)
+           ((equal pattern "premature") 'premature-stream)
+           ((equal status 409) 'conflict)
+           ((or (e-openai--retryable-status-p status)
+                (string-match-p
+                 "\\(?:overloaded\\|api_error\\|server_error\\)" code-text)
+                (member pattern '("overloaded" "overloaded_error" "api_error"
+                                  "internal_server_error" "server_error"
+                                  "service unavailable" "bad gateway"
+                                  "gateway time")))
+            'provider-unavailable)
+           (pattern 'transport)))
+         (retry-after
+          (or (plist-get normalized :retry-after-seconds)
+              (plist-get normalized :retry-after)
+              (e-openai--retry-after-from-text message))))
+    (setq normalized (plist-put normalized :retryable (and reason t)))
+    (when reason
+      (setq normalized (plist-put normalized :retry-reason reason)))
+    (when (numberp retry-after)
+      (setq normalized
+            (plist-put normalized :retry-after-seconds retry-after)))
+    normalized))
+
+(defun e-openai--normalize-backend-error-item (item)
+  "Return backend error ITEM with OpenAI-normalized payload details."
+  (if (not (eq (plist-get item :type) 'backend-error))
+      item
+    (let ((normalized (copy-tree item)))
+      (plist-put
+       normalized :payload
+       (e-openai--normalize-error-details
+        (plist-get normalized :content)
+        (plist-get normalized :payload)
+        nil))
+      normalized)))
+
 (defun e-openai--profile-enabled-p ()
   "Return non-nil when developer profiling is available and enabled."
   (and (fboundp 'e-dev-profile-enabled-p)
@@ -1796,7 +1908,8 @@ list.  Return a cancellable `e-backend-request' handle."
              (clear-active-request)
              (e-openai-codex--websocket-session-close session)
              (when on-item
-               (funcall on-item item))))
+               (funcall on-item
+                        (e-openai--normalize-backend-error-item item)))))
          (emit-item (item)
            (pcase (plist-get item :type)
              ('assistant-message
@@ -2662,7 +2775,7 @@ OpenAI request and backend-neutral context."
 (defun e-openai--emit-response-items (response context on-item)
   "Parse complete RESPONSE for CONTEXT and emit items through ON-ITEM."
   (dolist (item (e-openai--complete-response-items response context))
-    (funcall on-item item)))
+    (funcall on-item (e-openai--normalize-backend-error-item item))))
 
 (cl-defun e-openai-backend-create
     (&key provider auth-file base-url request-function name model)
@@ -2700,6 +2813,7 @@ default when turn options do not include `:model'.  The provider profile's
             (plist-get context :metadata))))
       (e-backend-create
        :name (or name (e-openai-provider-name provider))
+       :normalize-error-details #'e-openai--normalize-error-details
        :stream
        (cl-function
         (lambda (&key messages options on-item)

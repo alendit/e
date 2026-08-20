@@ -350,14 +350,54 @@ retry classifier sees the kind even when the message does not name it."
                    "invalid_request_error"))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-overloaded-error ()
-  "An `overloaded_error' body surfaces its type so retries can fire."
-  (let* ((items (e-anthropic-parse-stream
-                 "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"))
-         (item (car items)))
-    (should (eq (plist-get item :type) 'backend-error))
-    (should (string-match-p "overloaded_error" (plist-get item :content)))
-    (should (e-harness--retryable-error-p (plist-get item :content)
-                                          (plist-get item :payload)))))
+  "An `overloaded_error' leaves the adapter with normalized retry details."
+  (let (items)
+    (e-anthropic--emit-response-items
+     "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"
+     (lambda (item) (push item items)))
+    (setq items (nreverse items))
+    (let ((item (car items)))
+      (should (eq (plist-get item :type) 'backend-error))
+      (should (string-match-p "overloaded_error" (plist-get item :content)))
+      (let ((details (plist-get item :payload)))
+        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retry-reason)
+                    'provider-unavailable))))))
+
+(ert-deftest e-anthropic-test-normalizes-provider-retry-hints ()
+  "The Anthropic adapter owns transient classification and reset parsing."
+  (let* ((now (float-time
+               (encode-time (parse-time-string
+                             "2026-07-03 08:20:00 +0000"))))
+         (absolute
+          (e-anthropic--retry-after-from-text
+           "rate limit resets at: 2026-07-03 08:23:02 UTC"
+           now)))
+    (should (= absolute 182.0))
+    (should (= (e-anthropic--retry-after-from-text
+                "please retry after 2 minutes" now)
+               120.0)))
+  (dolist (case
+           '(("rate_limit_error: slow down" nil rate-limit)
+             ("overloaded_error: Overloaded" nil provider-unavailable)
+             ("connection reset by peer" nil transport)
+             ("request failed" (:status 529) provider-unavailable)))
+    (pcase-let ((`(,message ,payload ,reason) case))
+      (let ((details (e-anthropic--normalize-error-details
+                      message payload nil)))
+        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retry-reason) reason)))))
+  (let ((details
+         (e-anthropic--normalize-error-details
+          "Anthropic request timed out"
+          nil
+          '(e-anthropic-request-timeout "timed out"))))
+    (should (e-harness--retryable-error-p details))
+    (should (eq (plist-get details :retry-reason) 'timeout)))
+  (should-not
+   (e-harness--retryable-error-p
+    (e-anthropic--normalize-error-details
+     "invalid request" '(:status 400) nil))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-html-error ()
   "A non-stream HTML error body becomes a single backend error item."

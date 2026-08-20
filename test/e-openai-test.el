@@ -1817,7 +1817,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             "{\"error\":{\"message\":\"Generation failed\",\"code\":\"server_error\"}}")))
          (content (plist-get item :content)))
     (should (equal content "server_error: Generation failed"))
-    (should (e-harness--retryable-error-p content (plist-get item :payload)))))
+    (let ((details (e-openai--normalize-error-details
+                    content (plist-get item :payload) nil)))
+      (should (e-harness--retryable-error-p details))
+      (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
 
 (ert-deftest e-openai-test-parse-html-error-response ()
   "HTML provider error responses become explicit backend error items."
@@ -1864,7 +1867,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (content (plist-get item :content)))
     (should (equal content
                    "server_error: The model failed to generate a response."))
-    (should (e-harness--retryable-error-p content (plist-get item :payload)))))
+    (let ((details (e-openai--normalize-error-details
+                    content (plist-get item :payload) nil)))
+      (should (e-harness--retryable-error-p details))
+      (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
 
 (ert-deftest e-openai-test-response-error-message-bounds-large-message ()
   "Responses failure message text is capped before becoming diagnostics."
@@ -2194,8 +2200,11 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
              (payload (plist-get item :payload)))
         (should (equal (plist-get item :content) "Generation failed"))
         (should (= (plist-get payload :status) 503))
-        (should (e-harness--retryable-error-p
-                 (plist-get item :content) payload))))))
+        (let ((details (e-openai--normalize-error-details
+                        (plist-get item :content) payload nil)))
+          (should (e-harness--retryable-error-p details))
+          (should (eq (plist-get details :retry-reason)
+                      'provider-unavailable)))))))
 
 (ert-deftest e-openai-test-default-http-request-preserves-empty-rate-limit ()
   "An empty HTTP 429 body retains status and Retry-After for the harness."
@@ -2222,8 +2231,43 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
         (should (eq (plist-get item :type) 'backend-error))
         (should (= (plist-get payload :status) 429))
         (should (= (plist-get payload :retry-after) 7))
-        (should (e-harness--retryable-error-p
-                 (plist-get item :content) payload))))))
+        (let ((details (e-openai--normalize-error-details
+                        (plist-get item :content) payload nil)))
+          (should (e-harness--retryable-error-p details))
+          (should (= (plist-get details :retry-after-seconds) 7))
+          (should (eq (plist-get details :retry-reason) 'rate-limit)))))))
+
+(ert-deftest e-openai-test-normalizes-provider-retry-hints ()
+  "The OpenAI adapter owns transient classification and reset parsing."
+  (let* ((now (float-time
+               (encode-time (parse-time-string
+                             "2026-07-03 08:20:00 +0000"))))
+         (absolute
+          (e-openai--retry-after-from-text
+           (concat "429 rate limit. Limit resets at: "
+                   "2026-07-03 08:23:02 UTC")
+           now)))
+    (should (= absolute 182.0))
+    (should (= (e-openai--retry-after-from-text
+                "please retry after 2 minutes" now)
+               120.0)))
+  (dolist (case
+           '(("Rate limit exceeded" nil rate-limit)
+             ("server_error: Generation failed" nil provider-unavailable)
+             ("connection reset by peer" nil transport)
+             ("stream ended prematurely" nil premature-stream)
+             ("request failed" (:status 503) provider-unavailable)))
+    (pcase-let ((`(,message ,payload ,reason) case))
+      (let ((details (e-openai--normalize-error-details message payload nil)))
+        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retry-reason) reason)))))
+  (should-not
+   (e-harness--retryable-error-p
+    (e-openai--normalize-error-details "500: internal error" nil nil)))
+  (should-not
+   (e-harness--retryable-error-p
+    (e-openai--normalize-error-details
+     "invalid request" '(:status 400) nil))))
 
 (ert-deftest e-openai-test-default-http-request-start-normalizes-header-bytes ()
   "Multibyte ASCII headers must not make a Unicode request body invalid."

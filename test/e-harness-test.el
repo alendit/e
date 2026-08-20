@@ -649,46 +649,12 @@ prompt rides the metadata channel and its value may replay as a string."
                      '(:provider-error full))))))
 
 (ert-deftest e-harness-test-retryable-error-detection ()
-  "Transient errors are classified as retryable; genuine faults are not."
-  ;; Rate limiting.
+  "The harness consumes only the backend-normalized retry decision."
   (should (e-harness--retryable-error-p
-           "429: Rate limit exceeded for api_key: abc. Limit type: requests."
-           nil))
-  (should (e-harness--retryable-error-p "Rate limit exceeded" nil))
-  (should (e-harness--retryable-error-p "Too Many Requests" nil))
-  (should (e-harness--retryable-error-p "quota hit" '(:status 429)))
-  ;; Provider overload.
-  (should (e-harness--retryable-error-p "529: overloaded_error" nil))
-  (should (e-harness--retryable-error-p "Overloaded" nil))
-  (should (e-harness--retryable-error-p "upstream failure" '(:status 529)))
-  (should (e-harness--retryable-error-p "service unavailable" '(:status 503)))
-  (should (e-harness--retryable-error-p "internal" '(:status 500)))
-  (should (e-harness--retryable-error-p "request timeout" '(:status 408)))
-  ;; Anthropic error-type is surfaced in the content, so the kind is matched
-  ;; even when the human-readable message does not name it.
-  (should (e-harness--retryable-error-p "overloaded_error: Overloaded" nil))
-  (should (e-harness--retryable-error-p "rate_limit_error: slow down" nil))
-  (should (e-harness--retryable-error-p "server_error: Generation failed" nil))
-  ;; Transport resets before/while the stream starts.
-  (should (e-harness--retryable-error-p
-           (concat "Provider returned non-stream text instead of a Messages "
-                   "stream: upstream connect error or disconnect/reset before "
-                   "headers. reset reason: connection termination")
-           '(:response-kind text)))
-  (should (e-harness--retryable-error-p "connection reset by peer" nil))
-  (should (e-harness--retryable-error-p "broken pipe" nil))
-  ;; Provider idleness and local request timeouts are transient and should retry.
-  (should (e-harness--retryable-error-p "OpenAI/Codex request timed out" nil))
-  (should (e-harness--retryable-error-p
-           "OpenAI WebSocket idle timed out after 60 seconds" nil))
-  ;; Genuine faults are not retried.  A bare "500" in free text (no structured
-  ;; status) is not enough to retry; only a parsed :status of 5xx is.
-  (should-not (e-harness--retryable-error-p "500: internal error" nil))
-  (should-not (e-harness--retryable-error-p "provider failed" nil))
-  (should-not (e-harness--retryable-error-p "bad request" '(:status 400)))
-  (should-not (e-harness--retryable-error-p "not found" '(:status 404)))
-  ;; A bare 429 inside an unrelated number run must not false-positive.
-  (should-not (e-harness--retryable-error-p "served 14290 tokens" nil)))
+           '(:retryable t :retry-reason rate-limit)))
+  (should-not (e-harness--retryable-error-p '(:retryable nil :status 429)))
+  (should-not (e-harness--retryable-error-p '(:status 503)))
+  (should-not (e-harness--retryable-error-p nil)))
 
 (ert-deftest e-harness-test-backoff-schedule-grows-and-caps ()
   "Backoff grows by the multiplier and is capped, with jitter when enabled."
@@ -714,38 +680,20 @@ prompt rides the metadata channel and its value may replay as a string."
       (should (>= d 20.0))
       (should (<= d (* 20.0 1.25))))))
 
-(ert-deftest e-harness-test-retry-reset-seconds-parses-hints ()
-  "A named rate-limit reset yields a bounded wait; unnamed resets yield nil."
-  (let ((e-harness-retry-reset-max-wait-seconds 900.0)
-        (now (float-time
-              (encode-time (parse-time-string "2026-07-03 08:20:00 +0000")))))
-    ;; Absolute "resets at" UTC timestamp: wait until the stated reopen.
-    (should (= 182.0
-               (e-harness--retry-reset-seconds
-                (concat "None: 429: Rate limit exceeded for api_key: abc. "
-                        "Limit resets at: 2026-07-03 08:23:02 UTC")
-                nil now)))
-    ;; A reset farther out than the cap falls back to backoff (nil).
-    (should-not (e-harness--retry-reset-seconds
-                 "resets at: 2026-07-03 09:00:00 UTC" nil now))
-    ;; Relative hints in seconds and minutes.
-    (should (= 30 (e-harness--retry-reset-seconds
-                   "429 rate limit, try again in 30s" nil now)))
-    (should (= 120.0 (e-harness--retry-reset-seconds
-                      "please retry after 2 minutes" nil now)))
-    ;; A structured Retry-After delay wins over text parsing.
+(ert-deftest e-harness-test-retry-reset-seconds-bounds-adapter-hint ()
+  "The harness bounds normalized retry delays without interpreting providers."
+  (let ((e-harness-retry-reset-max-wait-seconds 900.0))
     (should (= 45 (e-harness--retry-reset-seconds
-                   "429" '(:retry-after 45) now)))
-    ;; A reset already in the past clamps to a small positive wait.
+                   '(:retry-after-seconds 45))))
     (should (= 1.0 (e-harness--retry-reset-seconds
-                    "resets at: 2026-07-03 08:19:00 UTC" nil now)))
-    ;; No parseable hint: nil, so the caller uses ordinary backoff.
+                    '(:retry-after-seconds -60))))
     (should-not (e-harness--retry-reset-seconds
-                 "429 rate limit exceeded" nil now)))
+                 '(:retry-after-seconds 2400)))
+    (should-not (e-harness--retry-reset-seconds '(:retryable t))))
   ;; A zero cap disables reset-aware waiting entirely.
   (let ((e-harness-retry-reset-max-wait-seconds 0))
     (should-not (e-harness--retry-reset-seconds
-                 "try again in 5s" nil (float-time)))))
+                 '(:retry-after-seconds 5)))))
 
 (defun e-harness-test--rate-limited-backend (failures)
   "Return a backend that fails with HTTP 429 FAILURES times, then succeeds.
@@ -754,6 +702,9 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (cons
      (e-backend-create
       :name "rate-limited"
+      :normalize-error-details
+      (lambda (_message details _condition)
+        (append details '(:retryable t :retry-reason rate-limit)))
       :stream
       (cl-function
        (lambda (&key messages options on-item)
@@ -799,7 +750,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (let ((payload (plist-get event :payload)))
           (should (equal (plist-get payload :error)
                          "429: Rate limit exceeded for api_key:[REDACTED]"))
-          (should (equal (plist-get payload :details) '(:status 429)))
+          (should (equal (plist-get payload :details)
+                         '(:status 429
+                           :retryable t
+                           :retry-reason rate-limit)))
           (should (numberp (plist-get payload :backoff-seconds))))))))
 
 (ert-deftest e-harness-test-rate-limited-turn-fails-after-budget ()
@@ -839,6 +793,11 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (backend
           (e-backend-create
            :name "flaky-then-tool"
+           :normalize-error-details
+           (lambda (_message details _condition)
+             (append details
+                     '(:retryable t
+                       :retry-reason provider-unavailable)))
            :start
            (cl-function
             (lambda (&key messages options on-item on-done on-error
@@ -1723,6 +1682,11 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (backend
           (e-backend-create
            :name "timeout"
+           :normalize-error-details
+           (lambda (_message details condition)
+             (append details
+                     (when (eq (car-safe condition) 'e-openai-request-timeout)
+                       '(:retryable t :retry-reason timeout))))
            :start
            (cl-function
             (lambda (&key messages options on-item on-done on-error
