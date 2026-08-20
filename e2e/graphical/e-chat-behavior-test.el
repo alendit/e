@@ -156,8 +156,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
              'e-chat-assistant-face
            'e-chat-system-face)
          (list 'e-chat-block-id (format "history-%04d" index)
-               'e-chat-turn-id (format "history-turn-%04d" (/ index 4)))))
-      (e-chat--note-transcript-layout-change))))
+               'e-chat-turn-id (format "history-turn-%04d" (/ index 4))))))))
 
 (defun e-chat-behavior-test--read-minibuffer-for (seconds before-exit)
   "Enter a real minibuffer for SECONDS, then call BEFORE-EXIT and leave it."
