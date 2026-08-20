@@ -68,10 +68,9 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
   =writable= policy used by =persp-mode=.  Workspace restoration therefore
   reconstructs the native atom directly; e-chat performs no structural
   reconciliation during host restoration.
-- Already-open or persisted ordinary pairs from the immediately preceding
-  release are upgraded once when e-chat next displays their composer.  This
-  compatibility path is local to the shell and can be removed after that
-  representation no longer needs migration support.
+- The temporary display-time upgrade for pre-atom ordinary pairs has been
+  removed.  The native atomic surface is the only supported representation;
+  e-chat carries no structural migration or repair path.
 - Each transcript window owns one ephemeral follow decision.  Generic
   pre/post-command observation updates it when scrolling from either
   constituent; renderers consume it without reinterpreting saved geometry.
@@ -107,10 +106,10 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
    transcript screen-line measurement.
 10. Emacs's atomic-window contract is the real structural abstraction.  No
     generic multi-pane abstraction is introduced.
-11. The old monolithic protocol is not retained for normal users.  A narrow
-    one-release ordinary-pair migration handles real saved presentation state.
-12. The eventual cleanup removes spacer-layout and composer capture/restore
-    paths from normal transcript rendering.
+11. Neither the old monolithic protocol nor the temporary ordinary-pair
+    migration is retained.  Native atomic surfaces are the sole representation.
+12. Spacer-layout, composer capture/restore, and structural migration paths
+    have been removed from normal transcript rendering.
 13. Expected host restoration uses ordinary window-state persistence;
     unexpected split and window errors surface.
 14. Focused tests prove native deletion and writable state restoration;
