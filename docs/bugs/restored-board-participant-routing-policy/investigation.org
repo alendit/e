@@ -100,6 +100,17 @@ derived intermittent entry where nothing reads them.
 Structured error details remain in durable harness activity; this cleanup does
 not discard diagnostic evidence or change retry presentation.
 
+* Retry detail view completion
+
+The chat shell retains the retry's structured provider details only
+on its semantic provider round and renders them from the existing turn detail
+view.  The compact live row remains unchanged; =d= exposes the attempt, retry
+delay, reset wait, error text, and provider details without duplicating them in
+the derived intermittent entry.
+
+- Focused retry detail ERT: 1/1 passed.
+- Strict =e-chat.el= compilation: passed.
+
 * Architecture Self-Check
 
 1. This is independently useful: retries are truthful and diagnosable even

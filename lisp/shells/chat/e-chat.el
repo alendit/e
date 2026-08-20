@@ -5243,6 +5243,33 @@ Count tool invocations after the reasoning chunk they followed."
          (format "Provider details\n%s" (pp-to-string details)))
         "\n\n")))))
 
+(defun e-chat--retry-details-text (record)
+  "Return expanded provider retry diagnostics for RECORD."
+  (let (sections)
+    (dolist (round (e-chat--activity-records record))
+      (when (or (plist-get round :error)
+                (plist-member round :error-details))
+        (let ((text
+               (format "Provider retry %s\nRetry delay: %s seconds"
+                       (or (plist-get round :retry-attempt) 1)
+                       (or (plist-get round :retry-backoff-seconds) 0))))
+          (when (plist-member round :retry-reset-wait)
+            (setq text
+                  (concat text
+                          (format "\nReset wait: %s seconds"
+                                  (plist-get round :retry-reset-wait)))))
+          (when-let ((error-message (plist-get round :error)))
+            (setq text (concat text "\nError: " error-message)))
+          (when (plist-member round :error-details)
+            (setq text
+                  (concat text "\nProvider details\n"
+                          (string-trim-right
+                           (pp-to-string
+                            (plist-get round :error-details))))))
+          (push (e-chat--indent-detail-text text) sections))))
+    (when sections
+      (concat (string-join (nreverse sections) "\n\n") "\n\n"))))
+
 (defun e-chat--activity-tool-items (record &optional live-projection)
   "Return tool call/output items derived from RECORD.
 When LIVE-PROJECTION is non-nil, include only live-projected rounds."
@@ -5380,7 +5407,12 @@ STATUS defaults to `done'."
         (plist-put round :retry-attempt (plist-get payload :attempt))
         (plist-put round :retry-backoff-seconds
                    (plist-get payload :backoff-seconds))
-        (plist-put round :error (plist-get payload :error)))
+        (plist-put round :error (plist-get payload :error))
+        (when (plist-member payload :reset-wait)
+          (plist-put round :retry-reset-wait
+                     (plist-get payload :reset-wait)))
+        (when (plist-member payload :details)
+          (plist-put round :error-details (plist-get payload :details))))
       (when entry
         (plist-put entry :title "Provider attempt")
         (plist-put entry :status 'retrying)
@@ -6951,6 +6983,7 @@ function records only lifecycle audit text."
   "Return expanded details text for TURN-ID using RECORD."
   (concat
    (or (e-chat--intermittent-details-text record) "")
+   (or (e-chat--retry-details-text record) "")
    (or (e-chat--failure-details-text record) "")
    (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
            turn-id

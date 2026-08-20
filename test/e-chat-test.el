@@ -5041,6 +5041,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                :payload '(:error "503: upstream unavailable"
                                           :details (:status 503)
                                           :attempt 1
+                                          :reset-wait 1.5
                                           :backoff-seconds 2.0))))
             (e-chat--render-event event))
           (e-ui-work-with-batch-drain
@@ -5052,12 +5053,21 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (eq (plist-get round :status) 'retrying))
             (should (equal (plist-get round :error)
                            "503: upstream unavailable"))
+            (should (equal (plist-get round :error-details) '(:status 503)))
             (should (string-match-p
                      "Provider attempt failed after 0min 5sec; retry 1 in 2sec"
                      expanded))
             (should (string-match-p "Error: 503: upstream unavailable" expanded))
             (should-not (string-match-p "Thought failed" expanded))
-            (should (string-match-p "retry 1 in 2s" content))))
+            (should (string-match-p "retry 1 in 2s" content))
+            (let ((details (e-chat--turn-details-text "turn-1" record)))
+              (should (string-match-p "Provider retry 1" details))
+              (should (string-match-p "Retry delay: 2\\.0 seconds" details))
+              (should (string-match-p "Reset wait: 1\\.5 seconds" details))
+              (should (string-match-p
+                       "Error: 503: upstream unavailable" details))
+              (should (string-match-p "Provider details" details))
+              (should (string-match-p "(:status 503)" details)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
