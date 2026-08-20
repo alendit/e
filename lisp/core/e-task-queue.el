@@ -169,7 +169,8 @@ DISPATCHING guards dispatch
 re-entrancy so a synchronous runner settle does not recurse.  PAUSED-P is the
 queue-level gate that stops the dispatcher from starting new work.  DIRECTORY,
 when non-nil, makes the queue durable and names where records are written;
-WRITE-TIMER coalesces those writes."
+LOADED-P records successful rehydration of that queue instance; WRITE-TIMER
+coalesces durable writes."
   (records (make-hash-table :test 'equal))
   (order nil)
   (sequence 0)
@@ -182,6 +183,7 @@ WRITE-TIMER coalesces those writes."
   max-retries
   expose-await-references-p
   directory
+  loaded-p
   write-timer
   write-process
   write-dirty-p
@@ -913,7 +915,8 @@ is normalized to `queued' for a best-effort re-run."
 (defun e-task-queue-load (queue)
   "Load QUEUE's persisted records from disk and re-dispatch.  Return QUEUE.
 A `running' record loads as `queued'; `paused', terminal, and `queued' states
-load unchanged.  A queue with no directory or no records file is left empty."
+load unchanged.  A queue with no directory or no records file is left empty.
+`e-task-queue-loaded-p' becomes non-nil only after the complete load succeeds."
   (when-let* ((file (e-task-queue--record-file queue))
               ((file-exists-p file)))
     (let ((state (with-temp-buffer
@@ -930,6 +933,7 @@ load unchanged.  A queue with no directory or no records file is left empty."
                    (e-task-queue-records queue))))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue)))
+  (setf (e-task-queue-loaded-p queue) t)
   queue)
 
 (provide 'e-task-queue)

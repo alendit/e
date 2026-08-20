@@ -147,7 +147,9 @@ task-queue layer to trigger rehydration first."
                 (should-not failure)
                 (should done)))
             ;; Default queue is empty and unloaded, as after a restart.
-            (put 'e-task-queue-actions-default-queue 'loaded nil)
+            (setf (e-task-queue-loaded-p
+                   e-task-queue-actions-default-queue)
+                  nil)
             (clrhash (e-task-queue-records e-task-queue-actions-default-queue))
             (let ((buffer (e-task-queue-list-buffer)))
               (unwind-protect
@@ -156,7 +158,7 @@ task-queue layer to trigger rehydration first."
                 (kill-buffer buffer)
                 (remove-hook 'e-task-queue-change-functions
                              #'e-task-queue-shell--refresh-buffers))))
-        (put 'e-task-queue-actions-default-queue 'loaded nil)
+        (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
         (delete-directory dir t)))))
 
 (ert-deftest e-task-queue-shell-test-shows-summary-stub-over-prompt ()

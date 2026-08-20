@@ -87,3 +87,14 @@ default queue is auto-rehydrated.
 - Live check: reset the =loaded= flag and cleared the in-memory queue, then
   opened the list buffer and confirmed the persisted tasks reappeared without
   any session building the layer.
+
+* 2026-08-20 cleanup
+
+The original fix made the load gate globally symbol-owned and swallowed load
+errors before marking it complete.  That could permanently present an empty
+queue after malformed or unreadable persistence.
+
+The gate is now =e-task-queue-loaded-p= on the queue instance itself.
+=e-task-queue-load= sets it only after complete successful rehydration, and
+=e-task-queue-actions-ensure-loaded= lets failures surface.  A failed queue
+therefore remains eligible for a later retry without hidden global state.

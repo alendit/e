@@ -61,14 +61,14 @@ It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
 
 (defun e-task-queue-actions-ensure-loaded ()
   "Rehydrate the default durable queue once.
-Idempotent: the `loaded' property guards against repeated disk reads.  Every
-path that first touches the shared default queue -- the layer factory and the
-list buffer alike -- calls this, so rehydration and re-dispatch of persisted
-queued work never depend on a harness happening to build the task-queue layer
-first."
-  (unless (get 'e-task-queue-actions-default-queue 'loaded)
-    (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
-    (put 'e-task-queue-actions-default-queue 'loaded t))
+Idempotent: the queue instance owns its successful-load state.  Every path that
+first touches the shared default queue -- the layer factory and the list buffer
+alike -- calls this, so rehydration and re-dispatch of persisted queued work
+never depend on a harness happening to build the task-queue layer first.
+Malformed or unreadable persistence remains visible to the caller and leaves
+the queue eligible for a later retry."
+  (unless (e-task-queue-loaded-p e-task-queue-actions-default-queue)
+    (e-task-queue-load e-task-queue-actions-default-queue))
   e-task-queue-actions-default-queue)
 
 (defun e-task-queue-actions--task-id (arguments)

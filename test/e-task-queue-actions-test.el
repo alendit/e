@@ -221,7 +221,7 @@ task-queue layer, and stay idempotent afterward."
               (should-not failure)
               (should done)))
           ;; The default queue starts empty and unloaded.
-          (put 'e-task-queue-actions-default-queue 'loaded nil)
+          (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
           (clrhash (e-task-queue-records e-task-queue-actions-default-queue))
           (should (zerop (hash-table-count
                           (e-task-queue-records
@@ -230,27 +230,44 @@ task-queue layer, and stay idempotent afterward."
           (let ((queue (e-task-queue-actions-ensure-loaded)))
             (should (eq queue e-task-queue-actions-default-queue))
             (should (= (length (e-task-queue-list queue)) 1))
-            (should (get 'e-task-queue-actions-default-queue 'loaded)))
+            (should (e-task-queue-loaded-p queue)))
           ;; Idempotent: a second call does not reload or duplicate.
           (e-task-queue-actions-ensure-loaded)
           (should (= (length (e-task-queue-list
                               e-task-queue-actions-default-queue))
                      1)))
-      (put 'e-task-queue-actions-default-queue 'loaded nil)
+      (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
       (delete-directory dir t))))
 
 (ert-deftest e-task-queue-actions-test-ensure-loaded-does-not-reload-live-queue ()
   "Ensuring an already-loaded queue is an idempotent no-op."
   (let ((e-task-queue-actions-default-queue
          (e-task-queue-actions-test--queue)))
-    (put 'e-task-queue-actions-default-queue 'loaded t)
+    (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) t)
     (unwind-protect
         (cl-letf (((symbol-function 'e-task-queue-load)
                    (lambda (&rest _args)
                      (ert-fail "An already-loaded queue must not reload"))))
           (should (eq (e-task-queue-actions-ensure-loaded)
                       e-task-queue-actions-default-queue)))
-      (put 'e-task-queue-actions-default-queue 'loaded nil))))
+      (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil))))
+
+(ert-deftest e-task-queue-actions-test-ensure-loaded-surfaces-load-failure ()
+  "A failed rehydration remains visible and does not poison loaded state."
+  (let ((e-task-queue-actions-default-queue
+         (e-task-queue-actions-test--queue))
+        (attempts 0))
+    (cl-letf (((symbol-function 'e-task-queue-load)
+               (lambda (_queue)
+                 (setq attempts (1+ attempts))
+                 (error "malformed task queue persistence"))))
+      (should-error (e-task-queue-actions-ensure-loaded)
+                    :type 'error)
+      (should-not
+       (e-task-queue-loaded-p e-task-queue-actions-default-queue))
+      (should-error (e-task-queue-actions-ensure-loaded)
+                    :type 'error)
+      (should (= attempts 2)))))
 
 (provide 'e-task-queue-actions-test)
 
