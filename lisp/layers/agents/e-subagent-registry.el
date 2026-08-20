@@ -77,6 +77,7 @@ List buffers hook onto this to track live subagent status.")
           :outputs (plist-get record :outputs)
           :error (plist-get record :error)
           :started-at (plist-get record :started-at)
+          :last-turn-at (plist-get record :last-turn-at)
           :last-activity-at (plist-get record :last-activity-at)
           :progress-sequence (plist-get record :progress-sequence)
           :progress (copy-tree (plist-get record :progress))
@@ -120,6 +121,7 @@ internally so steer/read reach the child session on its own harness."
                        :cancel nil
                        :created-at (float-time)
                        :started-at nil
+                       :last-turn-at nil
                        :last-activity-at nil
                        :progress-sequence 0
                        :progress nil
@@ -166,6 +168,8 @@ in the child session."
                           nil nil "...")
                 :at at)))
     (plist-put record :started-at (or (plist-get record :started-at) at))
+    (when (eq event 'turn-started)
+      (plist-put record :last-turn-at at))
     (plist-put record :last-activity-at at)
     (plist-put record :progress-sequence sequence)
     (plist-put record :progress snapshot)

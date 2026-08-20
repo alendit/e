@@ -307,8 +307,11 @@ never resurrected."
   (when (memq (e-subagent-registry-status registry subagent-id)
               '(queued running blocked))
     (e-subagent--publish-terminal-report registry subagent-id status args)
-    (let ((reported (e-subagent-registry-reported-p registry subagent-id))
-          (fields (list :status status :finished-at (float-time))))
+    (let* ((reported (e-subagent-registry-reported-p registry subagent-id))
+           (finished-at (float-time))
+           (fields (list :status status
+                         :finished-at finished-at
+                         :last-turn-at finished-at)))
       (unless reported
         (when (plist-member args :summary)
           (setq fields (plist-put fields :result-summary

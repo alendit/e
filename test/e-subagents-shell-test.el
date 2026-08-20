@@ -123,16 +123,56 @@
                           :outputs nil)))
             (should (equal (mapcar #'car tabulated-list-format)
                            '("Label" "Type" "Status" "Runtime" "Last activity"
-                             "Progress" "Result" "Outputs")))
+                             "Last turn" "Progress" "Result" "Outputs")))
             (let ((first (e-subagents-shell--entry record))
                   (second (e-subagents-shell--entry record)))
-              (should (equal (aref (cadr first) 5) "#3 Finished focused ERT"))
+              (should (equal (aref (cadr first) 6) "#3 Finished focused ERT"))
               (should (eq (get-text-property 0 'face (aref (cadr second) 2))
                           'font-lock-warning-face))
               (should (eq (plist-get record :status) 'running)))))
       (kill-buffer buffer)
       (remove-hook 'e-subagent-registry-change-functions
                    #'e-subagents-shell--refresh-buffers))))
+
+(ert-deftest e-subagents-shell-test-opens-sorted-by-last-turn-descending ()
+  "Opening the list shows the most recent turn boundary first as relative time."
+  (e-subagents-shell-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((recent (e-subagents-shell-test--spawn
+                      registry parent "parent-1" "recent turn"))
+             (older (e-subagents-shell-test--spawn
+                     registry parent "parent-1" "older turn")))
+        ;; Deliberately oppose registry insertion order so this proves the
+        ;; timestamp sort rather than the registry's newest-child ordering.
+        (e-subagent-registry-update
+         registry (plist-get recent :subagent-id) :last-turn-at 300.0)
+        (e-subagent-registry-update
+         registry (plist-get older :subagent-id) :last-turn-at 100.0)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 400.0)))
+          (let ((buffer (e-subagents-list-buffer
+                         :registry registry :parent-session-id "parent-1")))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (should (equal tabulated-list-sort-key '("Last turn" . t)))
+                  (should (equal (mapcar #'car tabulated-list-entries)
+                                 (list (plist-get recent :subagent-id)
+                                       (plist-get older :subagent-id))))
+                  (should (equal (substring-no-properties
+                                  (aref (cadr (nth 0 tabulated-list-entries)) 5))
+                                 "1m ago"))
+                  (should (equal (substring-no-properties
+                                  (aref (cadr (nth 1 tabulated-list-entries)) 5))
+                                 "5m ago"))
+                  (setq tabulated-list-sort-key '("Type" . nil))
+                  (e-subagents-list-buffer
+                   :registry registry :parent-session-id "parent-1")
+                  (should (equal tabulated-list-sort-key '("Last turn" . t))))
+              (kill-buffer buffer)
+              (remove-hook 'e-subagent-registry-change-functions
+                           #'e-subagents-shell--refresh-buffers))))))))
 
 (ert-deftest e-subagents-shell-test-supervision-keys-are-commands ()
   "The live operator controls expose steer and progress inspection."

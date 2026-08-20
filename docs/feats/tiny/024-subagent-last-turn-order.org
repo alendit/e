@@ -1,0 +1,33 @@
+#+title: Subagent Last-Turn Ordering
+
+The subagents list opens sorted by the newest child turn boundary.  A registry
+record now retains =:last-turn-at= at turn start and terminal finish, while
+provider, tool, and action progress leave that value unchanged.  The shell
+shows it in a compact =X ago= column and keeps the numeric timestamp as hidden
+sort data so display formatting cannot change chronological order.
+
+This is tiny work because it adds one bounded projection field and one table
+column without changing lifecycle policy, persistence, or tool contracts.
+
+Repository-side validation:
+
+- =eldev test -f test/e-subagents-test.el -f test/e-subagents-shell-test.el -f test/e-subagent-runner-test.el=
+- =eldev lint -f lisp/layers/agents/e-subagent-registry.el -f lisp/layers/agents/e-subagent-runner.el -f lisp/shells/e-subagents-shell.el=
+- =git diff --check=
+
+* Architecture self-check
+
+1. The package is independently useful: the supervision list opens in recency order.
+2. It moves toward evidence-based subagent supervision.
+3. Relative-time formatting is local and reversible; the stable turn-boundary fact is modeled directly.
+4. The registry owns the timestamp because it owns lifecycle evidence; the shell owns formatting and sorting.
+5. Coupling is unchanged apart from one narrow normalized record field.
+6. Dependency direction remains registry to shell; core policy does not depend on presentation.
+7. Rendering and sorting remain shell-side effects.
+8. =:last-turn-at= is process-local, bounded, replaced at each turn boundary, and owned by the registry.
+9. Each progress update adds one event-symbol comparison; list sorting is =O(n log n)= only when rendered.
+10. No abstraction or interface family was added.
+11. Existing records without the field render as =-= and sort after timestamped records.
+12. No legacy path became obsolete.
+13. Invalid timestamps remain visibly absent; unexpected record errors still surface.
+14. Focused tests prove boundary updates, non-boundary stability, initial descending order, and relative rendering.

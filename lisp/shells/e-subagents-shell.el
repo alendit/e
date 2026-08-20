@@ -65,6 +65,31 @@ policy."
       (format "%.0fs" (max 0.0 (- now at)))
     "-"))
 
+(defun e-subagents-shell--relative-time-label (at now)
+  "Return compact relative time AT from NOW in an `X ago' form."
+  (if (numberp at)
+      (let ((age (max 0 (floor (- now at)))))
+        (cond
+         ((< age 60) (format "%ds ago" age))
+         ((< age 3600) (format "%dm ago" (/ age 60)))
+         ((< age 86400) (format "%dh ago" (/ age 3600)))
+         (t (format "%dd ago" (/ age 86400)))))
+    "-"))
+
+(defun e-subagents-shell--last-turn-cell (at now)
+  "Return the sortable relative-time cell for last-turn timestamp AT and NOW."
+  (propertize (e-subagents-shell--relative-time-label at now)
+              'e-subagents-shell-sort-value (or at 0.0)))
+
+(defun e-subagents-shell--last-turn-less-p (left right)
+  "Return non-nil when LEFT's last turn precedes RIGHT's."
+  (< (or (get-text-property 0 'e-subagents-shell-sort-value
+                            (aref (cadr left) 5))
+         0.0)
+     (or (get-text-property 0 'e-subagents-shell-sort-value
+                            (aref (cadr right) 5))
+         0.0)))
+
 (defun e-subagents-shell--stale-p (record)
   "Update and return the soft-stale observation for RECORD."
   (let* ((subagent-id (plist-get record :subagent-id))
@@ -93,6 +118,8 @@ policy."
                   (e-subagents-shell--age-label (plist-get record :started-at) now)
                   (e-subagents-shell--age-label
                    (plist-get record :last-activity-at) now)
+                  (e-subagents-shell--last-turn-cell
+                   (plist-get record :last-turn-at) now)
                   (if progress
                       (format "#%s %s"
                               (or (plist-get progress :sequence) 0)
@@ -226,9 +253,11 @@ live chat with the child."
          ("Status" 12 t)
          ("Runtime" 10 t)
          ("Last activity" 14 t)
+         ("Last turn" 12 e-subagents-shell--last-turn-less-p)
          ("Progress" 32 nil)
          ("Result" 40 nil)
          ("Outputs" 8 nil)])
+  (setq tabulated-list-sort-key '("Last turn" . t))
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header))
 
@@ -254,6 +283,7 @@ when non-nil, scopes the list to that parent's direct children."
       (setq e-subagents-shell--registry registry)
       (setq e-subagents-shell--parent-session-id parent-session-id)
       (setq e-subagents-shell--progress-checkpoints (make-hash-table :test 'equal))
+      (setq tabulated-list-sort-key '("Last turn" . t))
       (e-subagents-shell--refresh))
     (add-hook 'e-subagent-registry-change-functions
               #'e-subagents-shell--refresh-buffers)
