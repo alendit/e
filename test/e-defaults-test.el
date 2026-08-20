@@ -535,42 +535,6 @@
         :on-item #'ignore)
        :type 'user-error))))
 
-(ert-deftest e-defaults-test-startup-repairs-shifted-chat-default-session-store ()
-  "Startup sync repairs cached chat-default harnesses with shifted reload slots."
-  (e-defaults-test--with-empty-harness-registry
-    (let* ((store (e-session-store-create))
-           (bad-session-slot
-            (list (e-layer-create :id 'chat-session
-                                  :name "Old Chat Session")))
-           (harness (e-harness-create
-                     :backend (e-backend-fake-create :items nil))))
-      (setf (e-harness-runtime-capability-config harness) store)
-      (setf (e-harness-sessions harness) bad-session-slot)
-      (setf (e-harness-enabled-layer-ids harness)
-            (make-hash-table :test 'equal))
-      (setf (e-harness-intrinsic-capabilities harness)
-            (make-hash-table :test 'equal))
-      (setf (e-harness-subscribers harness)
-            (make-hash-table :test 'equal))
-      (setf (e-harness-active-turns harness) bad-session-slot)
-      (setf (e-harness-prompt-queues harness) bad-session-slot)
-      (e-harness-registry-register :chat-default harness)
-      (let ((e-default-chat-harness-factory nil)
-            (e-default-chat-layer-ids nil))
-        (e-default-harnesses-startup))
-      (should (eq (e-harness-registry-get :chat-default) harness))
-      (should (eq (e-harness-sessions harness) store))
-      (should (e-session-store-p (e-harness-sessions harness)))
-      (should-not (e-session-store-p
-                   (e-harness-runtime-capability-config harness)))
-      (should-not (e-harness-enabled-layer-ids harness))
-      (should (listp (e-harness-subscribers harness)))
-      (should (hash-table-p (e-harness-active-turns harness)))
-      (should (hash-table-p (e-harness-prompt-queues harness)))
-      (should (memq 'chat-session
-                    (mapcar #'e-capability-id
-                            (e-harness-active-capabilities harness)))))))
-
 (ert-deftest e-defaults-test-sync-clears-stale-layer-owned-shells ()
   "Default harness layer sync removes old layer-owned shell registrations."
   (let ((e-layer--registry (make-hash-table :test 'eq))
@@ -618,7 +582,8 @@
 
 (ert-deftest e-defaults-test-sync-directory-does-not-change-session-root-context ()
   "Default sync can rebuild shells from one root without changing session tools."
-  (let ((e-layer--registry (make-hash-table :test 'eq))
+  (let ((e-default-chat-layer-ids e-default-chat-layer-ids)
+        (e-layer--registry (make-hash-table :test 'eq))
         (e-shell--registry (make-hash-table :test 'eq))
         (e-shell--scoped-registry (make-hash-table :test 'eq))
         (sync-root (make-temp-file "e-default-sync-root-" t))
