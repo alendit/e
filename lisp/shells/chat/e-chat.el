@@ -1450,7 +1450,9 @@ cycle."
     "e-chat-input"))
 
 (define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
-  "Editable input pane owned by an e chat transcript surface."
+  "Editable input pane using the e chat composer contract.
+Most composer buffers are owned by a transcript surface.  Presentation shells
+may also derive a transient standalone input/result pane from this mode."
   (use-local-map e-chat-composer-mode-map)
   (setq-local e-chat--surface-command-map-active t)
   (setq-local mode-name '(:eval (e-chat--surface-composer-mode-name)))
@@ -1482,6 +1484,10 @@ cycle."
   "Return non-nil when the current buffer is a composed chat input pane."
   (buffer-live-p e-chat--surface-transcript-buffer))
 
+(defun e-chat--composer-buffer-p ()
+  "Return non-nil when the current buffer implements the composer contract."
+  (derived-mode-p 'e-chat-composer-mode))
+
 (defun e-chat--surface-transcript-buffer ()
   "Return the transcript buffer for the current chat surface."
   (if (e-chat--surface-composer-p)
@@ -1504,14 +1510,16 @@ cycle."
   ;; deletes its sibling while `kill-buffer' may still be traversing another
   ;; visible transcript view.
   (dolist (window (get-buffer-window-list (current-buffer) nil t))
-    (set-window-dedicated-p window nil))
+    (set-window-dedicated-p window nil)
+    (set-window-parameter window 'window-atom nil))
   (when-let ((composer e-chat--surface-composer-buffer))
     (when (buffer-live-p composer)
       ;; The surface is already being torn down.  Releasing its ephemeral
       ;; dedication lets Emacs replace both buffers without mutating the window
       ;; tree out from under that traversal.
       (dolist (window (get-buffer-window-list composer nil t))
-        (set-window-dedicated-p window nil))
+        (set-window-dedicated-p window nil)
+        (set-window-parameter window 'window-atom nil))
       (kill-buffer composer)))
   (setq e-chat--surface-composer-buffer nil))
 
@@ -2341,7 +2349,7 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 (defun e-chat--delete-composer ()
   "Clear editable input from the current composer buffer.
 Return non-nil when active input was removed."
-  (when (and (e-chat--surface-composer-p)
+  (when (and (e-chat--composer-buffer-p)
              (e-chat--composer-active-p))
     (let ((inhibit-read-only t)
           (e-chat--composer-scroll-suppressed t))
@@ -2426,7 +2434,7 @@ with `e-chat--assume-redraw-visible'."
 PRESERVE-FOCUS retains composer point when the current buffer is the composer."
   (if (e-chat--surface-transcript-p)
       (e-chat--surface-ensure-composer)
-    (unless (e-chat--surface-composer-p)
+    (unless (e-chat--composer-buffer-p)
       (user-error "This buffer is not an e chat composer"))
     (e-chat--surface-initialize-composer text preserve-focus)))
 
@@ -2434,7 +2442,7 @@ PRESERVE-FOCUS retains composer point when the current buffer is the composer."
   "Ensure the current chat buffer has an active composer."
   (if (e-chat--surface-transcript-p)
       (e-chat--surface-ensure-composer)
-    (unless (e-chat--surface-composer-p)
+    (unless (e-chat--composer-buffer-p)
       (user-error "This buffer is not an e chat surface"))
     (unless (e-chat--composer-active-p)
       (e-chat--surface-initialize-composer))))
@@ -7666,14 +7674,17 @@ WINDOW defaults to an arbitrary visible window for the current transcript."
 
 (defun e-chat--after-display-buffer (buffer)
   "Restore chat-local editing invariants after displaying BUFFER."
-  (let ((transcript-window (get-buffer-window buffer t)))
+  (let ((transcript-window (get-buffer-window buffer t))
+        composed-surface-p)
     (with-current-buffer buffer
       (e-chat--disable-modal-editing)
       (e-chat--disable-completion)
-      (when (e-chat--surface-transcript-p)
+      (setq composed-surface-p (e-chat--surface-transcript-p))
+      (when composed-surface-p
         (e-chat--surface-display-composer))
       (e-chat--enter-composer-input-state))
-    (when (window-live-p transcript-window)
+    (when (and composed-surface-p
+               (window-live-p transcript-window))
       (e-chat--activate-surface (cons buffer transcript-window))))
   buffer)
 
@@ -8881,7 +8892,7 @@ When SESSION-ID is nil, create a private execution session for the participant."
              (e-workspace-current))))
       (when (and (buffer-live-p previous-surface-composer)
                  (not same-session))
-        (kill-buffer previous-surface-composer))
+        (e-chat--surface-kill-composer))
       (when (buffer-live-p surface-composer)
         (e-chat--surface-bind-composer surface-composer buffer)
         (setq-local e-chat--surface-composer-buffer surface-composer))

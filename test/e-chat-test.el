@@ -238,7 +238,12 @@ tests, matching how the buffer behaves when shown to a user."
           (should (eq (window-dedicated-p composer-window) 'soft))
           (kill-buffer buffer)
           (setq buffer nil)
-          (should-not (buffer-live-p composer)))
+          (should-not (buffer-live-p composer))
+          (dolist (window (list first-transcript-window
+                                second-transcript-window
+                                composer-window))
+            (when (window-live-p window)
+              (should-not (window-atom-root window)))))
       (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

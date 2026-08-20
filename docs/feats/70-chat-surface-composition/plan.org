@@ -81,6 +81,9 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
   written to the transcript or durable session state.
 - Batch, integration, and graphical tests exercise the same separate
   transcript/composer architecture as interactive sessions.
+- The composer mode remains a reusable presentation component: Org Canvas
+  derives its transient input/result pane from it without putting editable
+  input back into a chat transcript.
 
 * Architecture self-check
 

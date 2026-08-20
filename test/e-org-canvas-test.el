@@ -55,12 +55,14 @@
     harness))
 
 (defun e-org-canvas-test--kill-chat-buffers ()
-  "Kill all live e chat buffers."
+  "Kill all live e chat surfaces and collapse their test windows."
   (dolist (buffer (buffer-list))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (derived-mode-p 'e-chat-mode)
-          (kill-buffer buffer))))))
+          (kill-buffer buffer)))))
+  (when (> (length (window-list nil 'no-minibuf)) 1)
+    (delete-other-windows)))
 
 (defun e-org-canvas-test--drain-ui-work (buffer)
   "Drain pending UI work for BUFFER in batch-only test context."
@@ -133,7 +135,6 @@
 (ert-deftest e-org-canvas-test-open-current-buffer-focuses-composer ()
   "Opening an Org buffer leaves its chat composer selected and editable."
   (let ((harness (e-org-canvas-test--harness))
-        (e-chat--surface-composition-enabled t)
         insert-entered)
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
@@ -384,7 +385,9 @@
 (ert-deftest e-org-canvas-test-open-starts-new-session-without-reference ()
   "Opening an Org buffer without a session reference starts a new session."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness)))
+        (harness (e-org-canvas-test--harness))
+        (window-configuration (current-window-configuration))
+        first-chat)
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let* ((e-chat-default-harness-id :org-canvas-test)
@@ -392,11 +395,13 @@
                  first-id second-id)
             (e-harness-registry-register :org-canvas-test harness)
             (with-current-buffer (find-file-noselect file)
-              (setq first-id
-                    (with-current-buffer
-                        (e-org-canvas-open-for-current-buffer)
-                      e-chat-session-id))
-              (kill-buffer (current-buffer)))
+              (let ((source (current-buffer)))
+                (setq first-chat (e-org-canvas-open-for-current-buffer))
+                (setq first-id
+                      (buffer-local-value 'e-chat-session-id first-chat))
+                (kill-buffer first-chat)
+                (kill-buffer source)
+                (set-window-configuration window-configuration)))
             (with-current-buffer (find-file-noselect file)
               (setq second-id
                     (with-current-buffer
@@ -416,7 +421,9 @@
   (let ((directory (make-temp-file "e-org-canvas-" t))
         (harness (e-org-canvas-test--harness))
         first-file
-        second-file)
+        second-file
+        (window-configuration (current-window-configuration))
+        first-chat)
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let* ((e-chat-default-harness-id :org-canvas-test)
@@ -432,11 +439,13 @@
                                second-directory "plan.org"))
             (e-harness-registry-register :org-canvas-test harness)
             (with-current-buffer (find-file-noselect first-file)
-              (setq first-id
-                    (with-current-buffer
-                        (e-org-canvas-open-for-current-buffer)
-                      e-chat-session-id))
-              (kill-buffer (current-buffer)))
+              (let ((source (current-buffer)))
+                (setq first-chat (e-org-canvas-open-for-current-buffer))
+                (setq first-id
+                      (buffer-local-value 'e-chat-session-id first-chat))
+                (kill-buffer first-chat)
+                (kill-buffer source)
+                (set-window-configuration window-configuration)))
             (with-current-buffer (find-file-noselect second-file)
               (setq second-id
                     (with-current-buffer
@@ -490,7 +499,9 @@
   (let ((directory (make-temp-file "e-org-canvas-" t))
         (harness (e-org-canvas-test--harness))
         prompt
-        warning)
+        warning
+        (window-configuration (current-window-configuration))
+        first-chat)
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let* ((e-chat-default-harness-id :org-canvas-test)
@@ -507,11 +518,13 @@
                  first-id)
             (e-harness-registry-register :org-canvas-test harness)
             (with-current-buffer (find-file-noselect first-file)
-              (setq first-id
-                    (with-current-buffer
-                        (e-org-canvas-open-for-current-buffer)
-                      e-chat-session-id))
-              (kill-buffer (current-buffer)))
+              (let ((source (current-buffer)))
+                (setq first-chat (e-org-canvas-open-for-current-buffer))
+                (setq first-id
+                      (buffer-local-value 'e-chat-session-id first-chat))
+                (kill-buffer first-chat)
+                (kill-buffer source)
+                (set-window-configuration window-configuration)))
             (with-current-buffer (find-file-noselect second-file)
               (setq-local e-org-canvas-harness harness)
               (setq-local e-org-canvas-session-id first-id)
@@ -560,10 +573,15 @@
                   (with-current-buffer source
                     (e-org-canvas-open-for-current-buffer)))
             (let ((source-window (get-buffer-window source t))
-                  (chat-window (get-buffer-window chat-buffer t)))
+                  (chat-window (get-buffer-window chat-buffer t))
+                  (composer-window
+                   (get-buffer-window
+                    (buffer-local-value
+                     'e-chat--surface-composer-buffer chat-buffer)
+                    t)))
               (should (window-live-p source-window))
               (should (window-live-p chat-window))
-              (should (eq (selected-window) chat-window))
+              (should (eq (selected-window) composer-window))
               (should (> (nth 1 (window-edges chat-window))
                          (nth 1 (window-edges source-window)))))))
       (when (window-live-p original-window)
@@ -646,8 +664,7 @@
         (harness (e-org-canvas-test--harness)))
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test)
-                (e-chat--surface-composition-enabled t))
+          (let ((e-chat-default-harness-id :org-canvas-test))
             (e-harness-registry-register :org-canvas-test harness)
             (let ((chat-buffer (e-org-canvas-new-file directory)))
               (with-current-buffer chat-buffer
@@ -1056,7 +1073,7 @@
       (unwind-protect
           (with-current-buffer buffer
             (should (derived-mode-p 'e-org-canvas-input-mode))
-            (should (derived-mode-p 'e-chat-mode))
+            (should (derived-mode-p 'e-chat-composer-mode))
             (should (e-chat--composer-active-p))
             (save-excursion
               (goto-char (point-min))
@@ -1081,7 +1098,7 @@
   "Opening the session from an input pane reveals the normal backing chat."
   (let ((harness (e-org-canvas-test--harness))
         (original-window (selected-window))
-        (original-buffer (window-buffer))
+        (window-configuration (current-window-configuration))
         source
         chat
         input
@@ -1118,16 +1135,16 @@
                   (with-current-buffer input
                     (e-org-canvas-input-open-session)))
             (should (eq opened chat))
-            (should (eq (window-buffer (selected-window)) chat))
+            (should
+             (eq (window-buffer (selected-window))
+                 (buffer-local-value
+                  'e-chat--surface-composer-buffer chat)))
             (should-not (eq opened input))
             (should-not (get-buffer-window input t))
             (with-current-buffer opened
               (goto-char (point-min))
               (should (search-forward "Existing backing chat history" nil t)))))
-      (when (window-live-p original-window)
-        (select-window original-window)
-        (set-window-buffer original-window original-buffer))
-      (delete-other-windows)
+      (set-window-configuration window-configuration)
       (dolist (buffer (list input chat source))
         (when (buffer-live-p buffer)
           (kill-buffer buffer)))
@@ -1171,12 +1188,11 @@
   "Org Canvas prompting does not leave the backing chat buffer visible too."
   (let ((harness (e-org-canvas-test--harness))
         (original-window (selected-window))
-        original-buffer
+        (window-configuration (current-window-configuration))
         target
         chat
         chat-window
         input)
-    (setq original-buffer (window-buffer original-window))
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :org-canvas-test))
@@ -1191,8 +1207,7 @@
             (setq chat
                   (with-current-buffer target
                     (e-org-canvas-open-for-current-buffer)))
-            (setq chat-window (split-window original-window nil 'below))
-            (set-window-buffer chat-window chat)
+            (setq chat-window (get-buffer-window chat t))
             (should (get-buffer-window chat t))
             (with-current-buffer target
               (setq input (e-org-canvas--prompt-scope 'thread)))
@@ -1200,11 +1215,7 @@
             (should-not (get-buffer-window chat t))
             (should (get-buffer-window target t))
             (should (get-buffer-window input t))))
-      (when (window-live-p original-window)
-        (select-window original-window))
-      (delete-other-windows)
-      (when (buffer-live-p original-buffer)
-        (set-window-buffer (selected-window) original-buffer))
+      (set-window-configuration window-configuration)
       (dolist (buffer (list input chat target))
         (when (buffer-live-p buffer)
           (kill-buffer buffer)))

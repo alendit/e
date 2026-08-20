@@ -363,7 +363,7 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
     (e-org-canvas--set-mode-name-indicator nil)))
 
 ;;;###autoload
-(define-derived-mode e-org-canvas-input-mode e-chat-mode "e-org-canvas-input"
+(define-derived-mode e-org-canvas-input-mode e-chat-composer-mode "e-org-canvas-input"
   "Temporary prompt pane for Org Canvas turns.")
 
 (define-minor-mode e-org-canvas-input-result-mode
@@ -1080,7 +1080,6 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
 
 (defun e-org-canvas--input-enter-result-state ()
   "Switch the current input pane from editable composer to result display."
-  (setq-local e-chat--composer-restore-inhibited t)
   (e-chat--delete-composer)
   (e-org-canvas-input-result-mode 1))
 
@@ -1209,9 +1208,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
 
 (defun e-org-canvas--input-reset-chat-state ()
   "Reset chat-local presentation state for a transient Org Canvas input pane."
-  (setq-local e-chat--transcript-end-marker nil)
   (setq-local e-chat--composer-start-marker nil)
-  (setq-local e-chat--composer-spacer-marker nil)
   (setq-local e-chat--composer-scroll-needed nil)
   (setq-local e-chat--turn-registry (make-hash-table :test 'equal))
   (setq-local e-chat--block-registry (make-hash-table :test 'equal))
@@ -1226,7 +1223,6 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
   (setq-local e-chat--block-view-block-id nil)
   (setq-local e-chat--tool-list-block-id nil)
   (setq-local e-chat--tool-list-index 0)
-  (setq-local e-chat--composer-restore-inhibited nil)
   (setq-local e-chat--status nil))
 
 (defun e-org-canvas--input-replay-deferred-events (buffer)

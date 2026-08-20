@@ -151,6 +151,8 @@
     (unwind-protect
         (cl-letf (((symbol-function 'e-debug--popup-available-p)
                    (lambda () t))
+                  ((symbol-function 'e-chat--enter-composer-input-state)
+                   #'ignore)
                   ((symbol-function 'posframe-show)
                    (lambda (shown-buffer &rest args)
                      (setq shown (cons shown-buffer args))
@@ -184,6 +186,8 @@
     (unwind-protect
         (cl-letf (((symbol-function 'selected-frame)
                    (lambda () 'child-frame))
+                  ((symbol-function 'e-chat--enter-composer-input-state)
+                   #'ignore)
                   ((symbol-function 'frame-parameter)
                    (lambda (frame parameter)
                      (and (eq frame 'child-frame)
@@ -279,7 +283,7 @@
                   ((symbol-function 'select-frame-set-input-focus)
                    (lambda (_frame) nil)))
           (with-current-buffer buffer
-            (e-chat-mode)
+            (e-chat-composer-mode)
             (e-chat--insert-composer "for")
             (goto-char (point-min))
             (set-mark (point-max))
@@ -306,6 +310,8 @@
     (unwind-protect
         (cl-letf (((symbol-function 'e-debug--popup-available-p)
                    (lambda () t))
+                  ((symbol-function 'e-chat--enter-composer-input-state)
+                   #'ignore)
                   ((symbol-function 'posframe-show)
                    (lambda (_buffer &rest _args)
                      'debug-popup-frame))
