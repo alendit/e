@@ -178,69 +178,70 @@
 
 (ert-deftest e-dev-test-reload-refreshes-defaults ()
   "Reload reapplies changed default options."
-  (setq e-openai-default-model "gpt-5.4")
-  (setq e-default-layer-specs
-        '((:id e
-           :name "e"
-           :summary "Runtime self-management commands."
-           :feature e-layer
-           :factory e-core-layer-create)
-          (:id e-dev
-           :name "e Dev"
-           :summary "Development context inspection tools."
-           :feature e-dev-layer
-           :factory e-dev-layer-create)
-          (:id harness-base
-           :name "Harness Base"
-           :summary "Harness-owned support resources and tool lifecycle guards."
-           :feature e-harness-base
-           :factory e-harness-base-layer-create)
-          (:id os-base
-           :name "OS Base"
-           :summary "Workspace file and shell tools."
-           :feature e-base
-           :factory e-base-layer-create)
-          (:id emacs-base
-           :name "Emacs Base"
-           :summary "Live Emacs buffer awareness and editing tools."
-           :feature e-emacs-base
-           :factory e-emacs-base-layer-create)))
-  (setq e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base))
-  (setq e-debug-display-strategy 'tab)
-  (let ((e-default-chat-harness-factory
-         (lambda (&rest args)
-           (e-harness-create
-            :backend (e-backend-fake-create :items nil)
-            :sessions (plist-get args :sessions))))
-        (e-startup-shell-hook
-         (cons (lambda ()
-                 (e-harness-registry-get-or-create :chat-default))
-               e-startup-shell-hook)))
-    (e-dev-reload default-directory))
-  ;; Provider defaults belong to a restart-required adapter module and are not
-  ;; rewritten by an extension reload.
-  (should (equal e-openai-default-model "gpt-5.4"))
-  (should (e-layer-get 'agents-std-context))
-  (should (equal e-default-chat-layer-ids
-                 '(agents-std-context harness-base process-reporting
-                                      harness-advanced e os-base emacs-base
-                                      resource-toc web annotations org-canvas
-                                      project-local goodnite writing
-                                      subagents-parent)))
-  (should (eq e-debug-display-strategy 'popup))
-  (let ((harness (e-harness-registry-get-or-create :chat-default)))
-    (should (equal (e-harness-enabled-layer-ids harness)
+  (let ((e-openai-default-model e-openai-default-model))
+    (setq e-openai-default-model "gpt-5.4")
+    (setq e-default-layer-specs
+          '((:id e
+             :name "e"
+             :summary "Runtime self-management commands."
+             :feature e-layer
+             :factory e-core-layer-create)
+            (:id e-dev
+             :name "e Dev"
+             :summary "Development context inspection tools."
+             :feature e-dev-layer
+             :factory e-dev-layer-create)
+            (:id harness-base
+             :name "Harness Base"
+             :summary "Harness-owned support resources and tool lifecycle guards."
+             :feature e-harness-base
+             :factory e-harness-base-layer-create)
+            (:id os-base
+             :name "OS Base"
+             :summary "Workspace file and shell tools."
+             :feature e-base
+             :factory e-base-layer-create)
+            (:id emacs-base
+             :name "Emacs Base"
+             :summary "Live Emacs buffer awareness and editing tools."
+             :feature e-emacs-base
+             :factory e-emacs-base-layer-create)))
+    (setq e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base))
+    (setq e-debug-display-strategy 'tab)
+    (let ((e-default-chat-harness-factory
+           (lambda (&rest args)
+             (e-harness-create
+              :backend (e-backend-fake-create :items nil)
+              :sessions (plist-get args :sessions))))
+          (e-startup-shell-hook
+           (cons (lambda ()
+                   (e-harness-registry-get-or-create :chat-default))
+                 e-startup-shell-hook)))
+      (e-dev-reload default-directory))
+    ;; Provider defaults belong to a restart-required adapter module and are not
+    ;; rewritten by an extension reload.
+    (should (equal e-openai-default-model "gpt-5.4"))
+    (should (e-layer-get 'agents-std-context))
+    (should (equal e-default-chat-layer-ids
                    '(agents-std-context harness-base process-reporting
                                         harness-advanced e os-base emacs-base
                                         resource-toc web annotations org-canvas
                                         project-local goodnite writing
                                         subagents-parent)))
-    (should (equal (e-harness-effective-layer-ids harness)
-                   '(agents-std-context harness-base process-reporting
-                                        harness-advanced e resource-discovery
-                                        os-base async-control emacs-base resource-toc
-                                        web annotations org-canvas project-local
-                                        goodnite writing subagents-parent)))))
+    (should (eq e-debug-display-strategy 'popup))
+    (let ((harness (e-harness-registry-get-or-create :chat-default)))
+      (should (equal (e-harness-enabled-layer-ids harness)
+                     '(agents-std-context harness-base process-reporting
+                                          harness-advanced e os-base emacs-base
+                                          resource-toc web annotations org-canvas
+                                          project-local goodnite writing
+                                          subagents-parent)))
+      (should (equal (e-harness-effective-layer-ids harness)
+                     '(agents-std-context harness-base process-reporting
+                                          harness-advanced e resource-discovery
+                                          os-base async-control emacs-base resource-toc
+                                          web annotations org-canvas project-local
+                                          goodnite writing subagents-parent))))))
 
 (ert-deftest e-dev-test-reload-refreshes-retained-session-index-metadata ()
   "Full reload repairs stale unloaded metadata in the retained session store."
