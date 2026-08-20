@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-dev-reload-omits-e-work-orphans-tool-error/ | e-dev reload omits e-work and orphans tool errors |
 | New    | restored-board-participant-routing-policy/ | Restored board participant loses its routing policy |
 | Closed | session-persistence-writer-replacement-gap/ | Session persistence writer replacement loses initial Daily records |
 | Closed | e-chat-intermediate-assistant-summary-flicker/ | Intermediate assistant message flickers settled summary during active turn |

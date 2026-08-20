@@ -31,3 +31,15 @@ git diff --check -- AGENTS.md e.el lisp/dev/e-dev.el lisp/layers/e-dev-layer.el 
 Full =rtk eldev test= was also run.  It passed this slice's tests and exposed
 one unrelated existing dirty-work failure in =test/e-harness-base-test.el= caused
 by the uncommitted session-resource changes in =lisp/layers/harness/=.
+
+* 2026-08-20 boundary correction
+
+=e-dev-reload= now reloads only already-loaded modules under =lisp/layers/=,
+=lisp/defaults/=, =lisp/shells/=, and =lisp/dev/=.  Core runtime, session,
+harness, Work, provider adapter, and record-shape changes require an Emacs
+restart.  Restart-required markers survive an extension reload.
+
+This removes the manual whole-runtime source manifest and the obsolete-symbol
+and shifted-record repair paths it required.  Missing a reloadable extension
+now means that extension remains unchanged until restart; it cannot create a
+mixed core generation.

@@ -162,23 +162,6 @@ DIRECTORY is passed to config-aware shell layer factories."
   (list (e-chat-session-capability-create)
         (e-default-chat--prompt-capability)))
 
-(defun e-default-harness--proper-list-p (value)
-  "Return non-nil when VALUE is a proper list."
-  (let ((tail value))
-    (while (consp tail)
-      (setq tail (cdr tail)))
-    (null tail)))
-
-(defun e-default-harness--symbol-list-p (value)
-  "Return non-nil when VALUE is a proper list of symbols."
-  (and (e-default-harness--proper-list-p value)
-       (cl-every #'symbolp value)))
-
-(defun e-default-harness--capability-list-p (value)
-  "Return non-nil when VALUE is a proper list of capabilities."
-  (and (e-default-harness--proper-list-p value)
-       (cl-every #'e-capability-p value)))
-
 (defun e-default-debug--debug-capabilities ()
   "Return fresh internal debug guidance capabilities."
   (list (e-capability-create
@@ -222,31 +205,6 @@ is passed to config-aware shell layer factories."
   (e-harness--notify-layers-changed harness)
   harness)
 
-(defun e-default-harness--repair-shifted-session-store (harness)
-  "Repair HARNESS when a live reload shifted collection slots."
-  (when (and (not (e-session-store-p (e-harness-sessions harness)))
-             (e-session-store-p
-              (e-harness-runtime-capability-config harness)))
-    (setf (e-harness-sessions harness)
-          (e-harness-runtime-capability-config harness))
-    (setf (e-harness-runtime-capability-config harness) nil))
-  (unless (e-session-store-p (e-harness-sessions harness))
-    (setf (e-harness-sessions harness) (e-session-store-create)))
-  (unless (e-default-harness--symbol-list-p
-           (e-harness-enabled-layer-ids harness))
-    (setf (e-harness-enabled-layer-ids harness) nil))
-  (unless (e-default-harness--capability-list-p
-           (e-harness-intrinsic-capabilities harness))
-    (setf (e-harness-intrinsic-capabilities harness) nil))
-  (unless (e-default-harness--proper-list-p
-           (e-harness-subscribers harness))
-    (setf (e-harness-subscribers harness) nil))
-  (unless (hash-table-p (e-harness-active-turns harness))
-    (setf (e-harness-active-turns harness) (make-hash-table :test 'equal)))
-  (unless (hash-table-p (e-harness-prompt-queues harness))
-    (setf (e-harness-prompt-queues harness) (make-hash-table :test 'equal)))
-  harness)
-
 (defun e-default-harness-sync-from-factory (harness spec)
   "Refresh HARNESS generic runtime fields from SPEC's fresh factory result.
 
@@ -254,7 +212,6 @@ Live reload can replace adapter helper functions without recreating cached
 default harnesses.  Refreshing the runtime updates stale backend closures while
 preserving sessions, context state, and active presentation buffers that already
 hold HARNESS."
-  (e-default-harness--repair-shifted-session-store harness)
   (let ((fresh (funcall (plist-get spec :factory))))
     (unless (e-harness-p fresh)
       (signal 'wrong-type-argument (list 'e-harness-p fresh)))
@@ -289,7 +246,6 @@ hold HARNESS."
   (if (e-default-chat--sync-from-configured-factory-p spec)
       (e-default-harness-sync-from-factory harness spec)
     (progn
-      (e-default-harness--repair-shifted-session-store harness)
       (e-default-chat--mark-unconfigured harness)))
   (e-default-chat-sync-harness-layers harness)
   harness)
@@ -337,7 +293,6 @@ hold HARNESS."
   (if (e-default-chat--sync-from-configured-factory-p spec)
       (e-default-harness-sync-from-factory harness spec)
     (progn
-      (e-default-harness--repair-shifted-session-store harness)
       (e-default-chat--mark-unconfigured harness)))
   (e-default-debug-sync-harness-layers harness)
   harness)

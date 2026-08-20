@@ -19,37 +19,19 @@
 (require 'e-debug)
 (require 'e-dev)
 (require 'e-dev-layer)
+(require 'e-dev-perf)
+(require 'e-dev-profile)
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-work)
 
-(ert-deftest e-dev-test-clears-removed-sync-work-api-functions ()
-  "Reload cleanup unbinds stale definitions for removed sync Work APIs."
-  (let ((symbols '(e-backend-stream
-                   e-loop-run-turn
-                   e-harness-compact-session
-                   e-harness-follow-up
-                   e-harness-prompt
-                   e-harness-wait
-                   e-tools-execute)))
-    (dolist (symbol symbols)
-      (fset symbol (lambda (&rest _args) :stale)))
-    (unwind-protect
-        (progn
-          (e-dev--clear-obsolete-functions)
-          (dolist (symbol symbols)
-            (should-not (fboundp symbol))))
-      (dolist (symbol symbols)
-        (when (fboundp symbol)
-          (fmakunbound symbol))))))
-
 (ert-deftest e-dev-test-mark-reload-required-records-status-and-clear ()
-  "Reload-required notification records pending full reload intent."
+  "Reload-required notification records pending restart intent."
   (let ((e-dev--reload-required-entries nil))
     (let ((status (e-dev-mark-reload-required
                    "core shape changed"
                    ["lisp/core/e-harness.el"]
-                   'full)))
+                   'restart)))
       (should (eq (plist-get status :required) t))
       (should (= (plist-get status :count) 1))
       (let ((entry (car (plist-get status :entries))))
@@ -59,10 +41,21 @@
                        "core shape changed"))
         (should (equal (plist-get entry :files)
                        '("lisp/core/e-harness.el")))
-        (should (eq (plist-get entry :scope) 'full))))
+        (should (eq (plist-get entry :scope) 'restart))))
     (let ((status (e-dev-clear-reload-required)))
       (should-not (plist-get status :required))
       (should (= (plist-get status :count) 0)))))
+
+(ert-deftest e-dev-test-extension-reload-preserves-restart-requirements ()
+  "A supported reload clears only entries that it can actually satisfy."
+  (let ((e-dev--reload-required-entries
+         '((:reason "shell" :scope reloadable)
+           (:reason "core" :scope restart)
+           (:reason "old core" :scope full))))
+    (e-dev--clear-reloadable-required-entries)
+    (should (equal (mapcar (lambda (entry) (plist-get entry :reason))
+                           e-dev--reload-required-entries)
+                   '("core" "old core")))))
 
 (ert-deftest e-dev-test-dev-layer-exposes-reload-required-actions ()
   "The e-dev layer exposes lightweight reload notification actions."
@@ -84,9 +77,9 @@
     (should (e-action-p status))
     (let* ((handle (e-work-start
                     (e-action-work mark)
-                    '(:reason "needs full reload"
+                    '(:reason "needs restart"
                       :files ["lisp/dev/e-dev.el"]
-                      :scope "full")))
+                      :scope "restart")))
            (result (e-work-handle-result handle)))
       (should (eq (plist-get result :required) t))
       (should (= (plist-get result :count) 1)))
@@ -123,8 +116,23 @@
                         (stringp (plist-get block :text)))
                       text-blocks))))
 
-(ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
-  "Reload loads the MVP modules and restores their entry points."
+(ert-deftest e-dev-test-reloadable-source-files-exclude-core-and-adapters ()
+  "Reload discovery includes loaded seams but excludes cardinal runtime code."
+  (let ((files (e-dev--reloadable-source-files default-directory)))
+    (should (member (expand-file-name "lisp/shells/chat/e-chat.el"
+                                      default-directory)
+                    files))
+    (should (member (expand-file-name "lisp/defaults/e-default-layers.el"
+                                      default-directory)
+                    files))
+    (should-not (seq-some
+                 (lambda (file)
+                   (or (string-match-p "/lisp/core/" file)
+                       (string-match-p "/lisp/adapters/" file)))
+                 files))))
+
+(ert-deftest e-dev-test-reload-restores-extension-entrypoints ()
+  "Reload restores entry points owned by supported extension seams."
   (fmakunbound 'e-chat)
   (fmakunbound 'e-chat-new)
   (fmakunbound 'e-chat-resume)
@@ -134,13 +142,7 @@
   (fmakunbound 'e-chat-open)
   (fmakunbound 'e-base-layer-create)
   (fmakunbound 'e-emacs-base-layer-create)
-  (fmakunbound 'e-layer-create)
   (fmakunbound 'e-runtime-context-capability-create)
-  (fmakunbound 'e-operation-create)
-  (fmakunbound 'e-resource-method-create)
-  (fmakunbound 'e-resources-call)
-  (fmakunbound 'e-shell-create)
-  (fmakunbound 'e-shell-command-create)
   (fmakunbound 'e-chat-shell)
   (fmakunbound 'e-dev-profile-start)
   (fmakunbound 'e-dev-profile-stop)
@@ -151,7 +153,6 @@
   (fmakunbound 'e-dev-perf-report)
   (fmakunbound 'e-dev-perf-list-scenarios)
   (fmakunbound 'e-dev-perf-update-baseline)
-  (fmakunbound 'e-session-persistence-status)
   (e-dev-reload default-directory)
   (should (commandp 'e-chat))
   (should (commandp 'e-chat-new))
@@ -162,13 +163,7 @@
   (should (fboundp 'e-chat-open))
   (should (fboundp 'e-base-layer-create))
   (should (fboundp 'e-emacs-base-layer-create))
-  (should (fboundp 'e-layer-create))
   (should (fboundp 'e-runtime-context-capability-create))
-  (should (fboundp 'e-operation-create))
-  (should (fboundp 'e-resource-method-create))
-  (should (fboundp 'e-resources-call))
-  (should (fboundp 'e-shell-create))
-  (should (fboundp 'e-shell-command-create))
   (should (fboundp 'e-chat-shell))
   (should (commandp 'e-dev-profile-start))
   (should (commandp 'e-dev-profile-stop))
@@ -179,7 +174,6 @@
   (should (commandp 'e-dev-perf-report))
   (should (commandp 'e-dev-perf-list-scenarios))
   (should (commandp 'e-dev-perf-update-baseline))
-  (should (fboundp 'e-session-persistence-status))
   (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
 
 (ert-deftest e-dev-test-reload-refreshes-defaults ()
@@ -223,7 +217,9 @@
                  (e-harness-registry-get-or-create :chat-default))
                e-startup-shell-hook)))
     (e-dev-reload default-directory))
-  (should (equal e-openai-default-model "gpt-5.5"))
+  ;; Provider defaults belong to a restart-required adapter module and are not
+  ;; rewritten by an extension reload.
+  (should (equal e-openai-default-model "gpt-5.4"))
   (should (e-layer-get 'agents-std-context))
   (should (equal e-default-chat-layer-ids
                  '(agents-std-context harness-base process-reporting

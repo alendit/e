@@ -76,3 +76,11 @@ them clearly before dispatch.  That does not replace the settlement fix.
 
 This investigation made no runtime changes.  The affected turn remains marked
 running, and the user's Emacs was neither aborted nor reloaded.
+
+* Resolution
+
+Resolved on 2026-08-20 by narrowing =e-dev-reload= to supported live seams.
+The command no longer reloads =e-tools.el=, =e-work.el=, or any other core,
+session, harness, Work, or provider module in place.  Those changes are marked
+restart-required.  Already-loaded layer, default, shell, and developer modules
+remain reloadable without creating mixed core generations.

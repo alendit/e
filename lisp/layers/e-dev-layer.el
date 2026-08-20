@@ -45,9 +45,9 @@
 	      (e-dev-mark-reload-required
 	       (e-dev-layer--argument-string arguments :reason "e source changed")
 	       (e-dev-layer--argument-files arguments)
-       (intern (e-dev-layer--argument-string arguments :scope "full"))))
+	       (intern (e-dev-layer--argument-string arguments :scope "restart"))))
     :description
-    "Mark the running Emacs as needing an explicit full reload when the user is idle."
+    "Mark the running Emacs as needing a supported extension reload or a restart."
     :parameters
     '(:type "object"
       :properties (:reason (:type "string")
@@ -71,9 +71,9 @@
    (concat
     "When editing e from inside e, do not call `e-dev-reload' during an active turn."
     "\n\n"
-    "Use the `e-dev' action `mark-reload-required' when a full reload is needed, and let the user run `M-x e-dev-reload' when idle."
+    "Use the `e-dev' action `mark-reload-required' with scope `reloadable' for layer, default, shell, or developer-module changes, and let the user run `M-x e-dev-reload' when idle."
     "\n\n"
-    "Only mark a full reload for changes that cannot be applied safely by a lightweight scoped reload path.")
+    "Use scope `restart' for core runtime, session, harness, Work, provider adapter, or record-shape changes; those are not applied by `e-dev-reload'.")
    :actions (e-dev-layer--reload-actions)))
 
 (defun e-dev-layer-create ()
