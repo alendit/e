@@ -352,40 +352,6 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-display-repairs-overwritten-composer-constituent ()
-  "Redisplaying a saved damaged atom restores its composer slot in place."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-repair-composer-slot"))
-         (intruder (generate-new-buffer "*e-chat composer intruder*"))
-         transcript-window composer-window repaired-window composer)
-    (unwind-protect
-        (progn
-          (delete-other-windows)
-          (setq transcript-window (selected-window))
-          (set-window-buffer transcript-window buffer)
-          (with-current-buffer buffer
-            (setq composer-window
-                  (e-chat--surface-display-composer transcript-window)))
-          (setq composer (window-buffer composer-window))
-          ;; Model a corrupted window state produced before surface leaves were
-          ;; dedicated.  The atom itself remains structurally intact.
-          (set-window-dedicated-p composer-window nil)
-          (set-window-buffer composer-window intruder)
-          (with-current-buffer buffer
-            (setq repaired-window
-                  (e-chat--surface-display-composer transcript-window)))
-          (should (eq repaired-window composer-window))
-          (should (eq (window-buffer composer-window) composer))
-          (should (eq (window-dedicated-p transcript-window) 'soft))
-          (should (eq (window-dedicated-p composer-window) 'soft))
-          (should (= (length (window-list nil 'nomini)) 2)))
-      (set-window-configuration configuration)
-      (when (buffer-live-p intruder)
-        (kill-buffer intruder))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-window-state-restoration-recovers-surface-pair ()
   "Writable window state restores the native atomic chat surface."
   (should (eq (cdr (assq 'window-atom window-persistent-parameters))
@@ -424,37 +390,6 @@ tests, matching how the buffer behaves when shown to a user."
       (set-window-configuration configuration)
       (when (buffer-live-p external-buffer)
         (kill-buffer external-buffer))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-legacy-ordinary-surface-upgrades-to-atom ()
-  "Displaying a persisted ordinary pair upgrades it inside the chat shell."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
-         (buffer (e-chat-test--buffer nil "chat-legacy-pair-upgrade"))
-         transcript-window legacy-window composer-window composer)
-    (unwind-protect
-        (progn
-          (delete-other-windows)
-          (setq transcript-window (selected-window))
-          (set-window-buffer transcript-window buffer)
-          (with-current-buffer buffer
-            (setq composer (e-chat--surface-ensure-composer)))
-          (setq legacy-window
-                (split-window transcript-window
-                              (- e-chat-composer-window-min-height)
-                              'below))
-          (set-window-buffer legacy-window composer)
-          (should-not (window-atom-root transcript-window))
-          (should-not (window-atom-root legacy-window))
-          (with-current-buffer buffer
-            (setq composer-window
-                  (e-chat--surface-display-composer transcript-window)))
-          (should-not (window-live-p legacy-window))
-          (should (eq (window-buffer composer-window) composer))
-          (should (eq (window-atom-root transcript-window)
-                      (window-atom-root composer-window))))
-      (set-window-configuration configuration)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1953,7 +1888,7 @@ must drop any revealed hidden blocks."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-reload-refreshes-every-visible-surface-instance ()
-  "Reload protects and repairs every visible atom for one transcript buffer."
+  "Reload protects every visible atom for one transcript buffer."
   (let* ((e-chat--surface-composition-enabled t)
          (configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-reload-visible-surfaces"))
@@ -1976,12 +1911,6 @@ must drop any revealed hidden blocks."
           (should (= (length windows) 4))
           (dolist (window windows)
             (set-window-dedicated-p window nil))
-          ;; Model an old persisted atom whose composer slot was overwritten.
-          (let ((damaged-composer-window
-                 (e-chat--surface-composer-slot-window
-                  first-transcript-window)))
-            (set-window-buffer damaged-composer-window
-                               (get-buffer-create "*e-chat reload intruder*")))
           (with-current-buffer buffer
             (e-chat--attach-buffer
              buffer e-chat-harness e-chat-session-id
@@ -1999,8 +1928,6 @@ must drop any revealed hidden blocks."
                        (e-chat--surface-composer-window
                         transcript-window))))))
       (set-window-configuration configuration)
-      (when-let ((intruder (get-buffer "*e-chat reload intruder*")))
-        (kill-buffer intruder))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

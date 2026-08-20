@@ -125,3 +125,15 @@ frame already contains duplicate surface instances like the reported one.
     split, deletion, and display errors still surface.
 14. Unit tests isolate ownership and repair; graphical tests prove the real
     display transition; existing structural tests cover native commands.
+
+* Compatibility retirement
+
+The temporary repair for atoms persisted before soft dedication has now been
+removed.  Current surfaces prevent generic replacement through soft window
+dedication, and reload reapplies that ownership to valid visible surfaces.
+An invalid atom is no longer silently rewritten as though it were supported
+current state.
+
+- Focused steady-state surface ERT: 4/4 passed.
+- Complete graphical suite: 26/26 passed.
+- Strict =e-chat.el= compilation: passed.

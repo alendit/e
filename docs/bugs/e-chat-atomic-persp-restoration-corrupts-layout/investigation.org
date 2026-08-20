@@ -117,3 +117,14 @@ generic activation, and reload draft retention.
 13. Unexpected split, delete, and host restoration errors still surface.
 14. Unit tests isolate persistence and command behavior; graphical regressions
     prove real =persp-mode= transitions and exact target layout.
+
+* Compatibility retirement
+
+The temporary display-time upgrade from the pre-atom ordinary pair has now
+been removed.  Supported surfaces are created as native atoms and restored
+through writable =window-atom= state; the chat shell no longer recognizes or
+mutates the obsolete ordinary-pair representation.
+
+- Focused steady-state surface ERT: 4/4 passed.
+- Complete graphical suite: 26/26 passed.
+- Strict =e-chat.el= compilation: passed.

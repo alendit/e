@@ -1622,45 +1622,21 @@ composer buffer; transcript rendering never calls it."
          (= (nth 2 transcript-edges) (nth 2 composer-edges))
          (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
 
-(defun e-chat--surface-composer-slot-window (&optional transcript-window)
-  "Return TRANSCRIPT-WINDOW's lower atomic constituent, if one exists.
-This identifies the presentation-owned slot structurally even when an older
-window state contains the wrong buffer there."
+(defun e-chat--surface-composer-window (&optional transcript-window)
+  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
+The composer buffer owns transcript identity.  Native atomic structure and
+vertical adjacency identify its visible constituent without changing the host
+window tree."
   (setq transcript-window (or transcript-window (selected-window)))
-  (when (window-live-p transcript-window)
+  (when (and (window-live-p transcript-window)
+             (buffer-live-p e-chat--surface-composer-buffer))
     (when-let ((atom-root (window-atom-root transcript-window)))
       (cl-find-if
        (lambda (candidate)
          (and (eq atom-root (window-atom-root candidate))
               (e-chat--surface-window-directly-below-p
                transcript-window candidate)))
-       (window-list (window-frame transcript-window)
-                    'nomini transcript-window)))))
-
-(defun e-chat--surface-composer-window (&optional transcript-window)
-  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
-The composer buffer owns transcript identity.  Native atomic structure and
-vertical adjacency identify its visible constituent without changing the host
-window tree."
-  (when (buffer-live-p e-chat--surface-composer-buffer)
-    (when-let ((slot (e-chat--surface-composer-slot-window transcript-window)))
-      (and (eq (window-buffer slot) e-chat--surface-composer-buffer)
-           slot))))
-
-(defun e-chat--surface-legacy-composer-window (&optional transcript-window)
-  "Return an adjacent pre-atom composer for TRANSCRIPT-WINDOW, if any.
-This recognizes only the ordinary representation shipped immediately before
-native atom persistence.  It never changes the host window tree."
-  (setq transcript-window (or transcript-window (selected-window)))
-  (when (and (window-live-p transcript-window)
-             (not (window-atom-root transcript-window))
-             (buffer-live-p e-chat--surface-composer-buffer))
-    (cl-find-if
-     (lambda (candidate)
-       (and (not (window-atom-root candidate))
-            (e-chat--surface-window-directly-below-p
-             transcript-window candidate)))
-     (get-buffer-window-list e-chat--surface-composer-buffer nil t))))
+       (get-buffer-window-list e-chat--surface-composer-buffer nil t)))))
 
 (defun e-chat--surface-member-window-p (window transcript composer)
   "Return non-nil when WINDOW belongs to TRANSCRIPT and COMPOSER's surface."
@@ -1756,9 +1732,9 @@ teardown or state restoration to replace the buffer without chat knowledge."
   (set-window-dedicated-p composer-window 'soft))
 
 (defun e-chat--surface-refresh-visible-windows ()
-  "Restore every visible instance of the current transcript surface.
+  "Refresh every visible instance of the current transcript surface.
 One transcript buffer may be shown in multiple windows.  Refresh each instance
-locally so reload upgrades old undedicated or overwritten atoms without any
+locally so reload reapplies current composer layout and ownership without any
 workspace or generic display component knowing about chat composition."
   (dolist (transcript-window
            (get-buffer-window-list (current-buffer) nil t))
@@ -1773,24 +1749,8 @@ When SELECT is non-nil, select the composer window."
                                 (get-buffer-window transcript t)))
          composer-window)
     (when (window-live-p transcript-window)
-      ;; Upgrade already-open or persisted ordinary pairs locally.  Removing
-      ;; the legacy constituent before native creation avoids absorbing an
-      ;; unrelated sibling and keeps workspace adapters unaware of e-chat.
-      (when-let ((legacy-window
-                  (e-chat--surface-legacy-composer-window transcript-window)))
-        (delete-window legacy-window))
       (setq composer-window
             (or (e-chat--surface-composer-window transcript-window)
-                (when-let ((slot
-                            (e-chat--surface-composer-slot-window
-                             transcript-window)))
-                  ;; Repair persisted corruption produced before constituents
-                  ;; were dedicated.  The atom already proves this is the
-                  ;; chat-owned lower slot, so replace it instead of adding a
-                  ;; third constituent.
-                  (set-window-dedicated-p slot nil)
-                  (set-window-buffer slot composer)
-                  slot)
                 (let ((window
                        (display-buffer
                         composer
