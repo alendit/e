@@ -44,7 +44,8 @@
 
 Each entry is a directory.  A discovered capability or layer is loaded only when
 its project root is at or below an allowed root.  Loading repo elisp runs with
-full Emacs privileges, so only add roots you trust."
+full Emacs privileges, so only add roots you trust.  Projects in
+`e-default-projects' are also trusted because startup primes them explicitly."
   :type '(repeat directory)
   :group 'e-project-local)
 
@@ -236,7 +237,7 @@ Outer ancestors come first so nearer directories win on id collision."
      (lambda (root)
        (let ((allowed (file-truename (e-skills-normalize-directory root))))
          (string-prefix-p allowed target)))
-     e-project-local-allowed-roots)))
+     (append e-project-local-allowed-roots (e-default-project-roots)))))
 
 ;;;; Eager project priming
 
@@ -323,7 +324,9 @@ re-primes cleanly instead of reusing a half-loaded layer."
                #'e-project-local-prime-projectile-project))
 
 (defun e-project-local-startup ()
-  "Install optional integrations for project-local extension discovery."
+  "Prime default projects and install optional project-local integrations."
+  (dolist (root (e-default-project-roots))
+    (e-project-local-prime-project root))
   (with-eval-after-load 'projectile
     (e-project-local-projectile-hooks-install)))
 

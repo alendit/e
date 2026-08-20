@@ -823,6 +823,26 @@ after this accessor returns nil."
         (plist-get (plist-get session :metadata) :project-root))))
    (e-harness-default-project-root harness)))
 
+(defcustom e-default-projects nil
+  "Projects loaded by `e' startup and available as workspace roots.
+
+Each entry is a directory.  Project-local extensions under configured projects
+are trusted and primed during startup, and every normalized project path is a
+secondary root for file resources in sessions whose primary root is elsewhere.
+The primary root remains the base for relative paths and the bash working
+directory."
+  :type '(repeat directory)
+  :group 'e)
+
+(defun e-default-project-roots ()
+  "Return normalized, de-duplicated roots from `e-default-projects'."
+  (let (roots)
+    (dolist (project e-default-projects)
+      (when-let ((root (e-harness--normalize-project-root project)))
+        (unless (member root roots)
+          (push root roots))))
+    (nreverse roots)))
+
 (defcustom e-workspace-roots-alist nil
   "Extra workspace roots keyed by primary project root.
 
@@ -842,10 +862,10 @@ runs in the primary project root.  Configure it alongside
     (string-prefix-p (file-truename root) (file-truename target))))
 
 (defun e-harness-configured-workspace-roots (primary-root)
-  "Return configured extra workspace roots active for PRIMARY-ROOT.
+  "Return configured extra and default project roots for PRIMARY-ROOT.
 Collects EXTRA-ROOTS from `e-workspace-roots-alist' entries whose key is an
-ancestor of (or equal to) PRIMARY-ROOT.  Returns a normalized, de-duplicated
-list, excluding PRIMARY-ROOT itself."
+ancestor of (or equal to) PRIMARY-ROOT, followed by `e-default-projects'.
+Returns a normalized, de-duplicated list, excluding PRIMARY-ROOT itself."
   (when-let ((primary (e-harness--normalize-project-root primary-root)))
     (let (roots)
       (dolist (entry e-workspace-roots-alist)
@@ -854,13 +874,17 @@ list, excluding PRIMARY-ROOT itself."
             (when-let ((extra (e-harness--normalize-project-root extra)))
               (unless (or (equal extra primary) (member extra roots))
                 (push extra roots))))))
+      (dolist (project (e-default-project-roots))
+        (unless (or (equal project primary) (member project roots))
+          (push project roots)))
       (nreverse roots))))
 
 (defun e-harness-workspace-roots (harness &optional session-id turn-id)
   "Return active workspace roots for HARNESS SESSION-ID as a normalized list.
 The first element is the primary project root (the base for relative paths and
 the bash working directory); the rest are configured extra roots from
-`e-workspace-roots-alist'.  Returns nil when no primary root is resolvable."
+`e-workspace-roots-alist' followed by `e-default-projects'.  Returns nil when
+no primary root is resolvable."
   (when-let ((primary (e-harness--normalize-project-root
                        (e-harness-project-root harness session-id turn-id))))
     (cons primary (e-harness-configured-workspace-roots primary))))

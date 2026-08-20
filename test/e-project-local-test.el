@@ -997,6 +997,36 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
 	                             :key #'e-shell-id))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-default-project-is-trusted-for-priming ()
+  "A configured default project loads extensions without duplicate allowlisting."
+  (let* ((project (make-temp-file "e-project-local-default-trust-" t))
+         (e-default-projects (list project))
+         (e-project-local-allowed-roots nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((layer (e-project-local-prime-project project)))
+            (should layer)
+            (should (cl-find 'topic (e-layer-shells layer)
+                             :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-startup-primes-default-projects-in-order ()
+  "Project-local startup primes every normalized default project in order."
+  (let* ((first (make-temp-file "e-project-local-default-first-" t))
+         (second (make-temp-file "e-project-local-default-second-" t))
+         (e-default-projects (list first first second))
+         primed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-project-local-prime-project)
+                   (lambda (root) (push root primed))))
+          (e-project-local-startup)
+          (should (equal (nreverse primed)
+                         (mapcar #'e-skills-normalize-directory
+                                 (list first second)))))
+      (delete-directory first t)
+      (delete-directory second t))))
+
 (ert-deftest e-project-local-test-inspect-action-does-not-load-elisp ()
   "The project-local inspect action reports extension files without loading them."
   (let* ((project (make-temp-file "e-project-local-action-inspect-" t))

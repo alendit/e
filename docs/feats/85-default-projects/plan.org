@@ -1,0 +1,79 @@
+#+title: Default Projects
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Goal
+
+Let the user configure projects that =e= treats as available from startup:
+
+- load each trusted project's =.e/layers/= and =.e/capabilities/= extensions;
+- expose every configured path as a secondary workspace root for sessions in
+  other projects;
+- keep the session's primary project root as its relative-path and shell root.
+
+Grimoire is the first configured consumer.
+
+* Contract
+
+=e-default-projects= is an ordered list of directories.  Configuring a project
+is an explicit trust decision: its project-local Elisp may load during =e=
+startup without also appearing in =e-project-local-allowed-roots=.
+
+The setting contributes policy, not durable session state.  Paths are expanded,
+normalized as directories, and de-duplicated when read.  Changes therefore
+apply to workspace-root lookup immediately and to project-layer loading on the
+next startup or development reload.
+
+Default projects are global secondary roots.  =e-workspace-roots-alist= remains
+the more specific per-primary-project mechanism and its configured roots stay
+ahead of global defaults.  The active primary root remains first and is never
+duplicated.
+
+* Ownership
+
+- =e-harness= owns the default-project setting and normalized root projection
+  next to existing workspace-root policy.
+- =e-project-local= consumes the setting at startup, owns the trust decision,
+  and performs extension loading through its existing transactional prime path.
+- User configuration selects Grimoire before =e= loads.  The package contains
+  no machine-specific project path.
+
+* Slices
+
+1. Add =e-default-projects= and normalized/de-duplicated root projection.
+2. Include default project roots in =e-harness-workspace-roots= after specific
+   configured extras.
+3. Treat default roots as trusted and prime them from =e-project-local-startup=.
+4. Configure =~/projects/org/grimoire/= in Doom's =use-package! e= =:init=
+   block, while preserving the separate e/hyper trust and Grimoire extra-root
+   policies.
+
+* Verification
+
+- Core ERT proves normalization, order, de-duplication, primary exclusion, and
+  interaction with =e-workspace-roots-alist=.
+- Project-local ERT proves a default project is trusted and primed on startup.
+- A fresh batch Emacs process primes the real Grimoire path and observes its
+  topic shell without touching the user's running Emacs.
+- The focused e tests and Doom config checks pass; both diffs pass whitespace
+  validation.
+
+* Design self-check
+
+1. If stopped after the runtime slice, users can configure and use default projects without the Grimoire-specific config migration.
+2. This moves toward live-configurable project extensions available independently of the selected project.
+3. Directory-list syntax and global-root behavior are stable; formatting and consumer order remain local and reversible.
+4. Harness root policy owns configured paths; project-local owns trusted loading; user config owns machine-specific membership.
+5. One narrow list projection serves both consumers without exposing loader details to core.
+6. Project-local depends on harness policy; the harness does not depend on project-local loading.
+7. Project loading remains in the startup adapter, outside pure root lookup.
+8. The setting is durable user intent; normalized roots are rebuilt on demand and never persisted per session.
+9. Root lookup adds a linear pass over a short configured list; startup performs one existing prime per default project.
+10. The list is a real shared contract because loading and root access must agree on membership.
+11. Existing allowlists and per-project root mappings keep their behavior and precedence.
+12. Grimoire can be removed from the duplicated project-local allowlist entry after migration.
+13. Missing extension directories remain a no-op; extension load errors propagate through startup rather than being swallowed.
+14. Core tests isolate root policy; project-local tests isolate trust/loading; the real-project batch probe covers their integration.

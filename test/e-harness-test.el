@@ -4442,6 +4442,7 @@ an empty summary\"."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
+         (e-default-projects nil)
          (e-workspace-roots-alist nil))
     (unwind-protect
         (progn
@@ -4459,6 +4460,7 @@ an empty summary\"."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
+         (e-default-projects nil)
          (e-workspace-roots-alist (list (cons primary (list extra)))))
     (unwind-protect
         (progn
@@ -4479,6 +4481,7 @@ an empty summary\"."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
+         (e-default-projects nil)
          (e-workspace-roots-alist (list (cons parent (list extra)))))
     (unwind-protect
         (progn
@@ -4489,6 +4492,38 @@ an empty summary\"."
                           (e-harness-workspace-roots harness "s1"))))
       (delete-directory parent t)
       (delete-directory extra t))))
+
+(ert-deftest e-harness-test-default-project-roots-normalize-and-deduplicate ()
+  "Default project roots preserve configured order after normalization."
+  (let* ((first (file-name-as-directory (make-temp-file "e-default-first-" t)))
+         (second (file-name-as-directory (make-temp-file "e-default-second-" t)))
+         (e-default-projects
+          (list (directory-file-name first) "" first second nil)))
+    (unwind-protect
+        (should (equal (e-default-project-roots) (list first second)))
+      (delete-directory first t)
+      (delete-directory second t))))
+
+(ert-deftest e-harness-test-workspace-roots-include-default-projects-last ()
+  "Specific extras precede global defaults without duplicating the primary."
+  (let* ((primary (file-name-as-directory (make-temp-file "e-ws-primary-" t)))
+         (specific (file-name-as-directory (make-temp-file "e-ws-specific-" t)))
+         (default (file-name-as-directory (make-temp-file "e-ws-default-" t)))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-default-projects (list default specific primary default))
+         (e-workspace-roots-alist (list (cons primary (list specific)))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness :id "s1" :metadata (list :project-root primary))
+          (should (equal (e-harness-workspace-roots harness "s1")
+                         (list primary specific default))))
+      (delete-directory primary t)
+      (delete-directory specific t)
+      (delete-directory default t))))
 
 (provide 'e-harness-test)
 
