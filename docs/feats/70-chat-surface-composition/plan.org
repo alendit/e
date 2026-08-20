@@ -34,9 +34,8 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
    composer keymap, and paired-window creation/cleanup.
 2. DONE: route input focus, submission, and context insertion through the composer
    buffer while transcript events render exclusively in the transcript buffer.
-3. DONE: remove normal-path composer spacer/rebuild work.  Keep a test-only
-   monolithic seam while existing isolated transcript tests are migrated; it
-   is not a user configuration or production fallback.
+3. DONE: remove composer spacer/rebuild work and migrate isolated tests to the
+   production transcript/composer surface.
 4. DONE: verify draft preservation across durable messages, activity, claim updates,
    navigation, and window resizing.  Record any remaining legacy test seam as
    an explicit follow-up rather than treating it as the architecture.
@@ -80,8 +79,8 @@ to expose only generic sessions, events, resources, hooks, and prompt APIs.
 - A short pinned transcript is bottom-aligned with a window-scoped presentation
   overlay above its output.  Unpinning removes the overlay; no spacer text is
   written to the transcript or durable session state.
-- Batch tests retain the old monolithic layout until their focused rendering
-  fixtures are migrated.  Interactive users cannot select that path.
+- Batch, integration, and graphical tests exercise the same separate
+  transcript/composer architecture as interactive sessions.
 
 * Architecture self-check
 

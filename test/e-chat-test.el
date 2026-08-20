@@ -93,6 +93,21 @@ tests, matching how the buffer behaves when shown to a user."
       (setq e-chat--assume-redraw-visible t))
     buffer))
 
+(defun e-chat-test--composer (transcript)
+  "Return TRANSCRIPT's live production composer buffer."
+  (let ((composer
+         (and (buffer-live-p transcript)
+              (buffer-local-value 'e-chat--surface-composer-buffer
+                                  transcript))))
+    (unless (buffer-live-p composer)
+      (error "Chat transcript has no live composer: %S" transcript))
+    composer))
+
+(defun e-chat-test--composer-text-for (transcript)
+  "Return the editable input text paired with TRANSCRIPT."
+  (with-current-buffer (e-chat-test--composer transcript)
+    (e-chat--composer-text)))
+
 (defun e-chat-test--create-session (store &rest arguments)
   "Create one board-native test session in STORE from ARGUMENTS."
   (let* ((session (apply #'e-session-create store arguments))
@@ -104,8 +119,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-composed-surface-keeps-draft-outside-transcript ()
   "Transcript rendering must not recreate or alter the separate composer."
-  (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-composed-surface")))
+  (let* ((buffer (e-chat-test--buffer nil "chat-composed-surface")))
     (unwind-protect
         (with-current-buffer buffer
           (let ((composer e-chat--surface-composer-buffer)
@@ -141,8 +155,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-composer-window-cycle-skips-transcript ()
   "C-x o treats a composed transcript and composer as one chat surface."
-  (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-composer-window-cycle"))
+  (let* ((buffer (e-chat-test--buffer nil "chat-composer-window-cycle"))
          transcript-window composer-window external-window external-buffer)
     (unwind-protect
         (progn
@@ -171,8 +184,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-delete-composer-window-closes-surface-pair ()
   "Native C-x 0 in the composer closes the complete atomic surface."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-delete"))
          (external-buffer (generate-new-buffer " *e-chat pair external*"))
          transcript-window composer-window external-window)
@@ -205,8 +217,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-killing-duplicated-transcript-tears-down-composer ()
   "Killing a multiply displayed transcript safely tears down its atom."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-kill"))
          first-transcript-window second-transcript-window composer-window
          composer)
@@ -234,8 +245,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-delete-other-windows-keeps-atomic-surface ()
   "Native C-x 1 keeps both constituents and removes external windows."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-atom-delete-others"))
          (external-buffer (generate-new-buffer " *e-chat other external*"))
          transcript-window composer-window external-window)
@@ -267,8 +277,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-split-from-composer-keeps-external-window ()
   "A surface split replaces its transient unpaired composer view."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-split"))
          (replacement (generate-new-buffer "*e-chat split replacement*"))
          (workspace (make-e-workspace-token
@@ -319,8 +328,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-unrelated-pop-to-buffer-preserves-surface-windows ()
   "Generic pop-up display cannot replace either chat surface constituent."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-popup-window-ownership"))
          (popup (generate-new-buffer "*e-chat unrelated popup*"))
          transcript-window composer-window popup-window composer)
@@ -356,8 +364,7 @@ tests, matching how the buffer behaves when shown to a user."
   "Writable window state restores the native atomic chat surface."
   (should (eq (cdr (assq 'window-atom window-persistent-parameters))
               'writable))
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-restoration"))
          (external-buffer (generate-new-buffer " *e-chat restore external*"))
          transcript-window composer-window external-window state composer)
@@ -395,8 +402,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-composer-navigation-routes-keys-to-transcript ()
   "Composer navigation selects the transcript and activates its keymap."
-  (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-composer-navigation"))
+  (let* ((buffer (e-chat-test--buffer nil "chat-composer-navigation"))
          transcript-window composer-window details-buffer)
     (unwind-protect
         (save-window-excursion
@@ -429,8 +435,7 @@ tests, matching how the buffer behaves when shown to a user."
 
 (ert-deftest e-chat-test-window-buffer-change-defers-composer-creation ()
   "A generic chat buffer change creates its composer after redisplay work."
-  (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-deferred-restored-window"))
+  (let* ((buffer (e-chat-test--buffer nil "chat-deferred-restored-window"))
          (transcript-window (display-buffer buffer)))
     (unwind-protect
         (let ((calls 0))
@@ -753,41 +758,35 @@ Production presentation never performs this compatibility translation."
           (should (eq (get-text-property (point-min) 'font-lock-face)
                       'e-chat-title-face))
           (should-not (string-match-p "^e chat$" (buffer-string)))
-          (should (markerp e-chat--composer-start-marker))
-          (should (marker-position e-chat--composer-start-marker))
           (should (get-text-property (point-min) 'read-only))
           (goto-char (point-min))
-          (should-error (insert "mutate") :type 'text-read-only)
-          (goto-char (point-max))
-          (insert "editable")
-          (should (equal (e-chat--composer-text) "editable"))
-          (should (string-match-p (regexp-quote e-chat--composer-glyph)
-                                  (buffer-string)))
-          (should (get-text-property
-                   (1- (marker-position e-chat--composer-start-marker))
-                   'e-chat-composer)))
+          (should-error (insert "mutate") :type 'buffer-read-only)
+          (should-not (string-match-p (regexp-quote e-chat--composer-glyph)
+                                      (buffer-string)))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (derived-mode-p 'e-chat-composer-mode))
+            (should (markerp e-chat--composer-start-marker))
+            (goto-char (point-max))
+            (insert "editable")
+            (should (equal (e-chat--composer-text) "editable"))
+            (should (string-match-p (regexp-quote e-chat--composer-glyph)
+                                    (buffer-string)))
+            (should (get-text-property
+                     (1- (marker-position e-chat--composer-start-marker))
+                     'e-chat-composer))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-composer-has-visible-separator-line ()
-  "The composer has a protected, visible separator above its prompt."
+(ert-deftest e-chat-test-composer-has-protected-prompt-glyph ()
+  "The separate composer has a protected prompt glyph."
   (let ((buffer (e-chat-test--buffer nil "chat-separator")))
     (unwind-protect
-        (with-current-buffer buffer
-          (goto-char e-chat--composer-start-marker)
-          (forward-line -1)
-          (let ((line-start (line-beginning-position))
-                (line-end (line-end-position)))
-            (should (string-match-p "─"
-                                    (buffer-substring-no-properties
-                                     line-start line-end)))
-            (should (eq (get-text-property line-start 'font-lock-face)
-                        'e-chat-separator-face))
-            (should (get-text-property line-start 'read-only))
-            ;; The separator inherits a neutral theme face rather than a fixed
-            ;; palette, so it tracks the active theme.
-            (should (equal (face-attribute 'e-chat-separator-face :inherit)
-                           'shadow))))
+        (with-current-buffer (e-chat-test--composer buffer)
+          (goto-char (point-min))
+          (should (looking-at-p (regexp-quote e-chat--composer-glyph)))
+          (should (eq (get-text-property (point) 'font-lock-face)
+                      'e-chat-composer-face))
+          (should (get-text-property (point) 'read-only)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -805,9 +804,7 @@ Production presentation never performs this compatibility translation."
                         e-chat--turn-separator content)
                        1))
             (should (= (e-chat-test--count-font-lock-face-runs
-                        'e-chat-separator-face
-                        (point-min)
-                        (marker-position e-chat--composer-spacer-marker))
+                        'e-chat-separator-face (point-min) (point-max))
                        2))
             (should (equal e-chat--response-separator
                            e-chat--composer-separator))
@@ -872,9 +869,7 @@ Production presentation never performs this compatibility translation."
           (should (= (e-chat-test--count-font-lock-face-runs
                       'e-chat-separator-face
                       (point-min)
-                      (or (and (markerp e-chat--composer-spacer-marker)
-                               (marker-position e-chat--composer-spacer-marker))
-                          (point-max)))
+                      (point-max))
                      1))
           (should-not (string-match-p "2 tool calls" (buffer-string))))
       (when (buffer-live-p buffer)
@@ -948,14 +943,14 @@ Production presentation never performs this compatibility translation."
                    (:type done :reason stop))
                  "chat-submit")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "first line\nsecond line")
           (e-chat-submit)
           (should (e-chat-test--wait-until
-                   (lambda () (string-match-p "hello back" (buffer-string)))
+                   (lambda () (string-match-p "hello back" (with-current-buffer buffer (buffer-string))))
                    1.0))
-          (let ((content (buffer-string)))
+          (let ((content (with-current-buffer buffer (buffer-string))))
             (should (string-match-p (concat (regexp-quote e-chat--user-glyph)
                                             " first line\nsecond line")
                                     content))
@@ -967,17 +962,18 @@ Production presentation never performs this compatibility translation."
             (should-not (string-match-p "Turn finished" content))
             (should-not (string-match-p "Backend returned no assistant output"
                                         content)))
-          (save-excursion
-            (goto-char (point-min))
-            (search-forward (concat e-chat--user-glyph " first line"))
-            (should (eq (get-text-property (point) 'font-lock-face)
-                        'e-chat-user-face))
-            (search-forward "hello back")
-            (should-not (eq (get-text-property (point) 'font-lock-face)
-                            'e-chat-assistant-face)))
+          (with-current-buffer buffer
+            (save-excursion
+              (goto-char (point-min))
+              (search-forward (concat e-chat--user-glyph " first line"))
+              (should (eq (get-text-property (point) 'font-lock-face)
+                          'e-chat-user-face))
+              (search-forward "hello back")
+              (should-not (eq (get-text-property (point) 'font-lock-face)
+                              'e-chat-assistant-face))))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (ignore-errors
             (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
@@ -1188,22 +1184,22 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-submit-immediately-clears-composer-and-keeps-separator ()
+(ert-deftest e-chat-test-submit-immediately-clears-composer-and-renders-user-turn ()
   "Submitting clears the composer while board observation shows the user turn."
   (let ((buffer (e-chat-test--buffer
                  '((:type assistant-message :content "later")
                    (:type done :reason stop))
                  "chat-submit-immediate")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "send now")
           (e-chat-submit)
           (should (equal (e-chat--composer-text) ""))
           (should (e-chat-test--wait-until
-                   (lambda () (string-match-p "send now" (buffer-string)))
+                   (lambda () (string-match-p "send now" (with-current-buffer buffer (buffer-string))))
                    1.0))
-          (let ((content (buffer-string)))
+          (let ((content (with-current-buffer buffer (buffer-string))))
             (should (string-match-p
                      (concat (regexp-quote e-chat--user-glyph)
                              " send now")
@@ -1212,12 +1208,10 @@ must drop any revealed hidden blocks."
                          (concat (regexp-quote e-chat--composer-glyph)
                                  "send now")
                          content)))
-          (should (string-match-p (regexp-quote e-chat--composer-separator)
-                                  (buffer-string)))
           (should (e-chat--composer-active-p))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (ignore-errors
             (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
@@ -1241,7 +1235,7 @@ must drop any revealed hidden blocks."
          (context-calls 0)
          (original-context (symbol-function 'e-harness-context)))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "send now")
           (cl-letf (((symbol-function 'e-harness-context)
@@ -1251,8 +1245,6 @@ must drop any revealed hidden blocks."
             (e-chat-submit)
             (should (= context-calls 0))
             (should-not backend-started)
-            (should (string-match-p (regexp-quote e-chat--composer-separator)
-                                    (buffer-string)))
             (should (e-chat--composer-active-p))
             (should (equal (e-chat--composer-text) ""))
             (should (e-chat-test--wait-until
@@ -1264,10 +1256,10 @@ must drop any revealed hidden blocks."
                        (string-match-p
                         (concat (regexp-quote e-chat--user-glyph)
                                 " send now")
-                        (buffer-string)))
+                        (with-current-buffer buffer (buffer-string))))
                      1.0))))
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (ignore-errors
             (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
@@ -1296,7 +1288,7 @@ must drop any revealed hidden blocks."
          (buffer (e-chat-open :harness harness
                               :session-id "chat-async-submit")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "send async")
           (e-chat-submit)
@@ -1306,18 +1298,22 @@ must drop any revealed hidden blocks."
                      (string-match-p
                       (concat (regexp-quote e-chat--user-glyph)
                               " send async")
-                      (buffer-string)))
+                      (with-current-buffer buffer (buffer-string))))
                    2.0))
-          (should-not (string-match-p "late answer" (buffer-string)))
-          (should (string-match-p "queued" (format "%s" header-line-format)))
+          (should-not (string-match-p "late answer" (with-current-buffer buffer (buffer-string))))
+          (should (string-match-p
+                   "queued"
+                   (with-current-buffer buffer
+                     (format "%s" header-line-format))))
           (funcall finish)
           (should (e-chat-test--wait-until
-                   (lambda () (string-match-p "late answer" (buffer-string)))
+                   (lambda () (string-match-p "late answer" (with-current-buffer buffer (buffer-string))))
                    2.0))
           (should (e-chat-test--wait-until
                    (lambda ()
-                     (string-match-p "done"
-                                     (format "%s" header-line-format)))
+                     (with-current-buffer buffer
+                       (string-match-p "done"
+                                       (format "%s" header-line-format))))
                    2.0)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1337,7 +1333,7 @@ must drop any revealed hidden blocks."
                               :session-id "chat-active-steer"))
          steered)
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "first")
           (e-chat-submit)
@@ -1389,7 +1385,7 @@ must drop any revealed hidden blocks."
                               :session-id "chat-active-queue"))
          queued)
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "first")
           (e-chat-submit)
@@ -1444,7 +1440,7 @@ must drop any revealed hidden blocks."
          (buffer (e-chat-open :harness harness
                               :session-id "chat-steer-pending")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "first")
           (let ((turn-id (e-chat-submit)))
@@ -1457,7 +1453,10 @@ must drop any revealed hidden blocks."
             (insert "focus here")
             (should (equal (e-chat-submit) turn-id))
             (should (equal (e-chat--composer-text) ""))
-            (should (string-match-p "steered" (format "%s" header-line-format)))
+            (should (string-match-p
+                     "steered"
+                     (format "%s"
+                             (buffer-local-value 'header-line-format buffer))))
             (should
              (e-chat-test--wait-until
               (lambda ()
@@ -1471,21 +1470,21 @@ must drop any revealed hidden blocks."
                              'steering)))))
               1.0))))
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (ignore-errors
             (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-queued-prompts-render-above-composer ()
-  "Queued prompts appear in bottom chrome above the composer separator."
+(ert-deftest e-chat-test-queued-prompts-render-in-composer ()
+  "Queued prompts appear above editable input in the composer buffer."
   (let ((buffer (e-chat-test--buffer nil "chat-queue-render")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
                      (lambda (&rest _)
                        '((:prompt "second line\ncontinued")
                          (:prompt "third")))))
-            (e-chat--refresh-composer-position)
+            (e-chat--surface-refresh-composer-queue)
             (let* ((content (buffer-string))
                    (queue-pos (and (markerp e-chat--queue-start-marker)
                                    (marker-position
@@ -1506,17 +1505,18 @@ must drop any revealed hidden blocks."
   "Queue chrome survives spacer refresh and final assistant insertion."
   (let ((buffer (e-chat-test--buffer nil "chat-queue-refresh")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
                      (lambda (&rest _) '((:prompt "second")))))
             (goto-char (point-max))
             (insert "draft")
-            (e-chat--refresh-composer-position)
+            (e-chat--surface-refresh-composer-queue)
             (should (string-match-p "Queued prompts" (buffer-string)))
             (should (string-match-p "1\\. second" (buffer-string)))
             (should (equal (e-chat--composer-text) "draft"))
-            (e-chat--insert-entry "Assistant" "final answer" t "turn-final")
-            (should (string-match-p "final answer" (buffer-string)))
+            (with-current-buffer buffer
+              (e-chat--insert-entry "Assistant" "final answer" t "turn-final")
+              (should (string-match-p "final answer" (buffer-string))))
             (should (string-match-p "Queued prompts" (buffer-string)))
             (should (string-match-p "1\\. second" (buffer-string)))
             (should (equal (e-chat--composer-text) "draft"))))
@@ -1527,23 +1527,26 @@ must drop any revealed hidden blocks."
   "Queue chrome survives terminal error and cancellation entries."
   (let ((buffer (e-chat-test--buffer nil "chat-queue-terminal")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
                      (lambda (&rest _) '((:prompt "second")))))
             (goto-char (point-max))
             (insert "draft")
-            (e-chat--render-turn-failure
-             "turn-failed"
-             (current-time)
-             '(:error "provider failed")
-             t)
-            (should (string-match-p "Turn failed: provider failed"
-                                    (buffer-string)))
+            (e-chat--surface-refresh-composer-queue)
+            (with-current-buffer buffer
+              (e-chat--render-turn-failure
+               "turn-failed"
+               (current-time)
+               '(:error "provider failed")
+               t)
+              (should (string-match-p "Turn failed: provider failed"
+                                      (buffer-string))))
             (should (string-match-p "Queued prompts" (buffer-string)))
             (should (string-match-p "1\\. second" (buffer-string)))
             (should (equal (e-chat--composer-text) "draft"))
-            (e-chat--insert-entry "System" "Turn cancelled" t "turn-cancelled")
-            (should (string-match-p "Turn cancelled" (buffer-string)))
+            (with-current-buffer buffer
+              (e-chat--insert-entry "System" "Turn cancelled" t "turn-cancelled")
+              (should (string-match-p "Turn cancelled" (buffer-string))))
             (should (string-match-p "Queued prompts" (buffer-string)))
             (should (string-match-p "1\\. second" (buffer-string)))
             (should (equal (e-chat--composer-text) "draft"))))
@@ -1555,15 +1558,15 @@ must drop any revealed hidden blocks."
   (let ((buffer (e-chat-test--buffer nil "chat-queue-empty"))
         (queued '((:prompt "second"))))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
                      (lambda (&rest _) queued)))
-            (e-chat--refresh-composer-position)
+            (e-chat--surface-refresh-composer-queue)
             (goto-char (point-max))
             (insert "draft")
             (should (string-match-p "Queued prompts" (buffer-string)))
             (setq queued nil)
-            (e-chat--refresh-composer-position)
+            (e-chat--surface-refresh-composer-queue)
             (should-not (string-match-p "Queued prompts" (buffer-string)))
             (should (equal (e-chat--composer-text) "draft"))))
       (when (buffer-live-p buffer)
@@ -1576,7 +1579,7 @@ must drop any revealed hidden blocks."
                    (:type done :reason stop))
                  "chat-ret")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "one")
           (call-interactively (lookup-key e-chat-mode-map (kbd "RET")))
@@ -1591,10 +1594,11 @@ must drop any revealed hidden blocks."
   "C-p from the first composer line does not move point into transcript text."
   (let ((buffer (e-chat-test--buffer nil "chat-composer-c-p")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char e-chat--composer-start-marker)
           (let ((composer-start (marker-position e-chat--composer-start-marker)))
-            (call-interactively (key-binding (kbd "C-p")))
+            (should-error (call-interactively (key-binding (kbd "C-p")))
+                          :type 'beginning-of-buffer)
             (should (>= (point) composer-start))
             (should-not (get-text-property (point) 'e-chat-protected))))
       (when (buffer-live-p buffer)
@@ -1630,42 +1634,6 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-composer-edit-scrolls-bottom-into-view ()
-  "Editing composer text scrolls the active input down after the command."
-  (let ((buffer (e-chat-test--buffer nil "chat-composer-edit-scroll"))
-        (window nil)
-        recenter-argument)
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (cl-letf (((symbol-function 'recenter)
-                     (lambda (argument &rest _ignored)
-                       (setq recenter-argument argument))))
-            (with-current-buffer buffer
-              (goto-char (point-max))
-              (insert "typed")
-              (run-hooks 'post-command-hook)
-              (should (equal recenter-argument -2)))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-self-insert-from-scrollback-targets-composer ()
-  "Typing from readback moves to the composer before inserting text."
-  (let ((buffer (e-chat-test--buffer nil "chat-composer-self-insert")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (goto-char (point-min))
-          (let ((this-command 'self-insert-command)
-                (last-command-event ?x))
-            (run-hooks 'pre-command-hook)
-            (call-interactively #'self-insert-command))
-          (should (e-chat--point-in-composer-p))
-          (should (equal (e-chat--composer-text) "x")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-post-command-without-edit-does-not-scroll-composer ()
   "Plain navigation commands do not force the window back to the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-composer-no-edit-scroll"))
@@ -1677,25 +1645,6 @@ must drop any revealed hidden blocks."
           (with-current-buffer buffer
             (run-hooks 'post-command-hook)
             (should-not recenter-called)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-show-composer-leaves-bottom-margin ()
-  "Composer focus leaves a visible line between point and the mode line."
-  (let ((buffer (e-chat-test--buffer nil "chat-composer-recenter"))
-        (window nil)
-        recenter-argument)
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (cl-letf (((symbol-function 'recenter)
-                     (lambda (argument &rest _ignored)
-                       (setq recenter-argument argument))))
-            (with-current-buffer buffer
-              (e-chat--show-composer)))
-          (should (equal recenter-argument -2)))
-      (when (window-live-p window)
-        (delete-window window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1781,6 +1730,9 @@ must drop any revealed hidden blocks."
               (setq buffer (e-chat-new))
               (with-current-buffer buffer
                 (should-not evil-local-mode)
+                (should-not evil-state))
+              (with-current-buffer (e-chat-test--composer buffer)
+                (should-not evil-local-mode)
                 (should-not evil-state)
                 (should (e-chat--point-in-composer-p))))))
       (when (buffer-live-p buffer)
@@ -1799,14 +1751,14 @@ must drop any revealed hidden blocks."
           (should-not e-chat-tool-list-mode)
           (should-not e-chat-block-view-mode)
           (should-not e-chat-response-navigation-mode)
-          (should (e-chat--point-in-composer-p)))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-switch-to-buffer-restores-composed-surface ()
   "Generic buffer switching restores a composed chat's editable surface."
-  (let* ((e-chat--surface-composition-enabled t)
-         (origin (get-buffer-create " *e-chat switch origin*"))
+  (let* ((origin (get-buffer-create " *e-chat switch origin*"))
          (buffer (e-chat-test--buffer nil "chat-switch-composed-surface"))
          (window (selected-window))
          composer)
@@ -1835,8 +1787,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-reload-preserves-composed-surface-pair ()
   "Reload preserves the atomic pair and its composer draft."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-reload-composed-surface"))
          transcript-window
          composer)
@@ -1889,8 +1840,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-reload-refreshes-every-visible-surface-instance ()
   "Reload protects every visible atom for one transcript buffer."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-reload-visible-surfaces"))
          first-transcript-window second-transcript-window composer windows)
     (unwind-protect
@@ -1957,12 +1907,12 @@ must drop any revealed hidden blocks."
             (set-window-start window (point))
             (e-chat--after-display-buffer buffer)
             (let ((latest-output-end (cdr (e-chat--running-status-bounds)))
-                  (composer-position
-                   (marker-position e-chat--composer-start-marker)))
+                  (output-position (e-chat--output-follow-position)))
               (should latest-output-end)
-              (should composer-position)
-              (should (= (point) composer-position))
-              (should (= (window-point window) composer-position)))))
+              (should (= (point) output-position))
+              (should (= (window-point window) output-position))
+              (should (eq (window-buffer (selected-window))
+                          (e-chat-test--composer buffer))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)
@@ -1970,8 +1920,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-after-display-settled-composed-chat-shows-latest-output ()
   "Displaying a settled composed chat shows its newest transcript output."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -2006,8 +1955,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-loaded-session-reprojection-restores-following-tail ()
   "Async session replay keeps an activated transcript at its new output tail."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "loaded history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -2066,8 +2014,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-loaded-session-reprojection-does-not-tail-scrollback ()
   "Session replay does not tail a transcript physically showing scrollback."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "settled history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -2294,7 +2241,7 @@ must drop any revealed hidden blocks."
   "Submitting converts inline reference atoms into ordered prompt context."
   (let ((buffer (e-chat-test--buffer nil "chat-reference-submit")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "Look at ")
           (e-chat--insert-context-reference
@@ -2336,8 +2283,7 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-composer-delete-respects-inline-reference-boundaries ()
   "Delete reference atoms only on the side selected by the delete command."
-  (let* ((e-chat--surface-composition-enabled t)
-         (buffer (e-chat-test--buffer nil "chat-reference-delete"))
+  (let* ((buffer (e-chat-test--buffer nil "chat-reference-delete"))
          composer)
     (unwind-protect
         (progn
@@ -2435,7 +2381,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-literal"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (insert "hello")
             (let ((last-command-event ?!))
               (e-chat-composer-bang))
@@ -2456,7 +2402,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-leading"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let ((prompt (e-prompt-spec-create
                            :name "review"
                            :description "Review code."
@@ -2495,7 +2441,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-bang"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let (done)
               (cl-letf (((symbol-function 'read-shell-command)
                          (lambda (&rest _args) "printf hi"))
@@ -2538,7 +2484,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-pending-submit"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (cl-letf (((symbol-function 'read-shell-command)
                        (lambda (&rest _args) "printf hi"))
                       ((symbol-function 'e-chat--run-shell-command-start)
@@ -2553,40 +2499,28 @@ must drop any revealed hidden blocks."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-pending-command-references-cancel-on-clear-and-kill ()
-  "Pending ! command processes are cancelled when chat buffers go away."
-  (let (buffer clear-cancelled kill-cancelled)
+(ert-deftest e-chat-test-pending-command-references-survive-clear-and-cancel-on-kill ()
+  "Transcript redraw preserves composer work; killing the surface cancels it."
+  (let (buffer cancelled)
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-clear-cancel"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (cl-letf (((symbol-function 'read-shell-command)
                        (lambda (&rest _args) "sleep 10"))
                       ((symbol-function 'e-chat--run-shell-command-start)
                        (lambda (&rest _args)
                          (e-tools-request-create
                           :cancel (lambda ()
-                                    (setq clear-cancelled t)
+                                    (setq cancelled t)
                                     t)))))
               (e-chat-composer-bang))
-            (e-chat--clear)
-            (should clear-cancelled))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer))
-          (setq buffer (e-chat-test--buffer nil "chat-prefix-kill-cancel"))
-          (with-current-buffer buffer
-            (cl-letf (((symbol-function 'read-shell-command)
-                       (lambda (&rest _args) "sleep 10"))
-                      ((symbol-function 'e-chat--run-shell-command-start)
-                       (lambda (&rest _args)
-                         (e-tools-request-create
-                          :cancel (lambda ()
-                                    (setq kill-cancelled t)
-                                    t)))))
-              (e-chat-composer-bang)))
+            (with-current-buffer buffer
+              (e-chat--clear))
+            (should-not cancelled))
           (kill-buffer buffer)
           (setq buffer nil)
-          (should kill-cancelled))
+          (should cancelled))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2649,7 +2583,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-cancel"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (cl-letf (((symbol-function 'read-shell-command)
                        (lambda (&rest _args) (signal 'quit nil))))
               (e-chat-composer-bang))
@@ -2674,7 +2608,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-empty"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (cl-letf (((symbol-function 'e-chat--project-file-candidates)
                        (lambda () nil))
                       ((symbol-function 'e-chat--prompt-candidates)
@@ -2986,7 +2920,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-at"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (insert "see ")
             (let ((unread-command-events (list ?\r)))
               (cl-letf (((symbol-function 'e-chat--at-candidates)
@@ -3019,7 +2953,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-at-inline"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (insert "see ")
             (let ((unread-command-events (list ?\r)))
               (cl-letf (((symbol-function 'e-chat--at-candidates)
@@ -3054,7 +2988,7 @@ must drop any revealed hidden blocks."
           (with-temp-file (expand-file-name "same.txt" secondary)
             (insert "secondary\n"))
           (setq buffer (e-chat-test--buffer nil "chat-prefix-duplicate-files"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (cl-letf (((symbol-function 'e-chat--workspace-roots)
                        (lambda () (list primary secondary))))
               (let* ((candidates (e-chat--project-file-candidates-sync))
@@ -3089,7 +3023,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-at-resource"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let ((capability
                    (e-capability-create
                     :id 'reference-capability
@@ -3126,7 +3060,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-at-capability"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let ((capability
                    (e-capability-create
                     :id 'reference-capability
@@ -3193,7 +3127,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-slash"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let* ((prompt (e-prompt-spec-create
                             :name "review"
                             :description "Review code."
@@ -3225,7 +3159,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-inline"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let* ((prompt (e-prompt-spec-create
                             :name "review"
                             :description "Review code."
@@ -3252,7 +3186,7 @@ must drop any revealed hidden blocks."
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-error"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (let ((prompt (e-prompt-spec-create
                            :name "needs-topic"
                            :description "Needs topic."
@@ -5282,8 +5216,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 205))
-          (goto-char (point-max))
-          (insert "follow-up draft")
+          (with-current-buffer (e-chat-test--composer buffer)
+            (goto-char (point-max))
+            (insert "follow-up draft"))
           (e-chat-test--focus-block-containing "Turn took 3min 25sec")
           (let* ((summary (e-chat-test--focused-block))
                  (summary-id (plist-get summary :id)))
@@ -5305,8 +5240,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                         (+ 1 summary-index
                                            (length children)))
                              children))
-              (should (string-match-p "follow-up draft"
-                                      (buffer-string)))
+              (should (equal (e-chat-test--composer-text-for buffer)
+                             "follow-up draft"))
               (e-chat--focus-block (car children))
               (should (equal (call-interactively
                               #'e-chat-response-navigation-copy)
@@ -5522,7 +5457,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (equal e-chat--progress-turn-id "turn-1"))
             (should (e-chat-test--live-work-handle-p
                      e-chat--progress-interval-handle))
-            (should (e-chat--composer-active-p))))
+            (with-current-buffer (e-chat-test--composer buffer)
+              (should (e-chat--composer-active-p)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5555,7 +5491,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should-not e-chat--progress-turn-id)
             (should-not (e-chat-test--live-work-handle-p
                          e-chat--progress-interval-handle))
-            (should (e-chat--composer-active-p))))
+            (with-current-buffer (e-chat-test--composer buffer)
+              (should (e-chat--composer-active-p)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5592,12 +5529,14 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 10))
           (e-chat-test--mark-active-turn "turn-1")
-          (should (e-chat--composer-active-p))
-          (goto-char (point-max))
-          (insert "follow-up draft")
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--composer-active-p))
+            (goto-char (point-max))
+            (insert "follow-up draft"))
           (e-chat--advance-progress-indicator)
-          (should (e-chat--composer-active-p))
-          (should (equal (e-chat--composer-text) "follow-up draft")))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) "follow-up draft"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5640,12 +5579,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                               (search-forward "Auto-compaction started")))
                 (thought-pos (save-excursion
                                (goto-char (point-min))
-                               (search-forward "thought")))
-                (composer-pos (marker-position e-chat--composer-start-marker)))
+                               (search-forward "thought"))))
             (should (< user-pos system-pos))
             (should (< system-pos thought-pos))
-            (should (< thought-pos composer-pos))
-            (should (e-chat--composer-active-p))))
+            (with-current-buffer (e-chat-test--composer buffer)
+              (should (e-chat--composer-active-p)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5664,8 +5602,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :turn-id "turn-2"
                             :created-at 20))
             (e-chat-test--mark-active-turn "turn-2")
-            (goto-char (point-max))
-            (insert "follow-up draft")
+            (with-current-buffer (e-chat-test--composer buffer)
+              (goto-char (point-max))
+              (insert "follow-up draft"))
             (goto-char (point-min))
             (set-window-point window (point))
             (set-window-start window (point))
@@ -5676,8 +5615,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (should (= (point) before-point))
               (should (= (window-point window) before-window-point))
               (should (= (window-start window) before-window-start))
-              (should (e-chat--composer-active-p))
-              (should (equal (e-chat--composer-text) "follow-up draft")))))
+              (with-current-buffer (e-chat-test--composer buffer)
+                (should (e-chat--composer-active-p))
+                (should (equal (e-chat--composer-text)
+                               "follow-up draft"))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)
@@ -5737,11 +5678,15 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 (ert-deftest e-chat-test-activity-rerender-keeps-running-status-tail ()
   "Activity redraws keep following output when focus was at the active tail."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-status-tail"))
-        (window nil))
+        (window nil)
+        (composer-window nil))
     (unwind-protect
         (progn
           (setq window (display-buffer buffer))
-          (select-window window)
+          (setq composer-window
+                (with-current-buffer buffer
+                  (e-chat--surface-display-composer window t)))
+          (select-window composer-window)
           (with-current-buffer buffer
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -5762,12 +5707,11 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer (current-buffer)))
             (e-chat--show-latest-output)
+            (e-chat--set-window-output-follow-state window t)
             (let ((old-tail (cdr (e-chat--running-status-bounds)))
-                  (old-composer (marker-position e-chat--composer-start-marker)))
+                  (old-output (e-chat--output-follow-position)))
               (should old-tail)
-              (should old-composer)
-              (should (= (point) old-composer))
-              (should (= (window-point window) old-composer))
+              (should (= (window-point window) old-output))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
                               :session-id e-chat-session-id
@@ -5776,12 +5720,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer (current-buffer)))
               (let ((new-tail (cdr (e-chat--running-status-bounds)))
-                    (new-composer (marker-position e-chat--composer-start-marker)))
+                    (new-output (e-chat--output-follow-position)))
                 (should new-tail)
-                (should new-composer)
                 (should (> new-tail old-tail))
-                (should (= (point) new-composer))
-                (should (= (window-point window) new-composer))))))
+                (should (= (window-point window) new-output))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)
@@ -5789,8 +5731,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-composed-progress-follows-tail-viewports-only ()
   "Composer focus follows a tailing transcript but preserves scrollback."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -5931,8 +5872,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-pinned-short-transcript-aligns-output-bottom ()
   "A short composed transcript uses window-local space above pinned output."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-short-output-bottom"))
          transcript-window composer-window spacer)
     (unwind-protect
@@ -5967,8 +5907,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-surface-activation-survives-late-window-restore ()
   "One deferred surface activation wins a host restoring stale scrollback."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -6017,8 +5956,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-composer-selection-activates-transcript-once ()
   "Entering a composer tails its transcript, but staying there preserves scrollback."
-  (let* ((e-chat--surface-composition-enabled t)
-         (history (mapconcat (lambda (number)
+  (let* ((history (mapconcat (lambda (number)
                                (format "history line %d" number))
                              (number-sequence 1 300)
                              "\n"))
@@ -6061,8 +5999,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-entering-surface-pair-focuses-composer ()
   "Entering a chat pair focuses input without breaking transcript navigation."
-  (let* ((e-chat--surface-composition-enabled t)
-         (configuration (current-window-configuration))
+  (let* ((configuration (current-window-configuration))
          (buffer (e-chat-test--buffer nil "chat-pair-entry-focus"))
          (external-buffer (generate-new-buffer " *e-chat focus external*"))
          transcript-window composer-window external-window)
@@ -6143,40 +6080,6 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-progress-rerender-strips-composer-presentation-properties ()
-  "Progress redraws do not leak transcript presentation into composer text."
-  (let ((buffer (e-chat-test--buffer nil "chat-progress-composer-properties")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-chat--render-event
-           (e-events-make :type 'turn-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 10))
-          (e-chat-test--mark-active-turn "turn-1")
-          (should (e-chat--composer-active-p))
-          (goto-char (point-max))
-          (let ((start (point)))
-            (insert "follow-up draft")
-            (add-text-properties
-             start
-             (point)
-             '(font-lock-face e-chat-user-face
-               e-chat-block-id "leaked-block"
-               e-chat-turn-id "leaked-turn"))
-            (e-chat--advance-progress-indicator)
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)))
-            (goto-char e-chat--composer-start-marker)
-            (search-forward "follow-up draft")
-            (let ((position (match-beginning 0)))
-              (should-not (get-text-property position 'font-lock-face))
-              (should-not (get-text-property position 'e-chat-block-id))
-              (should-not (get-text-property position 'e-chat-turn-id)))
-            (should (equal (e-chat--composer-text) "follow-up draft"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-progress-rerender-preserves-context-reference ()
   "Progress redraws keep inline context reference properties in the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-context-reference")))
@@ -6191,30 +6094,34 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'activity-redraw))
-          (goto-char (point-max))
-          (insert "Review ")
-          (let ((reference
-                 (e-chat--insert-context-reference
-                  '(:id "ref-1"
-                    :uri "buffer://source"
-                    :label "source:2"
-                    :text "two"
-                    :start-line 2
-                    :end-line 2
-                    :point-line 2))))
-            (insert " before replying.")
+          (let* ((composer (e-chat-test--composer buffer))
+                 (reference
+                  (with-current-buffer composer
+                    (goto-char (point-max))
+                    (insert "Review ")
+                    (prog1
+                        (e-chat--insert-context-reference
+                         '(:id "ref-1"
+                           :uri "buffer://source"
+                           :label "source:2"
+                           :text "two"
+                           :start-line 2
+                           :end-line 2
+                           :point-line 2))
+                      (insert " before replying.")))))
             (e-chat--advance-progress-indicator)
-            (should (e-chat--composer-active-p))
-            (let ((document (e-chat--composer-document)))
-              (should (equal (plist-get document :text)
-                             "Review <reference id=\"ref-1\" label=\"source:2\"> before replying."))
-              (should (equal (plist-get document :references)
-                             (list reference))))
-            (goto-char e-chat--composer-start-marker)
-            (search-forward "@[source:2]")
-            (should (equal (get-text-property (match-beginning 0)
-                                              'e-chat-context-reference)
-                           reference))))
+            (with-current-buffer composer
+              (should (e-chat--composer-active-p))
+              (let ((document (e-chat--composer-document)))
+                (should (equal (plist-get document :text)
+                               "Review <reference id=\"ref-1\" label=\"source:2\"> before replying."))
+                (should (equal (plist-get document :references)
+                               (list reference))))
+              (goto-char e-chat--composer-start-marker)
+              (search-forward "@[source:2]")
+              (should (equal (get-text-property (match-beginning 0)
+                                                'e-chat-context-reference)
+                             reference)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -6226,7 +6133,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                   :harness harness
                   :session-id "chat-submit-follow-up-composer")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "Initial prompt")
           (e-chat-submit)
@@ -6250,8 +6157,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
-          (goto-char (point-max))
-          (insert "follow-up draft")
+          (with-current-buffer (e-chat-test--composer buffer)
+            (goto-char (point-max))
+            (insert "follow-up draft"))
           (e-chat--render-event
            (e-events-make :type 'message-added
                           :session-id e-chat-session-id
@@ -6259,16 +6167,18 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :created-at 11
                           :payload '(:message (:role assistant
                                                 :content "Final answer."))))
-          (should (e-chat--composer-active-p))
-          (should (equal (e-chat--composer-text) "follow-up draft"))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) "follow-up draft")))
           (e-chat--render-event
            (e-events-make :type 'turn-finished
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 12
                           :payload '(:reason stop)))
-          (should (e-chat--composer-active-p))
-          (should (equal (e-chat--composer-text) "follow-up draft")))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) "follow-up draft"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -6575,11 +6485,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (goto-char (point-min))
             (set-window-point window (point))
             (set-window-start window (point))
-            (let ((before-point (point))
-                  (before-window-point (window-point window))
+            (e-chat--set-window-output-follow-state window nil)
+            (let ((before-window-point (window-point window))
                   (before-window-start (window-start window)))
               (e-chat--run-pending-activity-redraw)
-              (should (= (point) before-point))
               (should (= (window-point window) before-window-point))
               (should (= (window-start window) before-window-start))
               (should (string-match-p "1 tool call" (buffer-string))))))
@@ -6630,27 +6539,20 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'activity-redraw))
-          (goto-char (point-max))
-          (insert "follow-up draft")
-          (let ((delete-composer (symbol-function 'e-chat--delete-composer))
-                (insert-composer (symbol-function 'e-chat--insert-composer))
-                (deletes 0)
-                (inserts 0))
-            (cl-letf (((symbol-function 'e-chat--delete-composer)
-                       (lambda (&rest args)
-                         (setq deletes (1+ deletes))
-                         (apply delete-composer args)))
-                      ((symbol-function 'e-chat--insert-composer)
-                       (lambda (&rest args)
-                         (setq inserts (1+ inserts))
-                         (apply insert-composer args))))
-              (e-chat--advance-progress-indicator)
-              (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer))))
-            (should (= deletes 0))
-            (should (= inserts 0))
-            (should (e-chat--composer-active-p))
-            (should (equal (e-chat--composer-text) "follow-up draft"))))
+          (let ((composer (e-chat-test--composer buffer))
+                tick)
+            (with-current-buffer composer
+              (goto-char (point-max))
+              (insert "follow-up draft")
+              (setq tick (buffer-chars-modified-tick)))
+            (e-chat--advance-progress-indicator)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
+            (with-current-buffer composer
+              (should (= (buffer-chars-modified-tick) tick))
+              (should (e-chat--composer-active-p))
+              (should (equal (e-chat--composer-text)
+                             "follow-up draft")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -6939,30 +6841,6 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-response-navigation-focus-excludes-composer-spacer ()
-  "Focused turn highlight stops before the visible composer spacer."
-  (let ((buffer (e-chat-test--buffer nil "chat-nav-spacer"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((e-chat--test-window-body-height 60)
-                  (e-chat--test-transcript-screen-lines 4))
-              (e-chat-test--render-turn "turn-1" 10 11 "first" "one"))
-            (goto-char (point-max))
-            (call-interactively #'e-chat-enter-response-navigation)
-            (should (equal (plist-get (gethash e-chat--focused-block-id
-                                               e-chat--block-registry)
-                                      :turn-id)
-                           "turn-1"))
-            (should (<= (overlay-end e-chat--focused-turn-overlay)
-                        (marker-position e-chat--transcript-end-marker)))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-response-navigation-starts-at-turn-under-point ()
   "Response navigation starts at the rendered turn under point."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-under-point")))
@@ -7041,7 +6919,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (call-interactively #'e-chat-block-view-insert)
           (should-not e-chat-block-view-mode)
           (should-not e-chat-response-navigation-mode)
-          (should (>= (point) (marker-position e-chat--composer-start-marker))))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -7123,7 +7002,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (call-interactively
            (lookup-key e-chat-response-navigation-mode-map (kbd "i")))
           (should-not e-chat-response-navigation-mode)
-          (should (>= (point) (marker-position e-chat--composer-start-marker))))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -7140,7 +7020,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (call-interactively
            (lookup-key e-chat-response-navigation-mode-map (kbd "<escape>")))
           (should-not e-chat-response-navigation-mode)
-          (should (>= (point) (marker-position e-chat--composer-start-marker))))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -7251,7 +7132,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                       'activity))
           (call-interactively #'e-chat-response-navigation-activate)
           (should e-chat-tool-list-mode)
-          (should (e-chat--composer-active-p)))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--composer-active-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -7625,185 +7507,6 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-composer-uses-bottom-spacer-when-buffer-is-visible ()
-  "Displayed chat buffers keep the composer visually near the window bottom."
-  (let ((buffer (e-chat-test--buffer nil "chat-bottom"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((e-chat--test-window-body-height 12))
-              (e-chat--refresh-composer-position))
-            (should (markerp e-chat--composer-spacer-marker))
-            (should (marker-position e-chat--composer-spacer-marker))
-            (should (< (marker-position e-chat--composer-spacer-marker)
-                       (marker-position e-chat--composer-start-marker)))
-            (should (string-match-p "\n\n\n"
-                                    (buffer-substring-no-properties
-                                     e-chat--composer-spacer-marker
-                                     e-chat--composer-start-marker)))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-composer-spacer-shrinks-for-multiline-input ()
-  "Growing composer input reduces the protected bottom spacer."
-  (let ((buffer (e-chat-test--buffer nil "chat-bottom-multiline"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((e-chat--test-window-body-height 12)
-                  (e-chat--test-transcript-screen-lines 4))
-              (e-chat--refresh-composer-position))
-            (let ((single-line-spacer
-                   (count-lines e-chat--composer-spacer-marker
-                                e-chat--transcript-end-marker)))
-              (goto-char (point-max))
-              (insert "one\ntwo\nthree")
-              (let ((e-chat--test-window-body-height 12)
-                    (e-chat--test-transcript-screen-lines 4))
-                (e-chat--refresh-composer-position))
-              (let ((multiline-spacer
-                     (count-lines e-chat--composer-spacer-marker
-                                  e-chat--transcript-end-marker)))
-                (should (< multiline-spacer single-line-spacer))))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-composer-layout-cache-skips-repeated-line-counts ()
-  "Pure composer refreshes reuse cached spacer geometry."
-  (let ((buffer (e-chat-test--buffer nil "chat-bottom-cache"))
-        (transcript-line-counts 0)
-        (composer-line-counts 0))
-    (unwind-protect
-        (with-current-buffer buffer
-          (setq e-chat--composer-layout-cache nil)
-          (cl-letf (((symbol-function 'e-chat--transcript-screen-lines)
-                     (lambda (&optional _limit)
-                       (setq transcript-line-counts
-                             (1+ transcript-line-counts))
-                       4))
-                    ((symbol-function 'e-chat--screen-lines)
-                     (lambda (&rest _args)
-                       (setq composer-line-counts
-                             (1+ composer-line-counts))
-                       2)))
-            (let ((e-chat--test-window-body-height 12))
-              (e-chat--refresh-composer-position)
-              (e-chat--refresh-composer-position)
-              (should (= transcript-line-counts 1))
-              (should (= composer-line-counts 1))
-              (e-chat--insert-entry "System" "transcript changed" t)
-              (should (= transcript-line-counts 2))
-              (should (= composer-line-counts 2))
-              (e-chat--refresh-composer-position)
-              (should (= transcript-line-counts 2))
-              (should (= composer-line-counts 2)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-composer-spacer-line-count-is-window-bounded ()
-  "Positioning the composer scans at most a window of transcript, not all of it."
-  (let ((buffer (e-chat-test--buffer nil "chat-screen-bound"))
-        (window nil)
-        (max-region-lines 0))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (should (window-live-p (e-chat--visible-window)))
-            ;; Build a tall, non-wrapping transcript.
-            (dotimes (i 200)
-              (e-chat--insert-entry "System" (format "line %d" i) t))
-            (cl-letf* ((orig (symbol-function 'count-screen-lines))
-                       ((symbol-function 'count-screen-lines)
-                        (lambda (beg end &rest args)
-                          (setq max-region-lines
-                                (max max-region-lines (count-lines beg end)))
-                          (apply orig beg end args))))
-              (let ((e-chat--test-window-body-height 12))
-                (e-chat--refresh-composer-position)))
-            ;; The transcript is 200 lines tall; the spacer math must not walk
-            ;; more than a window's worth of it.
-            (should (<= max-region-lines 13))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-transcript-screen-lines-cap-matches-exact ()
-  "A short transcript counts identically with or without a line cap."
-  (let ((buffer (e-chat-test--buffer nil "chat-screen-exact"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (should (window-live-p (e-chat--visible-window)))
-            (e-chat--insert-entry "System" "one" t)
-            (e-chat--insert-entry "System" "two" t)
-            (e-chat--insert-entry "System" "three" t)
-            (goto-char (point-max))
-            (should (= (e-chat--transcript-screen-lines)
-                       (e-chat--transcript-screen-lines 200)))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-composer-skips-spacer-when-wrapped-content-fills-window ()
-  "Wrapped long transcript content does not create a middle-of-buffer spacer."
-  (let ((buffer (e-chat-test--buffer nil "chat-long"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (e-chat--insert-entry
-             "Assistant"
-             (make-string 400 ?x)
-             t)
-            (let ((e-chat--test-window-body-height 12)
-                  (e-chat--test-transcript-screen-lines 20))
-              (e-chat--refresh-composer-position))
-            (should (not (string-match-p
-                          "\n\n\n"
-                          (buffer-substring-no-properties
-                           e-chat--composer-spacer-marker
-                           e-chat--transcript-end-marker))))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-window-change-refreshes-visible-composer-spacer ()
-  "Window changes recalculate the composer spacer for visible chat buffers."
-  (let ((buffer (e-chat-test--buffer nil "chat-resize"))
-        (window nil))
-    (unwind-protect
-        (progn
-          (setq window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((e-chat--test-window-body-height 18))
-              (e-chat--refresh-composer-position))
-            (let ((before (count-lines e-chat--composer-spacer-marker
-                                       e-chat--transcript-end-marker)))
-              (let ((e-chat--test-window-body-height 8))
-                (e-chat--refresh-visible-composers))
-              (let ((after (count-lines e-chat--composer-spacer-marker
-                                        e-chat--transcript-end-marker)))
-                (should (< after before))))))
-      (when (window-live-p window)
-        (delete-window window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-reload-buffers-keeps-board-bound-harness ()
   "Reloading keeps the admitted endpoint, transcript, and composer draft."
   (let* ((directory (make-temp-file "e-chat-" t))
@@ -7820,7 +7523,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (progn
           (e-session-append-message
            store "chat-reload" '(:id "msg-1" :role user :content "saved prompt"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (goto-char (point-max))
             (insert "stale prompt"))
           (e-chat-test--with-empty-harness-registry
@@ -7833,7 +7536,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (eq e-chat-harness old-harness))
             (should (eq (e-harness-backend e-chat-harness) new-backend))
             (should (equal e-chat-session-id "chat-reload"))
-            (should (string-match-p "stale prompt" (buffer-string)))
+            (should (equal (e-chat-test--composer-text-for buffer)
+                           "stale prompt"))
             (should (string-match-p "saved prompt" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
@@ -7925,7 +7629,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
          (buffer (e-chat-open :harness harness :session-id "chat-reload-draft")))
     (unwind-protect
         (progn
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (goto-char (point-max))
             (insert "draft before reload")
             (should (equal (e-chat--composer-text) "draft before reload")))
@@ -7933,7 +7637,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (let ((e-chat-default-harness-id :missing-chat))
               (should (>= (e-chat-reload-buffers) 1))))
           (with-current-buffer buffer
-            (should (eq e-chat-harness harness))
+            (should (eq e-chat-harness harness)))
+          (with-current-buffer (e-chat-test--composer buffer)
             (should (e-chat--composer-active-p))
             (should (equal (e-chat--composer-text) "draft before reload"))))
       (when (buffer-live-p buffer)
@@ -8883,9 +8588,7 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
                   (should (equal e-chat-session-id "visible-session"))
                   (should (string-match-p
                            "@\\[.*:2 (context 1-3)\\]"
-                           (buffer-substring-no-properties
-                            e-chat--composer-start-marker
-                            (point-max)))))))))
+                           (e-chat-test--composer-text-for chat-buffer))))))))
       (when (and window (window-live-p window))
         (delete-window window))
       (e-chat-test--kill-chat-buffers))))
@@ -8931,14 +8634,11 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
                     (with-current-buffer visible-buffer
                       (should (string-match-p
                                "@\\[.*:2 (context 1-3)\\]"
-                               (buffer-substring-no-properties
-                                e-chat--composer-start-marker
-                                (point-max)))))
+                               (e-chat-test--composer-text-for visible-buffer))))
                     (with-current-buffer hidden-duplicate
                       (should (string-empty-p
-                               (buffer-substring-no-properties
-                                e-chat--composer-start-marker
-                                (point-max)))))))))))
+                               (e-chat-test--composer-text-for
+                                hidden-duplicate))))))))))
       (when (and window (window-live-p window))
         (delete-window window))
       (e-chat-test--kill-chat-buffers))))
@@ -9088,9 +8788,7 @@ gamma
                            (buffer-name)))
                   (should (string-match-p
                            "@\\[.*:2 (context 1-3)\\]"
-                           (buffer-substring-no-properties
-                            e-chat--composer-start-marker
-                            (point-max)))))))))
+                           (e-chat-test--composer-text-for chat-buffer))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-to-latest-deactivates-source-region ()
@@ -9116,9 +8814,7 @@ gamma
                 (with-current-buffer chat-buffer
                   (should (string-match-p
                            "@\\[.*:1\\]"
-                           (buffer-substring-no-properties
-                            e-chat--composer-start-marker
-                            (point-max)))))))))
+                           (e-chat-test--composer-text-for chat-buffer))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-clears-target-block-view-mode ()
@@ -9142,7 +8838,8 @@ gamma
            e-chat-session-id)
           (should-not e-chat-block-view-mode)
           (should-not e-chat-response-navigation-mode)
-          (should (e-chat--point-in-composer-p))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p)))
           (should-not (eq (key-binding (kbd "h") t)
                           #'e-chat-block-view-left)))
       (when (buffer-live-p buffer)
@@ -9168,7 +8865,8 @@ gamma
            e-chat-session-id)
           (should-not e-chat-response-navigation-mode)
           (should-not e-chat-block-view-mode)
-          (should (e-chat--point-in-composer-p))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat--point-in-composer-p)))
           (should-not (eq (key-binding (kbd "j") t)
                           #'e-chat-response-navigation-next)))
       (when (buffer-live-p buffer)
@@ -9200,9 +8898,8 @@ gamma
                                2))
                     (should (string-match-p
                              "@\\[.*:1 (context 1-3)\\]"
-                             (buffer-substring-no-properties
-                              e-chat--composer-start-marker
-                              (point-max))))))))))
+                             (e-chat-test--composer-text-for
+                              chat-buffer)))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-picker-can-select-existing-session ()
@@ -9231,9 +8928,8 @@ gamma
                                1))
                     (should (string-match-p
                              "@\\[.*:1 (context 1-3)\\]"
-                             (buffer-substring-no-properties
-                             e-chat--composer-start-marker
-                             (point-max))))))))))
+                             (e-chat-test--composer-text-for
+                              chat-buffer)))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-picker-selects-session-across-chat-instances ()
@@ -9276,9 +8972,8 @@ gamma
                     (should (equal e-chat-session-id "beta-session"))
                     (should (string-match-p
                              "@\\[.*:1 (context 1-3)\\]"
-                             (buffer-substring-no-properties
-                              e-chat--composer-start-marker
-                              (point-max))))))))))
+                             (e-chat-test--composer-text-for
+                              chat-buffer)))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-deduplicates-shared-store-by-owner ()
@@ -9422,9 +9117,8 @@ gamma
                     (should (equal e-chat-session-id "target-session"))
                     (should (string-match-p
                              "@\\[.*:1\\]"
-                             (buffer-substring-no-properties
-                              e-chat--composer-start-marker
-                              (point-max))))))))))
+                             (e-chat-test--composer-text-for
+                              chat-buffer)))))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-rename-updates-session-and-buffer-display ()
@@ -9826,7 +9520,7 @@ gamma
          (buffer (e-chat-open :harness harness
                               :session-id "chat-submit-profile")))
     (unwind-protect
-        (with-current-buffer buffer
+        (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "profile submit")
           (e-dev-profile-start)
@@ -10351,15 +10045,18 @@ gamma
     (unwind-protect
         (progn
           (switch-to-buffer buffer)
-          (e-chat-test--render-turn "turn-1" 10 11 "first" "old final")
-          (e-chat-test--render-turn "turn-2" 20 21 "second" "latest final")
-          (goto-char e-chat--composer-start-marker)
-          (call-interactively
-           (lookup-key e-chat-mode-map (kbd "M-y")))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "first" "old final")
+            (e-chat-test--render-turn "turn-2" 20 21 "second" "latest final"))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (goto-char e-chat--composer-start-marker)
+            (call-interactively
+             (lookup-key e-chat-composer-mode-map (kbd "M-y"))))
           (should (equal (current-kill 0) "latest final"))
           (setq opened
-                (call-interactively
-                 (lookup-key e-chat-mode-map (kbd "M-o"))))
+                (with-current-buffer (e-chat-test--composer buffer)
+                  (call-interactively
+                   (lookup-key e-chat-composer-mode-map (kbd "M-o")))))
           (should (eq (window-buffer (selected-window)) opened))
           (with-current-buffer opened
             (should (derived-mode-p 'markdown-mode))
@@ -11245,10 +10942,11 @@ gamma
           (e-chat-test--seed-board-log-from-private-fixture
            harness "loaded-bounded")
           (setq buffer (e-chat-open-session harness "loaded-bounded"))
-          (with-current-buffer buffer
+          (with-current-buffer (e-chat-test--composer buffer)
             (goto-char (point-max))
             (insert "next")
-            (should (equal (e-chat--composer-text) "next"))
+            (should (equal (e-chat--composer-text) "next")))
+          (with-current-buffer buffer
             (let ((text (buffer-string)))
               (should (string-match-p
                        "3 earlier transcript messages omitted" text))
@@ -11266,7 +10964,7 @@ gamma
               (should-not (string-match-p "middle prompt" text))
               (should (string-match-p "last prompt" text))
               (should (string-match-p "last response" text))
-              (should (equal (e-chat--composer-text) "next")))
+              (should (equal (e-chat-test--composer-text-for buffer) "next")))
             (e-chat--rerender-transcript)
             (let ((text (buffer-string)))
               (should (string-match-p
@@ -11274,7 +10972,7 @@ gamma
               (should-not (string-match-p "first prompt" text))
               (should-not (string-match-p "middle prompt" text))
               (should (string-match-p "last response" text))
-              (should (equal (e-chat--composer-text) "next")))))
+              (should (equal (e-chat-test--composer-text-for buffer) "next")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -11564,9 +11262,10 @@ gamma
           (should (equal (e-chat-service-messages
                           e-chat-harness e-chat-session-id)
                          nil))
-          (goto-char (point-max))
-          (insert "next")
-          (should (equal (e-chat--composer-text) "next")))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (goto-char (point-max))
+            (insert "next")
+            (should (equal (e-chat--composer-text) "next"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

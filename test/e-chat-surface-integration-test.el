@@ -42,8 +42,7 @@
 (ert-deftest e-chat-surface-integration-test-composer-submits-below-transcript ()
   "A displayed chat keeps input in its pane and responses in its transcript."
   (e-board-e2e-reset-runtime)
-  (let* ((e-chat--surface-composition-enabled t)
-         (backend (e-backend-fake-create
+  (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "surface answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend))
@@ -121,8 +120,7 @@
   (e-chat--configure-modal-editing-policy)
   (e-chat--configure-evil-composer-bindings)
   (e-board-e2e-reset-runtime)
-  (let* ((e-chat--surface-composition-enabled t)
-         (backend (e-backend-fake-create
+  (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "evil answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend))
