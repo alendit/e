@@ -1,0 +1,121 @@
+#+title: Investigation: Resumed Grimoire Daily Hang and Persistence Errors
+#+startup: overview
+
+* Status
+
+The UI hang, missing-manifest error, and task-queue writer error are three
+distinct failures.  The UI hang has a deterministic source-level reproduction.
+The missing manifest is an already-incomplete historical checkpoint.  The
+task-queue snapshot is terminal and is not retrying continuously.
+
+* Live evidence
+
+The supported =scripts/e-live-probe chat= request reached the Emacs server but
+timed out after two seconds.  Per the live-diagnostic contract, no second Emacs
+request was sent.
+
+Read-only OS inspection found Emacs PID 14359 at approximately 100 percent CPU
+after more than 38 minutes, with a 1.5 GB physical footprint.  Two bounded
+one-second samples placed the main thread in read-key redisplay rather than in
+the orchestration reducer or task writer.  Doom mode-line rendering and face
+resolution dominated the sampled redisplay work.
+
+The user-recorded profile
+=/tmp/e-profile/20260821-230243-000001= supplied the missing Lisp attribution.
+Its CPU profile recorded 2,719 of 4,183 leaf samples in
+=redisplay_internal=.  Its allocation profile attributed overlapping inclusive
+totals of approximately 114 MB to =e-chat-service--drain-subscription=, 93 MB
+to =e-board-registry-prepare-observer-page=, and 50 MB to repeated subscription
+drain scheduling during the short capture.  =visual-fill-column= and Doom's
+mode line amplify each redisplay, but neither owns the zero-delay wake loop.
+
+* Hang cause
+
+=e-chat-service--drain-subscription= accepts a prepared observer page and then
+tests whether its =:through-index= is below the board message count.  An
+observer already positioned at the board high-watermark receives an empty page
+with no receipt and no =:through-index=.  The drain substitutes zero for the
+missing index, concludes that every nonempty board is still behind, and
+schedules another zero-delay drain.  The observer cursor never changes, so the
+cycle repeats indefinitely and forces redisplay between timer callbacks.
+
+An isolated batch reproduction created one board message, installed an
+observer at the resulting high-watermark, and invoked the subscription drain
+ten times while capturing scheduled callbacks.  All ten empty drains scheduled
+another callback while the observer remained at message index 1 and the board
+remained at message count 1.
+
+The correct fix belongs to the chat service: an empty prepared page at the live
+high-watermark is settled and must not reschedule.  A page requiring a
+resnapshot should transition the subscription explicitly instead of entering
+the same loop.  Regression coverage should prove both the empty-high-watermark
+case and ordinary bounded continuation while a nonempty backlog remains.
+
+* Missing manifest
+
+The Daily session is =20260821T124805-f8f5c1c896c8=.  Its current resume
+checkpoint retains six orchestration facts--four terminal reports and two
+continuation claims--but no manifest.  The complete legacy JSONL journal still
+contains the old manifest at message 119, but its pre-codec JSON representation
+collapsed the original task list and preserves only one recoverable task.
+
+Commit =3feba159= prevents future checkpoints from dropping all orchestration
+facts and adds an exact tagged wire codec, but rewriting this already-incomplete
+resumed state cannot recreate the missing manifest.  The current call path has
+a Grimoire =manifest-unavailable= recovery branch, but
+=e-board-orchestration-run-projection= signals =:manifest, missing= before that
+branch can inspect the projection.
+
+The fix must not invent the lost manifest.  The projection boundary should
+surface an explicit incomplete-run state, or Grimoire should catch this exact
+domain failure and require an operator-chosen new run.  Existing persisted
+state was not edited.
+
+* Task-queue writer
+
+The durable task-queue snapshot contains 74 records: 71 done, one failed, and
+two cancelled.  No task is queued, running, or paused.  The write timer catches
+the missing executable, marks the writer failed, and terminates; it does not
+continuously retry.  A later queue mutation can schedule another write and
+produce the error again.
+
+The exact error proves that =executable-find= returned nil for
+=e-task-queue-node-executable= in that live timer callback.  Node is installed
+at =/opt/homebrew/bin/node=, and a private daemon started through the current
+Doom configuration resolved the configured task-queue Node executable.  The
+installation and normal current-config startup therefore reproduce no missing
+Node.
+
+The task queue resolves its process executable at timer execution time from
+the callback's ambient =exec-path=.  Global durable infrastructure should not
+depend on whichever buffer and local process environment happen to be current
+when a timer fires.  The owning fix is to resolve and launch the writer from a
+stable global process environment, with a focused regression using an
+unrelated buffer-local =exec-path=.  The live value cannot be read now because
+the supported probe timed out and further requests are prohibited.
+
+* Verification
+
+- The isolated empty-subscription reproduction rescheduled 10 of 10 empty
+  drains without cursor progress.
+- The supplied native CPU and allocation profiles were read offline and agree
+  with both bounded OS samples.
+- The task-queue snapshot was parsed with =read-eval= disabled; all 74 records
+  are terminal.
+- The private current-config compatibility suite passed four of four existing
+  checks.  A temporary diagnostic fifth check proved Node resolution under the
+  same configuration and was removed afterward.
+- No request was sent to the running Emacs after the live-probe timeout.  No
+  session, board, task-queue, or Grimoire persisted state was changed.
+
+* Next step
+
+Implement and test three separate semantic slices:
+
+1. stop the empty subscription drain loop and handle resnapshot explicitly;
+2. make the task writer use stable global process discovery and launch state;
+3. represent the already-incomplete orchestration run without fabricating a
+   manifest, then choose an explicit Daily recovery operation.
+
+The first slice requires a full Emacs restart because =e-chat-service= is core
+runtime code.  It is the slice that resolves the current 100-percent-CPU hang.

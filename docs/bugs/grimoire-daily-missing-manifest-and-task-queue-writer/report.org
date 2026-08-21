@@ -1,0 +1,16 @@
+#+title: Resumed Grimoire Daily Hangs and Reports Persistence Errors
+#+startup: overview
+
+* Report
+
+While executing the resumed Grimoire topic canvas
+=daily/2026-08-21.org=, the user observed both errors and an Emacs UI hang:
+
+#+begin_example
+e-board-orchestration--invalid: Invalid board orchestration fact: :manifest, missing
+Error running timer: (e-task-queue-error "Cannot find task queue Node writer")
+#+end_example
+
+The failure occurs during Grimoire Daily execution, after resuming the existing
+session.  The Emacs process remains at approximately 100 percent CPU and does
+not answer the bounded live-state probe before its two-second timeout.
