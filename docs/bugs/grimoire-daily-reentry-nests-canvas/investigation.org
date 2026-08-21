@@ -1,0 +1,151 @@
+#+title: Investigation: Grimoire Daily Re-entry Nests and Corrupts the Visible Canvas
+#+startup: overview
+
+* Live evidence
+
+The supported bounded =scripts/e-live-probe windows= helper captured the
+reported frame while it was still corrupt.  It contained five windows:
+
+#+begin_example
+2026-08-21.org                               (0 1 195 71)    selected
+2026-08-21.org                               (195 1 389 71)
+2026-08-21.org                               (0 71 195 80)
+ *e-chat input:*e-chat:Grimoire: Daily...*   (195 71 389 80)
+*e-chat:Grimoire: Daily 2026-08-21*          (0 80 389 85)
+#+end_example
+
+Every leaf reported =:atomic nil= and =:dedicated nil=.  The transcript was the
+five-row full-width bottom window; the document occupied three leaves; and the
+composer occupied the lower-right leaf.  This establishes that the screenshot
+was not just stale rendering: the live Emacs window tree itself had been
+mutated.
+
+Bounded symbol probes found both =e-chat--surface-display-composer= and
+=e-chat--surface-dedicate-windows= loaded from the current checkout through the
+straight build symlink.  The Emacs process started at 14:47:55 local, after the
+native-atom and dedication changes were installed.  This recurrence is not a
+pre-fix process or stale pre-atom function definition.
+
+The running Emacs was inspected read-only and was not reloaded or repaired.
+
+* Durable activity sequence
+
+The visible interactive session is =20260821T124805-f8f5c1c896c8=.  Its
+persisted activity journal records the initiating call and result:
+
+#+begin_example
+2026-08-21T12:50:02Z run_elisp
+  (grimoire-daily-update "2026-08-21")
+2026-08-21T12:50:03Z error
+  Could not create atomic e-chat composer window
+#+end_example
+
+That is 14:50:02--14:50:03 local.  At 12:50:15Z the agent tried the controller
+without the foreground display:
+
+#+begin_example
+(let* ((repo-root (grimoire-topic--require-repo-root))
+       (result (grimoire-topic-daily repo-root '(:date "2026-08-21"))))
+  (grimoire-daily-run-start repo-root result :foreground t))
+#+end_example
+
+It failed with =Daily run refuses dirty daily note daily/2026-08-21.org=.
+The later successful controller launch used the same headless shape after
+creating a clean daily-only checkpoint.  It did not call the foreground display
+path.  Therefore the background update and final commit happened after the
+window corruption; they did not cause it.
+
+* Source cause
+
+=grimoire-daily-update= calls =grimoire-topic--start-agentic-session= before it
+starts the durable daily controller.  The session starter resumes the daily's
+existing chat buffer and calls =grimoire-topic--display-doc-and-chat=.
+
+The display function asks =e-window-surface-replace= to replace the selected
+surface.  That contract correctly recognizes the selected e-chat
+transcript/composer atom and replaces that atom with one ordinary window.  But
+the Grimoire canvas is structurally larger than that atom: its daily document
+is a separate window above the chat atom.  Grimoire has no enclosing surface
+identity for the document plus chat, and the re-entry path does not detect that
+the requested document/chat canvas is already visible.
+
+Consequently, invoking the foreground update from the daily composer performs
+this transition:
+
+#+begin_example
+daily document
+chat transcript  } selected e-chat atom
+chat composer    }
+
+        becomes
+
+old daily document
+new daily document       } built inside the former chat allocation
+new chat transcript      }
+#+end_example
+
+The old document remains and expands when the chat atom is removed.  The
+replacement allocation is then split 2:1 again.  On the reported frame the new
+transcript is only five rows high.  =e-chat--after-display-buffer= asks
+=e-chat--surface-display-composer= to split that transcript into a new native
+atom.  The split cannot satisfy the composer geometry.  Buffer display uses a
+neighboring leaf for the composer instead, the atom verification rejects that
+ordinary result, and e-chat signals =Could not create atomic e-chat composer
+window=.
+
+Neither =grimoire-topic--display-doc-and-chat= nor
+=grimoire-topic--start-agentic-session= restores the previous window
+configuration on error.  The successful early mutations therefore remain
+visible after the final composer check fails.
+
+* Isolated graphical reproduction
+
+A temporary test in the repository's private off-screen graphical Emacs built
+one healthy Daily canvas, selected its composer, and immediately displayed the
+same document and chat again.  With an 85-row frame, it reproduced the exact
+error using current source.
+
+The relevant states were:
+
+#+begin_example
+before re-entry:
+  daily       (0 0 144 56)
+  transcript  (0 56 144 79)  atom main, soft dedicated
+  composer    (0 79 144 84)  atom below, soft dedicated
+
+after replacing only the selected chat atom:
+  old daily   (0 0 144 69)
+  replacement (0 69 144 83)
+
+before composer creation:
+  old daily   (0 0 144 69)
+  new daily   (0 69 144 78)
+  transcript  (0 78 144 83)
+
+after the error:
+  old daily   (0 0 144 69)
+  composer    (0 69 144 78)
+  transcript  (0 78 144 83)
+#+end_example
+
+The temporary diagnostic test was removed after the run.  The existing
+=grimoire-topic-graphical-test-daily-replaces-selected-chat-surface= covers a
+different transition: replacing an unrelated full-height chat surface with a
+new Daily canvas.  It does not cover foreground re-entry into an already
+visible Daily canvas.
+
+* Conclusion and next step
+
+The immediate cause is foreground re-entry from the already-visible Daily
+chat.  It nests a second Daily layout inside the first layout's chat atom, then
+leaves that partial layout behind when composer creation fails.  The ongoing
+headless daily update merely made the timing look asynchronous.
+
+This remains New.  A fix should be owned by the Grimoire presentation shell:
+reuse or replace the complete already-visible Daily canvas before rebuilding
+it, and make the display transition rollback-safe.  A graphical regression
+must invoke the same Daily document/chat display twice from the selected
+composer and prove one document plus one valid atomic chat surface remains.
+The generic =e-window-surface-replace= contract should continue to replace the
+surface represented by its input window; it cannot infer Grimoire's unmarked
+outer document/chat composition.

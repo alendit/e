@@ -1,0 +1,29 @@
+#+title: Grimoire Daily Re-entry Nests and Corrupts the Visible Canvas
+#+startup: overview
+
+* Report
+
+While the current Grimoire daily was already open and its update was running,
+the visible canvas changed into a corrupt five-window layout.  The daily
+document appeared three times, the composer was detached from its transcript,
+and the transcript was reduced to a five-row strip at the bottom of the frame.
+
+* Expected
+
+Starting a foreground update for the daily that is already visible should
+reuse or rebuild that one daily canvas.  It must leave exactly one document and
+one composed transcript/composer surface, including when the command is invoked
+from the daily's own chat.
+
+* Actual
+
+The foreground update partially rebuilt the canvas inside its existing chat
+allocation.  Composer creation then failed with:
+
+#+begin_example
+Could not create atomic e-chat composer window
+#+end_example
+
+The failed display left its earlier window splits and buffer replacements in
+place.  The later headless daily update continued against that already-corrupt
+presentation.
