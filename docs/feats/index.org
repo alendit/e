@@ -97,3 +97,4 @@ Status values for coding agents:
 | 84 | Done        | 84-trace-driven-hot-path-remediation/       | Trace-Driven Hot Path Remediation                    |
 | 85 | Done        | 85-default-projects/                        | Default Projects                                     |
 | 86 | In-review   | 86-current-emacs-config-e2e/                | Current Emacs Configuration E2E Mode                 |
+| 87 | Planned     | 87-sqlite-session-board-persistence/         | SQLite Session and Board Persistence                 |

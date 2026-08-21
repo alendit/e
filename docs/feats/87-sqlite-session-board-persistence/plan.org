@@ -1,0 +1,706 @@
+#+title: SQLite Session and Board Persistence
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Make one SQLite database the durable authority for sessions and their boards.
+Keep session and board semantics in the core runtime, keep presentation state
+out of persistence, and preserve asynchronous writes and bounded cooperative
+loads so storage work does not stall Emacs redisplay.
+
+The completed feature replaces the JSONL journals, per-session resume
+checkpoints, and derived =index.json=.  It does not place live harness, routing,
+subscription, focus, window, or rendering state in SQLite.
+
+* Why now
+
+The current format has accumulated three representations of related state:
+
+- one append-only JSONL journal per session;
+- one lossy resume checkpoint per session;
+- one rebuildable global session index.
+
+That split made ordinary resume fast, but it also made correctness depend on
+retention policy, byte offsets, JSON shape, and a periodically rebuilt catalog.
+The recent orchestration restart failure showed both classes of risk: ordinary
+JSON did not preserve nested Lisp type identity, and a bounded board tail could
+retain terminal facts after evicting the manifest needed to interpret them.
+
+SQLite gives the runtime one transactional durability boundary and direct,
+indexed access to the records needed for a resume projection.  It removes the
+need to encode semantic correctness into checkpoint tails or to rebuild a
+catalog by scanning files.
+
+* Current constraints to preserve
+
+- =e-session= owns session identity, entry ancestry, current-path semantics,
+  metadata classes, compaction boundaries, and provider-anchor compatibility.
+- =e-board= remains a pure process-local routing model.  It owns message,
+  processing, idempotency, and reducer semantics; it does not execute SQL.
+- =e-chat-service= owns the relationship between one chat session and its one
+  board, including restart reconstruction.
+- The persistence controller owns the acknowledged outbox, worker lifecycle,
+  retry classification, and finalization barrier.
+- Durable writes stay outside the Emacs UI event loop.  Reads performed in the
+  main process must be indexed, paged, and bounded per scheduler step.
+- Durable values must round-trip with exact supported Lisp shape.  Symbols,
+  keywords, strings, lists, vectors, nil, and JSON false may not collapse into
+  one another.
+- Durable board facts may not be lost because unrelated activity is noisy.
+- Unexpected corruption, unsupported values, schema mismatches, and revision
+  conflicts must surface.  Persistence must not guess or silently fall back.
+- Existing in-memory store behavior remains available for unit tests and
+  explicitly ephemeral harnesses.
+
+* Direction
+
+Use one database at =<e-session-directory>/store.sqlite3=.  A storage adapter
+below =e-session= exposes semantic commands and bounded read projections.  It
+does not expose SQL to session, board, harness, capability, or presentation
+code.
+
+A long-lived =emacs --batch -Q= worker, launched from the same Emacs
+installation, owns the writable SQLite connection.  It loads only the bundled
+storage worker and its codec.  This reuses Emacs's built-in SQLite bindings and
+avoids a native Node package or command-line SQL interpolation.  The parent
+keeps its current acknowledged outbox and sends newline-delimited, preflighted
+commands.  The worker serializes each semantic command in one SQL transaction
+and acknowledges it only after commit.
+
+The main Emacs process owns a separate read-only connection with
+=query_only= enabled.  Startup reads only the session catalog.  Session and
+board restoration use indexed pages scheduled through the existing request
+lifecycle.  Synchronous load remains available only for batch callers and
+tests; interactive shells use cooperative load.
+
+Persistent mode requires an Emacs build for which =sqlite-available-p= is true.
+The cutover raises the declared minimum Emacs version to 29.1 and still performs
+the runtime feature check because SQLite is an optional build feature.  There
+is no JSONL fallback in steady-state persistent mode.  The in-memory store
+remains usable without SQLite.
+
+* Ownership and dependency direction
+
+** =e-session=
+
+Owns the live session aggregate and stable domain operations.  Its public
+callers continue to create sessions, append typed entries, change session
+configuration, set message display, clear a transcript, and query current
+state.  It emits typed persistence mutations instead of generic JSON records.
+
+It does not know table names, SQL, WAL settings, migration files, or worker
+protocol details.
+
+** =e-board=
+
+Owns validation of board envelopes and processing records, board ordering,
+source-key semantics, and the distinction between durable facts and transient
+routing state.  It supplies frozen semantic records to its application owner.
+
+It does not acquire a database connection and does not infer persistence from
+subscriptions or presentation observers.
+
+** =e-chat-service=
+
+Owns the current one-session-to-one-board relationship.  It supplies the board
+binding and groups session and board mutations that arise from one application
+transition into one storage commit.  For example, a board output and its
+durable transcript projection must not become two independently committed
+facts when they describe one completed transition.
+
+** =e-session-storage=
+
+Defines the narrow consumer-shaped boundary:
+
+- open and close a store;
+- submit one typed commit with an expected aggregate revision;
+- list bounded session headers;
+- read one paged session resume projection;
+- read one paged board resume or audit projection;
+- finalize all commands submitted before a barrier;
+- expose bounded health and migration status.
+
+The contract is asynchronous for writes.  It has no generic =execute-sql= or
+=append-record= operation.
+
+** =e-session-sqlite=
+
+Owns schema mapping, queries, transactions, PRAGMAs, schema migrations, command
+deduplication, database errors, and the read-only connection.  It translates
+domain mutations to SQL but does not decide session paths, board reducers,
+capability state meaning, or presentation retention.
+
+** =e-session-sqlite-worker=
+
+Owns the writable connection and the ordered command loop.  It is an adapter,
+not a second implementation of session or board policy.  Domain policy arrives
+as validated mutation fields and explicit projection changes.
+
+* Storage model
+
+The schema keeps identity and query fields relational.  Nested domain values
+use one exact, versioned codec.  Storing the entire current system as opaque
+JSON blobs would retain the shape bugs and would not provide useful indexed
+access; fully normalizing capability-owned payloads would make persistence own
+their schemas.  The mixed boundary below avoids both errors.
+
+** Store metadata
+
+=schema_migrations=
+
+- schema version, migration name, checksum, and applied timestamp;
+- one row per applied migration;
+- unknown newer versions are a hard open error.
+
+=writer_commands=
+
+- stable command id as the primary key;
+- canonical command hash;
+- committed timestamp and encoded result, including new revisions;
+- inserted in the same transaction as the command's mutations.
+
+A retry with the same id and hash returns the stored result.  Reusing an id
+with different bytes is a terminal protocol error.
+
+** Sessions
+
+=sessions= stores the current durable session root and catalog projection:
+
+- session id, root entry id, current head id, and revision;
+- created and updated timestamps plus the local update sequence;
+- explicit name, current branch, and turn options;
+- exact encoded metadata;
+- current transcript epoch;
+- message count, first-user summary, last-message timestamp, and latest
+  assistant marker.
+
+The catalog columns are updated in the same transaction as the record that
+changes them.  They are not authoritative duplicate files and never require a
+reindex scan after an ordinary write.
+
+=session_records= is the ordered immutable session history:
+
+- session id and monotonically increasing per-session position;
+- record type;
+- optional entry id and parent entry id;
+- transcript epoch and created timestamp;
+- exact encoded payload and codec version.
+
+Identity-bearing session events, messages, activity entries, branch summaries,
+compactions, provider anchors, and process reports use entry and parent ids.
+Configuration changes, message-display changes, and transcript clears remain
+ordered records even where they do not introduce a new model-path entry.
+Partial unique indexes enforce entry identity without inventing ids for
+records that do not have one.
+
+=message_displays= is a rebuildable current projection keyed by session and
+message id.  A display change appends its audit record and updates this row in
+the same transaction.  Loading does not scan every historical display change.
+
+The current model path is selected from =current_head_id= through indexed
+parent links.  The current transcript epoch and explicit path eliminate full
+journal replay.  Activity and process-report retention remain application
+resume policy expressed as bounded queries; the complete audit rows remain in
+=session_records=.
+
+** Boards
+
+=boards= makes the board a first-class durable aggregate while recording the
+currently stable one-to-one relationship:
+
+- board id and unique owning session id;
+- exact encoded trusted principal;
+- revision and current generation;
+- next durable position and restored retention floor;
+- board output and activity sequences needed across restart.
+
+Do not introduce a many-to-many join until a real shared-board requirement
+exists.  The table boundary still lets board persistence stop masquerading as
+a session journal payload.
+
+=board_records= stores immutable board messages, processing chains, and
+processing results:
+
+- board id, generation, and monotonically increasing durable position;
+- record namespace and record id;
+- ordinary board sequence when present;
+- stable selector columns such as kind, author, target, subject participant,
+  source turn, activity kind, created timestamp, and routing state;
+- canonical source keys where the board contract requires idempotency;
+- exact encoded frozen envelope and codec version.
+
+The key is board, generation, record namespace, and record id.  This preserves
+the existing separation between ordinary messages, processing chains, and
+processing results.  A second unequal processing record with the same key is a
+conflict.  The database position preserves the exact interleaving of all three
+record namespaces even though processing records do not have ordinary board
+sequence numbers.
+
+=board_record_tags= normalizes only tags because tag selection is a stable
+board query contract.  Capability attributes remain in the encoded envelope.
+No capability-specific orchestration columns belong in the base schema.
+
+Clearing a board increments =boards.generation= in one transaction.  New
+records use the new generation and ordinary restore reads only that generation.
+Older generations remain available as audit history.  This preserves the
+current clear semantics without deleting evidence or requiring a special
+checkpoint-cleared marker.
+
+** Exact value codec
+
+Add one shared =e-storage-value-codec-v1= for nested persisted values and the
+worker protocol.  It uses tagged canonical JSON bytes with explicit forms for:
+
+- nil and false;
+- integers and finite floats;
+- strings;
+- symbols and keywords;
+- proper and dotted lists;
+- vectors;
+- supported string/symbol-keyed maps where a domain contract already allows
+  them.
+
+The codec rejects cycles, non-finite numbers, buffers, markers, processes,
+functions, arbitrary records, and unrecognized mutable objects before a
+command enters the outbox.  Node and byte budgets remain preflight checks.
+Canonical key order and byte representation make hashes and migration
+comparison deterministic.  Each encoded column carries or inherits a codec
+version; an unknown version is an explicit load error.
+
+This codec replaces local JSON workarounds for metadata and orchestration
+facts.  Domain validators still own allowed value shapes.  The storage codec
+only preserves the shape it is given.
+
+* Transaction and concurrency contract
+
+Each writer command contains one application commit with one or more typed
+mutations.  The worker performs the following in one =BEGIN IMMEDIATE=
+transaction:
+
+1. Look up the command id and verify its canonical hash.
+2. Compare expected session and board revisions when the command mutates them.
+3. Insert immutable records.
+4. Update current session, board, display, and catalog projections.
+5. Advance aggregate revisions.
+6. Insert the command result and commit.
+
+The response is emitted only after commit.  Constraint and revision conflicts
+are terminal.  =SQLITE_BUSY= and worker transport failures are retryable with a
+bounded backoff.  A terminal aggregate conflict faults persistence for that
+session or board; later writes for the aggregate do not continue over an
+unreconciled in-memory state.
+
+Revision checks permit separate Emacs processes to use different sessions in
+one database while making same-session lost updates visible.  This is the
+supported concurrency boundary.  Automatic last-writer-wins merge and silent
+lease takeover are not supported.
+
+The connection enables foreign keys and WAL mode.  Use =synchronous=FULL= for
+the durable writer.  If measured commit latency needs amortization, the worker
+may group adjacent independent commands into one transaction, but it may
+acknowledge none of them before the group commit.  Durability is not weakened
+to accommodate the current implementation.
+
+=e-session-finalize= becomes an ordered barrier.  Because every acknowledged
+commit is already durable, finalization waits for all earlier commands and a
+worker barrier; it does not build a checkpoint or force a WAL checkpoint.
+
+* Read and restore contract
+
+** Startup
+
+Opening a store performs a bounded schema/version check, starts the writer, and
+reads session headers directly from =sessions= ordered by the existing recent
+message semantics.  It does not scan =session_records= or =board_records=.
+
+The worker must report schema readiness before the read-only connection opens.
+Full =integrity_check= is an explicit diagnostic and migration gate, not an
+unbounded startup task.
+
+** Session load
+
+=e-session-load-session-start= remains the interactive entrypoint.  It pages
+indexed rows and yields between pages.  It reconstructs:
+
+- the session root and current configuration;
+- the current model path from the latest valid compaction boundary, or the
+  complete current path when no compaction exists;
+- compatible provider anchors on that retained path;
+- the existing bounded activity and process-report resume projections;
+- current message display state;
+- the board identity and board restoration request.
+
+The database replaces checkpoint materialization; =e-session= still decides
+what a valid compaction and provider anchor mean.  SQL supplies candidates in
+stable order and never chooses semantic compatibility.
+
+** Board load
+
+Board restore has two explicitly different products:
+
+- a bounded recent message/activity page for presentation and ordinary context;
+- a complete semantic replay stream for durable facts and processing records
+  needed by reducers and restart reconstruction.
+
+Both come from indexed pages in current-generation order.  Semantic facts are
+never limited by the recent presentation tail.  Reducers consume their stream
+incrementally, so correctness no longer requires retaining every fact in the
+chat buffer or one checkpoint object.  The binding remains =restoring= until
+the semantic stream is complete; callers must distinguish that state from a
+definitively missing run or child.
+
+Selectors use stable board columns and normalized tags.  Attribute-specific
+interpretation remains in the owning reducer after decoding.  A later feature
+may persist reducer-owned projections once a specific projection contract is
+stable; this feature does not add a generic projection table.
+
+** Audit and export
+
+Audit resources page immutable session or board rows without hydrating the
+live aggregate.  There is no per-session backing file after cutover.  Remove
+the misleading session =:file= field from catalog entries and use the existing
+session resource identity for runtime access.  Add an explicit export command
+for operator-readable JSONL when a file artifact is needed for debugging or
+sharing.
+
+* Migration and cutover
+
+Migration is explicit and offline.  Do not dual-write JSONL and SQLite and do
+not make startup choose whichever copy happens to parse.
+
+Add =scripts/e-migrate-session-store= with these phases:
+
+1. Verify that no active writer owns the source store, inventory every journal,
+   and record source sizes and hashes.
+2. Parse complete JSONL journals through the existing legacy normalization and
+   domain validators.  Checkpoints and =index.json= may supply diagnostics but
+   are not import authorities because they are derived and intentionally
+   lossy.
+3. Build a temporary SQLite database with the current schema and import each
+   session and board in deterministic order.  The importer is restartable by
+   source hash but never exposes a partially imported database as current.
+4. Compare a semantic manifest for every session: root identity, record ids and
+   types, current head/path, metadata, counts, board identity, board record
+   identities, clear generations, and canonical payload hashes.
+5. Run foreign-key checks and =integrity_check=, checkpoint the temporary WAL,
+   close all connections, and atomically install =store.sqlite3=.
+6. Write a migration report naming exact repairs, warnings, skipped legacy
+   fields, and failures.  Preserve all JSONL, checkpoint, and index files as a
+   read-only rollback source.
+
+Any unexplained record loss, missing root, conflicting typed board record, or
+non-round-tripping value aborts the whole cutover.  Known legacy normalization
+may be accepted only when the report states the exact transformation.  Missing
+historical facts are not invented.
+
+On startup, the final SQLite backend behaves as follows:
+
+- a valid =store.sqlite3= is opened;
+- a legacy-only directory produces a targeted migration-required error;
+- both formats present after migration use SQLite and report legacy files as
+  inactive backup material;
+- an invalid or newer SQLite schema is a hard error, never a JSONL fallback.
+
+Deletion of legacy files is a separate, explicit future cleanup after the
+SQLite store has been used and backed up.  This feature does not delete them.
+
+* Backup, recovery, and observability
+
+- Add an explicit worker-owned backup operation using SQLite's online backup
+  API or =VACUUM INTO= after capability validation.  Never copy a live database
+  and WAL pair with ordinary file copy.
+- Expose schema version, database path, writer liveness, pending command count,
+  oldest pending age, last committed command, retry state, read-page state,
+  WAL size, and last error through the existing bounded persistence status.
+- Add explicit =quick_check= and full =integrity_check= diagnostics.  They are
+  operator actions, not implicit UI work.
+- A corrupt database is left untouched and errors with recovery instructions.
+  Recovery means restoring a verified backup or explicitly rerunning the
+  legacy importer against preserved sources.
+- Temporary databases, backups, and migration reports use restrictive file
+  permissions consistent with the session directory.
+
+* Implementation slices
+
+Each slice is a coherent commit and leaves the project in a useful state.  The
+SQLite backend remains opt-in until the migration and cutover gates pass.
+
+1. *Storage contract and exact codec*
+   - Add the typed storage mutation/read boundary and keep the existing JSONL
+     adapter behind it temporarily.
+   - Add the shared tagged value codec, budgets, canonical hashing, and property
+     tests for exact round trips and rejection.
+   - Convert metadata and orchestration fact persistence to the shared codec
+     without changing their domain schemas.
+   - Gate: existing persistence tests pass through the adapter and no session or
+     board caller emits generic JSON records directly.
+
+2. *SQLite schema and worker*
+   - Add schema migrations, the batch Emacs worker, writer protocol, WAL/foreign
+     key settings, command deduplication, aggregate revisions, and bounded
+     status.
+   - Test empty creation, reopen, duplicate command, hash mismatch, revision
+     conflict, busy retry, worker restart, kill-before-commit, and
+     kill-after-commit-before-ack.
+   - Gate: the SQLite adapter passes focused transaction tests without changing
+     the default backend.
+
+3. *Session writes and catalog reads*
+   - Map every session mutation to typed SQL transactions and update catalog
+     projections transactionally.
+   - Load only session headers at store startup; remove reindex work from the
+     SQLite path.
+   - Run the same semantic contract suite against in-memory and SQLite stores.
+   - Gate: create, metadata/config changes, branches, compactions, anchors,
+     displays, transcript clear, list ordering, and finalization survive
+     restart with exact values.
+
+4. *Cooperative session resume*
+   - Implement paged current-path and bounded auxiliary projection reads.
+   - Keep compaction and provider compatibility decisions in =e-session=.
+   - Replace checkpoint-based interactive loading in the SQLite path.
+   - Gate: the 15,722-record/38 MB regression fixture resumes without a full
+     record scan and is no slower than the approximately 0.07-second checkpoint
+     baseline on the same machine, unless a measured, first-principles reason is
+     recorded and approved.
+
+5. *First-class board persistence*
+   - Move board identity, messages, facts, processing chains, and processing
+     results into board tables with generation and position semantics.
+   - Implement bounded presentation pages and complete incremental semantic
+     replay.  Preserve typed identity conflicts and source-key behavior.
+   - Gate: noisy activity cannot hide a manifest or other required fact; clear,
+     duplicate, conflicting, processing-record, and orchestration restart cases
+     pass without checkpoint retention rules.
+
+6. *Cross-domain commit boundaries*
+   - Change =e-chat-service= transitions that create both a board fact and a
+     session projection to submit one typed storage commit.
+   - Keep the board core pure and make failures visible before later dependent
+     persistence is accepted.
+   - Gate: fault-injection tests cannot produce a committed transcript mirror
+     without its source board record, or the reverse, for grouped transitions.
+
+7. *Offline importer and verification*
+   - Add dry-run, import, semantic manifest comparison, integrity checks,
+     deterministic reports, and atomic installation.
+   - Exercise clean, malformed, legacy-shape, missing-root, board-clear, and
+     orchestration fixtures.  Run a dry migration of a copy of the current user
+     store; never modify the live store as part of repository tests.
+   - Gate: repeat import produces the same manifest and any unexplained
+     mismatch prevents installation.
+
+8. *Cutover and legacy removal*
+   - Make SQLite the only persistent backend, add the migration-required startup
+     error, raise the declared Emacs minimum, and update architecture and E2E
+     documentation.
+   - Remove the JSONL writer, checkpoint manifests and retention limits,
+     checkpoint loader/migrator, index rebuild, direct/queued file write modes,
+     and per-session file exposure.
+   - Retain only the offline legacy reader used by the migration command.  It is
+     not linked into ordinary startup or load.
+   - Gate: source search finds no production JSONL/checkpoint/index path and no
+     implicit compatibility fallback.
+
+9. *System, current-config, and performance proof*
+   - Run focused storage, session, board, chat-service, orchestration, resource,
+     and restart suites; then the complete batch suite.
+   - Run graphical E2E in isolated mode and
+     =E_E2E_EMACS_CONFIG=current= mode against temporary SQLite stores.
+   - Measure startup catalog load, session resume, board semantic restore,
+     append/commit latency, finalization latency, database/WAL size, and Emacs
+     main-thread time under a representative event burst.
+   - Perform crash recovery and verified backup/restore playthroughs.  Record
+     all results in =review.org= before any live user-store migration.
+
+* Performance requirements
+
+- No SQL write or migration runs in the main Emacs event loop.
+- No interactive read step decodes more than its configured row/byte budget.
+- Store startup is proportional to session headers returned, not total
+  transcript or board history.
+- Session resume is proportional to the selected model path and bounded
+  auxiliary projections, not total audit history.
+- Board semantic restore may read every required fact, but does so in bounded
+  pages and does not retain unrelated activity merely to preserve facts.
+- Session list ordering uses an index over catalog timestamps and stable tie
+  breakers.
+- Board restore/query indexes cover generation plus durable position, kind,
+  ordinary sequence, and normalized tags.
+- Writer batching, if added, must preserve command order, revision checks, and
+  acknowledgement-after-durability.
+
+* Test strategy
+
+** Core contract tests
+
+Run the same behavior examples against the in-memory store and SQLite store.
+Cover identity, ancestry, branch selection, clear semantics, metadata ownership,
+provider anchors, display state, board record namespaces, exact duplicate
+handling, and conflict behavior.  These tests should fail narrowly when domain
+semantics change and should not assert SQL text.
+
+** Adapter tests
+
+Test schema migrations and SQL constraints directly with disposable databases.
+Cover command deduplication, canonical hashes, revisions, foreign keys,
+transaction rollback, busy classification, worker death boundaries, page
+cursors, unknown codec/schema versions, and read-only connection enforcement.
+
+** Migration tests
+
+Use immutable legacy fixtures and semantic manifests rather than regex checks
+of generated SQL.  Include the known list/vector/symbol ambiguity, retained
+orchestration facts, checkpoint-only omissions, missing roots, typed board-id
+collisions, clears, and journals with an incomplete final line.
+
+** System tests
+
+One restart scenario must create a branched session, compact it, attach a board,
+publish ordinary and processing records plus orchestration facts, change a
+message display, clear and reuse a board id in a new generation, finalize, kill
+the worker, reopen, and prove exact session and board reconstruction.
+
+One load scenario must keep an interactive timer responsive while paging a
+large session and board.  The existing graphical/current-config matrix must use
+temporary state and must never open or migrate the user's live database.
+
+* Acceptance criteria
+
+- =store.sqlite3= is the only ordinary persistent authority for sessions and
+  boards.
+- Session headers are listed without transcript replay or a rebuilt index file.
+- Sessions resume from indexed records without checkpoint files or byte offsets.
+- Board facts required by reducers survive regardless of unrelated activity
+  volume.
+- Session and board nested values round-trip with exact supported Lisp shape.
+- One application transition can commit related session and board mutations
+  atomically.
+- Duplicate delivery is idempotent; conflicting command ids, record ids, and
+  aggregate revisions fail visibly.
+- Writes remain asynchronous and interactive loads remain bounded and
+  cooperative.
+- Legacy migration is explicit, verified, atomic at cutover, and preserves the
+  source files.
+- Persistent mode fails clearly when SQLite support, the expected schema, or a
+  required migration is absent.
+- Repository, isolated graphical, and current-config E2E validation pass against
+  disposable SQLite state before any operator-owned store is touched.
+
+* Non-goals
+
+- Do not persist active turns, tool requests, timers, work handles,
+  subscriptions, observers, pickups, focus, windows, overlays, render caches,
+  or other process/presentation state.
+- Do not make SQLite a model-facing tool or capability action.
+- Do not expose generic SQL to agents, shells, capabilities, or resources.
+- Do not add full-text search, cloud sync, shared network storage, or a generic
+  capability projection framework in this feature.
+- Do not make boards many-to-many with sessions without a concrete shared-board
+  contract.
+- Do not keep permanent JSONL dual-write, runtime legacy replay, or automatic
+  format fallback.
+- Do not delete the user's legacy store during implementation or migration.
+
+* Risks and explicit mitigations
+
+** SQLite availability
+
+Built-in SQLite is optional even on a new Emacs.  Persistent construction checks
+it before creating state and reports how to obtain a compatible build.  The
+ephemeral store remains independent.  CI must exercise the declared minimum and
+current supported Emacs with SQLite enabled.
+
+** Worker startup cost
+
+A batch Emacs is heavier than the current Node writer.  It starts once per
+store, with =-Q= and a small load path.  Measure cold and warm startup.  If it is
+material, share one worker across stores through the storage adapter rather
+than moving writes onto the UI thread.
+
+** Database growth
+
+SQLite retains complete audit rows.  WAL size is observable and checkpoints are
+worker-owned maintenance.  Retention/deletion needs a separate policy feature;
+this migration does not silently discard history.
+
+** Main-process reads
+
+Even read-only SQL can block.  All interactive queries require covering indexes,
+row and byte limits, and request-lifecycle yielding.  An unbounded convenience
+query is a test failure, not an accepted implementation shortcut.
+
+** Partial in-memory failure
+
+Live state changes before asynchronous durability is acknowledged.  A terminal
+commit or revision failure faults that aggregate and blocks dependent writes
+until explicit reload/reconciliation.  It must not keep presenting later state
+as durably saved.
+
+* Legacy removal list
+
+After verified cutover, remove from production:
+
+- =lisp/core/e-session-writer.mjs= and its Node tests;
+- JSONL append, scan, suffix replay, and per-session file helpers;
+- =index.json= loading, refresh, rebuild, and dangling-file reconciliation;
+- resume checkpoint files, manifests, byte offsets, dirty-id tracking, and all
+  checkpoint retention limits;
+- direct and queued filesystem write modes;
+- local JSON array/plist repair paths that the shared exact codec supersedes;
+- catalog =:file= fields that imply one session equals one backing file.
+
+Keep the legacy decoder only under the offline migration entrypoint until a
+separate deprecation removes it.
+
+* Design self-check
+
+1. *Useful stopping point*: The adapter and exact codec are useful before
+   cutover; the opt-in SQLite backend can be proven independently; the importer
+   and final cutover each leave a coherent system.
+2. *Final direction*: One transactional SQLite authority replaces journals,
+   checkpoints, and catalog files while the live runtime stays in memory.
+3. *Stable versus uncertain*: Session/board identity, ancestry, immutable facts,
+   and exact value shape are stable.  Page sizes, WAL maintenance thresholds,
+   and worker sharing are tunable adapter policy.  Reducer-specific projections
+   are deferred until a real schema exists.
+4. *Ownership*: Session semantics stay in =e-session=, board semantics in
+   =e-board=, cross-domain transitions in =e-chat-service=, and persistence
+   mechanics in =e-session-storage= and its SQLite adapter.
+5. *Coupling*: SQL is behind a narrow semantic boundary.  The design removes
+   coupling to JSONL paths and checkpoint shapes and adds only the real storage
+   adapter variation between ephemeral and persistent stores.
+6. *Dependency direction*: The SQLite adapter depends on domain mutation/read
+   contracts.  Stable domain policy does not depend on SQL, the worker,
+   presentation, or provider adapters.
+7. *Side effects*: Writable connections, migrations, backups, WAL maintenance,
+   and filesystem changes live in the worker/adapter boundary.  Shells only
+   request application operations.
+8. *State lifetime*: Immutable session and board facts, user intent, stable
+   references, and current durable roots persist.  Catalog/display rows are
+   rebuildable projections.  Live routing, request, focus, and rendering state
+   remain process- or presentation-local.
+9. *Performance*: Writes remain off-thread; reads are indexed and paged; startup
+   no longer scans files; resume no longer materializes a checkpoint plus
+   suffix.  FULL durability cost is paid in the worker and measured explicitly.
+10. *Real interfaces*: The storage boundary contains operations both in-memory
+    and SQLite stores can honor without weakened semantics.  It has no generic
+    SQL or unsupported-operation escape hatch.
+11. *Compatibility*: Legacy data has one explicit offline importer.  Runtime
+    fallback and dual-write are rejected.  SQLite availability and the minimum
+    Emacs change are explicit cutover requirements.
+12. *Removal*: The JSONL writer, checkpoint system, derived index, queued/direct
+    file modes, per-session file field, and superseded JSON normalization are
+    removed after migration proof.
+13. *Errors*: Expected busy/transport failures retry at the adapter.  Invalid
+    values, corruption, schema mismatch, command hash mismatch, typed record
+    conflict, and aggregate revision conflict reach the persistence owner and
+    fault the affected aggregate.
+14. *Tests*: Shared domain contracts prove semantics independently of storage;
+    adapter tests prove transactions and failure boundaries; migration manifests
+    prove equivalence; restart, graphical, current-config, crash, and performance
+    suites prove the integrated behavior.
