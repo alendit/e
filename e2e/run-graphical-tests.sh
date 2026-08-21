@@ -6,8 +6,25 @@ project_dir=$(cd "$e2e_dir/.." && pwd)
 test_file=${E_GRAPHICAL_E2E_TEST_FILE:-$e2e_dir/graphical/e-graphical-test-suite.el}
 runner_file=$e2e_dir/graphical/e-graphical-test-runner.el
 source_bootstrap_file=$e2e_dir/graphical/e-graphical-source-bootstrap.el
+daemon_bootstrap_file=$e2e_dir/graphical/e-graphical-daemon-bootstrap.el
 
 cd "$project_dir"
+
+emacs_config_mode=${E_E2E_EMACS_CONFIG:-isolated}
+if [[ $emacs_config_mode != isolated && $emacs_config_mode != current ]]; then
+  echo "E_E2E_EMACS_CONFIG must be isolated or current." >&2
+  exit 2
+fi
+export E_E2E_EMACS_CONFIG=$emacs_config_mode
+
+current_emacs_command=(emacs)
+if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then
+  if [[ $emacs_config_mode != current ]]; then
+    echo "E_E2E_EMACS_INIT_DIRECTORY requires E_E2E_EMACS_CONFIG=current." >&2
+    exit 2
+  fi
+  current_emacs_command+=(--init-directory "$E_E2E_EMACS_INIT_DIRECTORY")
+fi
 
 convert_graphical_screenshots() {
   local directory=${E_GRAPHICAL_E2E_SCREENSHOT_DIR:-}
@@ -23,31 +40,50 @@ convert_graphical_screenshots() {
   shopt -u nullglob
 }
 
-emacs_command=(
-  eldev emacs
-  --load "$source_bootstrap_file"
-  --load "$test_file"
-  --load "$runner_file"
-)
+if [[ $emacs_config_mode == current ]]; then
+  eldev prepare emacs
+  emacs_command=(
+    "${current_emacs_command[@]}"
+    --load "$daemon_bootstrap_file"
+    --load "$test_file"
+    --load "$runner_file"
+  )
+else
+  emacs_command=(
+    eldev emacs
+    --load "$source_bootstrap_file"
+    --load "$test_file"
+    --load "$runner_file"
+  )
+fi
 
 system_name=$(uname -s)
 
 if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; then
   server_name=e-graphical-e2e-$$
   report_file=$(mktemp -t e-graphical-e2e-report.XXXXXX)
-  emacs_dir=$(mktemp -d -t e-graphical-e2e-emacs.XXXXXX)
-  bootstrap_file=$e2e_dir/graphical/e-graphical-daemon-bootstrap.el
+  emacs_dir=
+  if [[ $emacs_config_mode == isolated ]]; then
+    emacs_dir=$(mktemp -d -t e-graphical-e2e-emacs.XXXXXX)
+  fi
   cleanup() {
     emacsclient --socket-name "$server_name" \
       --eval "(kill-emacs 0)" >/dev/null 2>&1 || true
     rm -f "$report_file"
-    rm -rf "$emacs_dir"
+    if [[ -n $emacs_dir ]]; then
+      rm -rf "$emacs_dir"
+    fi
   }
   trap cleanup EXIT HUP INT TERM
 
   eldev prepare emacs
-  E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
-    emacs --quick --daemon="$server_name" --load "$bootstrap_file"
+  if [[ $emacs_config_mode == current ]]; then
+    "${current_emacs_command[@]}" \
+      --daemon="$server_name" --load "$daemon_bootstrap_file"
+  else
+    E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
+      emacs --quick --daemon="$server_name" --load "$daemon_bootstrap_file"
+  fi
   result=$(emacsclient --socket-name "$server_name" --eval "
     (let ((frame
            (make-frame

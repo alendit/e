@@ -143,7 +143,6 @@
   (skip-unless (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
-     (should-not (fboundp '+workspace-current-name))
      (let* ((owner-shell
              (e-workspace-behavior-test--make-buffer
               "*e workspace owner shell*" "owner workspace shell"))

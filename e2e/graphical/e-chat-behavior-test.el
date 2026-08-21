@@ -443,7 +443,10 @@ than the invisible insertion position."
             (should (eq (selected-window) composer-window))
             (should (eq (window-atom-root transcript-window)
                         (window-atom-root composer-window)))
-            (should (eq (key-binding (kbd "C-x 0")) #'delete-window))
+            ;; Host configurations may remap `delete-window' to a workspace-
+            ;; aware command.  The observable atomic-surface behavior below is
+            ;; the contract; do not require one concrete keymap implementation.
+            (should (commandp (key-binding (kbd "C-x 0"))))
             (with-current-buffer (window-buffer composer-window)
               (should (derived-mode-p 'e-chat-composer-mode)))
             (should (window-live-p outside-window))
@@ -1252,6 +1255,10 @@ than the invisible insertion position."
   (skip-unless (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (persp-was-enabled (bound-and-true-p persp-mode))
+        (original-persp-name
+         (and (bound-and-true-p persp-mode)
+              (safe-persp-name (get-current-persp))))
         fixture)
     (unwind-protect
         (progn
@@ -1271,14 +1278,18 @@ than the invisible insertion position."
                           (window-atom-root (cdr windows)))
                       (eq (selected-window) (cdr windows)))))
              3.0 "persp-restored chat surface with focused composer")))
-      (when (bound-and-true-p persp-mode)
-        (persp-mode -1))
       (when-let ((away (get-buffer "*e graphical away*")))
         (kill-buffer away))
       (e-chat-behavior-test--cleanup fixture configuration frame-size)
-      ;; `persp-mode' finishes disabling through the interactive event loop.
-      ;; Let those callbacks settle, then make the captured pre-test window
-      ;; configuration the final state so later graphical cases are isolated.
+      (if persp-was-enabled
+          (when (and original-persp-name
+                     (persp-with-name-exists-p original-persp-name))
+            (persp-switch original-persp-name))
+        (when (bound-and-true-p persp-mode)
+          (persp-mode -1)))
+      ;; A current-config run must retain the host's enabled persp runtime;
+      ;; disabling it leaves Doom workspace functions present over cleared
+      ;; persp tables and makes every later chat fixture fail spuriously.
       (sit-for 0.05)
       (set-window-configuration configuration)
       (redisplay t))))
