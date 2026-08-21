@@ -1,0 +1,12 @@
+#+title: Grimoire First Open Fails In Recentf Hook
+#+startup: overview
+
+* Report
+
+On the first Grimoire daily open after Emacs startup, Doom reports:
+
+#+begin_src text
+Error (doom-first-file-hook): Error running hook "recentf-mode" because: (void-variable type)
+#+end_src
+
+Later opens in the same Emacs do not show the error.

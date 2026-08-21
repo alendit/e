@@ -97,13 +97,18 @@ with a focused screenshot trace before changing follow policy.
 
 * Verification
 
+The first-file compatibility check was added after a malformed configured
+Recentf cache reproduced a =doom-first-file-hook= failure.  The runner snapshots
+that cache into temporary state before opening a file, so this check exercises
+real persisted input without modifying it.
+
 #+begin_src sh
 bash e2e/run-current-config-tests.sh
 #+end_src
 
 #+begin_example
-Ran 3 tests, 3 results as expected, 0 unexpected
-Current-config E2E complete: 3 tests, 0 unexpected.
+Ran 4 tests, 4 results as expected, 0 unexpected
+Current-config E2E complete: 4 tests, 0 unexpected.
 #+end_example
 
 #+begin_src sh
@@ -147,8 +152,9 @@ scripts passed =bash -n=, and =git diff --check= passed.
 
 The current-config compatibility daemon loaded Doom and =e= from this checkout,
 constructed the configured default harness without a provider request, and
-integrated Grimoire through =e-default-projects=.  The three checks themselves
-took 0.34 seconds after normal configuration startup.
+integrated Grimoire through =e-default-projects=.  It also opened a first file
+through the configured Doom hooks.  The four checks took 1.27 seconds after
+normal configuration startup.
 
 The final current-config visual run loaded Doom in 3.4 seconds and ran the full
 matrix in 24.3 seconds.  It preserved configured =C-x 0= behavior and retained

@@ -7,6 +7,7 @@ bootstrap_file=$e2e_dir/e-e2e-bootstrap.el
 test_file=$e2e_dir/e-current-config-e2e-test.el
 server_name=e-current-config-e2e-$$
 report_file=$(mktemp -t e-current-config-e2e-report.XXXXXX)
+state_dir=$(mktemp -d -t e-current-config-e2e-state.XXXXXX)
 
 cd "$project_dir"
 
@@ -15,6 +16,7 @@ if [[ ${E_E2E_EMACS_CONFIG:-current} != current ]]; then
   exit 2
 fi
 export E_E2E_EMACS_CONFIG=current
+export E_CURRENT_CONFIG_E2E_STATE_DIR=$state_dir
 
 emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then
@@ -25,6 +27,7 @@ cleanup() {
   emacsclient --socket-name "$server_name" \
     --eval "(kill-emacs 0)" >/dev/null 2>&1 || true
   rm -f "$report_file"
+  rm -rf "$state_dir"
 }
 trap cleanup EXIT HUP INT TERM
 

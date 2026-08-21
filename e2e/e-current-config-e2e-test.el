@@ -24,12 +24,50 @@
 (defvar e-current-config-e2e-test--output nil
   "Dynamically bound buffer collecting the current-config ERT report.")
 
+(defconst e-current-config-e2e-test--state-directory
+  (file-name-as-directory
+   (or (getenv "E_CURRENT_CONFIG_E2E_STATE_DIR")
+       (error "E_CURRENT_CONFIG_E2E_STATE_DIR is required")))
+  "Temporary directory for current-config E2E persistence snapshots.")
+
+(defun e-current-config-e2e-test--prepare-recentf-snapshot ()
+  "Redirect Recentf persistence to a test-owned snapshot.
+Copy the configured cache before the first file loads it, so the compatibility
+test observes the same startup state without allowing its private daemon to
+rewrite the user's file."
+  (let* ((source (and (boundp 'recentf-save-file) recentf-save-file))
+         (snapshot
+          (expand-file-name "recentf" e-current-config-e2e-test--state-directory)))
+    (when (and source (file-readable-p source))
+      (copy-file source snapshot t))
+    (setq recentf-save-file snapshot)))
+
+(with-eval-after-load 'recentf
+  (e-current-config-e2e-test--prepare-recentf-snapshot))
+
 (defun e-current-config-e2e-test--print (format-string &rest arguments)
   "Append FORMAT-STRING with ARGUMENTS to the current ERT report."
   (when (buffer-live-p e-current-config-e2e-test--output)
     (with-current-buffer e-current-config-e2e-test--output
       (goto-char (point-max))
       (insert (apply #'format format-string arguments)))))
+
+(ert-deftest e-current-config-e2e-test-first-file-hooks-succeed ()
+  "The first file opens with the current configuration's real persisted state."
+  (let ((file
+         (expand-file-name
+          "first-file.org" e-current-config-e2e-test--state-directory)))
+    (with-temp-file file
+      (insert "#+title: Current-config first file\n"))
+    (let ((buffer (find-file-noselect file)))
+      (unwind-protect
+          (progn
+            (should (buffer-live-p buffer))
+            (when (boundp 'doom-first-file-hook)
+              (should (featurep 'recentf))
+              (should (bound-and-true-p recentf-mode))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest e-current-config-e2e-test-runtime-loaded-from-checkout ()
   "Normal user startup loads a ready e runtime from this checkout."

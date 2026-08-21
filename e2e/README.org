@@ -96,8 +96,11 @@ The runner uses the same =E_E2E_EMACS_CONFIG=current= policy as the graphical
 mode and starts a private named daemon through normal user initialization.  It
 checks that the configuration loads the ready =e= runtime from this checkout,
 can construct its configured default harness without sending a request, and
-can integrate each configured default project through project-local policy.
-The suite accepts the same optional =E_E2E_EMACS_INIT_DIRECTORY= override.
+can integrate each configured default project through project-local policy.  It
+also opens a first file through the host's startup hooks while loading a
+test-owned copy of the configured Recentf cache.  This catches malformed or
+incompatible persisted startup state without rewriting the user's cache.  The
+suite accepts the same optional =E_E2E_EMACS_INIT_DIRECTORY= override.
 
 * Live provider E2E
 

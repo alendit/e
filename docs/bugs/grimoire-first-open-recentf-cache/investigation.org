@@ -1,0 +1,70 @@
+#+title: Grimoire First Open Recentf Cache Investigation
+#+startup: overview
+
+* Evidence
+
+- The reported screenshot identifies =doom-first-file-hook= and =recentf-mode=
+  as the failing first-file path.
+- The configured cache at =~/.config/emacs/.local/cache/recentf= contained this
+  malformed first form:
+
+#+begin_src elisp
+(setq Wrong type argument: e-backend-request, recentf-list
+      '(...))
+#+end_src
+
+  Evaluating that form reads =type= as an unbound variable, exactly matching
+  the reported =(void-variable type)= condition.
+- Emacs 30.2 =recentf-load-list= loads the cache as Elisp when =recentf-mode=
+  starts.  Doom starts =recentf-mode= from =doom-first-file-hook=, which explains
+  why the failure appears only on the first file open.
+- An isolated private Doom daemon reproduced the same first-file startup error
+  against a temporary copy of the malformed cache.  The private process did not
+  load or save the user's live cache.
+- The supported live probe could not connect to the running Emacs socket due to
+  an operating-system permission error.  Per the live-diagnostics contract, no
+  second live request was sent.  The screenshot and on-disk cache provide the
+  bounded live-state evidence for this investigation.
+- The corrupt cache was written on 2026-08-19 at 22:33, immediately after an
+  interrupted Grimoire agent turn whose final durable event was an unfinished
+  provider request.  The injected text names =e-backend-request=, but source
+  inspection did not establish a reproducible =e= write path into Recentf.
+
+* Conclusion
+
+The repeatable first-open failure is persisted malformed Recentf state, not a
+Grimoire daily command or project-layer failure.  Repairing the malformed cache
+removes the immediate error.  The available evidence is insufficient to claim
+that =e= caused the original corruption; that would require reproducing the
+write, not inferring it from the injected error text.
+
+* Fix
+
+- Repair the malformed cache form while preserving its recent-file entries.
+- Extend the current-configuration E2E suite to open a first file and load a
+  test-owned copy of the configured Recentf cache.  The private test daemon can
+  now catch this class of persisted startup incompatibility without rewriting
+  live user state.
+
+* Validation
+
+#+begin_src sh
+bash e2e/run-current-config-tests.sh
+#+end_src
+
+Before repairing the cache, the new check failed with the reported condition:
+
+#+begin_example
+FAILED e-current-config-e2e-test-first-file-hooks-succeed
+(doom-hook-error doom-first-file-hook recentf-mode (void-variable type))
+#+end_example
+
+After the one-line cache repair, it passed:
+
+#+begin_example
+Ran 4 tests, 4 results as expected, 0 unexpected
+Current-config E2E complete: 4 tests, 0 unexpected.
+#+end_example
+
+The live cache's SHA-256 remained unchanged across the passing run, confirming
+that the suite loaded and saved only its temporary snapshot.
