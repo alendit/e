@@ -149,3 +149,29 @@ composer and prove one document plus one valid atomic chat surface remains.
 The generic =e-window-surface-replace= contract should continue to replace the
 surface represented by its input window; it cannot infer Grimoire's unmarked
 outer document/chat composition.
+
+* Agent-entry mitigation
+
+Grimoire commit =f376b15= makes the existing headless action the natural agent
+choice without forbidding direct Elisp or interactive presentation commands.
+
+- The =daily-run= capability now contributes model-facing instructions that ask
+  the agent to choose an entry point from the intended effect.  Create,
+  populate, refresh, and update requests prefer
+  =(e-actions-call 'daily-run :start ...)= because it leaves visible windows
+  alone.  The same instructions explicitly retain =grimoire-daily=,
+  =grimoire-daily-open=, and =grimoire-daily-update= when opening or rearranging
+  the Daily canvas is itself intended.
+- The =daily-run/:start= action description advertises its headless presentation
+  semantics in the action catalog.
+- The Daily skill and topic-layer reference present the same intent-based
+  choice, including the exact action form, so an agent can select it without
+  first inferring an internal function call from implementation prose.
+- Focused Daily-run ERT passed 44/44, including new contract and headless
+  dispatch regressions.  Warning-as-error compilation passed for
+  =daily-run.el= and =daily-run-test.el=.
+
+This prevents the agent decision that triggered the reported incident while
+preserving the runtime's explicit Elisp extensibility.  The bug remains New:
+manual or intentionally presentation-driven re-entry can still exercise the
+non-transactional nested-canvas path documented above.
