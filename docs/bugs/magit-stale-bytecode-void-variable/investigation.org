@@ -67,13 +67,20 @@ rebuilding all corresponding straight/Doom artifacts.  A variable shim such
 as =(defvar magit-githook-directory nil)= would only conceal this first API
 mismatch and leave the process vulnerable to others.
 
-The durable recovery is to rebuild the Doom package artifacts with:
+Running Doom's normal package synchronization did not replace these stale
+artifacts.  The operator therefore requested direct removal.  All 46 =.elc=
+files for which the corresponding Magit source was newer were deleted from:
 
-#+begin_src sh
-~/.config/emacs/bin/doom sync
-#+end_src
+#+begin_example
+~/.config/emacs/.local/straight/build-30.2/magit/
+#+end_example
 
-Then fully restart Emacs so no old Magit definitions remain resident.  An
-=e-dev-reload= is neither sufficient nor appropriate because it does not own
-external package artifacts.  No =e= source change is indicated by this
-investigation.
+The source symlinks and native-compilation cache were left untouched.  A
+read-back found no remaining Magit =.elc= files in that build directory and 47
+source symlinks still present.
+
+Emacs must now be fully restarted so no old Magit definitions remain resident.
+On the next load it can use the current source/native artifacts instead of the
+removed bytecode.  An =e-dev-reload= is neither sufficient nor appropriate
+because it does not own external package artifacts.  No =e= source change is
+indicated by this investigation.
