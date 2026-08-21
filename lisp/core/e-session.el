@@ -119,6 +119,13 @@
   :type 'integer
   :group 'e-session)
 
+(defcustom e-session-checkpoint-board-fact-limit 256
+  "Maximum recent board facts retained in a resume checkpoint.
+Facts are selected independently from the recent message tail so high-volume
+activity cannot evict the semantic state needed by board reducers."
+  :type 'integer
+  :group 'e-session)
+
 (defcustom e-session-checkpoint-process-report-limit 32
   "Maximum recent process reports retained in a resume checkpoint."
   :type 'integer
@@ -1222,6 +1229,27 @@ and RECORD supplies persisted identity fields during replay."
   (let ((count (length items)))
     (copy-sequence (nthcdr (max 0 (- count limit)) items))))
 
+(defun e-session--checkpoint-board-messages (store session-id)
+  "Return bounded board resume state for SESSION-ID in STORE.
+Retain a recent presentation/activity tail and a separately bounded fact tail,
+then restore their original board order without duplicates."
+  (let* ((messages
+          (e-session-board-journal-messages
+           (e-session--board-journal store session-id)))
+         (recent (e-session--checkpoint-tail
+                  messages e-session-checkpoint-board-message-limit))
+         (facts (e-session--checkpoint-tail
+                 (cl-remove-if-not
+                  (lambda (message)
+                    (let ((kind (plist-get message :kind)))
+                      (or (eq kind 'fact) (equal kind "fact"))))
+                  messages)
+                 e-session-checkpoint-board-fact-limit))
+         (selected (make-hash-table :test 'eq)))
+    (dolist (message recent) (puthash message t selected))
+    (dolist (message facts) (puthash message t selected))
+    (cl-remove-if-not (lambda (message) (gethash message selected)) messages)))
+
 (defun e-session--checkpoint-path-suffix (store session-id)
   "Return SESSION-ID's resumable current-path suffix.
 The latest valid compaction boundary is the earliest retained entry.  Without
@@ -1298,10 +1326,7 @@ a compaction, the complete current path remains model context and is retained."
   (let* ((session (e-session--get-live store session-id))
          (entries (e-session--checkpoint-retained-entries store session-id))
          (board-messages
-          (e-session--checkpoint-tail
-           (e-session-board-journal-messages
-              (e-session--board-journal store session-id))
-           e-session-checkpoint-board-message-limit)))
+          (e-session--checkpoint-board-messages store session-id)))
     (e-session--freeze-board-value
      (list :session-id session-id
            :root (e-session--checkpoint-root session)
@@ -1405,11 +1430,7 @@ a compaction, the complete current path remains model context and is retained."
                                 (plist-get root :board-output-sequence)
                                 :board-activity-sequence
                                 (plist-get root :board-activity-sequence))))))
-    (dolist (message
-             (e-session--checkpoint-tail
-              (e-session-board-journal-messages
-               (e-session--board-journal store session-id))
-              e-session-checkpoint-board-message-limit))
+    (dolist (message (e-session--checkpoint-board-messages store session-id))
       (setq records
             (append records
                     (list (list :type "board-message" :session-id session-id

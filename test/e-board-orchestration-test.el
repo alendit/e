@@ -1,6 +1,7 @@
 ;;; e-board-orchestration-test.el --- Tests for durable board runs -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'json)
 (require 'e-board)
 (require 'e-board-orchestration)
 
@@ -42,6 +43,65 @@
       (should (eq (e-board-publication-status
                    (e-board-orchestration-publish-fact board fact)) 'duplicate))
       (should (= (length (e-board-messages board)) 1)))))
+
+(ert-deftest e-board-orchestration-test-wire-roundtrip-preserves-lisp-shapes ()
+  "JSON replay preserves enums, task arrays, and opaque output values."
+  (let* ((e-board--registry (make-hash-table :test 'equal))
+         (source (e-board-create :id "wire-source"))
+         (restored (e-board-create :id "wire-restored"))
+         (fact
+          (e-board-orchestration-test--fact
+           'terminal-report "report-1"
+           '(:run-id "run-1" :task-key "task" :attempt 0 :status done
+             :summary "done"
+             :outputs ((:kind artifact :uri "file" :value (:state ready))))))
+         (expected (e-board-orchestration-validate-fact fact)))
+    (e-board-orchestration-publish-fact source fact)
+    (let* ((attributes (e-board-message-attributes (car (e-board-messages source))))
+           (replayed
+            (json-parse-string (json-encode attributes)
+                               :object-type 'plist :array-type 'list
+                               :null-object nil :false-object :json-false)))
+      (e-board-post-fact restored :tags '(orchestration) :attributes replayed
+                         :source-fact-key '("wire" "report-1" 0))
+      (should (equal (e-board-orchestration-fact-from-message
+                      (car (e-board-messages restored)))
+                     expected)))))
+
+(ert-deftest e-board-orchestration-test-legacy-json-facts-replay ()
+  "Pre-wire duplicate-key JSON objects restore into a run projection."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (board (e-board-create :id "legacy-wire")))
+    (e-board-post-fact
+     board :tags '(orchestration)
+     :source-fact-key '("legacy" "manifest-1" 0)
+     :attributes
+     '(:orchestration-version 1 :orchestration-type "manifest"
+       :orchestration-idempotency-key "manifest-1"
+       :orchestration-payload
+       (:run-id "run-1"
+        :tasks (:task-key ("required" "required" t "accepted-attempt" 0)
+                :task-key ("optional" "required" nil "accepted-attempt" 0))
+        :deadline (:kind "none"))))
+    (e-board-post-fact
+     board :tags '(orchestration)
+     :source-fact-key '("legacy" "report-1" 0)
+     :attributes
+     '(:orchestration-version 1 :orchestration-type "terminal-report"
+       :orchestration-idempotency-key "report-1"
+       :orchestration-payload
+       (:run-id "run-1" :task-key "required" :attempt 0 :status "done"
+        :summary "done"
+        :outputs (:kind ("artifact" "uri" "file" "outputs"
+                         (:kind ("artifact" "uri" "nested")))))))
+    (let* ((projection
+            (e-board-orchestration-run-projection board "run-1"))
+           (report (car (plist-get projection :reports))))
+      (should (eq (plist-get projection :terminal-status) 'done))
+      (should (= (length (plist-get projection :tasks)) 2))
+      (should (equal (plist-get report :outputs)
+                     '((:kind artifact :uri "file"
+                        :outputs ((:kind artifact :uri "nested")))))))))
 
 (ert-deftest e-board-orchestration-test-required-and-optional-completion ()
   "Optional work cannot block a successful required group."

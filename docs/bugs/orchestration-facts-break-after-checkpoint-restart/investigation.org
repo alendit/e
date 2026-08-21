@@ -1,0 +1,135 @@
+#+title: Investigation: Orchestration Facts Break After Checkpoint Restart
+#+startup: overview
+
+* Status
+
+The failure has two persistence causes in the repository implementation:
+
+1. orchestration attributes use ambiguous ordinary Lisp lists with
+   =json-encode=, so enum symbols return as strings and list-of-plist arrays
+   return as duplicate-key JSON objects;
+2. resume checkpoints retain only the latest 256 board messages, so noisy
+   activity can evict an older manifest while retaining its later terminal
+   reports.
+
+* Live evidence
+
+The screenshot shows a structurally intact transcript/composer surface and the
+orchestration contract error in the echo area.  The supported
+=scripts/e-live-probe chat= request timed out after two seconds.  Per the live
+diagnostic contract, no second Emacs request was sent.
+
+Read-only OS inspection found Emacs PID 63277 running at approximately 100%
+CPU.  A bounded one-second sample showed the main thread in key reading,
+redisplay, mode-line evaluation, and garbage collection.  It did not establish
+a separate Lisp backtrace for the orchestration error, so the CPU symptom is
+recorded as correlated rather than assigned the same root cause.
+
+* Persistence evidence
+
+The Daily session journal is
+=20260821T124805-f8f5c1c896c8.jsonl=.  Its persisted orchestration attributes
+contain strings such as ="terminal-report"= and ="done"=.  A terminal output
+list is stored as an object such as:
+
+#+begin_example
+{"kind":["artifact","uri","daily/raw/2026-08-21/calendar.org",...]}
+#+end_example
+
+The resume checkpoint contains terminal reports but not the earlier manifest.
+The source journal places that manifest at message 119, before enough later
+board traffic to move it outside the 256-message checkpoint tail.
+
+An isolated =emacs --batch -Q= reproduction, using a disposable session store,
+reopened a valid fact as:
+
+#+begin_example
+(:type "terminal-report"
+ :payload (... :status "done" :outputs (:kind ("artifact" "uri" "u"))))
+#+end_example
+
+This reproduces the persistence transformation without loading the user's
+configuration or contacting the running Emacs.
+
+* Source conclusion
+
+=e-session--json-read-line= intentionally parses JSON strings as strings.
+=e-session--normalize-board-message= normalizes top-level board fields but does
+not and should not own capability-specific orchestration attributes.
+=e-board-orchestration-fact-from-message= passed those raw attributes directly
+to the symbol-based validator, which rejected ="terminal-report"=.
+
+The orchestration component should own an explicit JSON-safe wire codec and
+legacy schema normalization.  The session checkpoint component should retain
+a separately bounded tail of semantic board facts so ordinary activity cannot
+evict all reducer state.
+
+* Existing-session recovery
+
+Code changes cannot restore a manifest already absent from the installed
+checkpoint.  An isolated copy of the installed checkpoint now replays its six
+retained orchestration facts without the reported type error, but correctly
+has no run id because it contains no manifest.
+
+An explicit offline migration of a disposable copy of the complete immutable
+JSONL journal recovered the run id and all seven terminal reports.  The legacy
+journal itself retained only one of the original manifest's task records, so
+the exact historical manifest cannot be reconstructed generically.  The
+installed session should therefore not be migrated as though it were exact
+without an operator decision.  The investigation did not edit the user's
+session store or stop/reload Emacs.
+
+* Fix
+
+=e-board-orchestration= now owns a tagged, versioned JSON-safe payload codec.
+It preserves list versus vector shape and symbol versus string identity across
+restart.  The reader accepts the pre-wire enum and duplicate-key array shape
+so retained legacy reports no longer fail merely because JSON returned known
+enums as strings.
+
+=e-session= now retains a separately bounded tail of 256 board facts in
+addition to its existing 256-message recent tail.  The two selections are
+deduplicated and restored in original board order.  High-volume activity can
+therefore no longer evict all semantic reducer state from a checkpoint.
+
+* Verification
+
+- Focused orchestration, board-run, session, persistence, chat-session, and
+  task-queue suites: 190 expected results, zero unexpected.
+- Changed core files compiled with warnings treated as errors.
+- Complete suite: 2,188 expected passes and two expected skips.  Six localhost
+  fixture tests failed under the filesystem/network sandbox; rerunning exactly
+  those six with localhost access produced six expected passes.
+- The installed checkpoint was parsed and reduced in an isolated batch Emacs
+  without contacting the running Emacs.
+- =git diff --check= passed.
+
+* Design self-check
+
+1. The package is useful independently: future orchestration facts survive
+   JSON restart and noisy checkpoints; retained legacy reports stop raising the
+   observed type error.
+2. It moves toward durable, replayable board orchestration over bounded session
+   resume state.
+3. The stable fact schema remains unchanged.  Wire representation and fact
+   retention limits are explicit, local, versioned, and reversible.
+4. Orchestration owns its domain codec; session persistence owns bounded
+   checkpoint selection.
+5. Coupling is reduced because session replay does not learn orchestration
+   fields, while orchestration receives only its own attributes.
+6. No stable policy depends on a concrete UI, shell, provider, or writer.
+7. JSON serialization and checkpoint materialization remain at persistence
+   boundaries; the reducer stays free of I/O.
+8. The only added state is immutable encoded fact data and a rebuildable,
+   bounded checkpoint fact tail owned by the session store.
+9. Checkpoint selection adds one linear scan and at most 256 additional board
+   records; ordinary replay remains bounded.
+10. The tagged codec has one exact substitution contract across live vectors
+    and JSON-decoded lists.
+11. New facts use the exact codec.  Legacy handling is limited to the known
+    pre-wire representation and cannot invent task records absent from disk.
+12. Ambiguous unversioned encoding is removed from new orchestration facts.
+13. Malformed and unknown wire values still surface as orchestration contract
+    errors; only known legacy shapes are normalized.
+14. Unit tests cover exact codec and legacy reduction; checkpoint tests cover
+    fact retention; the wider restart/persistence suites cover integration.

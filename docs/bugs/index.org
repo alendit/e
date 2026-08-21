@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | orchestration-facts-break-after-checkpoint-restart/ | Orchestration facts break after checkpoint restart |
 | New    | grimoire-daily-reentry-nests-canvas/ | Grimoire Daily re-entry nests and corrupts the visible canvas |
 | Closed | e-dev-reload-omits-e-work-orphans-tool-error/ | e-dev reload omits e-work and orphans tool errors |
 | New    | restored-board-participant-routing-policy/ | Restored board participant loses its routing policy |

@@ -1083,6 +1083,9 @@
          store session-id 'openai :model "model"
          :covered-entry-id (plist-get answer :id)
          :fingerprints '(:segments nil)))
+      (e-session-append-board-message
+       store session-id
+       '(:id "durable-fact" :kind fact :tags (orchestration)))
       (dotimes (index 300)
         (e-session-append-board-message
          store session-id
@@ -1109,12 +1112,17 @@
                    (equal (plist-get record :id)
                           (plist-get token-event :id)))
                  activity-records))
-        (should (= (length
-                    (seq-filter
-                     (lambda (record)
-                       (equal (plist-get record :type) "board-message"))
-                     records))
-                   256))
+        (let ((board-records
+               (seq-filter
+                (lambda (record)
+                  (equal (plist-get record :type) "board-message"))
+                records)))
+          (should (= (length board-records) 257))
+          (should (seq-find
+                   (lambda (record)
+                     (equal (plist-get (plist-get record :message) :id)
+                            "durable-fact"))
+                   board-records)))
         (should (= (length
                     (seq-filter
                      (lambda (record)

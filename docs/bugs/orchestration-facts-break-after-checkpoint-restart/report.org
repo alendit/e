@@ -1,0 +1,14 @@
+#+title: Orchestration Facts Break After Checkpoint Restart
+#+startup: overview
+
+* Report
+
+After restarting Emacs and opening the Grimoire Daily chat, the composed chat
+surface opens but the echo area reports:
+
+#+begin_example
+Invalid board orchestration fact: :type, "terminal-report"
+#+end_example
+
+The same Emacs process then consumes approximately one CPU core and the bounded
+live probe does not answer within its two-second deadline.
