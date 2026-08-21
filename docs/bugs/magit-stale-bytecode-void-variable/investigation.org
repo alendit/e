@@ -1,0 +1,79 @@
+#+title: Investigation: Redisplay Reports a Void Magit Githook Variable
+#+startup: overview
+
+* Summary
+
+The running Emacs contains a mixed Magit installation.  Its loaded
+=magit-git= module is from an older build that defines
+=magit-overriding-githook-directory=, while the loaded
+=magit-process-environment= function expects the newer
+=magit-githook-directory= variable.  Redisplay is only where that incompatible
+function happened to run; the defect is not owned by =e= or Grimoire.
+
+The running Emacs was inspected read-only and was not reloaded or repaired.
+
+* Source and build evidence
+
+The Magit source checkout is clean at tag =v4.7.0=, commit =67f2038=.  Current
+source defines =magit-githook-directory= in =magit-git.el= and reads it from
+=magit-process-environment= in =magit-process.el=:
+
+#+begin_example
+magit-git.el:197:     (defvar magit-githook-directory nil ...)
+magit-process.el:541: ,@(and magit-githook-directory ...)
+#+end_example
+
+The checkout files were updated on 2026-08-21, but the straight byte-compiled
+artifacts under =build-30.2/magit/= date from 2026-08-03.  The stale
+=magit-git.elc= contains the former
+=magit-overriding-githook-directory= name rather than the current variable.
+The build-tree =.el= files are symlinks to the newer checkout, so source and
+bytecode exposed through the same build directory disagree.
+
+New native-compilation artifacts for =magit-process=, =magit-mode=, and
+=magit-git= were also generated during the incident.  They contain the new
+=magit-githook-directory= name.  That provides a second route by which current
+Magit code can execute beside stale bytecode in one Emacs process.
+
+The repository's optional current-configuration graphical run had already
+printed the matching loader warning:
+
+#+begin_example
+Source file .../build-30.2/magit/magit-git.el newer than byte-compiled file; using older file
+#+end_example
+
+It printed analogous warnings for =magit-process= and =magit-mode=.
+
+* Live evidence
+
+Bounded =scripts/e-live-probe symbol= calls established the incompatible state
+inside the user's running Emacs:
+
+- =magit-githook-directory= is not bound.
+- =magit-overriding-githook-directory= is bound and attributed to the straight
+  =build-30.2/magit/magit-git.elc= artifact.
+- =magit-process-environment= is defined and attributed to
+  =build-30.2/magit/magit-process.elc=, but its executing definition reads the
+  new variable.
+
+The =pre-redisplay-functions= variable itself is bound.  The reported prefix
+identifies the hook context that surfaced the exception; it does not make the
+redisplay machinery the source of the incompatible Magit state.
+
+* Conclusion and recovery
+
+This is package-build skew caused by updating the Magit checkout without
+rebuilding all corresponding straight/Doom artifacts.  A variable shim such
+as =(defvar magit-githook-directory nil)= would only conceal this first API
+mismatch and leave the process vulnerable to others.
+
+The durable recovery is to rebuild the Doom package artifacts with:
+
+#+begin_src sh
+~/.config/emacs/bin/doom sync
+#+end_src
+
+Then fully restart Emacs so no old Magit definitions remain resident.  An
+=e-dev-reload= is neither sufficient nor appropriate because it does not own
+external package artifacts.  No =e= source change is indicated by this
+investigation.

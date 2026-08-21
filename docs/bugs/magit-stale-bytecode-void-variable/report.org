@@ -1,0 +1,18 @@
+#+title: Redisplay Reports a Void Magit Githook Variable
+#+startup: overview
+
+* Report
+
+While a Grimoire Daily chat was visible, Emacs reported:
+
+#+begin_example
+redisplay--pre-redisplay-functions: (void-variable magit-githook-directory)
+#+end_example
+
+The failure appeared in the Daily presentation, but the named variable belongs
+to Magit rather than =e= or Grimoire.
+
+* Expected
+
+Redisplay should complete without evaluating mutually incompatible versions of
+Magit's modules.
