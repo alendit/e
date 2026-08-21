@@ -33,6 +33,23 @@ On Linux, the runner uses the current display or automatically starts
 =xvfb-run= when =DISPLAY= is unset.  A graphical frame is mandatory; the suite
 never falls back to batch mode.
 
+The default is a hermetic Eldev-prepared Emacs.  To run the same graphical
+matrix after this machine's normal Emacs configuration has loaded, use:
+
+#+begin_src sh
+E_E2E_EMACS_CONFIG=current bash e2e/run-graphical-tests.sh
+#+end_src
+
+This starts another private Emacs process; it does not connect to or reload the
+running Emacs.  Current mode verifies that normal startup loaded =e= from this
+checkout before adding test-only paths or dependencies.  Because it really
+loads the user configuration, it retains normal startup filesystem effects
+such as cache updates and configured project-local byte compilation.
+
+If Emacs cannot discover the intended configuration through its normal startup
+rules, set =E_E2E_EMACS_INIT_DIRECTORY= to the directory passed to Emacs'
+=--init-directory= option.  This override is valid only in current mode.
+
 Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
 
 1. opening the chat pair focuses its composer and =C-x 0= deletes the pair;
@@ -66,6 +83,21 @@ Tests can add a named checkpoint with
 with =e-graphical-test-capture-transition=.  These helpers render the actual
 test frame's window geometry, visible text, mode lines, selected window, and
 viewport positions without using or focusing the desktop.
+
+* Current configuration compatibility E2E
+
+Run the opt-in non-provider compatibility checks with:
+
+#+begin_src sh
+bash e2e/run-current-config-tests.sh
+#+end_src
+
+The runner uses the same =E_E2E_EMACS_CONFIG=current= policy as the graphical
+mode and starts a private named daemon through normal user initialization.  It
+checks that the configuration loads the ready =e= runtime from this checkout,
+can construct its configured default harness without sending a request, and
+can integrate each configured default project through project-local policy.
+The suite accepts the same optional =E_E2E_EMACS_INIT_DIRECTORY= override.
 
 * Live provider E2E
 

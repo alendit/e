@@ -1,0 +1,87 @@
+#+title: Current Emacs Configuration E2E Mode
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Problem
+
+The deterministic and graphical suites prove =e= in an Eldev-prepared,
+isolated Emacs.  They do not prove that the package survives the load order,
+advice, host packages, and settings in the configuration that actually starts
+on a developer machine.
+
+A separate machine-specific test suite would duplicate the existing E2E
+contracts.  The useful boundary is instead an opt-in configuration mode that
+runs compatibility checks and the same graphical scenarios after normal user
+startup.
+
+* Goal
+
+Add =E_E2E_EMACS_CONFIG=current= as a shared opt-in mode for current-config
+compatibility E2E and graphical tests.  Keep the existing isolated mode as the
+default and keep both modes in private Emacs processes.
+
+* Contract
+
+- =isolated= remains the default for graphical tests and CI.
+- =current= starts a fresh private Emacs through its normal user-init path.  It
+  must observe that the configuration loaded =e= from this checkout before any
+  test helper may add checkout paths or load test dependencies.
+- The current-config compatibility suite checks runtime startup, configured
+  default harness construction, and configured default-project integration
+  without sending provider requests.
+- The graphical runner accepts the same mode and runs the existing visual
+  matrix after current configuration startup rather than maintaining a second
+  visual suite.
+- Test-only dependencies may come from Eldev after configuration startup, but
+  they must not replace or reload the =e= instance supplied by the current
+  configuration.
+- A nonstandard init root can be selected explicitly with
+  =E_E2E_EMACS_INIT_DIRECTORY=.  No Doom path or machine project path is
+  hardcoded in the repository.
+- The process never connects to or reloads the user's running Emacs.  Current
+  mode intentionally retains the ordinary filesystem side effects of starting
+  the user's configuration, such as cache updates or configured project-local
+  byte compilation.
+
+* Implementation slices
+
+1. Add a shared E2E bootstrap that distinguishes isolated from current startup,
+   validates the current-config provenance, and prepares only test dependencies.
+2. Add a private-daemon compatibility runner and focused ERT checks for the
+   configured runtime, default harness, and default projects.
+3. Teach the graphical launcher to use the same current-config mode on macOS,
+   visible native runs, and Linux/Xvfb while preserving its isolated default.
+4. Document the commands and side-effect boundary, run both modes on this
+   machine, review the diff, and record verification.
+
+* Design self-check
+
+1. This stopping point adds a reusable compatibility boundary and exercises it
+   on the machine that motivated it.
+2. It moves toward one behavioral matrix runnable against both hermetic and
+   real host configurations.
+3. User-init discovery is unstable and remains a launch-mode choice.  Runtime
+   and visual behavior stay in the existing stable tests.
+4. Shell launchers own process/config selection; the shared bootstrap owns
+   provenance and dependency preparation; existing tests own behavior.
+5. The mode reuses the visual suite and adds one narrow bootstrap contract,
+   reducing duplicated test behavior.
+6. Production runtime does not depend on test configuration or launch code.
+7. Process, frame, package-path, and temporary-report side effects remain in
+   the E2E shell and bootstrap boundary.
+8. All new state lives only in the private test process or temporary files.
+   Current user configuration retains its normal external startup effects.
+9. Current mode pays one normal user startup plus existing test runtime.  The
+   default CI path is unchanged.
+10. =isolated= and =current= are real launch policies with the same downstream
+    graphical contract; neither weakens the visual assertions.
+11. Existing commands and default behavior remain compatible.  The new mode is
+    explicit and optional.
+12. No legacy code can be removed in this slice.
+13. Invalid modes, missing config-loaded =e=, wrong source checkout, and runner
+    failures surface as process errors; cleanup still stops private daemons.
+14. Focused bootstrap tests prove compatibility startup, while the unchanged
+    graphical matrix proves presentation behavior under either mode.

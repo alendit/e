@@ -1,0 +1,181 @@
+#+title: Review: Current Emacs Configuration E2E Mode
+#+author: e implementation
+#+date: 2026-08-21
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+The implementation satisfies the launch-mode contract.  The default graphical
+path remains isolated, while =E_E2E_EMACS_CONFIG=current= starts a private
+Emacs through normal user initialization, proves that configuration loaded =e=
+from this checkout, and runs the existing visual matrix without reloading the
+runtime.  A separate three-test compatibility runner covers configured runtime,
+harness, and default-project startup without provider requests.
+
+The new mode initially exposed test assumptions about a direct =delete-window=
+binding, absent Doom workspace functions, and globally disabled =persp-mode=.
+Those assumptions were removed or made state-preserving.  The repaired matrix
+then exposed two reproducible current-configuration presentation defects.  They
+remain open below and keep the feature in review.
+
+* Scope reviewed
+
+- Shared E2E bootstrap and configuration provenance checks.
+- Current-config private-daemon runner and compatibility ERT checks.
+- macOS hidden frame, native visible, and Linux/Xvfb graphical launch paths.
+- Chat and workspace fixtures changed to preserve host keymap and persp state.
+- Test-tier documentation, shell syntax, warning-as-error compilation, batch
+  chat/workspace coverage, and isolated/current graphical execution.
+
+* Resolved findings
+
+** Resolved: visual tests required the direct =delete-window= binding
+
+*** Problem
+
+The atomic surface test asserted that =C-x 0= resolved exactly to
+=delete-window=.  The current Doom config correctly remaps that key to
+=+workspace/close-window-or-workspace=, even though the observable operation
+still closes the complete chat atom.
+
+*** Change
+
+The test now requires an interactive command and keeps its existing observable
+window-tree assertions after executing =C-x 0=.
+
+*** Evidence
+
+The case passes in both isolated and current-config graphical modes.
+
+** Resolved: persp round-trip test disabled configured global state
+
+*** Problem
+
+The round-trip test always disabled =persp-mode= during cleanup.  In Doom that
+left workspace functions loaded over cleared persp tables, causing later chat
+fixtures to fail with =wrong-type-argument hash-table-p nil=.
+
+*** Change
+
+The fixture records whether persp was enabled and its original perspective.  A
+current-config run restores that perspective and retains the enabled runtime;
+an isolated run still disables the test-only persp instance.
+
+*** Evidence
+
+The focused current-config sequence passes the round trip, a later pop-up chat
+fixture, and the plain-persp workspace scenario.  The same four changed fixture
+cases pass in isolated mode.
+
+* Findings
+
+** TODO Medium: Doom mode line consumes the context percentage sign
+
+The focused composer computes =e-chat gpt-5.6-sol/high 18% (64k/353k tok)=,
+but the current Doom mode line renders =18(64k/353k tok)=.  Doom formats
+=mode-name= inside its major-mode segment and the outer mode-line formatter
+processes the resulting percent construct again.  The isolated graphical mode
+renders the expected percentage.
+
+This is visible status corruption, not a test-fixture mismatch.  The fix must
+remain host-neutral; production =e= must not branch on Doom APIs.
+
+** TODO Medium: visual-fill current config loses the pinned stream tail
+
+With the current configuration's =visual-fill-column= integration active, the
+stream-follow scenario reproducibly leaves =window-end= at 2902 while the old
+tail is 4173 after the first streamed update.  The same scenario passes in the
+isolated mode where visual-fill is unavailable.
+
+This indicates that the current host layout invalidates or overrides =e='s
+pinned viewport placement.  It should be investigated as presentation behavior
+with a focused screenshot trace before changing follow policy.
+
+* Verification
+
+#+begin_src sh
+bash e2e/run-current-config-tests.sh
+#+end_src
+
+#+begin_example
+Ran 3 tests, 3 results as expected, 0 unexpected
+Current-config E2E complete: 3 tests, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+E_E2E_EMACS_CONFIG=current bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 26 tests, 24 results as expected, 2 unexpected
+FAILED e-chat-behavior-test-focused-composer-shows-configured-context-limit
+FAILED e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll
+#+end_example
+
+Both remaining failures reproduce when selected alone.
+
+#+begin_src sh
+E_GRAPHICAL_E2E_SELECTOR='<four changed fixture cases>' \
+  bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Ran 4 tests, 4 results as expected, 0 unexpected
+#+end_example
+
+The first complete isolated run reached 24/26 because two asynchronous chat
+cases timed out while UI jobs were queued.  An immediate focused rerun of those
+two cases passed 2/2; none of the new launch-mode code is on their runtime path.
+
+#+begin_src sh
+eldev test -f test/e-chat-test.el -f test/e-workspaces-test.el
+#+end_src
+
+#+begin_example
+Ran 356 tests, 355 results as expected, 0 unexpected, 1 expected skip.
+#+end_example
+
+Warning-as-error batch compilation passed for the shared bootstrap,
+current-config suite, daemon bootstrap, and graphical runner.  Both shell
+scripts passed =bash -n=, and =git diff --check= passed.
+
+* UX and performance playthrough
+
+The current-config compatibility daemon loaded Doom and =e= from this checkout,
+constructed the configured default harness without a provider request, and
+integrated Grimoire through =e-default-projects=.  The three checks themselves
+took 0.34 seconds after normal configuration startup.
+
+The final current-config visual run loaded Doom in 3.4 seconds and ran the full
+matrix in 24.3 seconds.  It preserved configured =C-x 0= behavior and retained
+persp state across the round-trip scenario.  The two visible failures above are
+the only reproducible current-config mismatches found.
+
+* Plan coverage
+
+All four implementation slices are complete.  The unresolved notes concern
+runtime presentation behavior discovered by the new mode, not missing mode or
+runner functionality.
+
+* Architecture review
+
+Configuration selection and private-process cleanup remain in shell launchers.
+The shared bootstrap owns only startup provenance and test dependency paths.
+Behavior stays in the existing compatibility and graphical tests; production
+runtime has no dependency on test configuration.  The design self-check in
+=plan.org= remains accurate.
+
+* Live reload
+
+No production or loaded runtime file changed, so live reload was not required.
+The user's running Emacs was not connected to, reloaded, or modified.  The
+supported live probe found no server socket; no second live request was sent.
+
+* Unresolved
+
+- Doom mode-line rendering consumes the context percentage sign.
+- Current visual-fill layout loses the initially pinned stream tail.
