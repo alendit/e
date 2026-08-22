@@ -494,6 +494,93 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-load-failure-offers-reference-replacement ()
+  "A referenced session load failure can create and install a replacement."
+  (let ((directory (make-temp-file "e-org-canvas-" t))
+        (harness (e-org-canvas-test--harness))
+        (window-configuration (current-window-configuration))
+        source
+        load-error-callback
+        prompt
+        warning)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-chat-default-harness-id :org-canvas-test)
+                 (file (e-org-canvas-test--org-file directory "notes.org"))
+                 (original-open (symbol-function 'e-chat-open)))
+            (e-harness-registry-register :org-canvas-test harness)
+            (setq source (find-file-noselect file))
+            (e-org-canvas-test--session-with-file
+             harness "broken-reference" file)
+            (with-current-buffer source
+              (setq-local e-org-canvas-harness harness)
+              (setq-local e-org-canvas-session-id "broken-reference")
+              (cl-letf (((symbol-function
+                          'e-org-canvas--display-and-select-chat-buffer)
+                         (lambda (buffer) buffer))
+                        ((symbol-function 'e-chat-open)
+                         (lambda (&rest arguments)
+                           (setq load-error-callback
+                                 (plist-get arguments
+                                            :on-session-load-error))
+                           (apply original-open arguments))))
+                (e-org-canvas-open-for-current-buffer))
+              (should (functionp load-error-callback))
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (text)
+                           (setq prompt text)
+                           t))
+                        ((symbol-function 'display-warning)
+                         (lambda (_type message &optional _level _buffer-name)
+                           (setq warning message)))
+                        ((symbol-function
+                          'e-org-canvas--display-and-select-chat-buffer)
+                         (lambda (buffer) buffer)))
+                (funcall load-error-callback
+                         '(e-session-checkpoint-invalid
+                           "broken-reference" "bad checkpoint"))
+                (e-org-canvas-test--drain-ui-work source))
+              (should-not (equal e-org-canvas-session-id
+                                 "broken-reference"))
+              (should (string-match-p "replace the reference" prompt))
+              (should (string-match-p "bad checkpoint" warning))
+              (should (= (length (e-harness-session-list harness)) 2)))))
+      (set-window-configuration window-configuration)
+      (when (buffer-live-p source)
+        (kill-buffer source))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-stale-load-failure-does-not-replace-reference ()
+  "A delayed failure cannot replace a reference that has since changed."
+  (let ((buffer (generate-new-buffer " *e-org-canvas-stale-recovery*"))
+        (harness (e-org-canvas-test--harness))
+        prompted)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (org-mode)
+            (setq-local e-org-canvas-harness harness)
+            (setq-local e-org-canvas-session-id "old-reference"))
+          (cl-letf (((symbol-function 'yes-or-no-p)
+                     (lambda (_text)
+                       (setq prompted t)
+                       t)))
+            (e-org-canvas--schedule-unavailable-session-recovery
+             buffer harness "old-reference" '(error "late failure"))
+            (with-current-buffer buffer
+              (setq-local e-org-canvas-session-id "new-reference"))
+            (e-org-canvas-test--drain-ui-work buffer))
+          (should-not prompted)
+          (with-current-buffer buffer
+            (should (equal e-org-canvas-session-id "new-reference"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-org-canvas-test-open-wrong-file-reference-prompts-before-new-session ()
   "A live reference for a different file prompts before starting a replacement."
   (let ((directory (make-temp-file "e-org-canvas-" t))

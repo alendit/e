@@ -78,27 +78,35 @@ Before finalizing an edit, check newly written Org prose for accidental wrapped 
   "Return non-nil when HARNESS SESSION-ID is an Org Canvas session."
   (and (e-org-canvas-session-metadata harness session-id) t))
 
+(defun e-org-canvas-session-buffer-from-metadata
+    (harness session-id metadata)
+  "Return HARNESS SESSION-ID's Org Canvas buffer described by METADATA.
+This lookup does not hydrate SESSION-ID and is therefore safe for catalog
+metadata belonging to an unloaded session."
+  (or (e-workspace-find-buffer
+       (lambda (buffer)
+         (with-current-buffer buffer
+           (and (bound-and-true-p e-org-canvas-mode)
+                (eq e-org-canvas-harness harness)
+                (equal e-org-canvas-session-id session-id))))
+       :prefer-visible t)
+      (when-let* ((buffer-name (plist-get metadata :buffer-name))
+                  (buffer (get-buffer buffer-name)))
+        (and (e-org-canvas--buffer-matches-uri-p
+              buffer
+              (plist-get metadata :uri))
+             buffer))
+      (when-let ((file (e-org-canvas--uri-file-name
+                        (plist-get metadata :uri))))
+        (or (find-buffer-visiting file)
+            (and (file-readable-p file)
+                 (find-file-noselect file))))))
+
 (defun e-org-canvas-session-buffer (harness session-id)
   "Return the live Org Canvas buffer for HARNESS SESSION-ID, if available."
   (when-let ((metadata (e-org-canvas-session-metadata harness session-id)))
-    (or (e-workspace-find-buffer
-         (lambda (buffer)
-           (with-current-buffer buffer
-             (and (bound-and-true-p e-org-canvas-mode)
-                  (eq e-org-canvas-harness harness)
-                  (equal e-org-canvas-session-id session-id))))
-         :prefer-visible t)
-        (when-let* ((buffer-name (plist-get metadata :buffer-name))
-                    (buffer (get-buffer buffer-name)))
-          (and (e-org-canvas--buffer-matches-uri-p
-                buffer
-                (plist-get metadata :uri))
-               buffer))
-        (when-let ((file (e-org-canvas--uri-file-name
-                          (plist-get metadata :uri))))
-          (or (find-buffer-visiting file)
-              (and (file-readable-p file)
-                   (find-file-noselect file))))
+    (or (e-org-canvas-session-buffer-from-metadata
+         harness session-id metadata)
         (when-let ((attachment
                     (seq-find
                      (lambda (candidate)

@@ -470,10 +470,8 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   (e-org-canvas--metadata-ref (plist-get session :metadata)))
 
 (defun e-org-canvas--all-sessions (harness)
-  "Return full root session records for HARNESS."
-  (mapcar (lambda (session)
-            (e-chat-service-session harness (plist-get session :id)))
-          (e-chat-service-root-session-list harness)))
+  "Return root session catalog entries for HARNESS without transcript hydration."
+  (e-chat-service-root-session-list harness))
 
 (defun e-org-canvas--normalize-directory (directory)
   "Return normalized DIRECTORY."
@@ -523,11 +521,11 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
     (nreverse groups)))
 
 (defun e-org-canvas--session-or-nil (harness session-id)
-  "Return SESSION-ID from HARNESS, or nil when it is missing."
+  "Return SESSION-ID's root catalog entry from HARNESS, or nil."
   (and session-id
-       (condition-case nil
-           (e-chat-service-session harness session-id)
-         (e-session-missing nil))))
+       (seq-find (lambda (session)
+                   (equal (plist-get session :id) session-id))
+                 (e-chat-service-root-session-list harness))))
 
 (defun e-org-canvas--session-matches-buffer-p (session buffer)
   "Return non-nil when SESSION's Org Canvas metadata belongs to BUFFER."
@@ -555,9 +553,11 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   (with-current-buffer buffer
     (or e-org-canvas-harness default-harness)))
 
-(defun e-org-canvas--confirm-session-replacement (buffer session-id reason)
+(defun e-org-canvas--confirm-session-replacement
+    (buffer session-id reason &optional condition)
   "Ask whether invalid SESSION-ID for BUFFER should be replaced.
-REASON is either `missing' or `different-buffer'."
+REASON is `missing', `different-buffer', or `unavailable'.  CONDITION is the
+original load failure for an unavailable session.  Return non-nil on consent."
   (let ((message
          (pcase reason
            ('missing
@@ -568,16 +568,22 @@ REASON is either `missing' or `different-buffer'."
             (format "Org Canvas session %s referenced by %s belongs to a different Org buffer"
                     session-id
                     (buffer-name buffer)))
+           ('unavailable
+            (format "Org Canvas session %s referenced by %s could not be resumed: %s"
+                    session-id
+                    (buffer-name buffer)
+                    (if condition
+                        (error-message-string condition)
+                      "unknown session load failure")))
            (_
             (format "Org Canvas session %s referenced by %s is invalid"
                     session-id
                     (buffer-name buffer))))))
     (display-warning 'e-org-canvas message :warning))
-  (unless (yes-or-no-p
-           (format "Org Canvas session %s is not valid for %s. Start a new session? "
-                   session-id
-                   (buffer-name buffer)))
-    (user-error "Org Canvas session %s is not valid for this buffer" session-id)))
+  (yes-or-no-p
+   (format "Org Canvas session %s is not usable for %s. Start a new session and replace the reference? "
+           session-id
+           (buffer-name buffer))))
 
 (defun e-org-canvas--ensure-org-buffer (buffer)
   "Signal unless BUFFER is an Org buffer."
@@ -674,6 +680,66 @@ the display to a normal window when the selected window is a side window."
     (e-org-canvas--display-and-select-chat-buffer chat-buffer)
     chat-buffer))
 
+(defun e-org-canvas--recover-unavailable-session
+    (buffer harness session-id condition)
+  "Offer to replace BUFFER's unavailable HARNESS SESSION-ID after CONDITION."
+  (when (and (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (and (eq e-org-canvas-harness harness)
+                    (equal e-org-canvas-session-id session-id))))
+    (if (e-org-canvas--confirm-session-replacement
+         buffer session-id 'unavailable condition)
+        (e-org-canvas--open-session-for-buffer-and-display buffer)
+      (message "Kept unavailable Org Canvas session reference %s" session-id))))
+
+(defun e-org-canvas--schedule-unavailable-session-recovery
+    (buffer harness session-id condition)
+  "Schedule UI recovery for BUFFER's unavailable HARNESS SESSION-ID.
+CONDITION is the original asynchronous transcript load failure."
+  (when (buffer-live-p buffer)
+    (e-ui-work-schedule
+     (e-ui-work-spec-create
+      :id "org_canvas_session_recovery"
+      :description "Offer recovery for an unavailable Org Canvas session."
+      :owner 'org-canvas-session-recovery
+      :target-buffer buffer
+      :key session-id
+      :generation session-id
+      :focus-policy 'preserve
+      :reentrancy-policy 'defer
+      :coalesce t
+      :stale-p
+      (lambda (_job)
+        (or (not (buffer-live-p buffer))
+            (with-current-buffer buffer
+              (not (and (eq e-org-canvas-harness harness)
+                        (equal e-org-canvas-session-id session-id))))))
+      :apply
+      (lambda (_job _handle)
+        (e-org-canvas--recover-unavailable-session
+         buffer harness session-id condition))))))
+
+(defun e-org-canvas--open-referenced-session
+    (buffer harness session-id)
+  "Open referenced HARNESS SESSION-ID for Org Canvas BUFFER with recovery."
+  (let ((workspace (e-org-canvas--workspace-for-buffer buffer)))
+    (e-org-canvas--sync-default-harness-for-buffer harness buffer)
+    (e-org-canvas--restore-buffer-session buffer harness session-id workspace)
+    (message "Org Canvas resumed for %s; use s-i to add context"
+             (buffer-name buffer))
+    (let ((chat-buffer
+           (e-chat-open
+            :harness harness
+            :session-id session-id
+            :on-session-load-error
+            (lambda (condition)
+              (e-org-canvas--schedule-unavailable-session-recovery
+               buffer harness session-id condition)))))
+      (e-buffer-set-workspace chat-buffer workspace)
+      (e-org-canvas--select-org-buffer buffer)
+      (e-org-canvas--display-and-select-chat-buffer chat-buffer)
+      chat-buffer)))
+
 ;;;###autoload
 (defun e-org-canvas-open-for-current-buffer ()
   "Start or reuse an Org Canvas session for the current Org buffer."
@@ -690,20 +756,13 @@ the display to a normal window when the selected window is a side window."
                            referenced-session source)
                           referenced))))
     (if existing
-        (let ((workspace (e-org-canvas--workspace-for-buffer source)))
-          (e-org-canvas--sync-default-harness-for-buffer harness source)
-          (e-org-canvas--restore-buffer-session source harness existing workspace)
-          (message "Org Canvas resumed for %s; use s-i to add context"
-                   (buffer-name source))
-          (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
-            (e-buffer-set-workspace chat-buffer workspace)
-            (e-org-canvas--select-org-buffer source)
-            (e-org-canvas--display-and-select-chat-buffer chat-buffer)
-            chat-buffer))
+        (e-org-canvas--open-referenced-session source harness existing)
       (when referenced
-        (e-org-canvas--confirm-session-replacement
-         source referenced
-         (if referenced-session 'different-buffer 'missing)))
+        (unless (e-org-canvas--confirm-session-replacement
+                 source referenced
+                 (if referenced-session 'different-buffer 'missing))
+          (user-error "Org Canvas session %s is not valid for this buffer"
+                      referenced)))
       (let ((chat-buffer (e-org-canvas--open-session-for-buffer source)))
         (e-org-canvas--select-org-buffer source)
         (e-org-canvas--display-and-select-chat-buffer chat-buffer)
@@ -1643,12 +1702,26 @@ prompt enumerating them, and leave the draft for review before submission."
 ;;;###autoload
 (defun e-org-canvas-resume-session (harness session-id)
   "Resume HARNESS SESSION-ID and return its Org canvas buffer."
-  (let* ((buffer (or (e-org-canvas-session-buffer harness session-id)
+  (let* ((session (or (e-org-canvas--session-or-nil harness session-id)
+                      (user-error "Org Canvas session %s is not in the catalog"
+                                  session-id)))
+         (metadata (or (e-org-canvas--session-canvas session)
+                       (user-error "Session %s is not an Org Canvas session"
+                                   session-id)))
+         (buffer (or (e-org-canvas-session-buffer-from-metadata
+                      harness session-id metadata)
                      (user-error "Org Canvas session has no buffer")))
-         (workspace (e-org-canvas--workspace-for-buffer buffer))
-         (chat-buffer (e-chat-open :harness harness :session-id session-id)))
+         (workspace (e-org-canvas--workspace-for-buffer buffer)))
     (e-org-canvas--restore-buffer-session buffer harness session-id workspace)
-    (e-buffer-set-workspace chat-buffer workspace)
+    (let ((chat-buffer
+           (e-chat-open
+            :harness harness
+            :session-id session-id
+            :on-session-load-error
+            (lambda (condition)
+              (e-org-canvas--schedule-unavailable-session-recovery
+               buffer harness session-id condition)))))
+      (e-buffer-set-workspace chat-buffer workspace))
     (e-org-canvas--select-org-buffer buffer)
     buffer))
 

@@ -3,9 +3,11 @@
 
 * Status
 
-The failure is caused by an eager historical-session hydration in the generic
-canvas shell.  The missing-checkpoint guard is behaving as designed; the
-canvas lookup reaches it unnecessarily.  No repository fix has been applied.
+Closed.  The failure was caused by eager historical-session hydration in the
+generic canvas shell.  Discovery is now catalog-only, non-Org buffers do not
+resume historical reverse associations, and Org Canvas owns best-effort
+recovery for its explicit document/session reference.  The strict checkpoint
+guard remains unchanged.
 
 * Live evidence
 
@@ -51,35 +53,74 @@ normal session loading to reject checkpoint-less journals rather than silently
 performing an unbounded full replay.  Weakening that persistence boundary would
 turn this presentation lookup bug into a runtime safety regression.
 
-* Fix direction
+* Fix
 
-Keep the strict checkpoint rule.  Change the generic canvas shell's existing
-canvas lookup to compare the current buffer against attachment metadata from
-the session-list entries themselves.  Prefer a narrow chat-session helper for
-normalizing attachments from catalog metadata so =e-canvas= does not duplicate
-the capability's metadata representation.
+Session metadata now has a transcript-free context-reference reader, and the
+chat-session capability exposes attachment normalization over that metadata.
+Generic Canvas uses those catalog values only for already-loaded sessions.
+Unloaded or malformed historical reverse associations are nonmatches because a
+generic document owns no durable session reference.  The attachment picker
+also always offers =[New e session]=, even when historical sessions exist.
 
-Only a session whose catalog attachment actually matches the current buffer
-should be opened and hydrated.  A nonmatching legacy session with no checkpoint
-must remain untouched, allowing =e-canvas-open-for-current-buffer= to create
-the requested new session.
+Org Canvas session listing, file matching, and buffer recovery now operate on
+root catalog entries without hydrating transcripts.  A missing or mismatched
+explicit document reference still prompts synchronously.  When a cataloged
+session fails during asynchronous checkpoint or journal loading, =e-chat-open=
+reports the original failure through a narrow load-error callback after
+rendering it.  Org Canvas uses that callback to ask whether to create a new
+session and replace the document's reference.  The callback enters presentation
+work through =e-ui-work=, where a stale-reference check prevents a delayed
+failure from replacing a newer association.  Declining preserves both the failed
+transcript and the original reference for diagnosis.
 
-Regression coverage should use a persistent index containing:
-
-- an unloaded unrelated legacy session with a journal but no checkpoint;
-- a current buffer with no matching canvas attachment;
-- an assertion that opening the current buffer creates a new canvas session
-  without trying to resume the legacy entry.
-
-A companion case should prove that a matching attachment in catalog metadata
-still selects the existing session.  The present canvas tests use only loaded
-in-memory sessions, so they do not exercise this boundary.
+Checkpoint validation and the explicit offline migration rule were not
+weakened.  Storage continues to surface unavailable or corrupt sessions; only
+the document-owning presentation shell decides whether replacement is valid.
 
 * Verification
 
-- =e-session-test-load-requires-explicit-resume-checkpoint= passed, confirming
-  the intended resume guard.
-- The two focused current-buffer canvas tests passed, confirming the existing
-  loaded-session behavior and its coverage gap for unloaded catalog entries.
-- The supported live probes remained responsive.
+- The combined session, chat-session, chat, generic canvas, and Org Canvas gate
+  passed 537 expected tests, one skipped optional Markdown-rendering test, and
+  zero unexpected results out of 538 tests.
+- The full generic Canvas file passed 9 of 9 tests.
+- The full Org Canvas file passed 72 of 72 tests.
+- Project compilation completed without warnings or errors.
+- Focused regressions prove that unloaded and malformed unrelated generic
+  sessions are not hydrated, that the attach picker can create a new session,
+   that checkpoint setup failures reach the chat recovery callback, and that
+  accepting the Org replacement prompt installs a new session reference while
+  a delayed stale failure cannot replace a newer one.
 - The running Emacs and persisted session files were left unchanged.
+
+* Architecture self-check
+
+1. The package is independently useful: unrelated historical state can no
+   longer block new canvases, and explicit Org references have a recovery path.
+2. It moves toward catalog-first discovery, asynchronous hydration, and
+   document-owned recovery policy.
+3. Stable facts--indexed references and strict resume validation--are modeled
+   directly.  The replace-or-keep choice remains local and reversible.
+4. Core session owns metadata shape, chat-session owns attachment semantics,
+   chat presentation owns load lifecycle, and Org Canvas owns its reference.
+5. Coupling is reduced because neither canvas shell reads transcript storage to
+   discover sessions; the new callback carries only one load condition.
+6. Dependencies still point from shells to capability/session contracts; core
+   does not depend on Canvas or Org Canvas.
+7. Catalog inspection is side-effect free.  Session creation and reference
+   replacement remain at the existing shell/application boundary, and delayed
+   recovery UI enters through the serialized UI-work boundary.
+8. No new durable state was added.  Replacement mutates the existing
+   buffer-owned reference only after explicit consent.
+9. Generic discovery changes from possible N-session replay to a linear scan of
+   bounded catalog metadata.  Org discovery likewise avoids transcript I/O.
+10. The metadata and callback contracts are semantically real and narrow: one
+    reads indexed current-state references, the other reports transcript-load
+    failure after presentation settlement.
+11. Existing checkpoint compatibility policy is unchanged; no implicit legacy
+    replay or migration path was added.
+12. Eager transcript hydration was removed from both canvas discovery paths.
+13. Unrelated malformed generic metadata becomes a nonmatch.  Referenced Org
+    failures remain visible and require a user decision before replacement.
+14. Core behavior is covered separately at metadata, load callback, generic
+    discovery, and Org recovery boundaries, so presentation changes remain
+    narrow in their test impact.

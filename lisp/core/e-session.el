@@ -2814,14 +2814,21 @@ New code should prefer the narrower typed metadata helpers."
                     config)))
     (e-session--replace-metadata store session-id metadata)))
 
-(defun e-session-context-references (store session-id owner)
-  "Return current-state references for OWNER in SESSION-ID."
-  (let* ((metadata (plist-get (e-session--get-live store session-id) :metadata))
-         (references (plist-get metadata :context-references))
+(defun e-session-metadata-context-references (metadata owner)
+  "Return current-state references for OWNER from session METADATA.
+This transcript-free reader accepts metadata from either a live session or a
+session catalog entry."
+  (let* ((references (plist-get metadata :context-references))
          (owner-key (e-session--metadata-owner-key owner)))
     (copy-tree
      (e-session--metadata-public-value
       (plist-get references owner-key)))))
+
+(defun e-session-context-references (store session-id owner)
+  "Return current-state references for OWNER in SESSION-ID."
+  (e-session-metadata-context-references
+   (plist-get (e-session--get-live store session-id) :metadata)
+   owner))
 
 (defun e-session-set-context-references (store session-id owner references)
   "Set durable current-state REFERENCES for OWNER in SESSION-ID."

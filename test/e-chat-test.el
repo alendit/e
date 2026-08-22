@@ -10763,6 +10763,39 @@ gamma
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-index-load-setup-failure-calls-recovery-hook ()
+  "Synchronous checkpoint failures use the asynchronous chat recovery seam."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         callback-condition
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--unloaded-index-session)
+                   (lambda (_harness session-id)
+                     (list :id session-id :loaded nil :title "Broken")))
+                  ((symbol-function 'e-session-load-session-start)
+                   (lambda (&rest _args)
+                     (signal 'e-session-checkpoint-invalid
+                             '("broken" "invalid checkpoint")))))
+          (setq buffer
+                (e-chat-open
+                 :harness harness
+                 :session-id "broken"
+                 :on-session-load-error
+                 (lambda (condition)
+                   (setq callback-condition condition))))
+          (should (e-chat-test--wait-until
+                   (lambda () callback-condition)
+                   1.0))
+          (should (eq (car callback-condition)
+                      'e-session-checkpoint-invalid))
+          (with-current-buffer buffer
+            (should-not e-chat--session-load-request)
+            (should (string-match-p "Failed to load transcript"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-index-loading-bounds-large-session-summary ()
   "Loading projection does not render an unbounded index summary."
   (let ((e-chat-session-summary-preview-max-chars 40)

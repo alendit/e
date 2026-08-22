@@ -85,6 +85,17 @@
               (plist-get attachment :canvas))
             (e-chat-session-attachments harness session-id)))
 
+(defun e-canvas--catalog-session-canvas-attachment (session)
+  "Return SESSION catalog metadata's primary canvas attachment, or nil.
+Malformed metadata is a nonmatch here: a generic buffer owns no durable
+reference that would justify failing or prompting for this historical session."
+  (condition-case nil
+      (seq-find (lambda (attachment)
+                  (plist-get attachment :canvas))
+                (e-chat-session-metadata-attachments
+                 (plist-get session :metadata)))
+    (user-error nil)))
+
 (defun e-canvas--session-canvas-buffer (harness session-id)
   "Return the live canvas buffer for SESSION-ID in HARNESS, or nil.
 Prefer an existing buffer; otherwise visit a file-backed canvas on
@@ -103,10 +114,16 @@ file-backed canvases resolve even without a recorded live buffer."
   (let ((buffer-uri (e-canvas--buffer-uri buffer))
         (buffer-name (buffer-name buffer)))
     (catch 'session
-      (dolist (session (e-harness-session-list harness))
+      ;; Generic buffers do not own durable session references.  Reuse a
+      ;; process-live association, but never hydrate historical sessions merely
+      ;; to discover whether one might point back to this buffer.
+      (dolist (session (seq-filter
+                        (lambda (candidate)
+                          (plist-get candidate :loaded))
+                        (e-harness-session-list harness)))
         (let* ((session-id (plist-get session :id))
-               (attachment (e-canvas--session-canvas-attachment
-                            harness session-id)))
+               (attachment
+                (e-canvas--catalog-session-canvas-attachment session)))
           (when (and attachment
                      (or (eq (e-chat-session--attachment-live-buffer
                               attachment)
@@ -168,22 +185,27 @@ chat buffer in a side pane."
   (e-chat--session-choice-label session))
 
 (defun e-canvas--read-session (harness prompt)
-  "Read a session id from HARNESS with PROMPT."
+  "Read a HARNESS session id or a new-session choice with PROMPT."
   (let* ((sessions (e-harness-root-session-list harness))
          (labels (mapcar #'e-canvas--session-choice-label sessions))
-         (selected (completing-read prompt labels nil t))
+         (new-label "[New e session]")
+         (choices (cons new-label labels))
+         (selected (completing-read prompt choices nil t))
          (index (cl-position selected labels :test #'equal)))
-    (unless index
-      (user-error "No e session selected"))
-    (plist-get (nth index sessions) :id)))
+    (cond
+     ((equal selected new-label) nil)
+     (index (plist-get (nth index sessions) :id))
+     (t (user-error "No e session selected")))))
 
 (defun e-canvas--target-session (harness)
-  "Return the most relevant session id for an attachment command."
+  "Return the most relevant HARNESS session id for an attachment command."
   (cond
    ((and (derived-mode-p 'e-chat-mode) e-chat-session-id)
     e-chat-session-id)
    ((e-harness-root-session-list harness)
-    (e-canvas--read-session harness "Attach canvas context to e session: "))
+    (or (e-canvas--read-session harness
+                                "Attach canvas context to e session: ")
+        (plist-get (e-chat--create-session harness) :id)))
    (t
     (plist-get (e-chat--create-session harness) :id))))
 

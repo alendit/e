@@ -2068,8 +2068,10 @@ message's block surgically."
        (eq instance-id e-chat-harness-instance-id)))
 
 (defun e-chat--start-session-load
-    (buffer harness session-id instance-id generation)
-  "Start async transcript load for BUFFER/HARNESS SESSION-ID."
+    (buffer harness session-id instance-id generation on-session-load-error)
+  "Start async transcript load for BUFFER/HARNESS SESSION-ID.
+INSTANCE-ID and GENERATION identify the current attachment.  Call
+ON-SESSION-LOAD-ERROR with the load condition after rendering the failure."
   (let* ((store (e-chat-service-session-store harness))
          request
          (on-done
@@ -2083,27 +2085,43 @@ message's block surgically."
                    buffer harness session-id instance-id))))))
          (on-error
           (lambda (err)
-            (when (buffer-live-p buffer)
-              (with-current-buffer buffer
-                (when (e-chat--session-load-current-p
-                       request generation harness session-id instance-id)
-                  (setq e-chat--session-load-request nil)
-                  (e-chat--set-status "session load failed" nil)
-                  (let ((inhibit-read-only t))
-                    (save-excursion
-                      (goto-char (or e-chat--composer-start-marker
-                                     (point-max)))
-                      (e-chat--insert-protected
-                       (format "%s Failed to load transcript: %S\n\n"
-                               e-chat--system-glyph
-                               err)
-                       'e-chat-error-face)))))))))
+            (let (handled)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (when (e-chat--session-load-current-p
+                         request generation harness session-id instance-id)
+                    (setq e-chat--session-load-request nil)
+                    (e-chat--set-status "session load failed" nil)
+                    (let ((inhibit-read-only t))
+                      (save-excursion
+                        (goto-char (or e-chat--composer-start-marker
+                                       (point-max)))
+                        (e-chat--insert-protected
+                         (format "%s Failed to load transcript: %S\n\n"
+                                 e-chat--system-glyph
+                                 err)
+                         'e-chat-error-face)))
+                    (setq handled t))))
+              (when (and handled on-session-load-error)
+                (funcall on-session-load-error err))))))
+    ;; Checkpoint validation happens before the asynchronous loader creates its
+    ;; own request.  Represent those setup failures with the same callback path
+    ;; as journal-tail failures so callers observe one load contract.
     (setq request
-          (e-session-load-session-start
-           store
-           session-id
-           :on-done on-done
-           :on-error on-error))
+          (e-request-lifecycle-create
+           :owner 'e-chat-session-load
+           :session-id session-id
+           :state 'started))
+    (condition-case err
+        (setq request
+              (e-session-load-session-start
+               store
+               session-id
+               :on-done on-done
+               :on-error on-error))
+      (error
+       (e-request-fail request err)
+       (run-at-time 0 nil on-error err)))
     request))
 
 (defun e-chat--git-root (directory)
@@ -8535,10 +8553,14 @@ service snapshot when supplied."
               (e-chat-service-subscription-active-p
                e-chat--event-subscription)))))
 
-(cl-defun e-chat-open (&key harness session-id new-session instance-id)
+(cl-defun e-chat-open
+    (&key harness session-id new-session instance-id on-session-load-error)
   "Attach and return an e chat buffer.
 HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
-reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
+reload.  INSTANCE-ID identifies a configured harness instance.
+ON-SESSION-LOAD-ERROR, when non-nil, receives an asynchronous session load
+condition after the chat buffer renders it.  User-facing commands should call
+`e-chat-new' or `e-chat-resume'."
   (let* ((instance (and (not harness)
                         instance-id
                         (e-harness-instance-get instance-id)))
@@ -8562,7 +8584,8 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (unless (e-chat--live-session-buffer-p
              buffer chat-harness chat-session-id chat-instance-id)
       (e-chat--attach-buffer
-       buffer chat-harness chat-session-id chat-instance-id))
+       buffer chat-harness chat-session-id chat-instance-id
+       on-session-load-error))
     (e-chat--prune-duplicate-session-buffers
      buffer chat-session-id chat-harness chat-instance-id)
     buffer))
@@ -8777,8 +8800,11 @@ When SESSION-ID is nil, create a private execution session for the participant."
   "Return one bounded page of public board interaction contexts."
   (e-chat-service-list-boards-page :after after :limit limit))
 
-(defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
-  "Attach BUFFER to HARNESS and SESSION-ID."
+(defun e-chat--attach-buffer
+    (buffer harness session-id &optional instance-id on-session-load-error)
+  "Attach BUFFER to HARNESS and SESSION-ID.
+INSTANCE-ID identifies the configured harness instance.
+ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
   (let ((unloaded-session (e-chat--unloaded-index-session harness session-id))
         binding
         view)
@@ -8855,7 +8881,8 @@ When SESSION-ID is nil, create a private execution session for the participant."
                    harness
                    session-id
                    instance-id
-                   e-chat--session-load-generation)))
+                   e-chat--session-load-generation
+                   on-session-load-error)))
         (let ((inhibit-read-only t))
           (e-chat--clear t)
           (e-chat--render-session-replay

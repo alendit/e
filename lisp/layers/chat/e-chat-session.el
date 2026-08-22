@@ -151,14 +151,20 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
     (user-error "Attachments must be a sequence of attachment plists"))
   attachments)
 
-(defun e-chat-session-attachments (harness session-id)
-  "Return current live context attachments for SESSION-ID in HARNESS."
-  (let* ((store (e-harness-sessions harness))
-         (references (e-session-context-references
-                      store session-id 'chat-session)))
+(defun e-chat-session-metadata-attachments (metadata)
+  "Return canonical chat attachments from session METADATA.
+METADATA may come from a live session or a transcript-free catalog entry."
+  (let ((references
+         (e-session-metadata-context-references metadata 'chat-session)))
     (mapcar #'e-chat-session--normalize-attachment
             (e-chat-session--attachment-list
              (plist-get references :attachments)))))
+
+(defun e-chat-session-attachments (harness session-id)
+  "Return current live context attachments for SESSION-ID in HARNESS."
+  (e-chat-session-metadata-attachments
+   (plist-get (e-session-get (e-harness-sessions harness) session-id)
+              :metadata)))
 
 (defun e-chat-session--same-attachment-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same attachment."

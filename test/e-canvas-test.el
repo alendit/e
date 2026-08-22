@@ -99,6 +99,67 @@
                 (should (= (length (e-harness-session-list harness)) 1))))))
       (e-canvas-test--kill-chat-buffers))))
 
+(ert-deftest e-canvas-test-open-ignores-unloaded-catalog-canvas ()
+  "A generic buffer never hydrates an unloaded reverse canvas association."
+  (let ((harness (e-canvas-test--harness))
+        loaded)
+    (unwind-protect
+        (e-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :canvas-test))
+            (e-harness-registry-register :canvas-test harness)
+            (with-temp-buffer
+              (rename-buffer "catalog-canvas" t)
+              (let ((catalog-session
+                     '(:id "historical"
+                       :loaded nil
+                       :metadata
+                       (:context-references
+                        (:chat-session
+                         (:attachments
+                          ((:uri "buffer://catalog-canvas"
+                            :label "catalog-canvas"
+                            :canvas t))))))))
+                (let ((original-attachments
+                       (symbol-function 'e-chat-session-attachments)))
+                  (cl-letf (((symbol-function 'e-harness-session-list)
+                             (lambda (_harness) (list catalog-session)))
+                            ((symbol-function 'e-chat-session-attachments)
+                             (lambda (target-harness session-id)
+                               (if (equal session-id "historical")
+                                   (progn
+                                     (setq loaded t)
+                                     (error "historical session was hydrated"))
+                                 (funcall original-attachments
+                                          target-harness session-id)))))
+                    (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+                      (should-not loaded)
+                      (with-current-buffer chat-buffer
+                        (should-not (equal e-chat-session-id
+                                           "historical"))))))))))
+      (e-canvas-test--kill-chat-buffers))))
+
+(ert-deftest e-canvas-test-open-skips-malformed-unrelated-canvas-metadata ()
+  "Malformed generic catalog metadata cannot block a new canvas session."
+  (let ((harness (e-canvas-test--harness)))
+    (unwind-protect
+        (e-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :canvas-test))
+            (e-harness-registry-register :canvas-test harness)
+            (with-temp-buffer
+              (rename-buffer "clean-canvas" t)
+              (cl-letf (((symbol-function 'e-harness-session-list)
+                         (lambda (_harness)
+                           '((:id "malformed"
+                              :loaded t
+                              :metadata
+                              (:context-references
+                               (:chat-session
+                                (:attachments ("not-an-attachment")))))))))
+                (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+                  (with-current-buffer chat-buffer
+                    (should-not (equal e-chat-session-id "malformed"))))))))
+      (e-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-canvas-test-new-file-uses-file-backed-buffer-as-canvas ()
   "Creating a file canvas attaches its visited buffer and file URI."
   (let ((file (make-temp-file "e-canvas-" nil ".txt"))
@@ -132,7 +193,7 @@
             (e-harness-test-create-board-session harness :id "target-session")
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
-                         (car collection))))
+                         (cadr collection))))
               (with-temp-buffer
                 (rename-buffer "canvas-extra" t)
                 (insert "extra context")
@@ -143,6 +204,35 @@
                   (should-not (plist-get attachment :canvas))
                   (should (equal (plist-get attachment :uri)
                                  "buffer://canvas-extra")))))))
+      (e-canvas-test--kill-chat-buffers))))
+
+(ert-deftest e-canvas-test-attach-can-target-new-session ()
+  "Manual attachment always offers an explicit new-session target."
+  (let ((harness (e-canvas-test--harness)))
+    (unwind-protect
+        (e-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :canvas-test))
+            (e-harness-registry-register :canvas-test harness)
+            (e-harness-test-create-board-session harness :id "existing")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (should (equal (car collection) "[New e session]"))
+                         (car collection))))
+              (with-temp-buffer
+                (rename-buffer "canvas-new-target" t)
+                (e-canvas-attach-current-buffer)
+                (let* ((sessions (e-harness-session-list harness))
+                       (created (seq-find
+                                 (lambda (session)
+                                   (not (equal (plist-get session :id)
+                                               "existing")))
+                                 sessions))
+                       (attachments
+                        (e-chat-session-attachments
+                         harness (plist-get created :id))))
+                  (should created)
+                  (should (equal (plist-get (car attachments) :uri)
+                                 "buffer://canvas-new-target")))))))
       (e-canvas-test--kill-chat-buffers))))
 
 (ert-deftest e-canvas-test-shell-descriptor-advertises-canvas-surface ()
