@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| New    | canvas-new-session-loads-legacy-session/ | Canvas new session loads an unresumable legacy session |
 | New    | grimoire-daily-missing-manifest-and-task-queue-writer/ | Resumed Grimoire Daily hangs and reports persistence errors |
 | Closed | orchestration-facts-break-after-checkpoint-restart/ | Orchestration facts break after checkpoint restart |
 | New    | grimoire-daily-reentry-nests-canvas/ | Grimoire Daily re-entry nests and corrupts the visible canvas |

@@ -1,0 +1,16 @@
+#+title: Canvas New Session Loads an Unresumable Legacy Session
+#+startup: overview
+
+* Report
+
+While visiting a Markdown buffer, the user tried to attach it as a canvas to a
+new session.  Instead of creating the new session, the command failed with:
+
+#+begin_example
+Session resume checkpoint does not exist: "20260803T080924-d408dbc0c08b", "/Users/dimitrivorona/.emacs.d/.local/cache/e/sessions/sessions/20260803T080924-d408dbc0c08b.checkpoint.json"
+#+end_example
+
+The referenced session is an unrelated historical session.  Creating a canvas
+session for the current buffer should not require loading every historical
+session, and an unrelated legacy session without a resume checkpoint should
+not prevent the new session from being created.
