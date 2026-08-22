@@ -132,6 +132,50 @@
                     e-org-canvas-input-mode))
     (should (commandp symbol))))
 
+(ert-deftest e-org-canvas-test-kind-substitutes-base-canvas-contract ()
+  "The Org specialization opens through the unmodified base Canvas lifecycle."
+  (let ((harness (e-org-canvas-test--harness)))
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (should (e-canvas-kind-p e-org-canvas--kind))
+            (dolist (function
+                     (list
+                      (e-canvas-kind-harness-function e-org-canvas--kind)
+                      (e-canvas-kind-prepare-buffer-function e-org-canvas--kind)
+                      (e-canvas-kind-prepare-harness-function e-org-canvas--kind)
+                      (e-canvas-kind-attachment-function e-org-canvas--kind)
+                      (e-canvas-kind-session-reference-function
+                       e-org-canvas--kind)
+                      (e-canvas-kind-session-matches-function
+                       e-org-canvas--kind)
+                      (e-canvas-kind-initialize-session-function
+                       e-org-canvas--kind)
+                      (e-canvas-kind-bind-session-function e-org-canvas--kind)
+                      (e-canvas-kind-present-session-function
+                       e-org-canvas--kind)))
+              (should (functionp function)))
+            (with-temp-buffer
+              (rename-buffer "org-canvas-substitution" t)
+              (org-mode)
+              (let ((source (current-buffer))
+                    (chat-buffer
+                     (e-canvas-open-buffer
+                      e-org-canvas--kind (current-buffer))))
+                (should (buffer-live-p chat-buffer))
+                (should e-org-canvas-mode)
+                (should (equal e-org-canvas-session-id
+                               (buffer-local-value
+                                'e-chat-session-id chat-buffer)))
+                (should (equal
+                         (plist-get
+                          (e-org-canvas-session-metadata
+                           harness e-org-canvas-session-id)
+                          :uri)
+                         (e-canvas--buffer-uri source)))))))
+      (e-org-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-org-canvas-test-open-current-buffer-focuses-composer ()
   "Opening an Org buffer leaves its chat composer selected and editable."
   (let ((harness (e-org-canvas-test--harness))
@@ -570,8 +614,9 @@
                      (lambda (_text)
                        (setq prompted t)
                        t)))
-            (e-org-canvas--schedule-unavailable-session-recovery
-             buffer harness "old-reference" '(error "late failure"))
+            (e-canvas--schedule-session-recovery
+             e-org-canvas--kind harness buffer "old-reference"
+             '(error "late failure") nil t)
             (with-current-buffer buffer
               (setq-local e-org-canvas-session-id "new-reference"))
             (e-org-canvas-test--drain-ui-work buffer))
@@ -626,7 +671,7 @@
                   (should e-chat-session-id)
                   (should-not (equal e-chat-session-id first-id))))
               (should (string-match-p first-id prompt))
-              (should (string-match-p "different Org buffer" warning))
+              (should (string-match-p "not a matching canvas" warning))
               (should (= (length (e-harness-session-list harness)) 2)))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))

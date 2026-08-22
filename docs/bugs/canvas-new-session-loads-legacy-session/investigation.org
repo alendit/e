@@ -67,11 +67,18 @@ root catalog entries without hydrating transcripts.  A missing or mismatched
 explicit document reference still prompts synchronously.  When a cataloged
 session fails during asynchronous checkpoint or journal loading, =e-chat-open=
 reports the original failure through a narrow load-error callback after
-rendering it.  Org Canvas uses that callback to ask whether to create a new
-session and replace the document's reference.  The callback enters presentation
-work through =e-ui-work=, where a stale-reference check prevents a delayed
-failure from replacing a newer association.  Declining preserves both the failed
-transcript and the original reference for diagnosis.
+rendering it.
+
+The follow-up design makes Org Canvas a substitutable specialization of Canvas
+rather than a parallel resume implementation.  =e-canvas-kind= is the common
+contract, and =e-canvas-open-buffer= owns catalog resolution, reference
+validation, replacement prompts, session creation, binding order, asynchronous
+load recovery, stale-reference protection, and UI-work scheduling.  The Org
+kind supplies only its real variations: explicit reference lookup, Org metadata
+and mode binding, project-layer preparation, workspace affinity, and its
+presentation.  The base lifecycle contains no Org conditionals or type tests.
+Declining replacement preserves both the failed transcript and the original
+reference for diagnosis.
 
 Checkpoint validation and the explicit offline migration rule were not
 weakened.  Storage continues to surface unavailable or corrupt sessions; only
@@ -80,30 +87,33 @@ the document-owning presentation shell decides whether replacement is valid.
 * Verification
 
 - The combined session, chat-session, chat, generic canvas, and Org Canvas gate
-  passed 537 expected tests, one skipped optional Markdown-rendering test, and
-  zero unexpected results out of 538 tests.
+  passed 538 expected tests, one skipped optional Markdown-rendering test, and
+  zero unexpected results out of 539 tests.
 - The full generic Canvas file passed 9 of 9 tests.
-- The full Org Canvas file passed 72 of 72 tests.
+- The full Org Canvas file passed 73 of 73 tests.
 - Project compilation completed without warnings or errors.
 - Focused regressions prove that unloaded and malformed unrelated generic
   sessions are not hydrated, that the attach picker can create a new session,
-   that checkpoint setup failures reach the chat recovery callback, and that
+  that checkpoint setup failures reach the chat recovery callback, and that
   accepting the Org replacement prompt installs a new session reference while
-  a delayed stale failure cannot replace a newer one.
+  a delayed stale failure cannot replace a newer one.  A substitution test
+  opens the Org kind directly through the unchanged base Canvas lifecycle.
 - The running Emacs and persisted session files were left unchanged.
 
 * Architecture self-check
 
 1. The package is independently useful: unrelated historical state can no
    longer block new canvases, and explicit Org references have a recovery path.
-2. It moves toward catalog-first discovery, asynchronous hydration, and
-   document-owned recovery policy.
+2. It moves toward one catalog-first Canvas application service with
+   substitutable specializations, asynchronous hydration, and reference-owned
+   recovery policy.
 3. Stable facts--indexed references and strict resume validation--are modeled
    directly.  The replace-or-keep choice remains local and reversible.
 4. Core session owns metadata shape, chat-session owns attachment semantics,
-   chat presentation owns load lifecycle, and Org Canvas owns its reference.
-5. Coupling is reduced because neither canvas shell reads transcript storage to
-   discover sessions; the new callback carries only one load condition.
+   chat presentation owns transcript load settlement, base Canvas owns the
+   canvas lifecycle, and Org Canvas owns only its Org-specific policy hooks.
+5. Coupling is reduced because Org Canvas no longer coordinates chat opening or
+   recovery itself, and base Canvas has no dependency on the Org specialization.
 6. Dependencies still point from shells to capability/session contracts; core
    does not depend on Canvas or Org Canvas.
 7. Catalog inspection is side-effect free.  Session creation and reference
@@ -113,14 +123,15 @@ the document-owning presentation shell decides whether replacement is valid.
    buffer-owned reference only after explicit consent.
 9. Generic discovery changes from possible N-session replay to a linear scan of
    bounded catalog metadata.  Org discovery likewise avoids transcript I/O.
-10. The metadata and callback contracts are semantically real and narrow: one
-    reads indexed current-state references, the other reports transcript-load
-    failure after presentation settlement.
+10. The metadata, load callback, and =e-canvas-kind= contracts are semantically
+    real.  Every kind accepts the same lifecycle inputs and preserves the same
+    create, resume, prompt, recovery, and stale-callback postconditions.
 11. Existing checkpoint compatibility policy is unchanged; no implicit legacy
     replay or migration path was added.
-12. Eager transcript hydration was removed from both canvas discovery paths.
+12. Eager transcript hydration and the duplicate Org resume/recovery lifecycle
+    were removed.
 13. Unrelated malformed generic metadata becomes a nonmatch.  Referenced Org
     failures remain visible and require a user decision before replacement.
 14. Core behavior is covered separately at metadata, load callback, generic
-    discovery, and Org recovery boundaries, so presentation changes remain
-    narrow in their test impact.
+    discovery, base lifecycle, substitution, and Org policy boundaries, so a
+    specialization can be tested through the same Canvas contract.
