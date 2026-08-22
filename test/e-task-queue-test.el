@@ -732,6 +732,40 @@ without one there is nothing to analyze, so the task terminates."
       (e-task-queue--writer-finished queue second)
       (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0)))))
 
+(ert-deftest e-task-queue-test-writer-uses-global-process-environment ()
+  "Writer discovery and launch ignore unrelated buffer-local process state."
+  (let ((directory (make-temp-file "e-task-queue-writer-environment-" t))
+        (global-exec-path (default-value 'exec-path))
+        (global-process-environment (default-value 'process-environment))
+        discovery-environment
+        launch-environment
+        sent)
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local exec-path '("/buffer-only"))
+          (setq-local process-environment '("PATH=/buffer-only"))
+          (let ((queue (e-task-queue-create :directory directory)))
+            (cl-letf (((symbol-function 'executable-find)
+                       (lambda (_executable)
+                         (setq discovery-environment
+                               (list exec-path process-environment))
+                         "/global/node"))
+                      ((symbol-function 'make-process)
+                       (lambda (&rest _arguments)
+                         (setq launch-environment
+                               (list exec-path process-environment))
+                         'writer))
+                      ((symbol-function 'process-send-string)
+                       (lambda (_process snapshot) (setq sent snapshot)))
+                      ((symbol-function 'process-send-eof) #'ignore))
+              (e-task-queue--start-async-write queue)))
+          (should (equal discovery-environment
+                         (list global-exec-path global-process-environment)))
+          (should (equal launch-environment
+                         (list global-exec-path global-process-environment)))
+          (should (stringp sent)))
+      (delete-directory directory t))))
+
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here

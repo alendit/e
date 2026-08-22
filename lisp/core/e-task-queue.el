@@ -811,29 +811,31 @@ The transient `:handle', `:pausing', and the live harness are never persisted.")
 
 (defun e-task-queue--start-async-write (queue)
   "Send one bounded QUEUE snapshot to the external writer."
-  (let* ((file (e-task-queue--record-file queue))
-         (node (executable-find e-task-queue-node-executable))
-         (snapshot (e-task-queue--snapshot-string queue)))
-    (unless node
-      (signal 'e-task-queue-error
-              (list "Cannot find task queue Node writer")))
-    (make-directory (file-name-directory file) t)
-    (let ((process
-           (make-process
-            :name "e-task-queue-writer" :buffer nil :noquery t
-            :command (list node (e-task-queue--writer-script) file)
-            :connection-type 'pipe :coding 'utf-8-unix
-            :sentinel (lambda (process _event)
-                        (e-task-queue--writer-finished queue process)))))
-      (setf (e-task-queue-write-process queue) process)
-      (condition-case err
-          (progn
-            (process-send-string process snapshot)
-            (process-send-eof process))
-        (error
-         (setf (e-task-queue-write-process queue) nil)
-         (when (process-live-p process) (delete-process process))
-         (signal (car err) (cdr err)))))))
+  (let ((exec-path (default-value 'exec-path))
+        (process-environment (default-value 'process-environment)))
+    (let* ((file (e-task-queue--record-file queue))
+           (node (executable-find e-task-queue-node-executable))
+           (snapshot (e-task-queue--snapshot-string queue)))
+      (unless node
+        (signal 'e-task-queue-error
+                (list "Cannot find task queue Node writer")))
+      (make-directory (file-name-directory file) t)
+      (let ((process
+             (make-process
+              :name "e-task-queue-writer" :buffer nil :noquery t
+              :command (list node (e-task-queue--writer-script) file)
+              :connection-type 'pipe :coding 'utf-8-unix
+              :sentinel (lambda (process _event)
+                          (e-task-queue--writer-finished queue process)))))
+        (setf (e-task-queue-write-process queue) process)
+        (condition-case err
+            (progn
+              (process-send-string process snapshot)
+              (process-send-eof process))
+          (error
+           (setf (e-task-queue-write-process queue) nil)
+           (when (process-live-p process) (delete-process process))
+           (signal (car err) (cdr err))))))))
 
 (defun e-task-queue--schedule-write (queue)
   "Schedule a coalesced durable write for QUEUE.

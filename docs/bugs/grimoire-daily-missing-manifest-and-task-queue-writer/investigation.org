@@ -4,9 +4,9 @@
 * Status
 
 The UI hang, missing-manifest error, and task-queue writer error are three
-distinct failures.  The UI hang has a deterministic source-level reproduction.
-The missing manifest is an already-incomplete historical checkpoint.  The
-task-queue snapshot is terminal and is not retrying continuously.
+distinct failures.  The task-queue writer path is fixed repository-side.  The
+UI hang has a deterministic source-level reproduction, and the missing manifest
+is an already-incomplete historical checkpoint.
 
 * Live evidence
 
@@ -94,6 +94,12 @@ stable global process environment, with a focused regression using an
 unrelated buffer-local =exec-path=.  The live value cannot be read now because
 the supported probe timed out and further requests are prohibited.
 
+The repository fix binds both =exec-path= and =process-environment= to their
+global default values across executable discovery and =make-process=.  The
+focused regression gives an unrelated temporary buffer deliberately invalid
+local values and proves that discovery and launch both observe the global
+defaults.
+
 * Verification
 
 - The isolated empty-subscription reproduction rescheduled 10 of 10 empty
@@ -105,17 +111,22 @@ the supported probe timed out and further requests are prohibited.
 - The private current-config compatibility suite passed four of four existing
   checks.  A temporary diagnostic fifth check proved Node resolution under the
   same configuration and was removed afterward.
+- The focused global-process-environment regression passed, the complete
+  =e-task-queue-test.el= file passed 36 of 36 tests, and project byte compilation
+  succeeded after refreshing stale repository-side bytecode.
 - No request was sent to the running Emacs after the live-probe timeout.  No
   session, board, task-queue, or Grimoire persisted state was changed.
 
 * Next step
 
-Implement and test three separate semantic slices:
+Implement and test the remaining separate semantic slices:
 
 1. stop the empty subscription drain loop and handle resnapshot explicitly;
-2. make the task writer use stable global process discovery and launch state;
+2. DONE: make the task writer use stable global process discovery and launch
+   state;
 3. represent the already-incomplete orchestration run without fabricating a
    manifest, then choose an explicit Daily recovery operation.
 
-The first slice requires a full Emacs restart because =e-chat-service= is core
-runtime code.  It is the slice that resolves the current 100-percent-CPU hang.
+The first and completed second slices require a full Emacs restart because
+=e-chat-service= and =e-task-queue= are core runtime code.  The first slice is
+the one that resolves the current 100-percent-CPU hang.
