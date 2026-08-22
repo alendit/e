@@ -1832,7 +1832,7 @@ must drop any revealed hidden blocks."
             (setq-local mode-name '(:eval (format-mode-line mode-name)))
             (with-current-buffer composer
               (should (equal (e-chat--surface-composer-mode-name)
-                             "e-chat gpt-5.6-sol/high 18%% (64k/353k tok)")))
+                             "e-chat gpt-5.6-sol/high 18 pct (64k/353k tok)")))
             (should (= (length
                         (get-buffer-window-list composer nil t))
                        1))
@@ -9227,7 +9227,7 @@ gamma
               (e-ui-work-drain-batch :buffer (current-buffer)
                                      :owner 'chat-mode-line-status))
             (should (string-match-p "gpt-5.5/high" mode-name))
-            (should (string-match-p "~[0-9]+%" mode-name))
+            (should (string-match-p "~[0-9]+ pct" mode-name))
             (should (string-match-p "/100 tok" mode-name))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -9370,7 +9370,7 @@ gamma
       (e-ui-work-with-batch-drain
         (e-ui-work-drain-batch :buffer (current-buffer)
                                :owner 'chat-mode-line-status))
-      (should (string-match-p "~[0-9]+%" mode-name))
+      (should (string-match-p "~[0-9]+ pct" mode-name))
       (should-not (string-match-p "203k/258k tok" mode-name)))))
 
 
@@ -9827,7 +9827,7 @@ gamma
             (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer (current-buffer)
                                      :owner 'chat-mode-line-status))
-            (should (string-match-p "~[0-9]+%" mode-name))
+            (should (string-match-p "~[0-9]+ pct" mode-name))
             (let ((before mode-name))
               (e-session-append-compaction
                store
@@ -9843,7 +9843,7 @@ gamma
               (e-ui-work-with-batch-drain
                 (e-ui-work-drain-batch :buffer (current-buffer)
                                        :owner 'chat-mode-line-status))
-              (should (string-match-p "~[0-9]+%" mode-name))
+              (should (string-match-p "~[0-9]+ pct" mode-name))
               (should-not (equal mode-name before)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

@@ -76,6 +76,24 @@ identity, so every settled transition resolves the current pair from them."
       (substring-no-properties
        (format-mode-line mode-line-format nil window buffer)))))
 
+(defun e-chat-behavior-test--scroll-output-back-one-line ()
+  "Scroll the paired output window one line toward older content."
+  (interactive)
+  (scroll-other-window-down 1))
+
+(defun e-chat-behavior-test--scroll-output-forward-one-line ()
+  "Scroll the paired output window one line toward newer content."
+  (interactive)
+  (scroll-other-window 1))
+
+(defun e-chat-behavior-test--send-semantic-command (event command)
+  "Execute COMMAND through the command loop using synthetic EVENT.
+An overriding terminal map keeps host modal keymaps from changing the command
+under test while preserving normal pre-command and post-command hooks."
+  (let ((overriding-terminal-local-map (make-sparse-keymap)))
+    (define-key overriding-terminal-local-map (vector event) command)
+    (e-graphical-test-send-keys (vector event))))
+
 (defun e-chat-behavior-test--set-frame-size (width height)
   "Resize the selected frame to WIDTH by HEIGHT and await native settlement."
   (set-frame-size (selected-frame) width height)
@@ -572,7 +590,7 @@ than the invisible insertion position."
               (with-current-buffer composer
                 (should
                  (equal (e-chat--surface-composer-mode-name)
-                        "e-chat gpt-5.6-sol/high 18%% (64k/353k tok)"))))
+                        "e-chat gpt-5.6-sol/high 18 pct (64k/353k tok)"))))
             (should (eq (selected-window)
                         (plist-get fixture :composer-window)))
             (with-current-buffer
@@ -914,7 +932,7 @@ than the invisible insertion position."
                    (let ((text
                           (e-chat-behavior-test--window-mode-line-text
                            composer-window)))
-                     (and (string-match-p "18%" text)
+                     (and (string-match-p "18 pct" text)
                           (string-match-p "64k/353k tok" text))))
                  2.0 "focused composer provider context-fill update")
               (error
@@ -984,7 +1002,9 @@ than the invisible insertion position."
                      (e-chat--output-follow-position))))
               ;; A one-line move toward older output is deliberate scrollback
               ;; even while the old tail remains visible in the viewport.
-              (e-graphical-test-send-keys "C-u 1 C-M-S-v")
+              (e-chat-behavior-test--send-semantic-command
+               'e-chat-test-scroll-back
+               #'e-chat-behavior-test--scroll-output-back-one-line)
               (should (< (window-start window) following-start))
               (with-current-buffer transcript
                 (should (>= (window-end window t) old-tail))
@@ -996,7 +1016,9 @@ than the invisible insertion position."
               (should (= (window-start window) scrolled-start))
               (should (eq (selected-window)
                           (plist-get fixture :composer-window))))
-            (e-graphical-test-send-keys "C-u 1 C-M-v")
+            (e-chat-behavior-test--send-semantic-command
+             'e-chat-test-scroll-forward
+             #'e-chat-behavior-test--scroll-output-forward-one-line)
             (with-current-buffer transcript
               (should (e-chat--window-follows-output-p window)))
             (e-chat-behavior-test--emit

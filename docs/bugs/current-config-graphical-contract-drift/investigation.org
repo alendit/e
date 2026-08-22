@@ -1,0 +1,73 @@
+#+title: Current Config Graphical Contract Drift Investigation
+#+startup: overview
+
+* Status
+
+Closed on 2026-08-22.
+
+* Investigation
+
+The installed =compat.el= and =magit-core.el= sources were newer than their
+compiled artifacts.  =doom sync -U --rebuild= rebuilt the package set.  A fresh
+current-config startup then loaded 214 packages across 40 modules without either
+stale-bytecode warning.
+
+The full current-config graphical run initially had two failures while the same
+26-test isolated run passed:
+
+1. Doom's modeline formatted the chat =mode-name= before returning it to the
+   outer mode-line formatter.  The old =%%= escape therefore underwent two
+   passes, while vanilla's built-in =%m= path underwent one.  Display properties
+   were not a common solution because =%m= strips them.  The semantic context
+   status continues to retain a literal percent sign; only the mode-line
+   projection now uses the compact textual unit =pct=, which is invariant under
+   either renderer.
+2. The scroll-follow E2E test sent =C-u 1 C-M-S-v= and =C-u 1 C-M-v=.  Doom's
+   modal maps changed the meaning of that input.  The test now binds synthetic
+   events to the intended semantic scroll commands in an overriding terminal
+   map and sends them through the real command loop, preserving the production
+   pre-command and post-command hooks under test.
+
+The user's running Emacs was not inspected or reloaded.  All live-equivalent
+checks used fresh private E2E daemons and off-screen graphical frames.
+
+* Validation
+
+- Current Doom configuration graphical E2E: 26/26 passed.
+- Isolated vanilla graphical E2E: 26/26 passed.
+- Focused recursive mode-line unit case: 1/1 passed.
+- Focused context-refresh unit cases: 3/3 passed.
+- Chat, session, and canvas regression set: 538 expected passes, one expected
+  optional-markdown skip, and zero unexpected results across 539 tests.
+- =eldev compile=: passed.
+- Current-config compatibility startup after package rebuild: 4/4 passed and no
+  stale =compat.el= or =magit-core.el= warning.
+
+* Architecture self-check
+
+1. This leaves the package artifacts coherent and converts two host assumptions
+   into explicit cross-configuration contracts.
+2. It moves toward presentation behavior that is portable across host Emacs
+   configurations while the shell keeps ownership of chat semantics.
+3. Host rendering and keymaps are variable.  Those decisions remain at the
+   presentation/test boundary; semantic status and scroll-follow policy stay
+   stable.
+4. =e-chat= owns its mode-line projection.  The graphical harness owns how a
+   semantic command is injected for host-independent E2E coverage.
+5. Coupling is reduced: neither path depends on Doom APIs or concrete keymaps.
+6. No stable policy dependency points toward a host package or UI adapter.
+7. Key injection remains outside production policy in the graphical harness.
+8. No durable state was added.  The semantic status cache retains its existing
+   lifetime; =pct= is derived presentation text.
+9. Context projection remains a bounded string replacement.  Test command
+   injection adds no production work.
+10. Vanilla and Doom substitute without narrowed behavior or unsupported
+    operations; both satisfy the same visible-status and output-follow tests.
+11. The supported compatibility contract is current configuration plus isolated
+    vanilla Emacs.  The renderer-specific percent escape was removed.
+12. The recursive percent escaping and host-key-specific test sequence were the
+    obsolete paths removed.
+13. No new error swallowing was added.  Unexpected formatter or command-loop
+    failures still fail the ERT scenario directly.
+14. Focused unit tests prove semantic/status projection, while the two complete
+    graphical matrices prove real redisplay and command-loop behavior.

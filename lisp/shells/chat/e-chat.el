@@ -7848,8 +7848,11 @@ expensive context-token estimate path."
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
 (defun e-chat--mode-line-display-text (status)
-  "Escape literal percent signs in STATUS for Emacs mode-line display."
-  (replace-regexp-in-string "%" "%%" status t t))
+  "Return a host-neutral mode-line projection of semantic STATUS.
+Mode-line strings interpret `%`, while host renderers disagree on whether
+`mode-name' is formatted once or recursively.  Use the compact textual unit
+`pct` in the presentation projection; the cached semantic status retains `%`."
+  (replace-regexp-in-string "%" " pct" status t t))
 
 (defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)
   "Refresh this buffer's e chat mode-line text.
@@ -7859,7 +7862,7 @@ an approximate full-context estimate."
     (unless (equal status e-chat--mode-line-status)
       (setq-local e-chat--mode-line-status status)
       ;; Strings inside mode-line constructs interpret `%'.  Keep the cached
-      ;; semantic status literal and escape only its display projection.
+      ;; semantic status literal and make only its display projection neutral.
       (setq-local mode-name (e-chat--mode-line-display-text status))
       (force-mode-line-update)
       (when (buffer-live-p e-chat--surface-composer-buffer)

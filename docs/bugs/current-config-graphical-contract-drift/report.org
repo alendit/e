@@ -1,0 +1,14 @@
+#+title: Current Config Graphical Contract Drift
+#+startup: overview
+
+* Report
+
+After rebuilding stale Doom package bytecode, run the graphical E2E suite with
+the machine's current configuration and fix the failures without regressing the
+isolated vanilla configuration.
+
+The current-config run exposed two host-sensitive assumptions:
+
+- the chat context percentage rendered differently when Doom recursively
+  formatted =mode-name=;
+- the output-follow scenario assumed a vanilla key binding that Doom remapped.
