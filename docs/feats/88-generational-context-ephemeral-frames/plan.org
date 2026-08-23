@@ -296,8 +296,10 @@ nonterminal states; =outcome-unknown= is a blocked, nonterminal recovery state;
 =finished=, =failed=, and =resolved= are outcome kinds, not independently
 terminal records.  Only a final =execution-settled= record makes an execution
 terminal.  The resume checkpoint retains every execution lacking that marker,
-the normalized call and provider linkage, and every partial result/frame record
-needed to finish or resolve it without scanning pre-checkpoint history.
+the normalized call and provider linkage, and every partial result record needed
+to finish or resolve it without scanning pre-checkpoint history.  It also
+retains settled result identities and any partial aggregate-frame record until
+the transition's aggregate result frame is durably acknowledged.
 
 The loop durably acknowledges =dispatch-started= before invocation.  On
 recovery, an admitted call with no =dispatch-started= record may dispatch.  A
@@ -307,35 +309,45 @@ redispatches nor permits provider follow-up until it is explicitly resolved.
 Feature 88 never automatically redispatches an execution after
 =dispatch-started=.
 
-A live =finished= or =failed= outcome uses one ordered transaction: first persist
-the normalized provider-linked tool result, then its deterministic result
-=frame-opened= record, then append one =execution-settled= commit marker that
-names the outcome kind and references both record identities.  The loop must
-durably acknowledge that complete prefix before clearing the active execution
-or starting any later tool/provider follow-up.  Failed or withheld
+A live =finished= or =failed= outcome uses one ordered per-execution transaction:
+first persist the normalized provider-linked tool result, then append one
+=execution-settled= commit marker that names the outcome kind and references the
+result identity.  The loop must durably acknowledge that complete prefix before
+clearing the active execution or starting the next tool.  Per-execution
+settlement does not open an observation frame.  Failed or withheld
 acknowledgement starts nothing.
 
 Replay derives terminality only from =execution-settled=.  If a durable result
-exists but its frame or marker is missing, recreate the missing records with the
-same identities and acknowledge the completed prefix idempotently; a known
-durable result never degrades to ambiguity.  Only =dispatch-started= without a
-durable normalized result becomes =outcome-unknown=.  A retry after failed
-acknowledgement resubmits the same record identities.
+exists but its marker is missing, recreate the marker with the same identity and
+acknowledge the completed prefix idempotently; a known durable result never
+degrades to ambiguity.  Only =dispatch-started= without a durable normalized
+result becomes =outcome-unknown=.  A retry after failed acknowledgement
+resubmits the same record identities.
+
+After every admitted execution has an acknowledged =execution-settled= marker,
+append exactly one deterministic aggregate =frame-opened= record for the
+transition.  It references every normalized result identity once in
+admitted-call order.  Acknowledge that frame before provider follow-up.  Replay
+opens the same frame exactly once when all executions are settled, or resubmits
+the same record identity when persistence succeeded but acknowledgement was
+lost.  It opens no result frame while any execution remains nonterminal.
 
 Add the consumer-shaped core operation =e-harness-resolve-tool-execution=.  It
 accepts a session id, execution id, and one bounded resolution: a normalized
-finished result or normalized failed result.  It uses the same result,
-=frame-opened=, =execution-settled= transaction and acknowledgement gate as live
-completion before releasing follow-up.  Repeating the same resolution is a
-no-op; a conflicting resolution is an explicit error.  Presentation may expose
-this operation but does not own its policy.
+finished result or normalized failed result.  It uses the same per-execution
+result and =execution-settled= transaction as live completion.  If this settles
+the last outstanding execution, the recovery service creates and acknowledges
+the one aggregate frame before releasing follow-up.  Repeating the same
+resolution is a no-op; a conflicting resolution is an explicit error.
+Presentation may expose this operation but does not own its policy.
 
 *** Pending-transition recovery service
 
 =e-session= derives and checkpoints a provider-neutral pending-transition
 descriptor containing the transition and turn identities, consuming response,
-ordered execution ids, provider replay linkage, and next durable action.  It
-contains no process-local callbacks, promises, or tool objects.
+ordered execution ids and settled result ids, deterministic aggregate frame
+identity, provider replay linkage, and next durable action.  It contains no
+process-local callbacks, promises, or tool objects.
 
 =e-harness-resume-pending-transition= is the sole application service that
 turns this durable descriptor back into live work.  Session resume calls it
@@ -343,8 +355,9 @@ after replay and before accepting a new prompt.  It claims the descriptor in the
 active-turn registry, is idempotent on repeated calls, dispatches only calls
 proven not to have reached =dispatch-started=, exposes =outcome-unknown= as a
 blocked state, and reconstructs exactly one provider follow-up after every
-ordered execution-settlement prefix is acknowledged.  A reconstruction mismatch fails
-visibly and leaves the descriptor recoverable.
+ordered execution-settlement prefix and the aggregate result frame are
+acknowledged.  A reconstruction mismatch fails visibly and leaves the
+descriptor recoverable.
 
 =e-harness-resolve-tool-execution= persists the bounded resolution, then
 delegates release to that service.  Feature 88 adds no generic idempotency-key
@@ -557,6 +570,8 @@ Add bounded events/diagnostics sufficient to explain context behavior:
 - tool execution admitted, dispatch-started, execution-settled,
   settlement-prefix-acknowledged, outcome-unknown, recovery-claimed, or
   explicitly resolved, keyed by bounded execution id;
+- aggregate result frame opened or acknowledged, keyed by bounded transition and
+  frame ids plus result count, never result bodies;
 - observation and promoted token/character estimates, never full content;
 - provider anchor held, advanced, rebuilt, or discarded, with reason;
 - rendering strategy: stateless, clean-anchor branch, or replaceable channel;
@@ -627,17 +642,21 @@ restart; do not add live-reload compatibility shims for them.
 - After restart, a durably admitted but provably undispatched call may resume.
   A =dispatch-started= call without a durable normalized result becomes
   blocked =outcome-unknown= and remains checkpoint-retained.  It is not
-  automatically redispatched.  A durable result with a partial frame/settlement
+  automatically redispatched.  A durable result with a partial settlement
   prefix is completed idempotently with the same identities.  No provider
   follow-up occurs until every admitted call has an acknowledged
-  =execution-settled= marker.
+  =execution-settled= marker and their one aggregate result frame is
+  acknowledged.
 - =e-harness-resolve-tool-execution= appends and acknowledges exactly one linked
-  result/frame/settlement transaction before releasing follow-up.  Repeating an
-  identical resolution is a no-op and a conflicting resolution fails explicitly.
+  result/settlement transaction.  If it settles the last outstanding execution,
+  the recovery service opens and acknowledges the same one aggregate frame
+  before releasing follow-up.  Repeating an identical resolution is a no-op and
+  a conflicting resolution fails explicitly.
 - =e-harness-resume-pending-transition= is invoked through the real
   session-resume path before a new prompt is accepted, claims recovered work at
   most once, blocks on ambiguity, and reconstructs exactly one follow-up from
-  durable records after all execution-settlement prefixes are acknowledged.
+  durable records after all execution-settlement prefixes and the aggregate
+  result frame are acknowledged.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -704,10 +723,11 @@ tool:
   previously undispatched call;
 - crash after the controlled side effect but before durable result produces
   =outcome-unknown= and zero automatic redispatch for an ordinary tool;
-- crash after the durable result, after =frame-opened=, after
-  =execution-settled= but before acknowledgement, and after acknowledgement;
-  each strict prefix completes exactly once after restart, a known result never
-  degrades to ambiguity, and its result observation never disappears;
+- with at least two admitted tools, crash after each durable result, after each
+  =execution-settled= marker but before acknowledgement, after all executions
+  settle but before aggregate =frame-opened=, after that frame but before its
+  acknowledgement, and after acknowledgement; each strict prefix completes
+  exactly once after restart and a known result never degrades to ambiguity;
 - =outcome-unknown= survives checkpoint/restart and blocks provider follow-up;
 - the public resolver appends one linked terminal result, waits for durable
   acknowledgement, and only then permits follow-up;
@@ -718,11 +738,14 @@ tool:
 - no generic idempotency key is persisted and no execution at or beyond
   =dispatch-started= is automatically redispatched;
 - completed multi-tool results remain terminal, ambiguous calls do not rerun,
-  and only provably undispatched calls may start; and
+  and only provably undispatched calls may start;
+- exactly one result frame contains every settled result once in admitted-call
+  order, including a manually resolved result among ordinary live results;
 - provider follow-up waits until every admitted call has an acknowledged
-  =execution-settled= marker and is reconstructed exactly once after restart;
+  =execution-settled= marker and the aggregate frame is acknowledged, and it is
+  reconstructed exactly once after restart; and
 - the same crash cuts through =e-harness-resolve-tool-execution= obey the same
-  transaction and acknowledgement gate.
+  per-execution transaction and aggregate-frame gate.
 
 Place this coverage under =e2e/= and give it one documented command that runs
 without credentials.  The planned direct command is:
@@ -787,12 +810,14 @@ is not sufficient justification.
 For an observation-bearing and a multi-tool transition, evidence also reports
 frame-settlement and tool-terminal-prefix record count and bytes, their separate
 acknowledgement waits, and end-to-end time from provider completion to first tool
-dispatch and from tool completion to the next tool or provider dispatch.  The
-acknowledgement paths perform work proportional to their prefixes, never scan
-the full journal, and perform no synchronous filesystem I/O on the Emacs main
-thread.  Any material latency regression requires first-principles
-justification.  A controlled-writer acknowledgement gate is contract evidence;
-queue/outbox microtests are mechanism evidence.
+dispatch and from each tool completion to the next tool dispatch.  Report the
+aggregate result-frame record count/bytes, acknowledgement wait, and
+last-tool-to-provider-follow-up time separately.  The acknowledgement paths
+perform work proportional to their prefixes, never scan the full journal, and
+perform no synchronous filesystem I/O on the Emacs main thread.  Any material
+latency regression requires first-principles justification.  A controlled-writer
+acknowledgement gate is contract evidence; queue/outbox microtests are mechanism
+evidence.
 
 * Compatibility and migration
 

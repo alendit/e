@@ -73,3 +73,12 @@ frame bytes, acknowledgement wait, and last-tool-to-follow-up time.
 
 Separate per-execution settlement from one aggregate result-frame opening, add
 restart and performance evidence, and run the same reviewer again.
+
+* Current disposition
+
+The candidate plan now uses two stages: each result and its
+=execution-settled= marker are acknowledged before the next tool, then exactly
+one deterministic frame containing all ordered results is acknowledged before
+provider follow-up.  Replay, manual resolution, checkpoints, cut-point E2E, and
+performance evidence cover both stages.  F88.14 is remediated in the candidate
+plan; the same reviewer must Tick its exact revision before implementation.
