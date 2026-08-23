@@ -136,7 +136,9 @@ activity cannot evict the semantic state needed by board reducers."
 
 (defconst e-session--replay-list-fields
   '(:session-events :messages :activity-events :branch-summaries
-    :compactions :provider-anchors :process-reports)
+    :compactions :provider-anchors :process-reports
+    :context-generations :context-frames :context-promotions
+    :context-frame-settlements)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
@@ -145,8 +147,16 @@ activity cannot evict the semantic state needed by board reducers."
     (:branch-summaries . :branch-summaries-tail)
     (:compactions . :compactions-tail)
     (:provider-anchors . :provider-anchors-tail)
-    (:process-reports . :process-reports-tail))
+    (:process-reports . :process-reports-tail)
+    (:context-generations . :context-generations-tail)
+    (:context-frames . :context-frames-tail)
+    (:context-promotions . :context-promotions-tail)
+    (:context-frame-settlements . :context-frame-settlements-tail))
   "Internal append-only list fields and their cached tail cells.")
+
+(defconst e-session--context-lifetime-entry-types
+  '(context-generation context-frame context-promotion context-frame-settlement)
+  "Durable entry types owned by the generational context lifetime model.")
 
 (defconst e-session-metadata-schema
   '((:name
@@ -685,6 +695,10 @@ arrays and sometimes inverted key/value pairs."
     "compaction"
     "provider-anchor"
     "process-report"
+    "context-generation"
+    "context-frame"
+    "context-promotion"
+    "context-frame-settlement"
     "current-branch"
     "messages-cleared")
   "Persistent record types that must flush before derived queued records.")
@@ -1126,7 +1140,11 @@ and RECORD supplies persisted identity fields during replay."
             (plist-get session :branch-summaries)
             (plist-get session :compactions)
             (plist-get session :provider-anchors)
-            (plist-get session :process-reports))))
+            (plist-get session :process-reports)
+            (plist-get session :context-generations)
+            (plist-get session :context-frames)
+            (plist-get session :context-promotions)
+            (plist-get session :context-frame-settlements))))
 
 (defun e-session-entry-by-id (store session-id entry-id)
   "Return durable entry ENTRY-ID from SESSION-ID."
@@ -1262,6 +1280,178 @@ a compaction, the complete current path remains model context and is retained."
         suffix
       path)))
 
+(defun e-session--context-record (entry)
+  "Return the provider-neutral context record carried by ENTRY."
+  (copy-tree (plist-get entry :context-record)))
+
+(defun e-session--context-lifetime-latest-entries
+    (entries type key)
+  "Return the latest ordered ENTRY of TYPE for each nested KEY value.
+
+Context records are append-only lifecycle snapshots.  `entries' is already in
+journal order, so the final occurrence for a logical id is authoritative.  A
+hash table finds those occurrences without scanning the journal once per
+frame; the final filter preserves their original order for checkpoint output."
+  (let ((latest (make-hash-table :test #'equal)))
+    (dolist (entry entries)
+      (when (eq (plist-get entry :type) type)
+        (let ((record (e-session--context-record entry)))
+          (when (plist-member record key)
+            (puthash (plist-get record key) entry latest)))))
+    (seq-filter
+     (lambda (entry)
+       (and (eq (plist-get entry :type) type)
+            (eq entry
+                (gethash (plist-get (e-session--context-record entry) key)
+                         latest))))
+     entries)))
+
+(defun e-session--context-lifetime-marker-p (record values)
+  "Return non-nil when RECORD's :status is one of VALUES.
+
+Symbols are used by the in-memory API and the replay normalizer restores the
+same symbols after JSON decoding.  Accepting their wire string spelling here
+keeps the reducer conservative but tolerant of a directly supplied persisted
+record."
+  (let ((status (plist-get record :status)))
+    (or (memq status values)
+        (and (stringp status)
+             (member status (mapcar #'symbol-name values))))))
+
+(defun e-session--context-lifetime-frame-state-p (record state)
+  "Return non-nil when FRAME RECORD has lifecycle STATE."
+  (let ((value (plist-get record :state)))
+    (or (eq value state)
+        (and (stringp value)
+             (equal value (symbol-name state))))))
+
+(defun e-session--context-record-sequence (record key)
+  "Return RECORD's KEY value as a detached logical-id sequence."
+  (let ((value (plist-get record key)))
+    (cond
+     ((null value) nil)
+     ((vectorp value) (append value nil))
+     ((listp value) (copy-sequence value))
+     (t (list value)))))
+
+(defun e-session--context-frame-unsettled-p (entry)
+  "Return non-nil when ENTRY is a frame snapshot candidate for reduction.
+
+Closure is not inferred from the nested snapshot state.  Only the final
+acknowledged settlement marker (or an explicit durable abort) closes a logical
+frame; in particular, a `:state settled' snapshot without its marker remains
+recoverable."
+  (eq (plist-get entry :type) 'context-frame))
+
+(defun e-session--checkpoint-context-lifetime-state (store session-id)
+  "Return bounded active generation and unsettled-frame checkpoint state.
+
+The state is derived from the current path.  Closed frames, unreferenced or
+superseded promotions, and superseded settlement attempts are intentionally
+omitted from the resume manifest; the append-only journal remains the audit
+source for them.  Returned entry ids follow journal order."
+  (let* ((path (e-session--checkpoint-path-suffix store session-id))
+         (generations
+          (seq-filter (lambda (entry)
+                        (eq (plist-get entry :type) 'context-generation))
+                      path))
+         (generation (car (last generations)))
+         (generation-record (and generation
+                                 (e-session--context-record generation)))
+         (generation-id (plist-get generation-record :id))
+         (frame-candidates
+          (e-session--context-lifetime-latest-entries
+           path 'context-frame :id))
+         (settlement-candidates
+          (e-session--context-lifetime-latest-entries
+           path 'context-frame-settlement :frame-id))
+         (promotion-candidates
+          (e-session--context-lifetime-latest-entries
+           path 'context-promotion :id))
+         (settled-frame-ids
+          (let ((ids (make-hash-table :test #'equal)))
+            (dolist (entry settlement-candidates)
+              (let ((record (e-session--context-record entry)))
+                (when (e-session--context-lifetime-marker-p
+                       record '(acknowledged settled))
+                  (puthash (plist-get record :frame-id) t ids))))
+            ids))
+         (aborted-frame-ids
+          (let ((ids (make-hash-table :test #'equal)))
+            ;; An explicit frame-aborted snapshot is itself a durable terminal
+            ;; decision.  A settlement marker carrying :status aborted is
+            ;; accepted as the equivalent durable abort marker.
+            (dolist (entry frame-candidates)
+              (let ((record (e-session--context-record entry)))
+                (when (e-session--context-lifetime-frame-state-p
+                       record 'aborted)
+                  (puthash (plist-get record :id) t ids))))
+            (dolist (entry settlement-candidates)
+              (let ((record (e-session--context-record entry)))
+                (when (e-session--context-lifetime-marker-p record '(aborted))
+                  (puthash (plist-get record :frame-id) t ids))))
+            ids))
+         (frames
+          (cl-remove-if-not
+           (lambda (entry)
+             (let ((record (e-session--context-record entry)))
+               (and (e-session--context-frame-unsettled-p entry)
+                    (not (gethash (plist-get record :id)
+                                  settled-frame-ids))
+                    (not (gethash (plist-get record :id)
+                                  aborted-frame-ids))
+                    (equal (plist-get record :generation-id)
+                           generation-id))))
+           frame-candidates))
+         (frame-ids
+          (let ((ids (make-hash-table :test #'equal)))
+            (dolist (entry frames)
+              (puthash (plist-get (e-session--context-record entry) :id)
+                       t ids))
+            ids))
+         (referenced-promotion-ids
+          (let ((ids (make-hash-table :test #'equal)))
+            (dolist (entry frames)
+              (dolist (promotion-id
+                       (e-session--context-record-sequence
+                        (e-session--context-record entry) :promotion-ids))
+                (puthash promotion-id t ids)))
+            ids))
+         (promotions
+          (cl-remove-if-not
+           (lambda (entry)
+             (and (eq (plist-get entry :type) 'context-promotion)
+                  (gethash (plist-get (e-session--context-record entry) :id)
+                           referenced-promotion-ids)
+                  (gethash (plist-get (e-session--context-record entry)
+                                      :frame-id)
+                           frame-ids)))
+           promotion-candidates))
+         (settlements
+          (seq-filter
+           (lambda (entry)
+             (and (eq (plist-get entry :type) 'context-frame-settlement)
+                  (memq entry settlement-candidates)
+                  (gethash (plist-get (e-session--context-record entry)
+                                      :frame-id)
+                           frame-ids)))
+           path))
+         (entries
+          (seq-filter
+           (lambda (entry)
+             (or (eq entry generation)
+                 (memq entry frames)
+                 (memq entry promotions)
+                 (memq entry settlements)))
+           path)))
+    (list :generation (and generation-record
+                           (copy-tree generation-record))
+          :frames (vconcat (mapcar #'e-session--context-record frames))
+          :promotions (vconcat (mapcar #'e-session--context-record promotions))
+          :settlements (vconcat (mapcar #'e-session--context-record settlements))
+          :entry-ids (vconcat (mapcar (lambda (entry) (plist-get entry :id))
+                                      entries)))))
+
 (defun e-session--checkpoint-retained-entries (store session-id)
   "Return ordered durable entries needed to resume SESSION-ID."
   (let* ((session (e-session--get-live store session-id))
@@ -1286,6 +1476,8 @@ a compaction, the complete current path remains model context and is retained."
              (and (member (plist-get anchor :id) path-ids)
                   (member (plist-get anchor :covered-entry-id) path-ids)))
            (plist-get session :provider-anchors)))
+         (context-state
+          (e-session--checkpoint-context-lifetime-state store session-id))
          (required-ids
           (delq nil
                 (append
@@ -1299,6 +1491,8 @@ a compaction, the complete current path remains model context and is retained."
                  (and latest-token (list (plist-get latest-token :id)))
                  (mapcar (lambda (entry) (plist-get entry :id)) reports)
                  (mapcar (lambda (entry) (plist-get entry :id)) anchors)
+                 (append (append (plist-get context-state :entry-ids) nil)
+                         nil)
                  (list (plist-get session :current-head-id)
                        (and path (plist-get (car path) :id)))))))
     (cl-remove-if-not
@@ -1331,6 +1525,8 @@ a compaction, the complete current path remains model context and is retained."
      (list :session-id session-id
            :root (e-session--checkpoint-root session)
            :board-state (plist-get session :board-session-state)
+           :context-lifetime
+           (e-session--checkpoint-context-lifetime-state store session-id)
            :entry-ids
            (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
            :board-message-identities
@@ -1392,6 +1588,16 @@ a compaction, the complete current path remains model context and is retained."
          (list :type "process-report" :session-id session-id
                :id id :parent-id parent-id :timestamp timestamp
                :report report)))
+      ((or 'context-generation 'context-frame 'context-promotion
+           'context-frame-settlement)
+       (list :type (symbol-name (plist-get entry :type))
+             :session-id session-id
+             :id id
+             :parent-id parent-id
+             :timestamp timestamp
+             :context-record
+             (e-session--context-record-for-json
+              (plist-get entry :context-record))))
       ('session-event
        (pcase (plist-get entry :event-type)
          ('current-branch
@@ -1776,6 +1982,10 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                             :compactions nil
                             :provider-anchors nil
                             :process-reports nil
+                            :context-generations nil
+                            :context-frames nil
+                            :context-promotions nil
+                            :context-frame-settlements nil
                             :created-at (or (plist-get record :created-at)
                                             timestamp)
                             :updated-at (or (plist-get record :updated-at)
@@ -1960,6 +2170,27 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
            timestamp
            record))
          (e-session--touch store session timestamp)))
+      ((or "context-generation" "context-frame" "context-promotion"
+           "context-frame-settlement")
+       (when session
+         (let* ((entry-type (intern type))
+                (field (pcase entry-type
+                         ('context-generation :context-generations)
+                         ('context-frame :context-frames)
+                         ('context-promotion :context-promotions)
+                         ('context-frame-settlement
+                          :context-frame-settlements)))
+                (entry
+                 (e-session--normalize-entry-from-record
+                  session entry-type
+                  (list :context-record
+                        (e-session--normalize-context-record-for-replay
+                         entry-type
+                         (plist-get record :context-record)))
+                  timestamp
+                  record)))
+           (e-session--prepend-replayed-item session field entry)
+           (e-session--touch store session timestamp))))
       ("current-branch"
        (when session
          (plist-put session :current-branch
@@ -2491,6 +2722,10 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :compactions nil
                         :provider-anchors nil
                         :process-reports nil
+                        :context-generations nil
+                        :context-frames nil
+                        :context-promotions nil
+                        :context-frame-settlements nil
                         :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
@@ -2746,6 +2981,31 @@ its dedicated board journal accessors."
   "Return provider anchor records for SESSION-ID in STORE in insertion order."
   (copy-sequence
    (plist-get (e-session--get-live store session-id) :provider-anchors)))
+
+(defun e-session-context-generations (store session-id)
+  "Return context generation entries for SESSION-ID in insertion order."
+  (copy-tree
+   (plist-get (e-session--get-live store session-id) :context-generations)))
+
+(defun e-session-context-frames (store session-id)
+  "Return context frame entries for SESSION-ID in insertion order."
+  (copy-tree
+   (plist-get (e-session--get-live store session-id) :context-frames)))
+
+(defun e-session-context-promotions (store session-id)
+  "Return context promotion entries for SESSION-ID in insertion order."
+  (copy-tree
+   (plist-get (e-session--get-live store session-id) :context-promotions)))
+
+(defun e-session-context-frame-settlements (store session-id)
+  "Return frame settlement entries for SESSION-ID in insertion order."
+  (copy-tree
+   (plist-get (e-session--get-live store session-id)
+              :context-frame-settlements)))
+
+(defun e-session-context-lifetime-resume-state (store session-id)
+  "Return bounded active generation and unsettled frame resume state."
+  (copy-tree (e-session--checkpoint-context-lifetime-state store session-id)))
 
 (defun e-session-process-reports (store session-id)
   "Return process reports for SESSION-ID in STORE in insertion order."
@@ -3146,6 +3406,150 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
            :metadata metadata))
     (e-session--write-index store)
     record))
+
+(defun e-session--context-value-for-json (value)
+  "Return context VALUE with semantic sequences encoded as JSON arrays.
+
+`json-encode' treats a list beginning with a keyword as an object.  Context
+records legitimately contain lists of keyword plists (messages, observations,
+facts), so those sequence boundaries must become vectors before persistence;
+otherwise a list containing one message is flattened into one object."
+  (cond
+   ((vectorp value)
+    (vconcat (mapcar #'e-session--context-value-for-json (append value nil))))
+   ((and (listp value)
+         (e-session--keyword-plist-p value))
+    (let (result)
+      (while value
+        (let ((key (pop value))
+              (item (pop value)))
+          (setq result
+                (append result
+                        (list key
+                              (e-session--context-value-for-json item))))))
+      result))
+   ((consp value)
+    (vconcat (mapcar #'e-session--context-value-for-json value)))
+   (t value)))
+
+(defun e-session--context-record-for-json (record)
+  "Return provider-neutral context RECORD safe for JSON persistence."
+  (e-session--context-value-for-json record))
+
+(defun e-session--normalize-context-record-for-replay (type record)
+  "Normalize JSON-decoded lifecycle fields in context RECORD.
+TYPE selects the lifecycle vocabulary to restore.
+
+JSON decodes symbols such as frame states and settlement statuses as strings.
+Keep the nested semantic payload opaque, but restore the small control
+vocabulary needed by checkpoint derivation and the pure lifetime projector.
+Unknown values remain conservative strings and therefore cannot be mistaken for
+a terminal state."
+  (let ((copy (copy-tree record)))
+    (plist-put copy :type type)
+    (when (eq type 'context-frame)
+      (when-let ((state (plist-get copy :state)))
+        (when (stringp state)
+          (plist-put copy :state
+                     (pcase state
+                       ("open" 'open)
+                       ("consuming" 'consuming)
+                       ("consumed" 'consumed)
+                       ("settled" 'settled)
+                       ("aborted" 'aborted)
+                       (_ state))))))
+    (when (eq type 'context-frame-settlement)
+      (when-let ((status (plist-get copy :status)))
+        (when (stringp status)
+          (plist-put copy :status
+                       (pcase status
+                       ("acknowledged" 'acknowledged)
+                       ("settled" 'settled)
+                       ("failed" 'failed)
+                       ("aborted" 'aborted)
+                       (_ status))))))
+    copy))
+
+(defun e-session--normalize-context-record (type record)
+  "Return a detached context RECORD normalized for TYPE."
+  (unless (and (listp record)
+               (proper-list-p record)
+               (plist-member record :id))
+    (signal 'e-session-error
+            (list "Context lifetime records require a keyword plist and :id"
+                  type record)))
+  (dolist (key (pcase type
+                 ('context-generation nil)
+                 ('context-frame '(:generation-id))
+                 ('context-promotion '(:frame-id))
+                 ('context-frame-settlement '(:frame-id :status))))
+    (unless (plist-member record key)
+      (signal 'e-session-error
+              (list "Context lifetime record is missing a required field"
+                    type key record))))
+  (let ((copy (copy-tree record)))
+    (plist-put copy :type type)
+    (unless (plist-member copy :record-version)
+      (plist-put copy :record-version 1))
+    copy))
+
+(cl-defun e-session--append-context-entry
+    (store session-id type field context-record &key (write-index t))
+  "Append provider-neutral CONTEXT-RECORD under TYPE and FIELD.
+
+The session entry receives its own append-only identity and parent link while
+the logical context record remains detached under `:context-record'."
+  (unless (memq type e-session--context-lifetime-entry-types)
+    (signal 'e-session-error (list "Unknown context lifetime entry" type)))
+  (let* ((session (e-session--get-live store session-id))
+         (timestamp (e-session--timestamp))
+         (context-record (e-session--normalize-context-record
+                          type context-record))
+         (entry
+          (e-session--normalize-entry-from-record
+           session type (list :context-record context-record) timestamp)))
+    (e-session--append-list-item session field entry)
+    (e-session--index-entry store session-id entry)
+    (e-session--touch store session timestamp)
+    (e-session--append-record
+     store session-id
+     (list :type (symbol-name type)
+           :session-id session-id
+           :id (plist-get entry :id)
+           :parent-id (plist-get entry :parent-id)
+           :timestamp timestamp
+           :context-record (e-session--context-record-for-json context-record)))
+    (when write-index
+      (e-session--write-index store))
+    entry))
+
+(cl-defun e-session-append-context-generation
+    (store session-id generation &key (write-index t))
+  "Append semantic GENERATION and return its durable session entry."
+  (e-session--append-context-entry
+   store session-id 'context-generation :context-generations generation
+   :write-index write-index))
+
+(cl-defun e-session-append-context-frame
+    (store session-id frame &key (write-index t))
+  "Append observation FRAME and return its durable session entry."
+  (e-session--append-context-entry
+   store session-id 'context-frame :context-frames frame
+   :write-index write-index))
+
+(cl-defun e-session-append-context-promotion
+    (store session-id promotion &key (write-index t))
+  "Append selected durable PROMOTION and return its durable session entry."
+  (e-session--append-context-entry
+   store session-id 'context-promotion :context-promotions promotion
+   :write-index write-index))
+
+(cl-defun e-session-append-context-frame-settlement
+    (store session-id settlement &key (write-index t))
+  "Append a frame SETTLEMENT acknowledgement marker."
+  (e-session--append-context-entry
+   store session-id 'context-frame-settlement :context-frame-settlements
+   settlement :write-index write-index))
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."

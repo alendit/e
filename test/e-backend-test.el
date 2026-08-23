@@ -129,6 +129,68 @@
         (should (equal (cdr err) '(e-backend-stream-batch backend-stream))))
       (should-not started))))
 
+(ert-deftest e-backend-test-context-capabilities-default-to-stateless-values ()
+  "Backends without a declaration expose conservative semantic defaults."
+  (let ((backend (e-backend-create :name "legacy")))
+    (should (equal (e-backend-context-capabilities backend '(:model "fake"))
+                   '(:continuation none
+                     :observation-delivery inherited
+                     :prefix-cache none
+                     :provider-compaction none
+                     :reasoning-state none)))))
+
+(ert-deftest e-backend-test-context-capabilities-are-resolved-from-options ()
+  "A backend capability resolver receives backend-neutral effective options."
+  (let (seen)
+    (let ((backend
+           (e-backend-create
+            :name "capable"
+            :context-capabilities
+            (lambda (options)
+              (setq seen options)
+              (list :continuation 'branchable
+                    :observation-delivery 'request-local-replaceable
+                    :prefix-cache 'explicit
+                    :provider-compaction 'opaque
+                    :reasoning-state 'replayable)))))
+      (let ((options '(:model "test" :session-id "s1")))
+        (should
+         (equal (e-backend-context-capabilities backend options)
+                '(:continuation branchable
+                  :observation-delivery request-local-replaceable
+                  :prefix-cache explicit
+                  :provider-compaction opaque
+                  :reasoning-state replayable)))
+        (should (eq seen options))))))
+
+(ert-deftest e-backend-test-context-capabilities-nil-resolver-is-stateless ()
+  "A resolver that declares no profile gets the conservative defaults."
+  (let ((backend (e-backend-create
+                  :name "empty-capabilities"
+                  :context-capabilities (lambda (_options) nil))))
+    (should (equal (e-backend-context-capabilities backend nil)
+                   '(:continuation none
+                     :observation-delivery inherited
+                     :prefix-cache none
+                     :provider-compaction none
+                     :reasoning-state none)))))
+
+(ert-deftest e-backend-test-context-capabilities-reject-unknown-semantic-values ()
+  "Unknown values and misspelled capability keys fail visibly."
+  (dolist (declaration
+           (list '(:continuation maybe)
+                 '(:observation-delivery replaceable)
+                 '(:prefix-cache provider)
+                 '(:provider-compaction readable)
+                 '(:reasoning-state guessed)
+                 '(:continuation none :observation-delivary inherited)))
+    (let ((backend (e-backend-create
+                    :name "invalid"
+                    :context-capabilities declaration)))
+      (should-error
+       (e-backend-context-capabilities backend nil)
+       :type 'e-backend-invalid-context-capabilities))))
+
 (provide 'e-backend-test)
 
 ;;; e-backend-test.el ends here

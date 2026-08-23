@@ -722,6 +722,10 @@
                   "compaction"
                   "provider-anchor"
                   "process-report"
+                  "context-generation"
+                  "context-frame"
+                  "context-promotion"
+                  "context-frame-settlement"
                   "current-branch"
                   "messages-cleared"))
     (should (eq (e-session--queued-record-criticality

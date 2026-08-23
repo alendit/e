@@ -24,7 +24,88 @@
   name
   stream
   start
-  normalize-error-details)
+  normalize-error-details
+  context-capabilities)
+
+(defconst e-backend-context-capability-values
+  '((:continuation none linear branchable)
+    (:observation-delivery inherited request-local-replaceable)
+    (:prefix-cache none implicit explicit)
+    (:provider-compaction none opaque)
+    (:reasoning-state none replayable provider-managed))
+  "Provider-neutral values accepted by `e-backend-context-capabilities'.")
+
+(defconst e-backend--default-context-capabilities
+  '(:continuation none
+    :observation-delivery inherited
+    :prefix-cache none
+    :provider-compaction none
+    :reasoning-state none)
+  "Conservative capabilities used when an adapter declares none.")
+
+(define-error 'e-backend-invalid-context-capabilities
+  "Invalid provider-neutral backend context capabilities")
+
+(defun e-backend--keyword-plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist."
+  (and (listp value)
+       (proper-list-p value)
+       (let ((rest value)
+             (valid t))
+         (while (and valid rest)
+           (if (and (consp rest)
+                    (keywordp (car rest))
+                    (consp (cdr rest)))
+               (setq rest (cddr rest))
+             (setq valid nil)))
+         (and valid (null rest)))))
+
+(defun e-backend--validate-context-capabilities (capabilities)
+  "Return normalized CAPABILITIES or signal for an unknown semantic value."
+  (unless (e-backend--keyword-plist-p capabilities)
+    (signal 'e-backend-invalid-context-capabilities
+            (list :not-a-plist capabilities)))
+  (let ((normalized (copy-sequence e-backend--default-context-capabilities)))
+    (dolist (descriptor e-backend-context-capability-values)
+      (let* ((key (car descriptor))
+             (allowed (cdr descriptor)))
+        (when (plist-member capabilities key)
+          (let ((value (plist-get capabilities key)))
+            (unless (memq value allowed)
+              (signal 'e-backend-invalid-context-capabilities
+                      (list key value allowed)))
+            (setq normalized (plist-put normalized key value))))))
+    ;; Provider-owned metadata is not part of the semantic contract.  Reject a
+    ;; misspelled semantic key rather than silently selecting a fallback.
+    (let ((rest capabilities))
+      (while rest
+        (let ((key (pop rest)))
+          (pop rest)
+          (unless (assq key e-backend-context-capability-values)
+            (signal 'e-backend-invalid-context-capabilities
+                    (list :unknown-key key)))))
+    normalized)))
+
+(defun e-backend-context-capabilities (backend options)
+  "Return BACKEND's provider-neutral context capabilities for OPTIONS.
+
+The optional backend slot may be a static plist or a function receiving the
+effective backend-neutral OPTIONS.  An adapter that declares no capabilities
+gets the conservative stateless defaults.  Core policy sees only semantic
+values and never provider wire field names."
+  (unless (e-backend-p backend)
+    (signal 'wrong-type-argument (list 'e-backend-p backend)))
+  (let* ((declaration (and (>= (length backend) 6)
+                           (e-backend--context-capabilities backend)))
+         (capabilities (cond
+                        ((functionp declaration)
+                         (funcall declaration options))
+                        ((null declaration)
+                         e-backend--default-context-capabilities)
+                        (t declaration))))
+    (setq capabilities (or capabilities
+                           e-backend--default-context-capabilities))
+    (e-backend--validate-context-capabilities capabilities)))
 
 (defvar e-backend--request-start-callback nil
   "Dynamically scoped callback for backend request handles.")

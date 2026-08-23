@@ -37,6 +37,7 @@
 (require 'e-skills)
 (require 'e-startup)
 (require 'e-session)
+(require 'e-context-lifetime)
 (require 'e-tools)
 (require 'e-loop)
 (require 'e-layers)
@@ -74,6 +75,7 @@
         :startup t
         :sessions t
         :session-persistence t
+        :context-lifetime t
         :tools t
         :loop t
         :layers t

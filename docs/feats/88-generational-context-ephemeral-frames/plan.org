@@ -617,6 +617,27 @@ Each slice is a semantic commit with focused tests and ledger updates.  Core
 record-shape, harness, loop, session, and adapter changes require a full Emacs
 restart; do not add live-reload compatibility shims for them.
 
+** Slice 1 implementation evidence
+
+Accepted parent-side on 2026-08-24.
+
+- Added a provider-neutral backend capability query with conservative stateless
+  defaults and strict semantic validation.
+- Added generation, observation-frame, promotion, and settlement record shapes;
+  pure shadow projection; strict frame transitions; bounded diagnostics; and an
+  opt-in asynchronous acknowledgement boundary.  Ordinary request behavior
+  remains unchanged.
+- Session replay and Feature 78 checkpoint manifests retain the active
+  generation plus exactly the latest records needed for each unsettled frame.
+  Frame closure derives from the final settlement marker, duplicate snapshots
+  reduce by logical identity, and stale promotions/settlement attempts remain in
+  the audit journal rather than the bounded resume state.
+- Parent verification: 17/17 lifetime tests, 10/10 backend tests, 94/94 session
+  tests, and the full 2225-test suite passed with two existing skips and zero
+  unexpected results.  =eldev compile= and =git diff --check= passed.
+- The user's running Emacs was left unchanged.  The new core/session record
+  shapes require a full restart before later slices can activate them.
+
 * Acceptance criteria
 
 ** Core behavior
