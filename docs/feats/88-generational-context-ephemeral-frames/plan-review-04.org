@@ -11,6 +11,12 @@ are classified as terminal while also requiring explicit resolution, so the
 checkpoint, follow-up gate, and public recovery contract disagree.  There is
 one P1 finding and no unknown required cells.  No implementation exists yet.
 
+* Current disposition
+
+=F88.10= was applied to =plan.org= in the subsequent specification Tock.  This
+historical review remains the negative witness; the persistent reviewer must run
+another Tick to establish implementation readiness.
+
 * Prior finding dispositions
 
 ** CARRIED CLOSED F88.1-F88.8

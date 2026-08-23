@@ -291,20 +291,37 @@ bytes into the old frame or marks the old observation consumed.
 ** Tool execution state and recovery
 
 Each accepted ordinary tool call has a stable execution id and durable execution
-state separate from frame settlement.  Session records distinguish =admitted=,
-=dispatch-started=, and terminal =finished=, =failed=, or =outcome-unknown=
-states, and the resume checkpoint retains every nonterminal execution
-obligation.  The loop acknowledges =dispatch-started= before invoking a tool and
-durably acknowledges each terminal result before starting the next tool or
-provider follow-up.
+state separate from frame settlement.  =admitted= and =dispatch-started= are
+nonterminal states; =outcome-unknown= is a blocked, nonterminal recovery state;
+=finished=, =failed=, and =resolved= are terminal.  The resume checkpoint retains
+every =admitted=, =dispatch-started=, and =outcome-unknown= obligation together
+with the normalized call, required provider linkage, and any persisted
+idempotency key.
 
-A crash after admission but before dispatch may resume the undispatched call.  A
-=dispatch-started= call with no terminal result has an ambiguous external
-outcome and is not automatically invoked again unless that tool explicitly
-declares a stable idempotency key or resumable execution contract.  Otherwise
-recovery surfaces =outcome-unknown= and requires explicit resolution.  This
-protocol promises one live dispatch per execution attempt, not impossible
-exactly-once external side effects across arbitrary crashes.
+The loop durably acknowledges =dispatch-started= before invocation.  On
+recovery, an admitted call with no =dispatch-started= record may dispatch.  A
+=dispatch-started= call without a terminal record first appends and acknowledges
+=outcome-unknown=.  It neither redispatches nor permits provider follow-up until
+it is retried through an allowed idempotency contract or explicitly resolved.
+
+Add the consumer-shaped core operation =e-harness-resolve-tool-execution=.  It
+accepts a session id, execution id, and one bounded resolution: a normalized
+finished result or normalized failed result.  It appends an
+=execution-resolved= record and the provider-linked tool result, acknowledges
+that prefix, then opens the result frame and releases the follow-up gate.
+Repeating the same resolution is a no-op; a conflicting resolution is an
+explicit error.  Presentation may expose this operation but does not own its
+policy.
+
+For the initial feature, add one narrow optional =:idempotency-key-function= to
+=e-tools-register=.  It receives normalized arguments and the stable execution
+id before admission and returns a nonempty key or nil.  Persist the returned key
+in the admitted record and pass that exact key through tool execution context on
+every attempt.  Only a persisted non-nil key permits automatic retry after
+=dispatch-started=.  Defer a broader resumable-execution protocol until a
+concrete tool requires it.  This protocol promises one live dispatch per
+execution attempt, not impossible exactly-once external side effects across
+arbitrary crashes.
 
 * Generational compaction
 
@@ -575,10 +592,13 @@ restart; do not add live-reload compatibility shims for them.
   next frame containing its results.
 - After restart, a durably admitted but provably undispatched call may resume.
   A =dispatch-started= call without a terminal result becomes
-  =outcome-unknown= and is not automatically redispatched unless the tool has a
-  stable idempotency/resume contract.  Completed results stay terminal, and no
-  provider follow-up occurs until every admitted call is terminal or explicitly
-  resolved.
+  blocked =outcome-unknown= and remains checkpoint-retained.  It is not
+  automatically redispatched unless its admitted record contains a stable
+  idempotency key.  Completed results stay terminal, and no provider follow-up
+  occurs until every admitted call is terminal.
+- =e-harness-resolve-tool-execution= appends and acknowledges exactly one linked
+  terminal result before releasing follow-up.  Repeating an identical resolution
+  is a no-op and a conflicting resolution fails explicitly.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -645,11 +665,15 @@ tool:
   previously undispatched call;
 - crash after the controlled side effect but before durable result produces
   =outcome-unknown= and zero automatic redispatch for an ordinary tool;
-- an idempotent retry reuses the same execution/idempotency key;
+- =outcome-unknown= survives checkpoint/restart and blocks provider follow-up;
+- the public resolver appends one linked terminal result, waits for durable
+  acknowledgement, and only then permits follow-up;
+- an identical repeated resolution is a no-op and a conflicting one fails;
+- a registered idempotency-key function runs before admission and its persisted
+  key is reused on the recovered attempt;
 - completed multi-tool results remain terminal, ambiguous calls do not rerun,
   and only provably undispatched calls may start; and
-- provider follow-up waits until every admitted call is terminal or explicitly
-  resolved.
+- provider follow-up waits until every admitted call is terminal.
 
 Place this coverage under =e2e/= and give it one documented command that runs
 without credentials.  The planned direct command is:
