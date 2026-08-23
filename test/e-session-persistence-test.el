@@ -178,6 +178,10 @@
                         '(:role user :content "b-1")))
                    (a1-id (plist-get a1 :id))
                    (b1-id (plist-get b1 :id)))
+              (should (eq
+                       (e-session-persistence--record-state
+                        controller "session-a" a1-id)
+                       'submitted))
               (should-error
                (e-session-context-lifetime-durability-barrier
                 store "session-a" '("missing-entry")
@@ -199,6 +203,10 @@
                  (gethash
                   (list "session-a" a1-id)
                   (e-session-persistence-record-command-ids controller))))
+              (should (eq
+                       (e-session-persistence--record-state
+                        controller "session-a" a1-id)
+                       'acknowledged))
               (setq done nil failure nil)
               (e-session-context-lifetime-durability-barrier
                store "session-a" (list a1-id)
@@ -208,7 +216,7 @@
               (should-not failure)
               ;; B1 remains pending until it is rejected.  Once rejected, a
               ;; barrier attached after the mapping was removed still fails
-              ;; from bounded terminal-outcome evidence.
+              ;; from authoritative terminal-failure state.
               (let ((b1-command
                      (gethash
                       (list "session-b" b1-id)
@@ -217,6 +225,10 @@
                  controller
                  (list :id b1-command
                        :ok :json-false :retryable :json-false)))
+              (should (eq
+                       (e-session-persistence--record-state
+                        controller "session-b" b1-id)
+                       'terminal-failed))
               (setq done nil failure nil)
               (e-session-context-lifetime-durability-barrier
                store "session-b" (list b1-id)
@@ -228,6 +240,189 @@
                               (e-session-persistence-process controller))))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-preflight-failure-is-not-durable ()
+  "A command rejected before outbox admission remains a visible failure."
+  (let* ((directory (make-temp-file "e-session-prefix-preflight-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller nil)
+         (done nil)
+         (failure nil))
+    (unwind-protect
+        (progn
+          ;; Keep the session root out of the controlled writer lifecycle so
+          ;; the only state under test is the rejected message append.
+          (e-session-create store :id "session-preflight")
+          (setq controller (e-session-persistence-enable store))
+          (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                     (lambda (&rest _arguments) nil))
+                    ((symbol-function 'e-session-persistence-request-checkpoint)
+                     (lambda (&rest _arguments) nil)))
+            (let ((e-session-persistence-command-node-limit 8))
+              (should-error
+               (e-session-append-message
+                store "session-preflight"
+                '(:id "preflight-entry"
+                  :role user
+                  :content "This record must fail before outbox admission."))
+               :type 'e-session-persistence-command-error))
+            ;; Mutation remains in the live session, but the persistence owner
+            ;; records why it cannot cross the later context barrier.
+            (should (e-session-entry-by-id store "session-preflight"
+                                            "preflight-entry"))
+            (should (eq
+                     (e-session-persistence--record-state
+                      controller "session-preflight" "preflight-entry")
+                     'preflight-failed))
+            (should (= (hash-table-count
+                        (e-session-persistence-outbox controller))
+                       0))
+            (e-session-context-lifetime-durability-barrier
+             store "session-preflight" '("preflight-entry")
+             (lambda (value) (setq done value))
+             (lambda (error) (setq failure error)))
+            (should-not done)
+            (should (equal (car failure) 'e-session-persistence-error))))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-waits-for-submitted-ack ()
+  "An admitted record remains pending until its explicit writer acknowledgement."
+  (let* ((directory (make-temp-file "e-session-prefix-submitted-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller nil)
+         (done nil)
+         (failure nil))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-submitted")
+          (setq controller (e-session-persistence-enable store))
+          (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                     (lambda (&rest _arguments) nil))
+                    ((symbol-function 'e-session-persistence-request-checkpoint)
+                     (lambda (&rest _arguments) nil)))
+            (let* ((entry (e-session-append-message
+                           store "session-submitted"
+                           '(:id "submitted-entry" :role user :content "wait")))
+                   (entry-id (plist-get entry :id))
+                   (key (list "session-submitted" entry-id))
+                   (command-id (gethash
+                                key
+                                (e-session-persistence-record-command-ids
+                                 controller))))
+              (should (equal entry-id "submitted-entry"))
+              (should (equal
+                       (e-session-persistence--record-state
+                        controller "session-submitted" entry-id)
+                       'submitted))
+              ;; A submitted state with a missing command mapping is an
+              ;; invalid active record, never an implicit acknowledgement.
+              (remhash key (e-session-persistence-record-command-ids controller))
+              (e-session-context-lifetime-durability-barrier
+               store "session-submitted" (list entry-id)
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should-not done)
+              (should (equal (car failure) 'e-session-persistence-error))
+              (puthash key command-id
+                       (e-session-persistence-record-command-ids controller))
+              (setq done nil failure nil)
+              (e-session-context-lifetime-durability-barrier
+               store "session-submitted" (list entry-id)
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should-not done)
+              (should-not failure)
+              (e-session-persistence--handle-response
+               controller (list :id command-id :ok t :result 'written))
+              (should (eq
+                       (e-session-persistence--record-state
+                        controller "session-submitted" entry-id)
+                       'acknowledged))
+              (should done)
+              (should-not failure))))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-accepts-replayed-durable-entry ()
+  "A journal-replayed entry is an explicit durable proof without a live command."
+  (let* ((directory (make-temp-file "e-session-prefix-replayed-" t))
+         (first (e-session-persistent-store-create directory))
+         (reopened nil)
+         (controller nil)
+         (done nil)
+         (failure nil))
+    (unwind-protect
+        (progn
+          (e-session-create first :id "session-replayed")
+          (e-session-append-message
+           first "session-replayed"
+           '(:id "replayed-entry" :role user :content "on disk"))
+          ;; The direct store has no asynchronous writer.  Explicit migration
+          ;; creates the checkpoint proof used by the normal restart loader.
+          (e-session-migrate-session-checkpoint first "session-replayed")
+          (setq reopened (e-session-persistent-store-create directory)
+                controller (e-session-persistence-enable reopened))
+          (let ((entry (e-session-entry-by-id
+                        reopened "session-replayed" "replayed-entry")))
+            (should (eq (plist-get entry :durability-state)
+                        'replayed-durable))
+            (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                       (lambda (&rest _arguments) nil))
+                      ((symbol-function 'e-session-persistence-request-checkpoint)
+                       (lambda (&rest _arguments) nil)))
+              (e-session-context-lifetime-durability-barrier
+               reopened "session-replayed" '("replayed-entry")
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should done)
+              (should-not failure))))
+      (dolist (store (list first reopened))
+        (when-let ((target (and store
+                                (e-session-store-persistence-controller store)
+                                (e-session-persistence-process
+                                 (e-session-store-persistence-controller store)))))
+          (when (process-live-p target) (kill-process target))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-retains-many-terminal-failures ()
+  "Terminal failures beyond the old cache size never become unknown successes."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "many-failures"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (count 300)
+         done
+         failure)
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil))
+              ((symbol-function 'display-warning)
+               (lambda (&rest _arguments) nil)))
+      (dotimes (index count)
+        (let* ((record-id (format "failed-%03d" index))
+               (command-id
+                (e-session-persistence-submit-record
+                 controller "session-many-failures"
+                 (list :type "message" :id record-id))))
+          (e-session-persistence--handle-response
+           controller
+           (list :id command-id :ok :json-false :retryable :json-false))))
+      (should (= (hash-table-count
+                  (e-session-persistence-record-states controller))
+                 count))
+      (dolist (record-id '("failed-000" "failed-299"))
+        (setq done nil failure nil)
+        (e-session-persistence-await-record-prefix
+         controller "session-many-failures" (list record-id)
+         (lambda (value) (setq done value))
+         (lambda (error) (setq failure error)))
+        (should-not done)
+        (should (equal (car failure) 'e-session-persistence-error))))))
 
 (ert-deftest e-session-persistence-test-command-budget-precedes-json-encoding ()
   "An oversized command is rejected before JSON allocates its representation."
@@ -434,10 +629,12 @@
         (let ((e-session--unsettled-change-function
                (lambda (state) (push (copy-sequence state) states))))
           (cl-letf (((symbol-function 'e-session-persistence--submit)
-                     (lambda (target operation &optional on-done on-error on-queued)
+                     (lambda (target operation &optional on-done on-error
+                                              on-queued on-preflight-error)
                         (push (copy-tree operation) submitted)
                         (funcall original-submit target operation
-                                 on-done on-error on-queued))))
+                                 on-done on-error on-queued
+                                 on-preflight-error))))
             (dolist (session-id '("one" "two"))
               (e-session-create store :id session-id)
               (dotimes (index 20)

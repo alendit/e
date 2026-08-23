@@ -1094,6 +1094,11 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
         (plist-put entry :parent-id parent-id)))
     (unless (plist-member entry :created-at)
       (plist-put entry :created-at timestamp))
+    ;; Replay is an explicit durability proof supplied by the journal or
+    ;; checkpoint loader.  Live appends receive their lifecycle state from
+    ;; the persistence owner instead of being inferred from entry presence.
+    (when record
+      (plist-put entry :durability-state 'replayed-durable))
     entry))
 
 (defun e-session--normalize-entry-from-record
@@ -1576,6 +1581,9 @@ source for them.  Returned entry ids follow journal order."
     (pcase (plist-get entry :type)
       ('message
        (let ((message (copy-tree entry)))
+         ;; `:durability-state' is an in-memory replay proof, not part of the
+         ;; provider-neutral journal payload.
+         (cl-remf message :durability-state)
          (plist-put message :parent-id parent-id)
          (list :type "message" :session-id session-id :timestamp timestamp
                :id id :parent-id parent-id :message message)))
@@ -1615,6 +1623,7 @@ source for them.  Returned entry ids follow journal order."
              :metadata (copy-tree (plist-get entry :metadata))))
       ('process-report
        (let ((report (copy-tree entry)))
+         (cl-remf report :durability-state)
          (plist-put report :parent-id parent-id)
          (list :type "process-report" :session-id session-id
                :id id :parent-id parent-id :timestamp timestamp
@@ -1901,7 +1910,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
 
 (defun e-session--validate-context-lifetime-prefix
     (store session-id prefix-entry-ids)
-  "Return PREFIX-ENTRY-IDS after proving they belong to SESSION-ID.
+  "Return validated PREFIX-ENTRY-IDS and their replayed durability proofs.
 
 An absent outbox mapping is not by itself evidence of durability: it may mean
 that a caller supplied an unknown identity.  The session boundary owns the
@@ -1918,14 +1927,19 @@ delegating acknowledgement to the persistence controller."
            (signal 'e-session-error
                    (list "Context lifetime prefix requires a sequence"
                          session-id prefix-entry-ids))))))
-    (when ids
-      (e-session--get-live store session-id)
-      (dolist (entry-id ids)
-        (unless (e-session-entry-by-id store session-id entry-id)
-          (signal 'e-session-error
-                  (list "Context lifetime prefix names no session entry"
-                        session-id entry-id)))))
-    ids))
+    (let (replayed-entry-ids)
+      (when ids
+        (e-session--get-live store session-id)
+        (dolist (entry-id ids)
+          (let ((entry (e-session-entry-by-id store session-id entry-id)))
+            (unless entry
+              (signal 'e-session-error
+                      (list "Context lifetime prefix names no session entry"
+                            session-id entry-id)))
+            (when (eq (plist-get entry :durability-state) 'replayed-durable)
+              (push entry-id replayed-entry-ids)))))
+      (list :entry-ids ids
+            :replayed-entry-ids (nreverse replayed-entry-ids)))))
 
 (defun e-session-context-lifetime-durability-barrier
     (store session-id prefix-entry-ids on-done on-error)
@@ -1935,22 +1949,24 @@ This is a narrow session/prefix barrier.  It never finalizes every dirty
 session, requests a checkpoint, or rebuilds the global index.  The production
 persistence controller owns the asynchronous outbox acknowledgement; the
 in-memory store is already durable at this boundary."
-  (let ((prefix-entry-ids
-         (e-session--validate-context-lifetime-prefix
-          store session-id prefix-entry-ids)))
+  (let* ((validated
+          (e-session--validate-context-lifetime-prefix
+           store session-id prefix-entry-ids))
+         (prefix-entry-ids (plist-get validated :entry-ids))
+         (replayed-entry-ids (plist-get validated :replayed-entry-ids)))
     (cond
-   ((not (e-session-store-persistent store))
-    (funcall on-done (list :session-id session-id
-                           :entry-ids (copy-sequence prefix-entry-ids)
-                           :pending-count 0)))
-   ((not (e-session--persistence-controller store))
-    (signal 'e-session-persistence-unavailable
-            (list "Session store has no asynchronous persistence controller"
-                  session-id)))
-   (t
-    (e-session-persistence-await-record-prefix
-     (e-session--persistence-controller store)
-     session-id prefix-entry-ids on-done on-error)))))
+     ((not (e-session-store-persistent store))
+      (funcall on-done (list :session-id session-id
+                             :entry-ids (copy-sequence prefix-entry-ids)
+                             :pending-count 0)))
+     ((not (e-session--persistence-controller store))
+      (signal 'e-session-persistence-unavailable
+              (list "Session store has no asynchronous persistence controller"
+                    session-id)))
+     (t
+      (e-session-persistence-await-record-prefix
+       (e-session--persistence-controller store)
+       session-id prefix-entry-ids on-done on-error replayed-entry-ids)))))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."

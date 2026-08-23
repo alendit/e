@@ -55,8 +55,14 @@
   :type 'integer
   :group 'e-session-persistence)
 
-(defcustom e-session-persistence-terminal-outcome-limit 256
-  "Maximum terminal record outcomes retained for late prefix barriers."
+(defcustom e-session-persistence-acknowledged-state-limit 256
+  "Maximum acknowledged record states retained for late prefix barriers.
+
+Failure states are authoritative and are never evicted by this limit.  An
+acknowledged state may be rebuilt as `replayed-durable' after a session is
+loaded from disk; an in-memory acknowledgement whose bounded evidence has
+expired is deliberately reported as unknown rather than inferred from an
+absent outbox mapping."
   :type 'integer
   :group 'e-session-persistence)
 
@@ -69,8 +75,8 @@
   (callbacks (make-hash-table :test 'equal))
   (record-command-ids (make-hash-table :test 'equal))
   (record-command-keys (make-hash-table :test 'equal))
-  (terminal-record-outcomes (make-hash-table :test 'equal))
-  terminal-record-outcome-order
+  (record-states (make-hash-table :test 'equal))
+  acknowledged-record-state-order
   checkpoint-timer retry-timer last-error)
 
 (cl-defstruct (e-session-persistence-command
@@ -213,49 +219,59 @@ reload; new submissions always prepare once before entering the outbox."
     (remhash command-id
              (e-session-persistence-record-command-keys controller))))
 
-(defun e-session-persistence--forget-terminal-record-outcome
+(defun e-session-persistence--forget-acknowledged-record-state
     (controller key)
-  "Forget terminal outcome KEY from CONTROLLER's bounded evidence cache."
+  "Remove acknowledged-state history for KEY, when present."
   (when key
-    (remhash key
-             (e-session-persistence-terminal-record-outcomes controller))
-    (setf (e-session-persistence-terminal-record-outcome-order controller)
+    (setf (e-session-persistence-acknowledged-record-state-order controller)
           (delete key
-                  (e-session-persistence-terminal-record-outcome-order
+                  (e-session-persistence-acknowledged-record-state-order
                    controller)))))
 
-(defun e-session-persistence--remember-terminal-record-failure
-    (controller command-id)
-  "Retain bounded failure evidence for COMMAND-ID's named record, if known."
-  (when-let ((key (gethash command-id
-                           (e-session-persistence-record-command-keys
-                            controller))))
-    (e-session-persistence--forget-terminal-record-outcome controller key)
-    (puthash key 'failed
-             (e-session-persistence-terminal-record-outcomes controller))
-    (push key
-          (e-session-persistence-terminal-record-outcome-order controller))
-    (let ((limit (max 0 e-session-persistence-terminal-outcome-limit)))
-      (while (> (length
-                 (e-session-persistence-terminal-record-outcome-order
-                  controller))
-                limit)
-        (let* ((order
-                (e-session-persistence-terminal-record-outcome-order
-                 controller))
-               (oldest (car (last order))))
-          (setf (e-session-persistence-terminal-record-outcome-order controller)
-                (butlast order))
-          (remhash oldest
-                   (e-session-persistence-terminal-record-outcomes
-                    controller)))))))
+(defun e-session-persistence--trim-acknowledged-record-states (controller)
+  "Bound only successful record-state history for CONTROLLER.
 
-(defun e-session-persistence--terminal-record-failure
-    (controller session-id record-id)
-  "Return terminal failure evidence for SESSION-ID and RECORD-ID, if any."
-  (eq (gethash (e-session-persistence--record-key session-id record-id)
-               (e-session-persistence-terminal-record-outcomes controller))
-      'failed))
+Failure states remain in the authoritative registry regardless of this
+bound.  Evicting an acknowledgement makes a later live lookup unknown; it
+does not make it successful merely because the outbox mapping is gone."
+  (let ((limit (max 0 e-session-persistence-acknowledged-state-limit))
+        (states (e-session-persistence-record-states controller)))
+    (while (> (length
+               (e-session-persistence-acknowledged-record-state-order
+                controller))
+              limit)
+      (let* ((order
+              (e-session-persistence-acknowledged-record-state-order
+               controller))
+             (oldest (car (last order))))
+        (setf (e-session-persistence-acknowledged-record-state-order controller)
+              (butlast order))
+        (when (eq (gethash oldest states) 'acknowledged)
+          (remhash oldest states))))))
+
+(defun e-session-persistence--set-record-state (controller key state)
+  "Set authoritative lifecycle STATE for durable record KEY.
+
+The registry intentionally retains every failure state.  Only successful
+acknowledgements participate in the bounded history, because disk replay can
+later establish `replayed-durable' without retaining an unbounded live
+success cache."
+  (when key
+    (let ((states (e-session-persistence-record-states controller)))
+      (puthash key state states)
+      (e-session-persistence--forget-acknowledged-record-state controller key)
+      (when (eq state 'acknowledged)
+        (setf (e-session-persistence-acknowledged-record-state-order controller)
+              (cons key
+                    (e-session-persistence-acknowledged-record-state-order
+                     controller)))
+        (e-session-persistence--trim-acknowledged-record-states controller))
+      state)))
+
+(defun e-session-persistence--record-state (controller session-id record-id)
+  "Return authoritative lifecycle state for SESSION-ID and RECORD-ID."
+  (gethash (e-session-persistence--record-key session-id record-id)
+           (e-session-persistence-record-states controller)))
 
 (defun e-session-persistence--resend-page (controller)
   "Resend one fixed retry page for CONTROLLER and yield between pages."
@@ -304,15 +320,28 @@ reload; new submissions always prepare once before entering the outbox."
                              "Writer rejected command"))))
           (setf (e-session-persistence-last-error controller) err)
           (if (eq (plist-get response :retryable) :json-false)
-              (progn
-                (when (and (stringp id)
-                           (gethash id (e-session-persistence-outbox controller)))
-                  (remhash id (e-session-persistence-outbox controller))
-                  (e-session-persistence--trim-outbox-order controller)
-                  (e-session--adjust-unsettled-writes
-                   (e-session-persistence-store controller) -1))
-                (e-session-persistence--remember-terminal-record-failure
-                 controller id)
+            (progn
+              (when (and (stringp id)
+                         (gethash id (e-session-persistence-outbox controller)))
+                (remhash id (e-session-persistence-outbox controller))
+                (e-session-persistence--trim-outbox-order controller)
+                (e-session--adjust-unsettled-writes
+                 (e-session-persistence-store controller) -1))
+                (let* ((key
+                        (gethash id
+                                 (e-session-persistence-record-command-keys
+                                  controller)))
+                       (current-command
+                        (and key
+                             (gethash key
+                                      (e-session-persistence-record-command-ids
+                                       controller)))))
+                  ;; A repeated append may have replaced this record's
+                  ;; command mapping.  An old response must not overwrite the
+                  ;; newer lifecycle state.
+                  (when (and key (equal id current-command))
+                    (e-session-persistence--set-record-state
+                     controller key 'terminal-failed)))
                 (e-session-persistence--forget-record-command controller id)
                 (remhash id (e-session-persistence-callbacks controller))
                 (when-let ((on-error (cdr callbacks)))
@@ -324,10 +353,18 @@ reload; new submissions always prepare once before entering the outbox."
             ;; Older writers omit `retryable'; preserve their retry behavior.
             (e-session-persistence--restart-later controller)))
       (when (stringp id)
-        (let ((key (gethash id
-                           (e-session-persistence-record-command-keys
-                            controller))))
-          (e-session-persistence--forget-terminal-record-outcome controller key))
+        (let* ((key
+                (gethash id
+                         (e-session-persistence-record-command-keys
+                          controller)))
+               (current-command
+                (and key
+                     (gethash key
+                              (e-session-persistence-record-command-ids
+                               controller)))))
+          (when (and key (equal id current-command))
+            (e-session-persistence--set-record-state
+             controller key 'acknowledged)))
         (when (gethash id (e-session-persistence-outbox controller))
           (remhash id (e-session-persistence-outbox controller))
           (e-session-persistence--trim-outbox-order controller)
@@ -405,9 +442,12 @@ reload; new submissions always prepare once before entering the outbox."
       (e-session-persistence--send controller command)))))
 
 (defun e-session-persistence--submit
-    (controller operation &optional on-done on-error on-queued)
+    (controller operation &optional on-done on-error on-queued
+                 on-preflight-error)
   "Queue OPERATION for CONTROLLER and return its stable command id.
-Call ON-QUEUED after the command enters the outbox but before transport send."
+Call ON-QUEUED after the command enters the outbox but before transport send.
+Call ON-PREFLIGHT-ERROR only when command preparation rejects OPERATION before
+it enters the outbox."
   (let* ((sequence (cl-incf (e-session-persistence-next-sequence controller)))
          ;; The writer deduplicates this value after an Emacs restart.  A local
          ;; counter would collide with a prior controller's acknowledged work.
@@ -422,6 +462,8 @@ Call ON-QUEUED after the command enters the outbox but before transport send."
               (e-session-persistence--prepare-command request)
             (e-session-persistence-command-error
              (setf (e-session-persistence-last-error controller) err)
+             (when on-preflight-error
+               (funcall on-preflight-error err))
              (when on-error
                (funcall on-error err))
              (signal (car err) (cdr err))))))
@@ -448,46 +490,77 @@ Call ON-QUEUED after the command enters the outbox but before transport send."
 
 Optional callbacks are attached to the command's existing outbox lifecycle;
 they do not introduce a checkpoint or a second write."
-  (let ((command-id
-         (e-session-persistence--submit
-          controller (list :op "append" :session-id session-id :record record)
-          on-done on-error
-          (lambda (queued-command-id)
-            (e-session-persistence--remember-record-command
-             controller session-id
-             (or (plist-get record :id) (plist-get record :entry_id))
-             queued-command-id)))))
-    command-id))
+  (let* ((record-id (or (plist-get record :id)
+                        (plist-get record :entry_id)))
+         (key (and session-id record-id
+                   (e-session-persistence--record-key session-id record-id))))
+    ;; `pending' exists only between the session mutation and the outbox
+    ;; admission callback.  It is never treated as durable by the barrier.
+    (e-session-persistence--set-record-state controller key 'pending)
+    (e-session-persistence--submit
+     controller (list :op "append" :session-id session-id :record record)
+     on-done on-error
+     (lambda (queued-command-id)
+       (e-session-persistence--set-record-state controller key 'submitted)
+       (e-session-persistence--remember-record-command
+        controller session-id record-id queued-command-id))
+     (lambda (_error)
+       ;; The command never entered the outbox.  Keep this negative fact at
+       ;; the same owner as the command mapping so a later barrier cannot
+       ;; mistake the missing mapping for durability.
+       (e-session-persistence--set-record-state
+        controller key 'preflight-failed)))))
 
 (defun e-session-persistence-await-record-prefix
-    (controller session-id record-ids on-done on-error)
+    (controller session-id record-ids on-done on-error
+                &optional replayed-record-ids)
   "Asynchronously await named durable RECORD-IDS for SESSION-ID.
 
 The lookup is indexed by session and record identity, so this operation visits
 only the requested prefix.  It never scans unrelated sessions, requests a
-checkpoint, or submits a global reindex barrier.  Records already removed from
-the outbox are durable only when the session boundary has separately proved
-that they are real entries; terminally failed named records remain failures
-through a bounded outcome cache."
+checkpoint, or submits a global reindex barrier.  Every record must have an
+explicit lifecycle state: `acknowledged' or an entry proven by the session
+boundary to be `replayed-durable' succeeds; `pending' and `submitted' wait on
+their active command; and preflight, terminal, or unknown state fails.
+REPLAYED-RECORD-IDS is supplied by the session owner after it has proved that
+those exact entries came from disk replay."
   (let* ((keys (delete-dups
                 (mapcar (lambda (record-id)
                           (e-session-persistence--record-key
                            session-id record-id))
                         record-ids)))
-         (command-ids
-          (delq nil
-                (mapcar
-                 (lambda (key)
-                   (gethash key
-                           (e-session-persistence-record-command-ids
-                            controller)))
-                 keys)))
-         (failed-key
-          (seq-find
+         (replayed-keys
+          (mapcar (lambda (record-id)
+                    (e-session-persistence--record-key session-id record-id))
+                  (delete-dups (copy-sequence (or replayed-record-ids nil)))))
+         (states
+          (mapcar
            (lambda (key)
-             (e-session-persistence--terminal-record-failure
-              controller (car key) (cadr key)))
+             (or (e-session-persistence--record-state
+                  controller (car key) (cadr key))
+                 (and (member key replayed-keys) 'replayed-durable)))
            keys))
+         (failed-key
+          (seq-find (lambda (state)
+                      (memq (cdr state) '(preflight-failed terminal-failed)))
+                    (cl-mapcar #'cons keys states)))
+         (unknown-key
+          (seq-find (lambda (state) (null (cdr state)))
+                    (cl-mapcar #'cons keys states)))
+         (pending-keys
+          (cl-remove-if-not
+           (lambda (state) (memq (cdr state) '(pending submitted)))
+           (cl-mapcar #'cons keys states)))
+         (command-ids
+          (mapcar
+           (lambda (key)
+             (gethash key
+                      (e-session-persistence-record-command-ids controller)))
+           (mapcar #'car pending-keys)))
+         (missing-command-key
+          (seq-find (lambda (pair) (null (cdr pair)))
+                    (cl-mapcar #'cons (mapcar #'car pending-keys)
+                               command-ids)))
          (remaining (length command-ids))
          (finished nil))
     (cl-labels
@@ -505,21 +578,37 @@ through a bounded outcome cache."
              (finish (list :session-id session-id
                            :entry-ids (copy-sequence record-ids)
                            :pending-count 0)))))
-      (if failed-key
-          (fail
-           (list 'e-session-persistence-error
-                 "A named session record previously failed"
-                 failed-key))
-        (if (zerop remaining)
-          (finish (list :session-id session-id
-                        :entry-ids (copy-sequence record-ids)
-                        :pending-count 0))
+       (cond
+       (failed-key
+        (fail
+         (list 'e-session-persistence-error
+               "A named session record reached terminal failure"
+               (car failed-key)
+               (cdr failed-key))))
+       (unknown-key
+        (fail
+         (list 'e-session-persistence-error
+               "A named session record has no authoritative durability state"
+               (car unknown-key))))
+       (missing-command-key
+        (fail
+         (list 'e-session-persistence-error
+               "An active named session record has no outbox command"
+               (car missing-command-key))))
+       ((zerop remaining)
+        (finish (list :session-id session-id
+                      :entry-ids (copy-sequence record-ids)
+                      :pending-count 0)))
+       (t
         (dolist (command-id command-ids)
           (let* ((callbacks (gethash command-id
                                      (e-session-persistence-callbacks
                                       controller)))
                  (prior-done (car callbacks))
                  (prior-error (cdr callbacks)))
+            ;; A record submission may have no caller callback.  The barrier
+            ;; itself is still allowed to attach the first callback pair to
+            ;; the active outbox command.
             (puthash
              command-id
              (cons (lambda (value)

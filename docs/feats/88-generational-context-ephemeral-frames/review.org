@@ -153,3 +153,22 @@ evidence, and bounded cache eviction must not turn failure into success.
 Remediate F88.I1.5 with authoritative per-entry durability and explicit
 preflight/active/acknowledged/terminal-failed tests, then run the same replacement
 reviewer again.  Slice 2 remains gated.
+
+* Tock 02 candidate disposition
+
+The candidate replaces inference from mappings and evictable failures with an
+authoritative per-record lifecycle at the persistence owner:
+=pending=, =submitted=, =acknowledged=, =preflight-failed=, and
+=terminal-failed=.  Session replay separately proves =replayed-durable=.  Unknown
+state and active state without a command fail closed; active commands wait;
+explicit acknowledgement or replay proof alone succeeds.  Failure states are
+not evicted, and stale command responses cannot overwrite a newer state.
+
+Controlled tests cover preflight failure before outbox admission, active wait,
+acknowledgement, missing mappings, terminal failure, late barriers, replayed
+durability, and 300 failures beyond the former cache bound.
+
+Parent verification passed 22/22 lifetime tests, 29/29 persistence tests, all
+2236 repository tests with two existing skips and zero unexpected results,
+compilation, and diff checks.  F88.I1.5 is candidate-closed; the same replacement
+reviewer must Tick the exact clean Tock commit before Slice 2.
