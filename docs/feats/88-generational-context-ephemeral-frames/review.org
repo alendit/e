@@ -4,11 +4,11 @@
 
 * Current decision
 
-Needs remediation after Implementation Tick 01 at
-=9137161d9ba8060c4d2c4be6d06f55a40861c932=.
+Needs remediation after Implementation Tick 04 at
+=1f67e016b65194743bd5e8fd09e46e55071474bd=.
 
-Slice 1 has two P1 and two P2 findings.  Later slices have not started.  This
-review is not the final feature acceptance.
+Slice 1 has one open P1 finding.  Later slices have not started.  This review
+is not the final feature acceptance.
 
 * Tick 01 findings
 
@@ -232,3 +232,50 @@ Parent verification passed 22/22 lifetime tests, 36/36 persistence tests, all
 and zero unexpected results.  Compilation and diff checks passed.  F88.I1.6 is
 candidate-closed; the same unattended reviewer must Tick the exact clean Tock
 commit before Slice 2.
+
+* Tick 04 findings
+
+Reviewed exact commit =1f67e016b65194743bd5e8fd09e46e55071474bd=.
+
+F88.I1.1--F88.I1.4 remain closed.  F88.I1.6 closes for every admitted
+replacement path, including replacement settlement before the predecessor,
+multiple barriers, repeated supersession, callback compatibility, cleanup, and
+key/session isolation.  F88.I1.5 reopens only for the same-key replacement
+preflight partition through F88.I1.7.  There are zero additional P0, P2, or P3
+findings and no unknown required cells.
+
+** P1 F88.I1.7: rejected replacement does not fence its predecessor
+
+A same-key replacement sets the logical record to =pending= before preflight,
+but preflight rejection changes only the state to =preflight-failed=.  The old
+command remains mapped as current.  Its later success may therefore overwrite
+the newer failed attempt with =acknowledged=, and the active logical watcher
+incorrectly completes the barrier for the rejected replacement.
+
+*** Owning correction
+
+Advance logical-record attempt ownership before replacement preflight.  A
+rejected replacement must terminally reconcile active logical watchers and
+fence every predecessor response from changing the newer attempt's state.  The
+old physical command may still complete its own callback and outbox lifecycle,
+but it must not satisfy or overwrite the newer logical record state.  Add stale
+success and stale failure predecessor tests after replacement preflight
+rejection.
+
+*** Evidence
+
+- The reviewer reproduced command 1 for key X, a watching barrier, rejected
+  replacement command 2, and late command-1 acknowledgement.  The observed
+  state changed from =preflight-failed= to =acknowledged= and the barrier
+  completed successfully.
+- Focused lifetime/persistence tests passed 58/58; the full suite produced 2241
+  expected results, the same two skips, and zero unexpected results out of
+  2243.
+- Worktree remained clean.  No edits, approvals, escalation, runtime mutation,
+  or live Emacs interaction occurred.
+
+* Tick 04 fixed-point disposition
+
+Remediate F88.I1.7 at logical-record attempt ownership, prove both predecessor
+success and predecessor failure are inert after replacement preflight rejection,
+then run the same unattended reviewer again.  Slice 2 remains gated.
