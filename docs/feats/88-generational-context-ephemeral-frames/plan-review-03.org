@@ -1,0 +1,182 @@
+#+title: Plan Review 03: Generational Context with Ephemeral Frames
+#+startup: overview
+
+* Decision
+
+Not implementation-ready at revision =9a7ca0f=.
+
+This independent incremental specification Tick closed =F88.4= and
+=F88.6-F88.8=.  Dependencies supporting =F88.1-F88.3= and =F88.5= remain valid.
+Two new P1 findings block implementation; no required review cell is unknown.
+
+* Prior finding dispositions
+
+** CLOSED F88.1: durable frame settlement and recovery
+
+The plan orders frame open, consumption attempt, response/promotions,
+=frame-settled=, asynchronous prefix acknowledgement, idempotent replay, and
+checkpoint retention.  Later tool ordering does not weaken that boundary.
+
+** CLOSED F88.2: reserved bounded promotion effect
+
+Promotion is validated before mutation, bounded to one effect / 16 facts /
+8 KiB, settled with its response, and buffered before ordinary tool dispatch.
+
+** CLOSED F88.3: semantic backend capability discovery
+
+=e-backend-context-capabilities= is pure and provider-neutral.  Missing
+capabilities choose stateless replay, unknown values fail, and adapters own wire
+mapping.
+
+** CLOSED F88.4: three lifetimes and existing external handles
+
+The goal, table, resource boundary, non-goals, and self-check now distinguish
+three model-visible history lifetimes from existing external-handle delivery.
+
+** CLOSED F88.5: effective inherited-context E2E
+
+The deterministic transport now models continuation and records literal,
+inherited, replaceable, and effective context through real replay.
+
+** CLOSED F88.6: restart-stable current-state observation
+
+The plan gives request-time observations durable source and render identity,
+compares fingerprints on retry, and explicitly aborts before recapturing changed
+or unavailable state.  Acceptance covers mutation/removal across restart.
+
+** CLOSED F88.7: admission and settlement before tool side effects
+
+The complete response and promotion/tool set are buffered and validated;
+settlement acknowledgement precedes dispatch.  Acceptance covers rejection,
+withheld acknowledgement, and successful dispatch.
+
+** CLOSED F88.8: settlement acknowledgement performance contract
+
+The plan now measures record count/bytes, acknowledgement wait, and time to next
+dispatch; requires prefix-proportional work; and forbids full-journal scans and
+main-thread filesystem I/O.
+
+* New findings
+
+** P1 F88.9: Exact lifetime projection omits accepted live static/stable context
+
+*** Evidence
+
+The plan describes exactly three model-visible lifetimes and says context
+reconstruction is exactly =checkpoint + durable tail + open frame=.  Accepted
+Features 23 and 35 and current =e-capabilities=/=e-harness= also rebuild and
+prepend live =static-prefix= and =stable-context= segments on every request.
+Those segments must remain live-configurable rather than being dropped, frozen
+into a generation, or left as an unowned fourth path.
+
+*** Owning correction
+
+Scope the three lifetimes to session-derived causal history and define the full
+semantic request as:
+
+#+begin_example
+active static-prefix + active stable-context
++ generation checkpoint + durable tail + open observation frame
+#+end_example
+
+=e-capabilities= continues rebuilding the first two segments from the active
+capability set.  They are not copied into generations or promotions.  Their
+fingerprints participate in anchor compatibility, so live changes appear on the
+next request and rebuild incompatible anchors without compaction.  Current-state
+segments move to the observation frontier.
+
+Acceptance must change static instruction and stable provider content
+mid-generation, prove replacement and anchor invalidation, and prove the
+generation/checkpoint did not change.  Fingerprint/layout tests are mechanism
+evidence.
+
+** P1 F88.10: Settled tool calls have no restart-safe outcome contract
+
+*** Evidence
+
+The corrected transaction settles tool calls before execution and claims exact
+single dispatch, but two durable states remain ambiguous after a crash:
+
+1. acknowledged admission followed by exit before invocation; and
+2. irreversible side effect followed by exit before durable result.
+
+Both replay as call-without-result.  Retrying may duplicate case 2; skipping
+loses case 1.  Arbitrary tools cannot promise exactly-once external side effects
+without tool-owned idempotency.
+
+*** Owning correction
+
+Give every accepted ordinary tool call a stable execution id and append-only
+execution states separate from frame settlement: admitted, dispatch-started,
+and terminal finished/failed/outcome-unknown.  Checkpoints retain nonterminal
+obligations.  Acknowledge dispatch-started before invocation and terminal result
+before the next tool or provider follow-up.
+
+An admitted-but-undispatched call may resume.  A dispatch-started call without a
+terminal result becomes =outcome-unknown= and is not automatically retried unless
+the tool explicitly supplies a stable idempotency key or resumable contract.
+Promise one live dispatch per execution attempt, not impossible exactly-once
+effects across arbitrary crashes.
+
+Required contract evidence includes:
+
+- restart before dispatch resumes one previously undispatched call;
+- restart after controlled side effect but before result yields
+  =outcome-unknown= and zero automatic redispatch;
+- idempotent retry reuses its execution/idempotency key;
+- completed multi-tool results remain terminal and only provably undispatched
+  calls can start; and
+- provider follow-up waits until every admitted call is terminal or explicitly
+  resolved.
+
+A restart E2E with a controlled side-effecting tool is contract evidence.
+Exact execution-record/checkpoint encoding tests are mechanism evidence.
+
+* Contract-chain coverage
+
+| Contract | Status | Evidence or next question |
+|----------+--------+---------------------------|
+| Static/stable request context | candidate | F88.9 |
+| Generation checkpoint | cleared | Immutable generation and compaction records |
+| Durable tail and promotion | cleared | Bounded reserved effect and durable settlement |
+| Observation frame | cleared | Settle/abort and effective-context evidence |
+| Request-time observation | cleared | Durable descriptor and restart drift case |
+| Persistence acknowledgement | cleared | Ordered prefix and controlled-writer metric |
+| Admission before tool side effects | cleared | Full-response validation before dispatch |
+| Tool crash/restart recovery | candidate | F88.10 |
+| Backend capabilities | cleared | Semantic query and adapter mapping |
+| Clean anchor/stateless fallback | cleared | Disposable provider state and E2E |
+| Portable/provider compaction | cleared | Portable canonical, opaque disposable |
+| Resume checkpoint | candidate | Pending tool obligation from F88.10 |
+| External handles | cleared | Existing resource/reference owners |
+| Migration/branches | cleared | Explicit provenance and boundary |
+| Presentation | not-applicable | No required visible UI |
+| Unknown required cells | none | Re-review after findings close |
+
+* Test evidence classification
+
+| Evidence | Classification |
+|----------+----------------|
+| Pure lifetime state machine and semantic projection | contract |
+| Exact journal/checkpoint encoding | mechanism |
+| Semantic backend capability/fallback partitions | contract |
+| Adapter request body shape | mechanism |
+| Stateful effective-context and restart E2E | contract |
+| Controlled-writer acknowledgement gate | contract |
+| Queue/outbox microtests | mechanism |
+| Static/stable mid-generation replacement | contract |
+| Controlled side-effecting tool restart | contract |
+
+* Verification
+
+- Reviewed exact revision =9a7ca0fcfd4c3d53efc49abc0324fc20d29f88c4=.
+- =git diff --check 9a7ca0f^ 9a7ca0f=: passed.
+- Batch Org parsing of the plan and first two plan reviews: passed.
+- No implementation, runtime mutation, or live Emacs probe applied.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Correct =F88.9= and =F88.10=, then run a fresh independent Tick.  Implementation
+must not begin until full request composition and post-settlement tool recovery
+are explicit.
