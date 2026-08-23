@@ -1,0 +1,130 @@
+#+title: Plan Review 05: Generational Context with Ephemeral Frames
+#+date: 2026-08-23
+#+startup: overview
+
+* Decision
+
+Needs remediation at revision =fe4d7780b123ef7d55d2414107c619e009c6ce56=.
+
+The =F88.10= state classification improved, but the complete restart-safe tool
+transaction is not implementation-ready.  Three P1 findings remain and no
+required cell is unknown.  No Feature 88 implementation exists yet.
+
+* Prior disposition
+
+** CARRIED CLOSED F88.1-F88.9
+
+Their dependencies remain valid: frame settlement, promotion limits, semantic
+capabilities, external ownership, effective provider-context evidence,
+request-time observation identity, pre-tool admission, metrics, and active
+static/stable composition remain explicit.
+
+** INCOMPLETE F88.10
+
+=outcome-unknown= is now blocked/nonterminal and checkpoint-retained, and the
+public resolver acknowledges manual resolutions.  Ordinary live terminal
+results lack acknowledgement, and no owner reconstructs a pending transition
+after the original loop disappears.
+
+* Findings
+
+** P1 F88.10: ordinary terminal results can race the next dispatch
+
+The plan acknowledges =dispatch-started= and manually resolved results, but only
+says live tool results are persisted with the next frame.  An asynchronous
+append may still be outstanding when the next tool or provider follow-up starts.
+A crash can lose a known result after later irreversible work began and replay
+the completed call as =outcome-unknown=.
+
+*** Owning correction
+
+A live =finished=/=failed= outcome, provider-linked result, and =frame-opened=
+form one ordered terminal prefix.  Acknowledge it before clearing the active
+execution or starting any later tool/follow-up.  Failed/withheld acknowledgement
+starts nothing.  Live retry resubmits the same record identities; after crash,
+absence of an acknowledged terminal prefix yields =outcome-unknown=.
+
+Acceptance needs failed/withheld/successful terminal-prefix partitions and
+separate prefix count/bytes, acknowledgement wait, and completion-to-dispatch
+metrics.
+
+** P1 F88.11: recovery has no application-service owner after restart
+
+Feature 78 restores durable records, not the old process-local loop callbacks,
+tool queue, active request, or follow-up gate.  The plan names no owner that
+claims a recovered transition once, blocks new prompts, dispatches provably
+undispatched calls, exposes ambiguity, and reconstructs follow-up.
+
+*** Owning correction
+
+=e-session= derives and checkpoints a provider-neutral pending-tool-transition
+descriptor with transition/turn identity, consuming response, ordered execution
+ids, provider replay linkage, and next durable action.  It contains no callbacks.
+
+=e-harness-resume-pending-transition= is the sole application service.  Session
+resume invokes it before accepting a new prompt.  It claims the descriptor in
+the active-turn registry, is idempotent on repeated calls, dispatches only
+provably undispatched calls, exposes =outcome-unknown= as blocked, and rebuilds
+follow-up from durable state after all terminal prefixes are acknowledged.
+The public resolver delegates release to this service.  Reconstruction mismatch
+fails visibly and leaves the descriptor recoverable.
+
+The E2E must cross the real session-resume route, prove idempotent claims and
+blocked new prompts, resolve ambiguity, and observe exactly one rebuilt
+follow-up.
+
+** P1 F88.12: a key generator is not an idempotency contract
+
+=:idempotency-key-function= only produces a string.  It does not prove that the
+external operation consumes or deduplicates it, nor that the registration after
+restart matches the persisted contract.  Its only planned consumer is synthetic.
+
+*** Owning correction
+
+Remove automatic post-=dispatch-started= retry and the key hook from Feature 88.
+Every ambiguous execution remains blocked until explicit durable resolution.
+A later feature may add retry for a concrete tool whose adapter actually sends a
+stable key to a deduplicating operation and persists a versioned contract
+identity.
+
+* Test evidence disposition
+
+| Evidence | Disposition | Reason |
+|----------+-------------+--------|
+| Lifetime projector/state machine | retain | Stable contract |
+| Static/stable replacement | retain | F88.9 remains closed |
+| Frame settlement acknowledgement | retain | Independent boundary |
+| Live terminal-result acknowledgement | strengthen | Failed/success/multi-tool partitions |
+| Restart side-effect/resolver scenario | strengthen | Cross real recovery service |
+| Synthetic idempotency retry | delete | Unsafe without real consumer |
+| Exact record/checkpoint encoding | mechanism | Not public recovery proof |
+
+* Coverage ledger
+
+| Contract | Status | Evidence or next question |
+|----------+--------+---------------------------|
+| Static/stable request context | cleared | F88.9 retained |
+| Generation, durable tail, observation | cleared | Existing closure |
+| Frame-settlement acknowledgement | cleared | Ordered prefix |
+| Tool admission/dispatch-started | cleared | Acknowledged before invocation |
+| Live terminal-result durability | candidate | F88.10 |
+| Restart transaction ownership/public resolution | candidate | F88.11 |
+| Automatic ambiguous retry safety | candidate | F88.12 |
+| Checkpoint obligation retention | cleared | Ambiguity retained |
+| Backend/anchor/compaction/migration | cleared | Unchanged |
+| Performance evidence | candidate | Terminal-prefix metrics |
+| Unknown required cells | none | Three findings remain |
+
+* Verification
+
+- Reviewed exact revision =fe4d7780b123ef7d55d2414107c619e009c6ce56=.
+- =git diff --check fe4d778^ fe4d778=: passed.
+- Batch Org parsing of the plan and reviews 01--04: passed.
+- No implementation, runtime mutation, or live Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Restore live terminal-result acknowledgement, add a durable-to-live recovery
+service, remove speculative automatic idempotency, and run the reused reviewer
+again.  Implementation cannot begin with any P0-P3 finding.
