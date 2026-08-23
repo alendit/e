@@ -1,0 +1,29 @@
+#+title: Goodnite Is an Explicit Default
+
+* Status
+
+Done.
+
+* Change
+
+Keep the =goodnite= layer registered and available, but remove it from
+=e-default-chat-layer-ids=. Hosts with a Goodnite knowledge repository opt into
+the layer explicitly in their own configuration.
+
+This is tiny because it changes only the membership policy of an existing
+default preset; the Goodnite capability, layer, and resource implementation are
+unchanged.
+
+* Validation
+
+- Focused default/reload tests pass.
+- =git diff --check= passes.
+
+* Architecture self-check
+
+The portable default-harness configuration owns the cross-host preset, while
+host configuration owns optional local knowledge sources. This reduces coupling
+between a portable chat harness and a machine-specific repository without adding
+state, side effects, compatibility paths, or abstractions. Existing explicit
+layer selection remains the narrow extension point, and focused reload coverage
+proves the default independently of Goodnite's own behavior tests.

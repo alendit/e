@@ -226,7 +226,7 @@
                    '(agents-std-context harness-base process-reporting
                                         harness-advanced e os-base emacs-base
                                         resource-toc web annotations org-canvas
-                                        project-local goodnite writing
+                                        project-local writing
                                         subagents-parent)))
     (should (eq e-debug-display-strategy 'popup))
     (let ((harness (e-harness-registry-get-or-create :chat-default)))
@@ -234,14 +234,14 @@
                      '(agents-std-context harness-base process-reporting
                                           harness-advanced e os-base emacs-base
                                           resource-toc web annotations org-canvas
-                                          project-local goodnite writing
+                                          project-local writing
                                           subagents-parent)))
       (should (equal (e-harness-effective-layer-ids harness)
                      '(agents-std-context harness-base process-reporting
                                           harness-advanced e resource-discovery
                                           os-base async-control emacs-base resource-toc
                                           web annotations org-canvas project-local
-                                          goodnite writing subagents-parent))))))
+                                          writing subagents-parent))))))
 
 (ert-deftest e-dev-test-reload-refreshes-retained-session-index-metadata ()
   "Full reload repairs stale unloaded metadata in the retained session store."
