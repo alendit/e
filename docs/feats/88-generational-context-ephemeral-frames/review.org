@@ -172,3 +172,43 @@ Parent verification passed 22/22 lifetime tests, 29/29 persistence tests, all
 2236 repository tests with two existing skips and zero unexpected results,
 compilation, and diff checks.  F88.I1.5 is candidate-closed; the same replacement
 reviewer must Tick the exact clean Tock commit before Slice 2.
+
+* Tick 03 findings
+
+Reviewed exact commit =3a20305ee179f2fde75359723e75bda23f823b4d=.
+
+F88.I1.1--F88.I1.4 remain closed.  F88.I1.5 closes for absence-based success,
+preflight and terminal failure, replay proof, active command wait, and failure
+retention.  Its stale-response partition remains incomplete through F88.I1.6.
+
+** P1 F88.I1.6: a stale command response can settle a superseded record barrier
+
+The persistence state update ignores a response whose command is no longer
+current for the logical record, but callbacks attached by an earlier barrier
+still run unconditionally.  A record can be resubmitted under a new command,
+then a stale success or failure from the old command incorrectly settles the
+barrier while the authoritative command remains active.
+
+*** Owning correction
+
+Bind every barrier callback to its record key and expected command identity.
+Before success or failure, verify that command remains authoritative.  A
+superseded response must neither satisfy nor fail the logical-record wait;
+rebind to the current command or fail closed through an explicit superseded
+state.  Add controlled stale-success and stale-failure tests for same-key
+replacement.
+
+*** Evidence
+
+- The reviewer reproduced command 1 watched by a barrier, command 2 replacing
+  the same record, and stale acknowledgement of command 1 falsely completing the
+  barrier while command 2 remained =submitted=.
+- Focused lifetime/persistence tests remained 51/51 green, isolating the missing
+  race partition.
+- No approvals, edits, runtime mutation, or live Emacs interaction occurred.
+
+* Tick 03 fixed-point disposition
+
+Remediate F88.I1.6 in the persistence owner, prove stale success/failure and the
+replacement acknowledgement path, then run the same reviewer again.  Slice 2
+remains gated.
