@@ -632,8 +632,8 @@ Accepted parent-side on 2026-08-24.
   Frame closure derives from the final settlement marker, duplicate snapshots
   reduce by logical identity, and stale promotions/settlement attempts remain in
   the audit journal rather than the bounded resume state.
-- Parent verification after Tock 02: 22/22 lifetime tests, 29/29 persistence
-  tests, and 94/94 session tests passed.  The full 2236-test suite produced 2234
+- Parent verification after Tock 03: 22/22 lifetime tests and 36/36 persistence
+  tests passed.  The full 2243-test suite produced 2241
   expected results, the same two existing skips, and zero unexpected results.
   =eldev compile= and =git diff --check= passed.
 - The user's running Emacs was left unchanged.  The new core/session record

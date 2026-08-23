@@ -424,6 +424,414 @@
         (should-not done)
         (should (equal (car failure) 'e-session-persistence-error))))))
 
+(ert-deftest e-session-persistence-test-prefix-barrier-stale-success-rebinds-replacement ()
+  "A stale success cannot settle a logical record after replacement."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "stale-success"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil)
+         (done-count 0)
+         (failure-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "first")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq done value
+                       done-count (1+ done-count)))
+               (lambda (error)
+                 (setq failure error
+                       failure-count (1+ failure-count)))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "replacement"))))
+        (should-not done)
+        (should-not failure)
+        ;; The first response is stale: the authoritative logical record now
+        ;; points at SECOND, so it must only move the watcher to SECOND.
+        (e-session-persistence--handle-response
+         controller (list :id first :ok t :result 'stale))
+        (should-not done)
+        (should-not failure)
+        (should (= done-count 0))
+        (should (= failure-count 0))
+        (should (equal
+                 (gethash (list "session-replacement" "same-key")
+                          (e-session-persistence-record-command-ids controller))
+                 second))
+        (e-session-persistence--handle-response
+         controller (list :id second :ok t :result 'replacement))
+        (should done)
+        (should-not failure)
+        (should (= done-count 1))
+        (should (= failure-count 0))
+        ;; A duplicate response has no callback left to settle again.
+        (e-session-persistence--handle-response
+         controller (list :id second :ok t :result 'duplicate))
+        (should (= done-count 1))
+        (should (= failure-count 0))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-stale-failure-rebinds-replacement ()
+  "A stale terminal failure cannot fail a logical record after replacement."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "stale-failure"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil)
+         (done-count 0)
+         (failure-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "first")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq done value
+                       done-count (1+ done-count)))
+               (lambda (error)
+                 (setq failure error
+                       failure-count (1+ failure-count)))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "replacement"))))
+        (e-session-persistence--handle-response
+         controller
+         (list :id first :ok :json-false :retryable :json-false))
+        (should-not done)
+        (should-not failure)
+        (should (= done-count 0))
+        (should (= failure-count 0))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'submitted))
+        (e-session-persistence--handle-response
+         controller
+         (list :id second :ok :json-false :retryable :json-false))
+        (should-not done)
+        (should failure)
+        (should (= done-count 0))
+        (should (= failure-count 1))
+        ;; The terminal failure callback is consumed exactly once.
+        (e-session-persistence--handle-response
+         controller
+         (list :id second :ok :json-false :retryable :json-false))
+        (should (= done-count 0))
+        (should (= failure-count 1))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-replacement-success-before-old-response ()
+  "A replacement can settle before its predecessor responds."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "early-success"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil)
+         (done-count 0)
+         (failure-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "first")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq done value
+                       done-count (1+ done-count)))
+               (lambda (error)
+                 (setq failure error
+                       failure-count (1+ failure-count)))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "replacement"))))
+        ;; Admission proactively moved the watcher to SECOND; no response for
+        ;; FIRST is needed for the replacement to complete the logical wait.
+        (should (= (hash-table-count
+                    (e-session-persistence-callbacks controller))
+                   1))
+        (e-session-persistence--handle-response
+         controller (list :id second :ok t :result 'replacement))
+        (should done)
+        (should-not failure)
+        (should (= done-count 1))
+        (should (= failure-count 0))
+        (should (= (hash-table-count
+                    (e-session-persistence-record-watchers controller))
+                   0))
+        ;; FIRST was already detached from the logical barrier.  A late stale
+        ;; response remains harmless and cannot settle it a second time.
+        (e-session-persistence--handle-response
+         controller (list :id first :ok t :result 'late-old))
+        (should (= done-count 1))
+        (should (= failure-count 0))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'acknowledged))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-replacement-failure-before-old-response ()
+  "A replacement failure settles before its predecessor responds."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "early-failure"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil)
+         (done-count 0)
+         (failure-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil))
+              ((symbol-function 'display-warning)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "first")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq done value
+                       done-count (1+ done-count)))
+               (lambda (error)
+                 (setq failure error
+                       failure-count (1+ failure-count)))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "replacement"))))
+        (should (= (hash-table-count
+                    (e-session-persistence-callbacks controller))
+                   1))
+        (e-session-persistence--handle-response
+         controller
+         (list :id second :ok :json-false :retryable :json-false))
+        (should-not done)
+        (should failure)
+        (should (= done-count 0))
+        (should (= failure-count 1))
+        (should (= (hash-table-count
+                    (e-session-persistence-record-watchers controller))
+                   0))
+        ;; The old command cannot convert the already-terminal replacement
+        ;; into a second failure or a success.
+        (e-session-persistence--handle-response
+         controller
+         (list :id first :ok :json-false :retryable :json-false))
+        (should-not done)
+        (should (= done-count 0))
+        (should (= failure-count 1))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'terminal-failed))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-multiple-watchers-share-replacement ()
+  "Simultaneous barriers on one key all follow the replacement command."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "multiple-watchers"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (first-done nil)
+         (second-done nil)
+         (first-failure nil)
+         (second-failure nil)
+         (first-count 0)
+         (second-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments))))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "first")))
+             (_first-result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq first-done value
+                       first-count (1+ first-count)))
+               (lambda (error) (setq first-failure error))))
+             (_second-result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq second-done value
+                       second-count (1+ second-count)))
+               (lambda (error) (setq second-failure error))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "replacement"))))
+        ;; One command entry carries both independent callback pairs; neither
+        ;; barrier can overwrite the other during proactive rebinding.
+        (should (= (hash-table-count
+                    (e-session-persistence-callbacks controller))
+                   1))
+        (should (= (length
+                    (gethash second
+                             (e-session-persistence-callbacks controller)))
+                   2))
+        (e-session-persistence--handle-response
+         controller (list :id second :ok t :result 'replacement))
+        (should first-done)
+        (should second-done)
+        (should-not first-failure)
+        (should-not second-failure)
+        (should (= first-count 1))
+        (should (= second-count 1))
+        (should (= (hash-table-count
+                    (e-session-persistence-record-watchers controller))
+                   0))
+        ;; The predecessor is no longer registered with either barrier.
+        (e-session-persistence--handle-response
+         controller (list :id first :ok :json-false :retryable :json-false))
+        (should (= first-count 1))
+        (should (= second-count 1))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-repeated-supersession-is-bounded ()
+  "Repeated same-key replacement rebinds one watcher without callback leaks."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "repeated-supersession"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil)
+         (done-count 0)
+         (failure-count 0))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "one")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-replacement" '("same-key")
+               (lambda (value)
+                 (setq done value
+                       done-count (1+ done-count)))
+               (lambda (error)
+                 (setq failure error
+                       failure-count (1+ failure-count)))))
+             (second
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "two"))))
+        ;; Each old response rebinds to the current command.  A new command
+        ;; is submitted between responses so the path exercises repeated,
+        ;; rather than one-time, supersession.
+        (e-session-persistence--handle-response
+         controller (list :id first :ok t :result 'stale-one))
+        (should (= (hash-table-count
+                    (e-session-persistence-callbacks controller))
+                   1))
+        (let ((third
+               (e-session-persistence-submit-record
+                controller "session-replacement"
+                '(:type "message" :id "same-key" :content "three"))))
+          (e-session-persistence--handle-response
+           controller (list :id second :ok t :result 'stale-two))
+          (should (= (hash-table-count
+                      (e-session-persistence-callbacks controller))
+                     1))
+          (let ((fourth
+                 (e-session-persistence-submit-record
+                  controller "session-replacement"
+                  '(:type "message" :id "same-key" :content "four"))))
+            (e-session-persistence--handle-response
+             controller (list :id third :ok t :result 'stale-three))
+            (should (= (hash-table-count
+                        (e-session-persistence-callbacks controller))
+                       1))
+            (should-not done)
+            (should-not failure)
+            (should (= done-count 0))
+            (should (= failure-count 0))
+            (e-session-persistence--handle-response
+             controller (list :id fourth :ok t :result 'final))
+            (should done)
+            (should-not failure)
+            (should (= done-count 1))
+            (should (= failure-count 0))
+            (should (= (hash-table-count
+                        (e-session-persistence-callbacks controller))
+                       0))))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-does-not-watch-unrelated-key ()
+  "A logical barrier neither settles nor rebinds an unrelated record."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "unrelated-key"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (done nil)
+         (failure nil))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil)))
+      (let* ((a-first
+              (e-session-persistence-submit-record
+               controller "session-a"
+               '(:type "message" :id "same-key" :content "a1")))
+             (b-first
+              (e-session-persistence-submit-record
+               controller "session-b"
+               '(:type "message" :id "other-key" :content "b1")))
+             (_result
+              (e-session-persistence-await-record-prefix
+               controller "session-a" '("same-key")
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error))))
+             (a-second
+              (e-session-persistence-submit-record
+               controller "session-a"
+               '(:type "message" :id "same-key" :content "a2"))))
+        ;; The unrelated key can settle independently and must not touch A's
+        ;; logical watcher or its authoritative replacement mapping.
+        (e-session-persistence--handle-response
+         controller (list :id b-first :ok t :result 'b-written))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-b" "other-key")
+                 'acknowledged))
+        (should-not done)
+        (should-not failure)
+        (should (equal
+                 (gethash (list "session-a" "same-key")
+                          (e-session-persistence-record-command-ids controller))
+                 a-second))
+        (e-session-persistence--handle-response
+         controller (list :id a-first :ok t :result 'a-stale))
+        (should-not done)
+        (should-not failure)
+        (e-session-persistence--handle-response
+         controller (list :id a-second :ok t :result 'a-written))
+        (should done)
+        (should-not failure)))))
+
 (ert-deftest e-session-persistence-test-command-budget-precedes-json-encoding ()
   "An oversized command is rejected before JSON allocates its representation."
   (let ((e-session-persistence-command-byte-limit 8)

@@ -212,3 +212,23 @@ replacement.
 Remediate F88.I1.6 in the persistence owner, prove stale success/failure and the
 replacement acknowledgement path, then run the same reviewer again.  Slice 2
 remains gated.
+
+* Tock 03 candidate disposition
+
+The candidate moves prefix barriers from command-owned callback chaining to a
+controller-owned logical watcher registry keyed by session and record identity.
+Every same-key submission proactively rebinds all active watchers to the new
+command before transport send.  Rebinding detaches only that watcher's old
+callback, so multiple simultaneous barriers remain independent and a stale
+predecessor response is inert.
+
+Controlled tests cover stale success and stale failure, replacement success and
+replacement failure arriving before the predecessor responds, multiple
+barriers sharing one replacement, repeated supersession without callback or
+watcher leaks, and unrelated-key isolation.
+
+Parent verification passed 22/22 lifetime tests, 36/36 persistence tests, all
+2243 repository tests with 2241 expected results, the same two existing skips,
+and zero unexpected results.  Compilation and diff checks passed.  F88.I1.6 is
+candidate-closed; the same unattended reviewer must Tick the exact clean Tock
+commit before Slice 2.
