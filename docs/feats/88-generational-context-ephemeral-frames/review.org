@@ -1,0 +1,91 @@
+#+title: Implementation Review: Generational Context with Ephemeral Frames
+#+date: 2026-08-24
+#+startup: overview
+
+* Current decision
+
+Needs remediation after Implementation Tick 01 at
+=9137161d9ba8060c4d2c4be6d06f55a40861c932=.
+
+Slice 1 has two P1 and two P2 findings.  Later slices have not started.  This
+review is not the final feature acceptance.
+
+* Tick 01 findings
+
+** P1 F88.I1.1: cross-generation observations can enter a projection
+
+The projector checks record types but not that the frame's =generation-id=
+matches the active generation.  A stale frame can therefore place an old
+observation inside a new generation.
+
+*** Owning correction
+
+Reject mismatched generation/frame pairs at the pure projector boundary and add
+a negative projector contract test.
+
+** P1 F88.I1.2: malformed lifetime records survive replay
+
+Replay normalizes wire strings but bypasses the append validator, and append
+validation covers only a subset of required fields.  A frame with no generation
+and an unknown state can enter resume state instead of surfacing corruption.
+
+*** Owning correction
+
+Use one strict validator for append and replay.  Validate plist shape, record
+version/type, required identities, lifecycle state/status, and generation
+ownership.  Resume reduction must reject a frame without one active matching
+generation.
+
+** P2 F88.I1.3: projection fingerprints are not restart-stable
+
+Fingerprints hash raw printed Lisp values while JSON replay changes nested
+symbols such as roles into strings.  Identical logical context can therefore
+change its fingerprint and adapter-facing representation after restart.
+
+*** Owning correction
+
+Define one canonical provider-neutral persisted representation and fingerprint
+it.  Prove exact projection and fingerprint equality across persistent replay.
+
+** P2 F88.I1.4: settlement acknowledgement is store-global
+
+The acknowledgement helper ignores its session on the success path and calls
+the global session finalizer.  One frame can scan or wait on unrelated dirty
+sessions, violating prefix-proportional work and placing session side effects in
+lifetime policy.
+
+*** Owning correction
+
+Add a session/prefix-specific asynchronous durability barrier at the session
+boundary and leave harness/loop orchestration to call it.  A controlled-writer
+test with two dirty sessions must prove only the named prefix gates progress.
+
+* Cleared Slice 1 cells
+
+- Provider-neutral capability vocabulary, defaults, option-dependent query, and
+  strict unknown capability handling.
+- Opt-in default with no request-path change.
+- Forward-only frame transition helpers and bounded promotion projection.
+- Valid-record checkpoint reduction and latest-snapshot retention.
+- Legacy journal compatibility.
+
+* Unknown required cell
+
+Successful settlement acknowledgement through a real controlled persistence
+controller is unproved.  Existing tests cover disabled, in-memory, and
+missing-controller paths only.
+
+* Evidence
+
+- Exact reviewed commit:
+  =9137161d9ba8060c4d2c4be6d06f55a40861c932=.
+- Focused backend/lifetime/session tests: 121/121 passed.
+- Parent full suite: 2223 passed, 2 skipped, zero unexpected of 2225.
+- =eldev compile=, Org parsing, and =git diff --check= passed.
+- No runtime mutation or live Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Remediate F88.I1.1--F88.I1.4 with the persistent implementer, commit the Tock,
+then run the replacement persistent reviewer on the exact clean revision.
