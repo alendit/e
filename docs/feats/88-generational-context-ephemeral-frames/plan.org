@@ -293,33 +293,42 @@ bytes into the old frame or marks the old observation consumed.
 Each accepted ordinary tool call has a stable execution id and durable execution
 state separate from frame settlement.  =admitted= and =dispatch-started= are
 nonterminal states; =outcome-unknown= is a blocked, nonterminal recovery state;
-=finished=, =failed=, and =resolved= are terminal.  The resume checkpoint retains
-every =admitted=, =dispatch-started=, and =outcome-unknown= obligation together
-with the normalized call and required provider linkage.
+=finished=, =failed=, and =resolved= are outcome kinds, not independently
+terminal records.  Only a final =execution-settled= record makes an execution
+terminal.  The resume checkpoint retains every execution lacking that marker,
+the normalized call and provider linkage, and every partial result/frame record
+needed to finish or resolve it without scanning pre-checkpoint history.
 
 The loop durably acknowledges =dispatch-started= before invocation.  On
 recovery, an admitted call with no =dispatch-started= record may dispatch.  A
-=dispatch-started= call without a terminal record first appends and acknowledges
-=outcome-unknown=.  It neither redispatches nor permits provider follow-up until
-it is explicitly resolved.  Feature 88 never automatically redispatches an
-execution after =dispatch-started=.
+=dispatch-started= call with neither a durable normalized result nor
+=execution-settled= first appends and acknowledges =outcome-unknown=.  It neither
+redispatches nor permits provider follow-up until it is explicitly resolved.
+Feature 88 never automatically redispatches an execution after
+=dispatch-started=.
 
-A live =finished= or =failed= outcome, its provider-linked tool result, and the
-next =frame-opened= record form one ordered terminal prefix.  The loop must
-durably acknowledge that entire prefix before clearing the active execution or
-starting any later tool/provider follow-up.  Failed or withheld acknowledgement
-starts nothing.  A live retry resubmits the same record identities; after a
-crash, the absence of an acknowledged terminal prefix yields
-=outcome-unknown=, even when the old process observed a result.
+A live =finished= or =failed= outcome uses one ordered transaction: first persist
+the normalized provider-linked tool result, then its deterministic result
+=frame-opened= record, then append one =execution-settled= commit marker that
+names the outcome kind and references both record identities.  The loop must
+durably acknowledge that complete prefix before clearing the active execution
+or starting any later tool/provider follow-up.  Failed or withheld
+acknowledgement starts nothing.
+
+Replay derives terminality only from =execution-settled=.  If a durable result
+exists but its frame or marker is missing, recreate the missing records with the
+same identities and acknowledge the completed prefix idempotently; a known
+durable result never degrades to ambiguity.  Only =dispatch-started= without a
+durable normalized result becomes =outcome-unknown=.  A retry after failed
+acknowledgement resubmits the same record identities.
 
 Add the consumer-shaped core operation =e-harness-resolve-tool-execution=.  It
 accepts a session id, execution id, and one bounded resolution: a normalized
-finished result or normalized failed result.  It appends an
-=execution-resolved= record and the provider-linked tool result, acknowledges
-that prefix, then opens the result frame and releases the follow-up gate.
-Repeating the same resolution is a no-op; a conflicting resolution is an
-explicit error.  Presentation may expose this operation but does not own its
-policy.
+finished result or normalized failed result.  It uses the same result,
+=frame-opened=, =execution-settled= transaction and acknowledgement gate as live
+completion before releasing follow-up.  Repeating the same resolution is a
+no-op; a conflicting resolution is an explicit error.  Presentation may expose
+this operation but does not own its policy.
 
 *** Pending-transition recovery service
 
@@ -334,7 +343,7 @@ after replay and before accepting a new prompt.  It claims the descriptor in the
 active-turn registry, is idempotent on repeated calls, dispatches only calls
 proven not to have reached =dispatch-started=, exposes =outcome-unknown= as a
 blocked state, and reconstructs exactly one provider follow-up after every
-ordered terminal prefix is acknowledged.  A reconstruction mismatch fails
+ordered execution-settlement prefix is acknowledged.  A reconstruction mismatch fails
 visibly and leaves the descriptor recoverable.
 
 =e-harness-resolve-tool-execution= persists the bounded resolution, then
@@ -545,9 +554,9 @@ Add bounded events/diagnostics sufficient to explain context behavior:
 
 - generation id and checkpoint boundary;
 - frame opened, consumed, promoted, closed, failed, or recovered;
-- tool execution admitted, dispatch-started, terminal-prefix-acknowledged,
-  outcome-unknown, recovery-claimed, or explicitly resolved, keyed by bounded
-  execution id;
+- tool execution admitted, dispatch-started, execution-settled,
+  settlement-prefix-acknowledged, outcome-unknown, recovery-claimed, or
+  explicitly resolved, keyed by bounded execution id;
 - observation and promoted token/character estimates, never full content;
 - provider anchor held, advanced, rebuilt, or discarded, with reason;
 - rendering strategy: stateless, clean-anchor branch, or replaceable channel;
@@ -616,18 +625,19 @@ restart; do not add live-reload compatibility shims for them.
   dispatches each admitted tool once per live execution attempt and opens one
   next frame containing its results.
 - After restart, a durably admitted but provably undispatched call may resume.
-  A =dispatch-started= call without a terminal result becomes
+  A =dispatch-started= call without a durable normalized result becomes
   blocked =outcome-unknown= and remains checkpoint-retained.  It is not
-  automatically redispatched.  Completed results stay terminal, and no provider
-  follow-up occurs until every admitted call has an acknowledged terminal
-  prefix.
+  automatically redispatched.  A durable result with a partial frame/settlement
+  prefix is completed idempotently with the same identities.  No provider
+  follow-up occurs until every admitted call has an acknowledged
+  =execution-settled= marker.
 - =e-harness-resolve-tool-execution= appends and acknowledges exactly one linked
-  terminal result before releasing follow-up.  Repeating an identical resolution
-  is a no-op and a conflicting resolution fails explicitly.
+  result/frame/settlement transaction before releasing follow-up.  Repeating an
+  identical resolution is a no-op and a conflicting resolution fails explicitly.
 - =e-harness-resume-pending-transition= is invoked through the real
   session-resume path before a new prompt is accepted, claims recovered work at
   most once, blocks on ambiguity, and reconstructs exactly one follow-up from
-  durable records after all terminal prefixes are acknowledged.
+  durable records after all execution-settlement prefixes are acknowledged.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -694,6 +704,10 @@ tool:
   previously undispatched call;
 - crash after the controlled side effect but before durable result produces
   =outcome-unknown= and zero automatic redispatch for an ordinary tool;
+- crash after the durable result, after =frame-opened=, after
+  =execution-settled= but before acknowledgement, and after acknowledgement;
+  each strict prefix completes exactly once after restart, a known result never
+  degrades to ambiguity, and its result observation never disappears;
 - =outcome-unknown= survives checkpoint/restart and blocks provider follow-up;
 - the public resolver appends one linked terminal result, waits for durable
   acknowledgement, and only then permits follow-up;
@@ -706,7 +720,9 @@ tool:
 - completed multi-tool results remain terminal, ambiguous calls do not rerun,
   and only provably undispatched calls may start; and
 - provider follow-up waits until every admitted call has an acknowledged
-  terminal prefix and is reconstructed exactly once after restart.
+  =execution-settled= marker and is reconstructed exactly once after restart;
+- the same crash cuts through =e-harness-resolve-tool-execution= obey the same
+  transaction and acknowledgement gate.
 
 Place this coverage under =e2e/= and give it one documented command that runs
 without credentials.  The planned direct command is:
@@ -837,8 +853,9 @@ queue/outbox microtests are mechanism evidence.
   promotion, and close transitions idempotently; resume from the last committed
   state.
 - *Crash recovery duplicates an external tool side effect.* Persist execution
-  admission and dispatch-started separately, never automatically rerun an
-  ambiguous tool, retain it as =outcome-unknown=, and require an explicit durable
+  admission and dispatch-started separately; commit terminality only with a last
+  =execution-settled= marker; idempotently finish known partial results; never
+  automatically rerun an ambiguous tool; and require an explicit durable
   resolution before resuming the transition.
 - *Cache optimization leaks into semantic policy.* Keep provider capabilities
   and rendering in adapters, and prove core projection with a backend-free test.

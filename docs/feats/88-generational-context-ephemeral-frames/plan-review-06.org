@@ -73,3 +73,12 @@ Add one unambiguous settlement commit point shared by live completion and manual
 resolution, retain and recover partial prefixes, add cut-point acceptance, and
 run the same reviewer again.  Implementation cannot begin with any P0-P3
 finding.
+
+* Current disposition
+
+The candidate plan now makes =execution-settled= the sole terminal commit marker
+after the provider result and deterministic result frame, retains every partial
+prefix, and specifies idempotent completion of known results.  Live completion
+and manual resolution share the same transaction and cut-point E2E.  F88.13 is
+remediated in the candidate plan; the same reviewer must Tick its exact revision
+before implementation starts.
