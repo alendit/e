@@ -1,0 +1,66 @@
+#+title: Plan Review 08: Generational Context with Ephemeral Frames
+#+date: 2026-08-23
+#+startup: overview
+
+* Decision
+
+Implementation-ready at revision =5c040ab08569f058bc324ea45e82c3ce8176fdda=.
+
+F88.14 is closed.  The final full-plan fixed-point audit found zero P0--P3
+findings and no unknown required cells.  No Feature 88 implementation exists
+yet.
+
+* Prior finding disposition
+
+** CLOSED F88.14: one aggregate multi-tool result frame
+
+Each live or manually resolved execution durably commits its result with a sole
+=execution-settled= marker before the next tool.  Per-execution settlement opens
+no observation frame.  After all calls settle, exactly one deterministic
+=frame-opened= references every result once in admitted-call order and is
+acknowledged before provider follow-up.
+
+Checkpoints retain partial result prefixes, settled result identities, aggregate
+frame identity, and partial aggregate-frame state.  Replay uses the same
+identities, opens no frame while a call is nonterminal, and never degrades a
+known durable result to ambiguity.  The public resolver shares this transaction.
+Mandatory E2E and performance evidence cover the per-execution and aggregate
+boundaries separately.
+
+* Findings
+
+Zero P0--P3 findings.
+
+* Coverage ledger
+
+| Contract | Status | Evidence |
+|----------+--------+----------|
+| Lifetime taxonomy and active request state | cleared | Provider-neutral projection and fingerprints |
+| Frame lifecycle and promotion | cleared | Ordered settlement and bounded reserved effect |
+| Tool admission and per-execution durability | cleared | Acknowledged records before side effects/later work |
+| Partial replay and ambiguous outcomes | cleared | Stable identities, no automatic redispatch |
+| Multi-tool aggregate result frame | cleared | One deterministic ordered frame |
+| Restart recovery and public resolution | cleared | Sole harness service and real resume route |
+| Backend capability and clean-anchor fallback | cleared | Semantic query plus stateless correctness |
+| Portable/provider compaction | cleared | Portable state canonical; opaque state disposable |
+| Migration, branches, external handles | cleared | Conservative explicit compatibility |
+| Observability and performance | cleared | Bounded events and separate acknowledgement metrics |
+| Deterministic and credentialed E2E | cleared | Effective-context/cut-point proofs and gated provider claims |
+| Unknown required cells | none | Complete fixed-point coverage |
+
+* Verification
+
+- Reviewed exact revision =5c040ab08569f058bc324ea45e82c3ce8176fdda=.
+- =git diff --check 5c040ab^ 5c040ab=: passed.
+- Batch Org parsing of =plan.org= and plan reviews 01--07: passed.
+- Worktree remained clean.
+- No implementation inspection, repository edit, runtime mutation, or live
+  Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+The Feature 88 specification has reached the pre-implementation fixed point:
+zero P0--P3 findings and no unknown required cells.  It may move to =Ready= and
+enter supervised implementation.  Implementation slices require focused parent
+acceptance and a later independent implementation Tick.
