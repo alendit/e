@@ -1,0 +1,159 @@
+#+title: Plan Review 02: Generational Context with Ephemeral Frames
+#+startup: overview
+
+* Decision
+
+Not implementation-ready at revision =90b5a32=.
+
+This was an independent incremental specification Tick.  No implementation was
+reviewed.  Four prior findings close; =F88.4= remains textually inconsistent.
+Two new P1 findings and one P2 finding block implementation.  No required
+review cell remains unknown.
+
+* Prior finding dispositions
+
+** CLOSED F88.1
+
+=plan.org= now makes frame open, consumption attempt, response/promotion,
+settlement, asynchronous persistence acknowledgement, idempotent recovery, and
+resume-checkpoint retention explicit.
+
+** CLOSED F88.2
+
+Promotion is now a reserved core response effect with exact admission bounds,
+not an ordinary observation-producing tool.  Ordinary tool results open the
+next frame.
+
+** CLOSED F88.3
+
+The plan now defines a pure =e-backend-context-capabilities= query with semantic
+values, stateless fallback for missing capabilities, errors for unknown values,
+and adapter-local OpenAI wire mapping.
+
+** INCOMPLETE F88.4
+
+The goal, lifetime table, tool/resource boundary, and non-goals now keep three
+model-visible lifetimes and reuse existing resource handles.  The architecture
+self-check still calls “the four lifetimes” stable.
+
+Required correction: name the three model-visible lifetimes and the existing
+external-handle delivery mode separately.
+
+** CLOSED F88.5
+
+The credential-free E2E now requires a stateful transport that models provider
+continuation and records literal, inherited, replaceable, and effective context
+separately through a newly loaded test-owned session.
+
+* New findings
+
+** P1 F88.6: Request-time current state has no restart-stable observation representation
+
+*** Evidence
+
+Current canvas/attachment context is rebuilt from mutable live buffers or files
+at request time.  The plan says a frame stores observation entry ids, persists
+them before dispatch, and retains referenced records across checkpoints, but
+does not say how a volatile canvas snapshot obtains stable identity or what a
+retry does if its source changes or disappears.
+
+*** Owning correction
+
+Every admitted observation needs a restart-stable provider-neutral reference.
+A journal-backed observation references its exact payload entry.  A request-time
+observation records provider owner, durable source reference, source version or
+content fingerprint, render-layout revision, and rendered fingerprint; mutable
+buffer objects are not durable references.
+
+Retry rebuilds request-time state and compares fingerprints.  A match retries
+the same frame.  A mismatch or unavailable source appends =frame-aborted= and
+opens a newly captured frame; it never substitutes new bytes into the old frame
+or marks the old observation consumed.
+
+Acceptance must interrupt an open canvas frame, mutate or remove its source,
+restart, and prove explicit abort/new-frame behavior with no stale inherited
+marker.  Descriptor serialization and checkpoint-retention tests are mechanism
+evidence.
+
+** P1 F88.7: Tool side effects are not ordered after admission and settlement
+
+*** Evidence
+
+Current =e-loop= can enqueue and execute a streamed tool-call item before the
+provider response completes.  The plan validates promotion before mutation and
+makes ordinary calls durable transition records, but does not require the
+complete promotion/tool-call set to be validated and settled before dispatch.
+An invalid promotion emitted beside a tool call could therefore cause an
+irreversible side effect before the transition is admissible or durable.
+
+*** Owning correction
+
+Buffer reserved effects and ordinary tool calls until response completion.
+Validate the complete set before dispatch.  Persist and acknowledge the
+consuming response, accepted promotions, and =frame-settled= before executing
+ordinary tools.  Validation or persistence failure dispatches no tool and
+leaves the frame retryable.  Persist completed tool results with the next
+=frame-opened= before any provider follow-up.
+
+Required contract partitions:
+
+- invalid one-over promotion plus ordinary tool call dispatches zero tools;
+- withheld or failed settlement acknowledgement dispatches zero tools; and
+- successful acknowledgement dispatches each admitted tool once and opens one
+  next frame containing its results.
+
+Exact serialized record-order tests are mechanism evidence.
+
+** P2 F88.8: Durable acknowledgement cost has no metric or acceptance evidence
+
+*** Evidence
+
+The plan inserts a durability wait between response completion and observation
+exclusion, anchor advancement, provider follow-up, or tool dispatch.  Existing
+performance acceptance covers token/cache behavior only.  Asynchronous I/O
+protects redisplay but does not prove bounded transition latency or work.
+
+*** Owning correction
+
+For observation-bearing and multi-tool transitions, report settlement-prefix
+record count and bytes, acknowledgement wait, and time from provider completion
+to the next admitted tool/provider dispatch.  Work must be proportional to the
+settling prefix, never scan the full journal, and perform no synchronous
+filesystem I/O on the Emacs main thread.
+
+A controlled-writer acknowledgement gate is contract evidence; queue/outbox
+microtests are mechanism evidence.
+
+* Coverage ledger
+
+| Contract cell | Status | Evidence or next question |
+|---------------+--------+---------------------------|
+| Lifetime taxonomy | candidate | F88.4 |
+| Frame representation and lifetime | candidate | F88.6 |
+| Settlement, failure, retry, recovery | candidate | F88.6/F88.7 |
+| Promotion | cleared | Reserved response effect with exact limits |
+| Ordinary tool composition | candidate | F88.7 |
+| Backend capability query | cleared | Semantic query and adapter mapping |
+| Clean anchor/stateless fallback | cleared | Existing local-authority rule preserved |
+| Portable/provider compaction | cleared | Portable state remains canonical |
+| Resume checkpoint | candidate | Through F88.6 |
+| Migration and branches | cleared | Compatibility/provenance explicit |
+| Deterministic E2E | cleared | Stateful effective-context emulator specified |
+| Credentialed provider claims | cleared | Profile-gated |
+| Metrics and performance | candidate | F88.8 |
+| Presentation | not-applicable | No required visible UI yet |
+| Unknown required cells | none | Re-review after findings close |
+
+* Verification
+
+- Reviewed exact revision =90b5a32=.
+- =git diff --check 90b5a32^ 90b5a32=: passed.
+- Batch Org parsing of =plan.org= and =plan-review-01.org=: passed.
+- No runtime or live-Emacs gate applied to this specification-only Tick.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Correct =F88.4= and =F88.6-F88.8=, then run a fresh independent specification
+Tick.  The remaining blockers are localized to observation representation,
+transactional side-effect ordering, and the cost metric for persistence wait.
