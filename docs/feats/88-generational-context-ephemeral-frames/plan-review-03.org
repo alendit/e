@@ -9,6 +9,12 @@ This independent incremental specification Tick closed =F88.4= and
 =F88.6-F88.8=.  Dependencies supporting =F88.1-F88.3= and =F88.5= remain valid.
 Two new P1 findings block implementation; no required review cell is unknown.
 
+* Current disposition
+
+=F88.9= and =F88.10= were applied to =plan.org= in the subsequent specification
+Tock.  This historical review remains the negative witness; a fresh independent
+Tick must establish implementation readiness.
+
 * Prior finding dispositions
 
 ** CLOSED F88.1: durable frame settlement and recovery

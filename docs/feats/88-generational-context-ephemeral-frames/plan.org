@@ -76,6 +76,23 @@ provider's prompt-cache =cache_control= vocabulary.
 | =EPHEMERAL= | Observation available to one reasoning transition and then absent unless promoted | tool output, trace, canvas snapshot, large source excerpt |
 | =EXTERNAL HANDLE= | Existing resource/reference delivery mode, not a frame lifetime; resolving a handle creates a bounded ephemeral observation | full traces, source indexes, runtime objects |
 
+The three lifetimes classify session-derived causal context.  They do not
+replace the accepted request-time =static-prefix= and =stable-context=
+segments.  The complete semantic request is:
+
+#+begin_example
+active static-prefix + active stable-context
++ generation checkpoint + durable tail + open observation frame
+#+end_example
+
+=e-capabilities= continues to rebuild =static-prefix= and =stable-context= from
+the active capability set for each request.  They are not copied into generation
+records or promotions.  Their fingerprints participate in anchor compatibility:
+a changed capability instruction or stable provider segment appears on the next
+request and invalidates or rebuilds an incompatible anchor without requiring
+compaction or mutating the generation checkpoint.  Current-state segments move
+to the ephemeral observation frontier.
+
 =e-session= remains the canonical audit history.  A consumed ephemeral record
 may remain in the journal for replay, diagnosis, or export while being absent
 from future model context.  Storage durability and model-context durability
@@ -271,6 +288,24 @@ bytes into the old frame or marks the old observation consumed.
   unsettled frame, its referenced observations, and the settlement records
   needed to make that derivation without scanning pre-checkpoint history.
 
+** Tool execution state and recovery
+
+Each accepted ordinary tool call has a stable execution id and durable execution
+state separate from frame settlement.  Session records distinguish =admitted=,
+=dispatch-started=, and terminal =finished=, =failed=, or =outcome-unknown=
+states, and the resume checkpoint retains every nonterminal execution
+obligation.  The loop acknowledges =dispatch-started= before invoking a tool and
+durably acknowledges each terminal result before starting the next tool or
+provider follow-up.
+
+A crash after admission but before dispatch may resume the undispatched call.  A
+=dispatch-started= call with no terminal result has an ambiguous external
+outcome and is not automatically invoked again unless that tool explicitly
+declares a stable idempotency key or resumable execution contract.  Otherwise
+recovery surfaces =outcome-unknown= and requires explicit resolution.  This
+protocol promises one live dispatch per execution attempt, not impossible
+exactly-once external side effects across arbitrary crashes.
+
 * Generational compaction
 
 Eventually the durable tail contains superseded or retracted facts:
@@ -400,9 +435,9 @@ It does not own frame lifetime, promotion policy, or provider fallback.
   cohesive enough to stand alone; otherwise keep its pure projection helpers in
   =lisp/core/e-context.el= until that boundary is proven.
 - Modify =lisp/core/e-backend.el=, =e-context.el=, =e-session.el=,
-  =e-harness.el=, =e-loop.el=, and =e-compaction.el= for the semantic capability
-  query, projection, persistence, transaction orchestration, and generation
-  boundaries.
+  =e-harness.el=, =e-loop.el=, =e-tools.el=, and =e-compaction.el= for the
+  semantic capability query, projection, persistence, transaction orchestration,
+  optional tool idempotency/resume declaration, and generation boundaries.
 - Modify =lisp/adapters/openai/e-openai.el= for replaceable instructions,
   capability declaration, clean-anchor decisions, and optional opaque
   compaction.
@@ -469,6 +504,8 @@ Add bounded events/diagnostics sufficient to explain context behavior:
 
 - generation id and checkpoint boundary;
 - frame opened, consumed, promoted, closed, failed, or recovered;
+- tool execution admitted, dispatch-started, terminal, outcome-unknown, retried,
+  or explicitly resolved, keyed by bounded execution id;
 - observation and promoted token/character estimates, never full content;
 - provider anchor held, advanced, rebuilt, or discarded, with reason;
 - rendering strategy: stateless, clean-anchor branch, or replaceable channel;
@@ -491,10 +528,11 @@ provider state and why the chosen anchor is safe.
    projection for profiles that prove it, and the clean-anchor/stateless path
    for profiles that do not.  Replace the existing E2E assertion that appends
    changed dynamic developer input to a chain containing the old snapshot.
-3. *Ephemeral tool frames and promotion.* Make new raw tool results ephemeral by
-   default, add the reserved core promotion effect, transactional ordered frame
-   settlement/recovery, and deterministic multi-tool tests.  Preserve old
-   sessions conservatively.
+3. *Ephemeral tool frames, promotion, and tool recovery.* Make new raw tool
+   results ephemeral by default, add the reserved core promotion effect,
+   transactional ordered frame settlement, durable tool execution states and
+   recovery, and deterministic multi-tool tests.  Preserve old sessions
+   conservatively.
 4. *Generational portable compaction.* Extend existing compaction records and
    context reconstruction with generation identity; summarize only checkpoint
    plus durable tail; update auto-compaction to cross one explicit generation
@@ -517,7 +555,10 @@ restart; do not add live-reload compatibility shims for them.
 
 ** Core behavior
 
-- Context reconstruction is exactly =checkpoint + durable tail + open frame=.
+- Session-history reconstruction is exactly
+  =checkpoint + durable tail + open frame=.  A complete request prepends the
+  active request-time =static-prefix= and =stable-context= segments without
+  copying them into the generation.
 - A unique sentinel present only in a consumed observation is absent from the
   next model request; a promoted fact derived from it is present.
 - The audit journal still contains the observation, its source/frame identity,
@@ -530,8 +571,14 @@ restart; do not add live-reload compatibility shims for them.
 - An invalid one-over promotion emitted beside an ordinary tool call dispatches
   zero tools and leaves the frame retryable.  Withheld or failed settlement
   acknowledgement also dispatches zero tools; successful acknowledgement
-  dispatches each admitted tool exactly once and opens one next frame containing
-  its results.
+  dispatches each admitted tool once per live execution attempt and opens one
+  next frame containing its results.
+- After restart, a durably admitted but provably undispatched call may resume.
+  A =dispatch-started= call without a terminal result becomes
+  =outcome-unknown= and is not automatically redispatched unless the tool has a
+  stable idempotency/resume contract.  Completed results stay terminal, and no
+  provider follow-up occurs until every admitted call is terminal or explicitly
+  resolved.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -563,6 +610,12 @@ context.  The restart step creates a new harness and store from the persisted
 test-owned session.  Do not mock the context projector, frame state machine, or
 session replay.
 
+A companion credential-free contract scenario changes one static instruction
+and one =stable-context= provider value mid-generation.  It proves the new
+values replace the old values on the next effective request, an incompatible
+anchor is not reused, and generation/checkpoint identity remains unchanged.
+Fingerprint helper and exact segment-layout tests are mechanism evidence.
+
 Before this feature can move to =Done=, that E2E runs this scenario:
 
 1. Start a session with stable prefix =C=, durable fact =D1=, and canvas marker
@@ -584,6 +637,19 @@ Before this feature can move to =Done=, that E2E runs this scenario:
 7. Force a compaction boundary, restart the test-owned session, and prove the
    new generation resumes from its portable checkpoint without either old
    marker.
+
+The same E2E file includes a restart scenario with a controlled side-effecting
+tool:
+
+- crash after settlement acknowledgement but before dispatch resumes one
+  previously undispatched call;
+- crash after the controlled side effect but before durable result produces
+  =outcome-unknown= and zero automatic redispatch for an ordinary tool;
+- an idempotent retry reuses the same execution/idempotency key;
+- completed multi-tool results remain terminal, ambiguous calls do not rerun,
+  and only provably undispatched calls may start; and
+- provider follow-up waits until every admitted call is terminal or explicitly
+  resolved.
 
 Place this coverage under =e2e/= and give it one documented command that runs
 without credentials.  The planned direct command is:
@@ -658,6 +724,8 @@ contract evidence; queue/outbox microtests are mechanism evidence.
 
 - Existing journals load without rewriting.  Messages lacking lifetime
   metadata remain durable, preserving pre-feature behavior.
+- Legacy tool calls without execution records keep the existing replay behavior;
+  they are not retroactively classified as safely undispatched or retried.
 - New lifetime behavior starts at a recorded generation boundary or explicit
   session migration point; do not reinterpret old tool results silently.
 - Existing provider anchors without the new layout/generation revision are
@@ -688,6 +756,9 @@ contract evidence; queue/outbox microtests are mechanism evidence.
 - Do not add a second external-resource registry or persist external payloads in
   generation/frame state.  This feature only classifies the bounded observation
   produced when an existing handle is resolved.
+- Do not promise exactly-once external side effects for arbitrary tools.  Only a
+  tool-owned stable idempotency or resume contract permits automatic retry after
+  =dispatch-started= without a terminal result.
 
 * Risks and explicit mitigations
 
@@ -707,6 +778,10 @@ contract evidence; queue/outbox microtests are mechanism evidence.
 - *Crash recovery duplicates or forgets a frame.* Journal frame open, consume,
   promotion, and close transitions idempotently; resume from the last committed
   state.
+- *Crash recovery duplicates an external tool side effect.* Persist execution
+  admission and dispatch-started separately, never automatically rerun an
+  ambiguous ordinary tool, and reuse a stable key only when the tool owns a real
+  idempotency/resume contract.
 - *Cache optimization leaks into semantic policy.* Keep provider capabilities
   and rendering in adapters, and prove core projection with a backend-free test.
 - *Journal size still grows.* This feature bounds model context, not audit
