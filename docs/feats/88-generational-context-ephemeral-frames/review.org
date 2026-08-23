@@ -113,3 +113,43 @@ persistence shapes.
 F88.I1.1--F88.I1.4 and the previously unknown successful-controller cell are
 candidate-closed.  The replacement persistent reviewer must Tick the exact clean
 Tock commit before Slice 2 begins.
+
+* Tick 02 findings
+
+Reviewed exact commit =380919965efd407d8ee93912875f9278e2a803a9=.
+
+- F88.I1.1: closed.
+- F88.I1.2: closed.
+- F88.I1.3: closed.
+- F88.I1.4: session isolation is closed; durability inference remains incomplete
+  through F88.I1.5.
+
+** P1 F88.I1.5: absence of an outbox mapping can be mistaken for acknowledgement
+
+A context append mutates and indexes the live session before writer-command
+preflight.  If preflight rejects the command, the entry remains known but has no
+outbox mapping.  The barrier currently treats no mapping and no cached failure
+as already durable.  Failure-cache eviction creates the same ambiguity.
+
+*** Owning correction
+
+Track authoritative per-entry durability at the session/persistence boundary,
+or make submission transactional.  The barrier succeeds only for explicit
+acknowledgement, remains pending for an active command, and fails for preflight
+or terminal failure.  Absence of a mapping is never positive durability
+evidence, and bounded cache eviction must not turn failure into success.
+
+*** Evidence
+
+- The reviewer reproduced a preflight command-budget rejection followed by a
+  false successful barrier for the rejected entry.
+- Focused lifetime/persistence tests remained 47/47 green, demonstrating the
+  missing partition rather than contradicting the finding.
+- Worktree remained clean; no approval, edit, runtime mutation, or live Emacs
+  interaction occurred.
+
+* Tick 02 fixed-point disposition
+
+Remediate F88.I1.5 with authoritative per-entry durability and explicit
+preflight/active/acknowledged/terminal-failed tests, then run the same replacement
+reviewer again.  Slice 2 remains gated.
