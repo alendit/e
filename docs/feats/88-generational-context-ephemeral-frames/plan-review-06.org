@@ -1,0 +1,75 @@
+#+title: Plan Review 06: Generational Context with Ephemeral Frames
+#+date: 2026-08-23
+#+startup: overview
+
+* Decision
+
+Needs remediation at revision =bd0751887cb5a484b65d6f5c1033b75f5ddddd2d=.
+
+F88.11 and F88.12 are closed.  One P1 crash-consistency finding remains in the
+terminal-result transaction; no other required cell is unknown and no Feature
+88 implementation exists yet.
+
+* Prior disposition
+
+** CLOSED F88.11
+
+The plan now assigns durable pending-transition reconstruction to one
+harness-owned service and exercises it through the real session-resume route.
+
+** CLOSED F88.12
+
+The generic idempotency-key hook and every automatic retry after
+=dispatch-started= have been removed from Feature 88.
+
+** INCOMPLETE F88.10
+
+The plan gates later dispatch on acknowledgement of an ordered result prefix,
+but it does not define how replay distinguishes a complete prefix from a
+partially persisted one.
+
+* Finding
+
+** P1 F88.13: tool terminality can precede completion of its durable transaction
+
+=finished=, =failed=, and =resolved= are called terminal before the linked
+provider result and result frame are durably complete.  Checkpoint retention
+names only nonterminal executions.  Manual resolution also appends its execution
+record and provider result before opening the frame outside that acknowledged
+prefix.  A crash at any cut can therefore leave a terminal execution without
+its linked result/frame, or omit an observation the next transition requires.
+
+*** Owning correction
+
+Persist the provider-linked result and result frame first, then append one
+=execution-settled= commit marker last, referencing the complete identities.
+Only that last marker makes an execution terminal and releases later work.
+Checkpoint retention and replay must keep partial terminal transactions.
+Replay idempotently completes the marker when every referenced record exists;
+otherwise it records =outcome-unknown=.  Live completion and the public resolver
+use the same transaction.  Acceptance crashes after every record boundary and
+proves no incomplete transaction becomes terminal or loses its observation.
+
+* Coverage ledger
+
+| Contract | Status | Evidence or next question |
+|----------+--------+---------------------------|
+| F88.11 recovery owner | cleared | Durable descriptor plus sole resume service |
+| F88.12 ambiguous retry | cleared | Explicit resolution only |
+| F88.13 terminal commit point | candidate | Add last-record settlement marker |
+| Partial-prefix checkpoint retention | candidate | Retain until marker |
+| Cut-point recovery E2E | candidate | Crash after every record boundary |
+| Unknown required cells | none | One finding remains |
+
+* Verification
+
+- Reviewed exact revision =bd0751887cb5a484b65d6f5c1033b75f5ddddd2d=.
+- No implementation, runtime mutation, or live Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Add one unambiguous settlement commit point shared by live completion and manual
+resolution, retain and recover partial prefixes, add cut-point acceptance, and
+run the same reviewer again.  Implementation cannot begin with any P0-P3
+finding.
