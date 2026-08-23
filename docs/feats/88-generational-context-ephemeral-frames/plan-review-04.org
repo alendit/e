@@ -1,0 +1,113 @@
+#+title: Plan Review 04: Generational Context with Ephemeral Frames
+#+date: 2026-08-23
+#+startup: overview
+
+* Decision
+
+Needs remediation at revision =838136198936ee62215c4808cab0e04ec66d7f0a=.
+
+=F88.9= is closed.  =F88.10= remains P1 incomplete: ambiguous tool executions
+are classified as terminal while also requiring explicit resolution, so the
+checkpoint, follow-up gate, and public recovery contract disagree.  There is
+one P1 finding and no unknown required cells.  No implementation exists yet.
+
+* Prior finding dispositions
+
+** CARRIED CLOSED F88.1-F88.8
+
+Their owning text and dependencies remain valid: frame settlement is
+acknowledged and recoverable; promotion is reserved and bounded; capabilities
+are semantic; external handles retain existing owners; inherited context is
+observable; current-state observations have restart-stable identity; settlement
+precedes tool side effects; and acknowledgement has bounded-work metrics.
+
+** CLOSED F88.9: static and stable request context
+
+The three lifetimes now scope session-derived causal context.  The complete
+semantic request prepends active =static-prefix= and =stable-context=, rebuilt
+on every request.  Their fingerprints invalidate incompatible anchors without
+mutating a generation.  Contract evidence changes both mid-generation.
+
+** INCOMPLETE F88.10: restart-safe tool outcome
+
+The admission/dispatch-started boundary and no-automatic-redispatch direction
+are sound, but the recovery state machine is not.
+
+* Finding
+
+** P1 F88.10: ambiguous execution can disappear or unblock follow-up without resolution
+
+The plan calls =outcome-unknown= terminal, retains only nonterminal obligations
+in resume checkpoints, and separately requires explicit resolution.  Acceptance
+allows follow-up when every call is “terminal or explicitly resolved,” so an
+ambiguous call can satisfy the first branch, disappear, and unblock the model.
+
+No append-only resolution record or public resolver is specified.  The optional
+idempotency/resume declaration also lacks a registration surface, key admission
+point, persisted representation, and recovered invocation propagation.  Current
+=e-tools-register= has no such contract.
+
+*** Owning correction
+
+=admitted= and =dispatch-started= are nonterminal; =outcome-unknown= is blocked
+and nonterminal; =finished=, =failed=, and =resolved= are terminal.  Checkpoints
+retain every nonterminal obligation with normalized call, provider linkage, and
+persisted idempotency key.
+
+Recovery turns =dispatch-started= without a terminal record into acknowledged
+=outcome-unknown=.  It neither redispatches nor permits provider follow-up until
+an allowed persisted-idempotency retry or explicit resolution.
+
+Add consumer-shaped =e-harness-resolve-tool-execution=.  It accepts session id,
+execution id, and a bounded normalized finished/failed result; appends one
+=execution-resolved= record and provider-linked tool result; acknowledges that
+prefix; opens the result frame; and then releases follow-up.  Identical repeated
+resolution is a no-op; conflicting resolution errors.
+
+For the initial feature add one optional =:idempotency-key-function= to
+=e-tools-register=.  It receives normalized arguments and stable execution id
+before admission.  Persist a nonempty returned key and pass that exact key in
+execution context on every attempt.  Only a persisted key permits automatic
+retry after =dispatch-started=.  Defer a broader resume interface.
+
+Required E2E assertions:
+
+- =outcome-unknown= survives checkpoint/restart;
+- no redispatch or provider follow-up occurs before resolution;
+- the public resolver appends and acknowledges one linked terminal result before
+  follow-up;
+- identical resolution is idempotent and conflicting resolution fails; and
+- the idempotency-key function runs before admission and its persisted key is
+  reused on recovered retry.
+
+Exact record/key encoding is mechanism evidence; the public resolver and
+restart scenario are contract evidence.
+
+* Coverage ledger
+
+| Contract | Status | Evidence or next question |
+|----------+--------+---------------------------|
+| Static/stable request context | cleared | F88.9 closure |
+| Generation/checkpoint projection | cleared | Portable immutable baseline |
+| Durable tail/promotion | cleared | Bounded reserved effect |
+| Observation lifecycle/current-state identity | cleared | Settlement, drift abort, retry |
+| Settlement acknowledgement | cleared | Ordered prefix and metrics |
+| Tool admission before side effects | cleared | Validation and acknowledgement |
+| Tool crash/restart outcome | candidate | F88.10 |
+| Checkpoint obligation retention | candidate | =outcome-unknown= contradiction |
+| Public resolution surface | candidate | F88.10 |
+| Backend/anchor/compaction/migration | cleared | Provider-neutral contracts |
+| Unknown required cells | none | One concrete candidate remains |
+
+* Verification
+
+- =git diff --check 8381361^ 8381361=: passed.
+- Batch Org parsing of the plan and reviews 01--03: passed.
+- No implementation, runtime mutation, or live Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Correct =F88.10= and run another fresh independent Tick.  Implementation cannot
+start until ambiguous execution is nonterminal, checkpoint-retained, and
+released only through acknowledged resolution or persisted idempotent retry.
