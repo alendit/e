@@ -1,0 +1,654 @@
+#+title: Generational Context with Ephemeral Frames
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Make model context a provider-neutral state projection with explicit lifetimes:
+an immutable checkpoint for one generation, an append-only durable tail,
+one-transition ephemeral observation frames, and external data retrieved only
+when needed.
+
+The result should preserve hot reusable prefixes on ordinary turns, prevent
+canvas snapshots and bulky tool observations from becoming permanent causal
+history, and pay the cold-cache cost only at deliberate generation boundaries.
+
+* Problem
+
+The current context model distinguishes stable and dynamic placement, but not
+durable and ephemeral lifetime.
+
+Today a request is approximately:
+
+#+begin_example
+[static][stable][current canvas][durable transcript]
+#+end_example
+
+That ordering gives a provider a cache-friendly stable prefix.  It does not
+make =current canvas= replaceable in the provider's retained causal state.  If
+an adapter advances =previous_response_id= after a request containing canvas
+snapshot =E1=, a later request containing =E2= is effectively:
+
+#+begin_example
+A -> B -> E1 -> response-1 -> | provider anchor |
+                                  \
+                                   E2 -> response-2
+#+end_example
+
+The instruction that =E2= supersedes =E1= helps model behavior, but does not
+remove =E1= from the transformer's inherited context.  Tool results have the
+same problem more directly: their complete bodies are journaled as transcript
+messages and remain in later model projections until compaction.
+
+Existing compaction is useful but solves a different problem.  It occasionally
+replaces an old transcript prefix with a readable continuation summary.  It
+does not prevent high-volume observations from entering that prefix in the
+first place, and running it every turn would sacrifice cache reuse and add a
+summary call to the hot path.
+
+The missing protocol is therefore:
+
+#+begin_example
+observe -> consume -> promote selected information -> forget observation
+#+end_example
+
+rather than:
+
+#+begin_example
+observe -> append forever
+#+end_example
+
+* Context lifetime model
+
+The names describe logical model-context lifetime.  They do not describe how
+long an audit record remains on disk, and =ephemeral= here is unrelated to a
+provider's prompt-cache =cache_control= vocabulary.
+
+| Lifetime | Meaning | Examples |
+|----------+---------+----------|
+| =CHECKPOINT= | Immutable semantic baseline for one generation | compacted continuation, current goal, established decisions |
+| =DURABLE= | Append-only delta reused by later invocations in the same generation | user intent, assistant decisions, promoted facts |
+| =EPHEMERAL= | Observation available to one reasoning transition and then absent unless promoted | tool output, trace, canvas snapshot, large source excerpt |
+| =EXTERNAL= | Addressable data omitted from context until retrieved | full traces, source indexes, runtime objects, previous experiments |
+
+=e-session= remains the canonical audit history.  A consumed ephemeral record
+may remain in the journal for replay, diagnosis, or export while being absent
+from future model context.  Storage durability and model-context durability
+must not be represented by one overloaded flag.
+
+Within generation =G17=, logical state is:
+
+#+begin_example
+G17
+  checkpoint: C17
+  durable tail: D81 D82 D83
+  open frame: E20                 ; at most the observations for one transition
+  external: trace:t19 value:v72 test-run:r14
+#+end_example
+
+Normal evolution is monotonic:
+
+#+begin_example
+request 1: [C17][D81]
+request 2: [C17][D81][D82]
+request 3: [C17][D81][D82][D83]
+#+end_example
+
+An observation is attached only at the frontier:
+
+#+begin_example
+[C17][D81 D82 D83][E20]
+                       |
+                       v
+                 promote Delta84
+
+[C17][D81 D82 D83][Delta84]
+#+end_example
+
+=E20= is not part of the second request.  If no selected information is
+promoted, forgetting it is intentional.
+
+* Required invariants
+
+1. Local session and resource state remain authoritative.  Provider state is a
+   disposable acceleration and can always be rebuilt from the local semantic
+   projection.
+2. A generation's checkpoint never changes.  Durable state in that generation
+   is append-only.
+3. An ephemeral frame is visible only while open and to the single reasoning
+   transition that consumes it.  Closing the frame removes its observations
+   from ordinary future projections.
+4. Promotion is explicit and small.  A promotion records facts or decisions,
+   not an unreviewed copy of the observation.
+5. The audit journal may retain the original observation, frame lifecycle, and
+   promotion provenance without making those records model-visible forever.
+6. A provider anchor is reusable only when its inherited provider state is
+   semantically clean: it contains checkpoint and durable material, but no
+   observation that the next request is supposed to forget.
+7. Missing provider capabilities reduce optimization, not correctness.  The
+   universal fallback is stateless reconstruction from local state.
+8. Compaction creates a new generation and is deliberately rare.  It is not
+   the mechanism for closing ordinary observation frames.
+
+* Anchor rule
+
+** Provider without a replaceable context channel
+
+Let =H= be the latest clean provider anchor:
+
+#+begin_example
+C -> D1 -> D2 -> H -> | we are here |
+                       \
+                        E1 -> R1
+#+end_example
+
+The observation-bearing response =R1= must not replace =H= as the clean anchor.
+The harness consumes =E1=, persists selected durable delta =Delta3= locally,
+and builds the next invocation from =H=:
+
+#+begin_example
+C -> D1 -> D2 -> H -> | clean anchor stays here |
+                       \
+                        Delta3 -> E2 -> R2
+#+end_example
+
+=E1= is absent.  If the provider cannot branch from =H=, the adapter sends a
+stateless replay instead:
+
+#+begin_example
+[C][D1 D2 Delta3][E2]
+#+end_example
+
+This is what “the anchor must not advance across the observation-bearing
+invocation” means.  Advancing would make =E1= an inherited ancestor that the
+harness can no longer remove.
+
+** Provider with a proven replaceable context channel
+
+A provider may advertise a channel whose prior value is not inherited by
+continuation.  Then observation delivery does not contaminate the anchor:
+
+#+begin_example
+H -- replaceable=E1 --> R1 -> | safe new anchor |
+R1 -- replaceable=E2 --> R2
+#+end_example
+
+This exception is capability-driven and covered by an adapter conformance
+test.  Merely appending a newer system/developer message does not qualify as
+replacement.
+
+For OpenAI Responses, the public API documents that top-level =instructions=
+from the prior response are not carried forward with =previous_response_id=.
+An eligible OpenAI adapter can therefore render current canvas state in the
+request-local =instructions= channel while keeping stable developer input and
+durable history in the reusable response chain.  Profiles that do not prove
+this wire behavior use the clean-anchor or stateless path.
+
+* Promotion contract
+
+The core protocol needs a provider-neutral durable delta, not a provider-owned
+summary format.
+
+- User messages and normal assistant messages keep their existing durable
+  semantics.
+- Raw tool results, traces, large retrieved excerpts, and replace-current-state
+  snapshots are ephemeral by default for new records.
+- Tool intent and arguments remain in the audit journal.  Their future context
+  projection is governed by frame state rather than by the fact that they were
+  journaled.
+- A small core =context-promote= operation accepts facts/decisions plus source
+  frame ids.  It appends durable promotion records and returns only a bounded
+  acknowledgement.
+- The model-facing form must be backend-neutral.  It may be exposed as a narrow
+  built-in tool or through an equivalent normalized response item, but provider
+  adapters must not implement promotion policy.
+- Assistant output or a subsequent tool call may itself carry the required
+  durable transition.  If future work needs details that are present only in
+  the observation, the model must explicitly promote them before the frame is
+  closed.
+- A frame closes only after its consuming response and any promotion records
+  are durably committed.  Cancellation or process failure leaves a recoverable
+  open/failed frame; it must not silently mark an unconsumed result forgotten.
+
+The initial implementation should keep the protocol strict and observable.
+Do not add an automatic per-observation summarizer as a fallback: that would
+restore cost and latency on the hot path and blur whether a fact was selected.
+
+* Generational compaction
+
+Eventually the durable tail contains superseded or retracted facts:
+
+#+begin_example
+C0 + D0
+   |
+   | deliberate compact boundary
+   v
+C1
+
+C1 + D1 + D2 + ...
+#+end_example
+
+The existing readable compaction summary becomes the portable checkpoint for
+the next generation.  Compaction input contains the old checkpoint and durable
+tail, not consumed ephemeral frames.  Promoted facts are included because they
+are durable.
+
+The compaction record should identify:
+
+- prior and new generation ids;
+- the covered durable boundary;
+- the readable portable checkpoint;
+- the first retained durable entry;
+- source and resulting token estimates;
+- provider projections associated with the same boundary;
+- fingerprints needed to reject stale provider state.
+
+The original journal remains append-only audit history.  A generation switch
+changes the model projection and resume checkpoint; it does not rewrite or
+delete the journal.
+
+* Provider capability contract
+
+Core policy must reason in semantic terms and ask the adapter to render a
+logical transition.  It must not branch directly on
+=previous_response_id=, OpenAI item types, Anthropic cache controls, or another
+provider's field names.
+
+Backend profiles should expose a small data contract such as:
+
+#+begin_src elisp
+(:continuation linear-or-branchable
+ :replaceable-context instructions
+ :prefix-cache explicit
+ :provider-compaction opaque
+ :reasoning-state replayable)
+#+end_src
+
+Each field is independently optional:
+
+| Capability | Values | Core consequence |
+|------------+--------+------------------|
+| =continuation= | =none=, =linear=, =branchable= | whether a clean provider anchor can replace stateless replay |
+| =replaceable-context= | =none=, =instructions=, =mutable-items= | whether an observation may cross an advancing anchor safely |
+| =prefix-cache= | =none=, =implicit=, =explicit= | how a stable prefix is accelerated; never changes lifetime semantics |
+| =provider-compaction= | =none=, =opaque= | whether an optional provider checkpoint projection can be produced |
+| =reasoning-state= | =none=, =replayable=, =provider-managed= | what assistant/reasoning state must be retained or replayed |
+
+Avoid a shared interface whose implementations throw “unsupported operation.”
+Capabilities select among complete rendering strategies; absence chooses the
+portable path.
+
+* Ownership and dependency direction
+
+** =e-context= / new context-lifetime policy module
+
+- Own the logical =CHECKPOINT + DURABLE + EPHEMERAL= projection.
+- Open, consume, close, and project frames with pure helpers where possible.
+- Exclude consumed observations without deleting audit records.
+- Produce provider-neutral fingerprints and generation identity.
+
+If the lifecycle is large enough to deserve a module, use a core name such as
+=e-context-lifetime.el=.  Do not put provider request fields in it.
+
+** =e-session=
+
+- Persist generation, frame lifecycle, promotion, and provider-anchor records.
+- Keep the journal authoritative and append-only.
+- Restore the active generation and any recoverable open frame through the
+  Feature 78 resume-checkpoint manifest.
+- Treat pre-feature session messages conservatively as durable unless an
+  explicit migrated lifetime record proves otherwise.
+
+** =e-harness= / =e-loop=
+
+- Orchestrate one transactional observation transition.
+- Commit consumer output and promotions before closing its frame.
+- Ask the adapter for a rendering strategy from semantic context plus declared
+  capabilities.
+- Advance, retain, or discard provider anchors according to the returned anchor
+  safety decision.
+- Emit bounded lifecycle and cache diagnostics without observation bodies.
+
+** Tool and resource boundaries
+
+- Tool execution produces an ephemeral observation record by default.
+- External resources return stable handles when full content need not enter the
+  next invocation.
+- Tools with a real durable-result contract may opt in explicitly; “all tool
+  results are durable” is not a compatibility fallback.
+
+** Backend adapters
+
+- Map semantic segments and frames to provider wire shapes.
+- Advertise only capabilities proven for that profile and transport.
+- Own provider ids, opaque items, cache controls, retries, and rejection
+  fallback.
+- Return normalized diagnostics and anchor candidates; do not decide which
+  facts become durable.
+
+** Presentation
+
+Presentation may show generation/frame status and manual compaction progress.
+It does not own frame lifetime, promotion policy, or provider fallback.
+
+* Expected file surface
+
+- Add =lisp/core/e-context-lifetime.el= if the frame/generation state machine is
+  cohesive enough to stand alone; otherwise keep its pure projection helpers in
+  =lisp/core/e-context.el= until that boundary is proven.
+- Modify =lisp/core/e-context.el=, =e-session.el=, =e-harness.el=, =e-loop.el=,
+  and =e-compaction.el= for projection, persistence, transaction orchestration,
+  and generation boundaries.
+- Modify =lisp/adapters/openai/e-openai.el= for replaceable instructions,
+  capability declaration, clean-anchor decisions, and optional opaque
+  compaction.
+- Add focused tests beside the owning modules, extend
+  =test/e-provider-continuation-integration-test.el=, add
+  =e2e/e-context-lifetime-e2e-test.el=, and extend the profile-gated cases in
+  =e2e/e-live-e2e-test.el=.
+- Update =docs/references/runtime_concepts.org=, =docs/core.md=, and
+  =e2e/README.org= once the implemented names and commands are final.
+
+* OpenAI projection
+
+For eligible Responses profiles:
+
+- Keep stable instructions/policy in stable developer input before the cache
+  breakpoint.
+- Render current-state canvas and similar replaceable observations into
+  top-level request-local =instructions= and resend the complete current value
+  on every request.
+- Continue durable history with =previous_response_id= only when the selected
+  anchor is clean and all stable/generation fingerprints match.
+- Preserve stateless encrypted reasoning replay for =store=false= and fallback
+  paths.
+- Keep =prompt_cache_key= and explicit breakpoint behavior independent of
+  logical lifetime.
+
+The adapter must not assume every OpenAI-shaped endpoint behaves like the
+public API.  ChatGPT subscription profiles, gateways, HTTP, and WebSocket
+transports advertise and prove their own capabilities.
+
+OpenAI =POST /responses/compact= is an optional accelerator at a generation
+boundary, not the canonical compaction implementation.  From the same durable
+boundary, produce two projections:
+
+#+begin_example
+portable:  S1 = readable e checkpoint
+provider:  K1 = opaque OpenAI compaction output
+#+end_example
+
+=S1= is stored in the normal compaction/generation record and is sufficient for
+every backend.  =K1= is stored as disposable provider state keyed by provider,
+model, boundary, prompt-layout revision, and fingerprints.  The adapter passes
+it back unchanged, never parses it, and discards it on rejection or mismatch.
+
+Consumed canvas snapshots, tool output, and diagnostics must not enter the
+input used to create =K1=.  Otherwise provider compaction would preserve exactly
+the obsolete material this feature is intended to forget.
+
+Use the endpoint only when the selected profile explicitly advertises support.
+If a ChatGPT subscription endpoint or gateway has not been proven to implement
+it, keep using =S1= and do not probe speculatively during an ordinary turn.
+
+Implementation should recheck these official API contracts rather than treating
+this plan as a frozen provider specification:
+
+- [[https://developers.openai.com/api/reference/resources/responses/methods/create][Create a model response]] for =instructions= and
+  =previous_response_id= semantics;
+- [[https://developers.openai.com/api/reference/resources/responses/methods/compact][Compact a response]] for the opaque provider projection;
+- [[https://developers.openai.com/api/docs/guides/context-management][Context management]] for the supported stateless continuation shape.
+
+* Observability
+
+Add bounded events/diagnostics sufficient to explain context behavior:
+
+- generation id and checkpoint boundary;
+- frame opened, consumed, promoted, closed, failed, or recovered;
+- observation and promoted token/character estimates, never full content;
+- provider anchor held, advanced, rebuilt, or discarded, with reason;
+- rendering strategy: stateless, clean-anchor branch, or replaceable channel;
+- portable and provider compaction success/fallback;
+- cached, uncached, and cache-write token counters when a provider reports them.
+
+Diagnostics must make the central safety property auditable: for every request,
+one can tell whether an observation was placed in inherited or replaceable
+provider state and why the chosen anchor is safe.
+
+* Implementation slices
+
+1. *Lifetime model and shadow projection.* Add generation/frame/promotion record
+   shapes, pure projector tests, resume-checkpoint retention, and diagnostics.
+   Keep request behavior unchanged behind an opt-in so recorded comparisons can
+   prove what would be retained or forgotten.
+2. *Replaceable current-state delivery.* Move canvas/current-state rendering to
+   the semantic observation frontier.  Implement the OpenAI =instructions=
+   projection for profiles that prove it, and the clean-anchor/stateless path
+   for profiles that do not.  Replace the existing E2E assertion that appends
+   changed dynamic developer input to a chain containing the old snapshot.
+3. *Ephemeral tool frames and promotion.* Make new raw tool results ephemeral by
+   default, add the core promotion operation, transactional frame close/recovery,
+   and deterministic multi-tool tests.  Preserve old sessions conservatively.
+4. *Generational portable compaction.* Extend existing compaction records and
+   context reconstruction with generation identity; summarize only checkpoint
+   plus durable tail; update auto-compaction to cross one explicit generation
+   boundary without changing its threshold policy.
+5. *Optional provider compaction.* Add a provider-neutral opaque-checkpoint
+   slot and implement capability-gated OpenAI =/responses/compact=.  Rejection,
+   expiry, profile change, or model change falls back to the portable checkpoint.
+6. *Presentation and operator controls.* Show bounded generation/frame state in
+   existing context diagnostics and make manual compaction report portable and
+   provider projection outcomes without exposing opaque contents.
+7. *E2E, performance evidence, cleanup, and review.* Run the mandatory tests
+   below, compare cached/uncached frontier size, remove the superseded dynamic
+   continuation path, and complete the architecture review.
+
+Each slice is a semantic commit with focused tests and ledger updates.  Core
+record-shape, harness, loop, session, and adapter changes require a full Emacs
+restart; do not add live-reload compatibility shims for them.
+
+* Acceptance criteria
+
+** Core behavior
+
+- Context reconstruction is exactly =checkpoint + durable tail + open frame=.
+- A unique sentinel present only in a consumed observation is absent from the
+  next model request; a promoted fact derived from it is present.
+- The audit journal still contains the observation, its source/frame identity,
+  and the promotion link.
+- Cancellation and restart cannot silently close an unconsumed frame or include
+  a consumed frame forever.
+- A changed canvas replaces the prior snapshot.  It does not become another
+  durable transcript item and does not force stable-prefix invalidation.
+- A provider anchor never advances across inherited ephemeral input.  It may
+  advance across a proven replaceable channel.
+- Providers with no lifetime capabilities produce the same semantic context by
+  stateless replay.
+- Compaction starts a new generation from durable state only.  Portable
+  checkpoint reconstruction works without any provider artifact.
+- OpenAI opaque compaction, when enabled, is disposable and produces identical
+  local semantics when removed before the next turn.
+
+** Mandatory end-to-end expectation
+
+Unit tests and request-body tests are necessary but are not sufficient for
+acceptance.  Before this feature can move to =Done=, add a deterministic E2E
+scenario that crosses real =e-harness=, =e-loop=, session persistence, tool
+dispatch, context assembly, and an instrumented backend transport:
+
+1. Start a session with stable prefix =C=, durable fact =D1=, and canvas marker
+   =CANVAS-ONE=.
+2. Run a tool whose large result contains unique marker =OBSERVATION-ONE=.
+3. Let the next model transition consume it and promote only
+   =first-divergence=normalize-price=.
+4. Change the canvas marker to =CANVAS-TWO= and run another turn.
+5. Inspect the actual provider-bound requests and assert:
+   - =CANVAS-TWO= is present;
+   - =CANVAS-ONE= and =OBSERVATION-ONE= are absent from inherited and explicit
+     input;
+   - the promoted fact and prior durable user intent are present;
+   - the stable prefix/clean anchor is reused when capabilities allow it;
+   - a no-capability backend takes stateless fallback with the same semantics.
+6. Force a compaction boundary, restart the test-owned session, and prove the
+   new generation resumes from its portable checkpoint without either old
+   marker.
+
+Place this coverage under =e2e/= and give it one documented command that runs
+without credentials.  The planned direct command is:
+
+#+begin_src sh
+eldev test -f e2e/e-context-lifetime-e2e-test.el
+#+end_src
+
+It must fail on the current append-forever behavior.
+
+Also extend the credentialed OpenAI live E2E when an eligible profile is
+configured:
+
+- continue with =previous_response_id= while replacing a first canvas sentinel
+  with a second through top-level =instructions=;
+- verify request diagnostics classify that channel as replaceable and advance
+  only a clean anchor;
+- verify reported cache counters show the stable prefix remains reusable where
+  the profile exposes them;
+- exercise =/responses/compact= only for a profile explicitly configured with
+  opaque provider compaction, then continue from the returned item;
+- close/discard provider state and prove portable full replay still completes.
+
+Use the existing credentialed runner shape:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
+eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+Claims about a specific provider path require its credentialed E2E to pass.
+When credentials or endpoint support are unavailable, the generic feature may
+pass its deterministic acceptance gate, but that provider optimization remains
+unclaimed and the corresponding test must skip with an explicit reason.  A
+request-shape mock alone cannot prove cache hits, inherited-state replacement,
+or acceptance of opaque compacted items.
+
+Run the complete batch suite and =bash e2e/run-graphical-tests.sh= as regression
+gates.  No new graphical test is required unless presentation changes become
+visible; if they do, add screenshot-backed coverage for the new status.  Leave
+the user's running Emacs untouched during all acceptance runs.
+
+* Performance contract
+
+- Ordinary turns append only small durable deltas and reuse the generation's
+  stable prefix.
+- Consumed observation bytes are not retransmitted on later requests.
+- Updating a canvas changes only the request-local/ephemeral frontier, not the
+  stable prefix fingerprint.
+- The harness does not run a summary model call for every observation.
+- Cold prefill is expected at a deliberate generation boundary and on safe
+  fallback after provider state loss.
+- Context projection must not add an unbounded full-journal scan to each turn;
+  resume checkpoints retain the active generation and bounded open-frame state.
+
+Review evidence must report exact first-turn, warm-turn, observation-turn, and
+post-compaction input/cached token counts for at least one capable profile.  A
+cache regression needs a first-principles justification; existing code layout
+is not sufficient justification.
+
+* Compatibility and migration
+
+- Existing journals load without rewriting.  Messages lacking lifetime
+  metadata remain durable, preserving pre-feature behavior.
+- New lifetime behavior starts at a recorded generation boundary or explicit
+  session migration point; do not reinterpret old tool results silently.
+- Existing provider anchors without the new layout/generation revision are
+  incompatible and fall back to full replay once.
+- Backends that ignore new capabilities remain correct through flat stateless
+  messages.
+- Prompt-cache placement, provider continuation, and logical lifetime remain
+  independently configurable.
+- Branches inherit the selected generation checkpoint and durable path, not
+  consumed frames from another branch.
+- Export and audit views continue to show full historical tool evidence even
+  though model context does not.
+
+* Non-goals
+
+- Do not delete or rewrite the append-only audit journal.
+- Do not make OpenAI =previous_response_id=, =instructions=, or opaque compaction
+  items part of the core state model.
+- Do not parse or display the contents of provider opaque compaction items.
+- Do not claim that a provider forgot data merely because e omitted it from a
+  later request; the claim requires a documented replaceable channel or a
+  stateless/clean-anchor path.
+- Do not automatically promote every observation or summarize every tool result.
+- Do not make the canvas itself durable conversation history.
+- Do not require every backend to implement branching, replacement, cache
+  controls, or provider compaction.
+- Do not use compaction as a substitute for bounded tool/resource output.
+
+* Risks and explicit mitigations
+
+- *The model fails to promote a needed fact.* Make the lifetime contract visible
+  in instructions, expose an explicit promotion operation, keep audit evidence
+  retrievable, and test multi-tool transitions.  Do not silently retain all
+  observations as insurance.
+- *A provider claims replacement but retains prior values.* Gate the capability
+  per profile/transport, require conformance and live E2E evidence, and fall back
+  to clean-anchor/stateless reconstruction.
+- *Reasoning state is lost when an observation branch is abandoned.* Normalize
+  replayable reasoning items and include them in the durable delta when the
+  provider contract requires it; otherwise retain the last clean anchor.
+- *Dual compactions drift.* The portable checkpoint is canonical.  Provider
+  opaque state is accepted only at the same boundary/fingerprint and can always
+  be discarded.
+- *Crash recovery duplicates or forgets a frame.* Journal frame open, consume,
+  promotion, and close transitions idempotently; resume from the last committed
+  state.
+- *Cache optimization leaks into semantic policy.* Keep provider capabilities
+  and rendering in adapters, and prove core projection with a backend-free test.
+- *Journal size still grows.* This feature bounds model context, not audit
+  storage.  Retention/export policy is separate work.
+
+* Architecture self-check
+
+1. *If work stopped here, is the project better off?* Yes.  The first behavioral
+   slice fixes stale canvas inheritance with a safe stateless fallback; later
+   slices independently remove raw tool observations and add generational
+   compaction.
+2. *Final direction?* A harness-owned logical state machine whose provider
+   adapters accelerate, but do not define, context semantics.
+3. *Stable and uncertain decisions?* The four lifetimes, clean-anchor invariant,
+   and portable checkpoint are stable.  Provider wire capabilities and the exact
+   promotion UI are likely to change and remain local to adapters or one narrow
+   core operation.
+4. *Owner?* Core context policy owns lifetime; session owns durable audit;
+   harness/loop own transactions; adapters own wire realization; presentation
+   only renders status.
+5. *Coupling?* Reduced: core no longer relies on OpenAI continuation semantics,
+   and adapters consume a narrow semantic projection rather than session internals.
+6. *Dependency direction?* Unstable provider code depends on the stable logical
+   context contract.  Core never imports an OpenAI request shape.
+7. *Side effects outward?* Provider calls, journal writes, and external resource
+   retrieval stay at adapter/session/tool boundaries; projection is pure where
+   practical.
+8. *State lifetime?* Generations and promotions are durable; open frames are the
+   smallest restart-safe state; provider anchors and opaque checkpoints are
+   disposable; presentation/cache state remains runtime-local.
+9. *Performance?* The design removes repeated observation bytes and preserves
+   monotonic prefixes, with an explicit cold cost only at compaction or fallback.
+10. *Real abstractions?* Every capability corresponds to a distinct request
+    strategy.  Missing capabilities select a valid fallback instead of weakened
+    behavior or unsupported-operation errors.
+11. *Compatibility?* Old records remain durable, old anchors invalidate once,
+    and no legacy rewrite path is added.
+12. *Legacy removable now?* Remove the path that treats refreshed dynamic
+    developer input as sufficient replacement while continuing through an
+    anchor that contains the prior snapshot.
+13. *Errors?* Expected anchor rejection and opaque-state expiry fall back through
+    the adapter.  Journal corruption, invalid frame transitions, and mismatched
+    boundaries surface as explicit errors.
+14. *Independent tests?* Pure projector/state-machine tests prove lifetime;
+    adapter tests prove wire mapping; the mandatory E2E proves their integration
+    through the real harness/session/tool path.
