@@ -1,0 +1,75 @@
+#+title: Plan Review 07: Generational Context with Ephemeral Frames
+#+date: 2026-08-23
+#+startup: overview
+
+* Decision
+
+Needs remediation at revision =26fa59e18cc941007876cadb935ae1bb8487f705=.
+
+F88.13 is correct for one execution but does not compose with the required
+multi-tool transition.  One P1 finding remains.  No other P0--P3 finding and no
+unknown required cell remain.  No Feature 88 implementation exists yet.
+
+* Prior finding disposition
+
+** INCOMPLETE F88.13
+
+=execution-settled= is now the sole terminal marker, partial execution prefixes
+are retained and replayed idempotently, and live/manual completion share the
+same crash-cut-tested transaction.  The remaining defect is its interaction
+with more than one tool result.
+
+* Finding
+
+** P1 F88.14: per-execution frame opening conflicts with one aggregate result frame
+
+The plan requires every execution to persist its own =frame-opened= before its
+=execution-settled= marker, while the lifetime invariant and acceptance criteria
+require one next frame containing all results from the reasoning transition.
+For multiple tools this either opens multiple frames, mutates an append-only
+frame, or delays settlement past the acknowledgement-before-next-tool boundary.
+
+*** Owning correction
+
+Use a two-stage transaction.  Each tool persists its normalized provider-linked
+result followed by =execution-settled= referencing that result, and acknowledges
+that prefix before the next tool.  Per-execution settlement opens no frame.
+
+After every admitted execution is settled, append and acknowledge exactly one
+deterministic =frame-opened= record referencing all result entry ids in admitted
+order.  The pending-transition descriptor retains those ids and the aggregate
+frame identity.  Replay completes partial execution prefixes first, then creates
+or re-acknowledges the same aggregate frame exactly once.  Manual resolution
+uses the same per-execution prefix; when it settles the last call, the recovery
+service creates the aggregate frame before follow-up.
+
+E2E acceptance needs at least two admitted tools and must prove per-execution
+ordering, one ordered result frame, cut-point recovery around all markers and
+the aggregate frame, mixed settled/ambiguous resolution, and no follow-up before
+aggregate-frame acknowledgement.  Performance evidence must separate aggregate
+frame bytes, acknowledgement wait, and last-tool-to-follow-up time.
+
+* Coverage ledger
+
+| Contract | Status | Evidence or next question |
+|----------+--------+---------------------------|
+| Sole execution terminal marker | cleared | =execution-settled= only |
+| Partial execution-prefix replay | cleared | Stable identities retained |
+| Shared live/manual transaction | cleared | Same execution prefix |
+| Multi-tool one-frame composition | candidate | F88.14 |
+| Aggregate-frame crash recovery | candidate | One deterministic frame |
+| Recovery owner and ambiguous retry | cleared | F88.11-F88.12 retained |
+| Other lifetime/provider/compaction cells | cleared | Dependencies unchanged |
+| Unknown required cells | none | One concrete finding remains |
+
+* Verification
+
+- Reviewed exact revision =26fa59e18cc941007876cadb935ae1bb8487f705=.
+- No implementation inspection, repository edit, runtime mutation, or live
+  Emacs probe was performed.
+- The user's running Emacs was left unchanged.
+
+* Fixed-point disposition
+
+Separate per-execution settlement from one aggregate result-frame opening, add
+restart and performance evidence, and run the same reviewer again.
