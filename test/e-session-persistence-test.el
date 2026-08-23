@@ -63,6 +63,172 @@
                      0)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-prefix-barrier-is-session-scoped ()
+  "A controlled writer settles only the named session and record prefix."
+  (let* ((directory (make-temp-file "e-session-prefix-barrier-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller nil)
+         (sent nil)
+         (done nil)
+         (failure nil)
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0))
+    (unwind-protect
+        (progn
+          ;; Create both dirty sessions before attaching the controlled writer;
+          ;; only their later outbox appends participate in this barrier.
+          (e-session-create store :id "session-a")
+          (e-session-create store :id "session-b")
+          (setq controller (e-session-persistence-enable store))
+          (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                     (lambda (_controller command)
+                       (push command sent))))
+            (let* ((a1 (e-session-persistence-submit-record
+                        controller "session-a"
+                        '(:type "context-frame" :id "a-1")))
+                   (a2 (e-session-persistence-submit-record
+                        controller "session-a"
+                        '(:type "context-frame" :id "a-2")))
+                   (b1 (e-session-persistence-submit-record
+                        controller "session-b"
+                        '(:type "context-frame" :id "b-1"))))
+              (e-session-persistence-await-record-prefix
+               controller "session-a" '("a-1")
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should-not done)
+              ;; Another session's terminal failure is not this barrier's
+              ;; failure, and a same-session record outside the named prefix is
+              ;; not sufficient for success either.
+              (e-session-persistence--handle-response
+               controller (list :id b1 :ok :json-false :retryable :json-false))
+              (should-not done)
+              (should-not failure)
+              (e-session-persistence--handle-response
+               controller (list :id a2 :ok t :result 'written))
+              (should-not done)
+              (should-not failure)
+              (e-session-persistence--handle-response
+               controller (list :id a1 :ok t :result 'written))
+              (should (equal (plist-get done :session-id) "session-a"))
+              (should (equal (plist-get done :entry-ids) '("a-1")))
+              (should (= (plist-get done :pending-count) 0))
+              (should-not failure)
+              (should-not
+               (seq-some
+                (lambda (command)
+                  (member (plist-get
+                           (e-session-persistence-command-request command) :op)
+                          '("checkpoint" "reindex")))
+                sent))
+              ;; A fresh unrelated failure still cannot poison a barrier for
+              ;; session-a; failure of its named record does.
+              (setq done nil failure nil)
+              (let ((a3 (e-session-persistence-submit-record
+                          controller "session-a"
+                          '(:type "context-frame" :id "a-3")))
+                    (b2 (e-session-persistence-submit-record
+                         controller "session-b"
+                         '(:type "context-frame" :id "b-2"))))
+                (e-session-persistence-await-record-prefix
+                 controller "session-a" '("a-3")
+                 (lambda (value) (setq done value))
+                 (lambda (error) (setq failure error)))
+                (e-session-persistence--handle-response
+                 controller
+                 (list :id b2 :ok :json-false :retryable :json-false))
+                (should-not done)
+                (should-not failure)
+                (e-session-persistence--handle-response
+                 controller
+                 (list :id a3 :ok :json-false :retryable :json-false))
+                (should-not done)
+                (should failure)))))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-validates-entry-lifecycle ()
+  "Unknown, acknowledged, and late-failed named entries are distinguished."
+  (let* ((directory (make-temp-file "e-session-prefix-entry-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller nil)
+         (sent nil)
+         (done nil)
+         (failure nil))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-a")
+          (e-session-create store :id "session-b")
+          (setq controller (e-session-persistence-enable store))
+          (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                     (lambda (_controller command)
+                       (push command sent)))
+                    ;; Appending the test entries must not schedule unrelated
+                    ;; checkpoint commands; the barrier under test is only for
+                    ;; the named entry ids.
+                    ((symbol-function 'e-session-persistence-request-checkpoint)
+                     (lambda (&rest _arguments) nil)))
+            (let* ((a1 (e-session-append-message
+                        store "session-a"
+                        '(:role user :content "a-1")))
+                   (b1 (e-session-append-message
+                        store "session-b"
+                        '(:role user :content "b-1")))
+                   (a1-id (plist-get a1 :id))
+                   (b1-id (plist-get b1 :id)))
+              (should-error
+               (e-session-context-lifetime-durability-barrier
+                store "session-a" '("missing-entry")
+                #'ignore #'ignore)
+               :type 'e-session-error)
+              ;; The entry is known to the session and its writer command has
+              ;; already been acknowledged, so a barrier attached afterwards
+              ;; succeeds without an outbox mapping.
+              ;; Use the command indexed by A1 rather than relying on the
+              ;; controlled writer's newest-first send capture order.
+              (let ((a1-command
+                     (gethash
+                      (list "session-a" a1-id)
+                      (e-session-persistence-record-command-ids controller))))
+                (e-session-persistence--handle-response
+                 controller (list :id a1-command :ok t :result 'written))
+                ;; The mapping is removed by the acknowledgement.
+                (should-not
+                 (gethash
+                  (list "session-a" a1-id)
+                  (e-session-persistence-record-command-ids controller))))
+              (setq done nil failure nil)
+              (e-session-context-lifetime-durability-barrier
+               store "session-a" (list a1-id)
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should done)
+              (should-not failure)
+              ;; B1 remains pending until it is rejected.  Once rejected, a
+              ;; barrier attached after the mapping was removed still fails
+              ;; from bounded terminal-outcome evidence.
+              (let ((b1-command
+                     (gethash
+                      (list "session-b" b1-id)
+                      (e-session-persistence-record-command-ids controller))))
+                (e-session-persistence--handle-response
+                 controller
+                 (list :id b1-command
+                       :ok :json-false :retryable :json-false)))
+              (setq done nil failure nil)
+              (e-session-context-lifetime-durability-barrier
+               store "session-b" (list b1-id)
+               (lambda (value) (setq done value))
+               (lambda (error) (setq failure error)))
+              (should-not done)
+              (should (equal (car failure) 'e-session-persistence-error)))))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-command-budget-precedes-json-encoding ()
   "An oversized command is rejected before JSON allocates its representation."
   (let ((e-session-persistence-command-byte-limit 8)
@@ -268,10 +434,10 @@
         (let ((e-session--unsettled-change-function
                (lambda (state) (push (copy-sequence state) states))))
           (cl-letf (((symbol-function 'e-session-persistence--submit)
-                     (lambda (target operation &optional on-done on-error)
-                       (push (copy-tree operation) submitted)
-                       (funcall original-submit target operation
-                                on-done on-error))))
+                     (lambda (target operation &optional on-done on-error on-queued)
+                        (push (copy-tree operation) submitted)
+                        (funcall original-submit target operation
+                                 on-done on-error on-queued))))
             (dolist (session-id '("one" "two"))
               (e-session-create store :id session-id)
               (dotimes (index 20)

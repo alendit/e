@@ -13,9 +13,11 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'json)
 (require 'e)
 (require 'e-context-lifetime)
 (require 'e-session)
+(require 'e-session-persistence)
 
 (defun e-context-lifetime-test--generation ()
   "Return a small generation fixture."
@@ -75,7 +77,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
   (when include-settlement
     (e-session-append-context-frame-settlement
      store session-id
-     '(:id "settlement-1" :frame-id "frame-1" :status failed)))
+     '(:record-version 1 :type context-frame-settlement
+       :id "settlement-1" :frame-id "frame-1" :status failed)))
   (e-session-context-lifetime-resume-state store session-id))
 
 (defun e-context-lifetime-test--append-bounded-retries (store session-id)
@@ -117,11 +120,13 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
          (_first-settlement
           (e-session-append-context-frame-settlement
            store session-id
-           '(:id "settlement-1" :frame-id "frame-1" :status failed)))
+           '(:record-version 1 :type context-frame-settlement
+             :id "settlement-1" :frame-id "frame-1" :status failed)))
          (latest-settlement
           (e-session-append-context-frame-settlement
            store session-id
-           '(:id "settlement-2" :frame-id "frame-1" :status failed)))
+           '(:record-version 1 :type context-frame-settlement
+             :id "settlement-2" :frame-id "frame-1" :status failed)))
          (state (e-session-context-lifetime-resume-state store session-id)))
     (list :state state
           :expected-entry-ids
@@ -160,6 +165,141 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
       (should-not (plist-member diagnostics :ephemeral)))
     (should (equal (plist-get consumed :generation-id) "generation-1"))
     (should (equal (plist-get consumed :frame-id) "frame-1"))))
+
+(ert-deftest e-context-lifetime-test-project-rejects-cross-generation-frame ()
+  "A frame from another generation cannot enter the projection frontier."
+  (let ((generation (e-context-lifetime-test--generation))
+        (frame
+         (e-context-lifetime-frame-create
+          :id "frame-other"
+          :generation-id "generation-other"
+          :observations '((:role user :content "wrong generation")))))
+    (should-error
+     (e-context-lifetime-project generation frame)
+     :type 'e-context-lifetime-invalid-record)))
+
+(ert-deftest e-context-lifetime-test-canonical-projection-survives-reopen ()
+  "Canonical nested semantic values retain exact projection and fingerprint."
+  (let* ((directory (make-temp-file "e-context-lifetime-canonical-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "canonical-session")
+         (generation
+          (e-context-lifetime-generation-create
+           :id 'generation-canonical
+           :checkpoint
+           [(:role system :content "checkpoint"
+             :metadata (:kind decision :roles [assistant reviewer]
+                        :enabled :json-false
+                        :nested (:visible :json-false)))]
+           :durable-tail
+           '((:role assistant :content "durable"
+              :metadata (:kind fact :source 'canvas)))))
+         (frame
+          (e-context-lifetime-frame-create
+           :id 'frame-canonical
+           :generation-id 'generation-canonical
+           :observations
+           '((:role user :content "observation"
+              :metadata (:kind trace :actors [user tool]
+                         :available :json-false)))))
+         (static-prefix '((:role system :content "static" :metadata (:kind policy))))
+         (stable-context '((:role developer :content "stable" :metadata (:kind rule))))
+         (before (e-context-lifetime-project
+                  generation frame :static-prefix static-prefix
+                  :stable-context stable-context)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (e-session-append-context-generation
+           store session-id (e-context-lifetime-generation-record generation))
+          (e-session-append-context-frame
+           store session-id (e-context-lifetime-frame-record frame))
+          (e-session-flush-write-queue store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (generation-record
+                  (plist-get (car (e-session-context-generations
+                                   reopened session-id))
+                             :context-record))
+                 (frame-record
+                  (plist-get (car (e-session-context-frames reopened session-id))
+                             :context-record))
+                 (after
+                  (e-context-lifetime-project
+                   (e-context-lifetime-generation-from-record generation-record)
+                   (e-context-lifetime-frame-from-record frame-record)
+                   :static-prefix static-prefix
+                   :stable-context stable-context)))
+            (should (equal before after))
+            (should (equal (plist-get before :fingerprint)
+                           (plist-get after :fingerprint)))
+            (should (eq
+                     (plist-get
+                      (plist-get (car (plist-get before :checkpoint))
+                                 :metadata)
+                      :enabled)
+                     :json-false))
+            (should (eq
+                     (plist-get
+                      (plist-get (car (plist-get before :ephemeral))
+                                 :metadata)
+                      :available)
+                     :json-false))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-context-lifetime-test-context-record-validation-is-strict ()
+  "Append rejects malformed lifetime record shape and lifecycle values."
+  (let ((store (e-session-store-create))
+        (session-id "session-1"))
+    (e-session-create store :id session-id)
+    (should-error
+     (e-session-append-context-generation
+      store session-id
+      '(:type context-generation :id "generation-1"
+        :checkpoint nil :durable-tail nil))
+     :type 'e-session-error)
+    (e-session-append-context-generation
+     store session-id
+     (e-context-lifetime-generation-record
+      (e-context-lifetime-test--generation)))
+    (should-error
+     (e-session-append-context-frame
+      store session-id
+      '(:record-version 1 :type context-frame :id "frame-1"
+        :generation-id "generation-1" :state unknown))
+     :type 'e-session-error)
+    (should-error
+     (e-session-append-context-frame-settlement
+      store session-id
+      '(:record-version 1 :type context-frame-settlement
+        :id "settlement-1" :frame-id "missing-frame" :status failed))
+     :type 'e-session-error)))
+
+(ert-deftest e-context-lifetime-test-persistent-replay-rejects-corruption ()
+  "A malformed persisted lifetime record cannot enter replay state."
+  (let* ((directory (make-temp-file "e-context-lifetime-corrupt-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (session-id "session-1")
+         (journal (expand-file-name "sessions/session-1.jsonl" directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (with-temp-buffer
+            (insert
+             (json-encode
+              '(:type "context-generation"
+                :session-id "session-1"
+                :id "entry-corrupt"
+                :timestamp "2026-01-01T00:00:00Z"
+                :context-record
+                (:record-version 1 :type "context-generation"
+                 :checkpoint [] :durable-tail [])))
+             "\n")
+            (write-region (point-min) (point-max) journal t 'silent))
+          (should-error
+           (e-session-persistent-store-create directory)
+           :type 'e-session-error))
+      (delete-directory directory t))))
 
 (ert-deftest e-context-lifetime-test-promotion-never-copies-observation ()
   "Promotion adds selected facts without making the observation durable."
@@ -282,7 +422,7 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
       (should (= (length frames) 1))
       (should (eq (plist-get frame :state) 'consumed))
       (should (equal (plist-get frame :observations)
-                     '((:role "user" :content "OBSERVATION-CONSUMED"))))
+                     '((:content "OBSERVATION-CONSUMED" :role "user"))))
       ;; Generation plus the latest frame, promotion, and failed settlement are
       ;; enough to reconstruct this state; superseded frame entries are not
       ;; retained.
@@ -315,7 +455,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
       (should (= (length (append (plist-get state :frames) nil)) 1))
       (e-session-append-context-frame-settlement
        store session-id
-       '(:id "settlement-ack" :frame-id "frame-1" :status acknowledged))
+       '(:record-version 1 :type context-frame-settlement
+         :id "settlement-ack" :frame-id "frame-1" :status acknowledged))
       (should-not (append (plist-get
                            (e-session-context-lifetime-resume-state
                             store session-id)
@@ -362,7 +503,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
                            (plist-get state :settlements)))
             (e-session-append-context-frame-settlement
              reopened session-id
-             '(:id "settlement-ack" :frame-id "frame-1" :status acknowledged))
+             '(:record-version 1 :type context-frame-settlement
+               :id "settlement-ack" :frame-id "frame-1" :status acknowledged))
             (should-not (append (plist-get
                                  (e-session-context-lifetime-resume-state
                                   reopened session-id)
@@ -413,7 +555,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
       (e-context-lifetime-test--frame 'settled)))
     (e-session-append-context-frame-settlement
      store session-id
-     '(:id "settlement-failed" :frame-id "frame-1" :status failed))
+     '(:record-version 1 :type context-frame-settlement
+       :id "settlement-failed" :frame-id "frame-1" :status failed))
     (should (= (length (append (plist-get
                                 (e-session-context-lifetime-resume-state
                                  store session-id)
@@ -422,7 +565,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
                1))
     (e-session-append-context-frame-settlement
      store session-id
-     '(:id "settlement-ack" :frame-id "frame-1" :status acknowledged))
+     '(:record-version 1 :type context-frame-settlement
+       :id "settlement-ack" :frame-id "frame-1" :status acknowledged))
     (should-not (append (plist-get
                          (e-session-context-lifetime-resume-state
                           store session-id)
@@ -506,7 +650,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
      (e-context-lifetime-frame-record (e-context-lifetime-test--frame)))
     (e-session-append-context-frame-settlement
      store "session-1"
-     '(:id "settlement-1" :frame-id "frame-1" :status acknowledged))
+     '(:record-version 1 :type context-frame-settlement
+       :id "settlement-1" :frame-id "frame-1" :status acknowledged))
     (let* ((state (e-session-context-lifetime-resume-state store "session-1"))
            (frames (append (plist-get state :frames) nil)))
       (should (equal (plist-get (plist-get state :generation) :id)
@@ -531,7 +676,8 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
             (e-context-lifetime-test--frame)))
           (e-session-append-context-frame-settlement
            store session-id
-           '(:id "settlement-1" :frame-id "frame-1" :status acknowledged))
+           '(:record-version 1 :type context-frame-settlement
+             :id "settlement-1" :frame-id "frame-1" :status acknowledged))
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (state (e-session-context-lifetime-resume-state
@@ -587,6 +733,86 @@ The repeated snapshots deliberately reuse one logical frame id.  The final
                    'e-context-lifetime-settlement-unavailable))
     (should (eq (caar diagnostics)
                 'settlement-prefix-acknowledgement-failed))))
+
+(ert-deftest e-context-lifetime-test-enabled-persistent-ack-uses-named-prefix ()
+  "A controlled persistence controller gates only the named session prefix."
+  (let* ((directory (make-temp-file "e-context-lifetime-controller-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller nil)
+         (sent nil)
+         (done nil)
+         (failure nil))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-a")
+          (e-session-create store :id "session-b")
+          (setq controller (e-session-persistence-enable store))
+          (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+                     (lambda (_controller command)
+                       (push command sent)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _arguments) nil))
+                    ;; Local entry appends are enough for this barrier test;
+                    ;; suppress their unrelated checkpoint scheduling.
+                    ((symbol-function 'e-session-persistence-request-checkpoint)
+                     (lambda (&rest _arguments) nil)))
+            (let* ((a1 (e-session-append-message
+                        store "session-a"
+                        '(:role user :content "a-1")))
+                   (a2 (e-session-append-message
+                        store "session-a"
+                        '(:role user :content "a-2")))
+                   (b1 (e-session-append-message
+                        store "session-b"
+                        '(:role user :content "b-1")))
+                   (a1-id (plist-get a1 :id))
+                   (a2-id (plist-get a2 :id))
+                   (b1-id (plist-get b1 :id))
+                   (a1-command
+                    (gethash (list "session-a" a1-id)
+                             (e-session-persistence-record-command-ids
+                              controller)))
+                   (a2-command
+                    (gethash (list "session-a" a2-id)
+                             (e-session-persistence-record-command-ids
+                              controller)))
+                   (b1-command
+                    (gethash (list "session-b" b1-id)
+                             (e-session-persistence-record-command-ids
+                              controller))))
+              (e-context-lifetime-acknowledge-settlement
+               store "session-a"
+               :frame-id "frame-a"
+               :prefix-entry-ids (list a1-id)
+               :enabled t
+               :on-done (lambda (result) (setq done result))
+               :on-error (lambda (error) (setq failure error)))
+              (should-not done)
+              (e-session-persistence--handle-response
+               controller
+               (list :id b1-command :ok :json-false :retryable :json-false))
+              (should-not done)
+              (should-not failure)
+              (e-session-persistence--handle-response
+               controller (list :id a2-command :ok t :result 'written))
+              (should-not done)
+              (should-not failure)
+              (e-session-persistence--handle-response
+               controller (list :id a1-command :ok t :result 'written))
+              (should (eq (plist-get done :status) 'acknowledged))
+              (should (equal (plist-get done :prefix-entry-ids) (list a1-id)))
+              (should-not failure)
+              (should-not
+               (seq-some
+                (lambda (command)
+                  (member (plist-get
+                           (e-session-persistence-command-request command) :op)
+                          '("checkpoint" "reindex")))
+                sent)))))
+      (when-let ((process (and controller
+                              (e-session-persistence-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
 
 (provide 'e-context-lifetime-test)
 

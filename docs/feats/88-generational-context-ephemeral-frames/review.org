@@ -89,3 +89,27 @@ missing-controller paths only.
 
 Remediate F88.I1.1--F88.I1.4 with the persistent implementer, commit the Tock,
 then run the replacement persistent reviewer on the exact clean revision.
+
+* Tock 01 candidate disposition
+
+The candidate remediation:
+
+- rejects frame/generation mismatch in the pure projector;
+- applies one strict lifetime-record validator to append and replay, including
+  generation/frame ownership;
+- canonicalizes provider-neutral semantic payloads and preserves JSON false so
+  exact projections and fingerprints survive persistent restart; and
+- replaces global finalization with a session/prefix durability barrier backed
+  by indexed outbox commands, explicit entry ownership, and terminal-failure
+  evidence.  Controlled two-session tests cover success, unrelated work,
+  unknown ids, already-acknowledged entries, and late terminal failure.
+
+Parent verification on 2026-08-24 passed 22/22 lifetime tests, 25/25 persistence
+tests, 94/94 session tests, and all 2232 repository tests with two existing skips
+and zero unexpected results.  Compilation and diff checks passed.  The running
+Emacs remained untouched; restart is required for the changed core/session/
+persistence shapes.
+
+F88.I1.1--F88.I1.4 and the previously unknown successful-controller cell are
+candidate-closed.  The replacement persistent reviewer must Tick the exact clean
+Tock commit before Slice 2 begins.
