@@ -219,6 +219,15 @@ summary format.
 - Provider adapters render this effect but never select or validate promoted
   facts.
 
+The loop buffers reserved effects and ordinary tool calls until the provider
+response is complete.  It validates the complete promotion and tool-call set
+before dispatching any tool.  It then persists and receives acknowledgement for
+the consuming response, accepted promotions, and =frame-settled=.  Only after
+that acknowledgement may ordinary tools execute.  Validation or durable-write
+failure dispatches no tool, records the failed attempt, and leaves the frame
+retryable.  Completed tool results are persisted with the next =frame-opened=
+before any follow-up provider request.
+
 The initial implementation should keep the protocol strict and observable.
 Do not add an automatic per-observation summarizer as a fallback: that would
 restore cost and latency on the hot path and blur whether a fact was selected.
@@ -229,6 +238,17 @@ Frame state is derived from append-only session records, not from one mutable
 status flag.  One frame records its generation id, observation entry ids,
 consumption-attempt ids, consuming response entry ids, promotion entry ids, and
 terminal settlement.
+
+Every admitted observation has a restart-stable provider-neutral reference.  A
+journal-backed observation references the durable entry containing its exact
+payload.  A request-time current-state observation instead records its owning
+provider, durable source reference, source version or content fingerprint,
+render-layout revision, and rendered fingerprint; mutable buffer objects are
+not durable references.  Before retry, replay rebuilds the current-state
+observation and compares fingerprints.  A match retries the same frame.  A
+mismatch or unavailable source appends an explicit =frame-aborted= record and
+opens a new frame from newly captured state; it never silently substitutes new
+bytes into the old frame or marks the old observation consumed.
 
 - Persist =frame-opened= with its observations before those observations are
   eligible for a provider request.
@@ -504,6 +524,14 @@ restart; do not add live-reload compatibility shims for them.
   and the promotion link.
 - Cancellation and restart cannot silently close an unconsumed frame or include
   a consumed frame forever.
+- A retry of request-time current state either reproduces the admitted rendered
+  fingerprint or explicitly aborts that frame before capturing replacement
+  state.
+- An invalid one-over promotion emitted beside an ordinary tool call dispatches
+  zero tools and leaves the frame retryable.  Withheld or failed settlement
+  acknowledgement also dispatches zero tools; successful acknowledgement
+  dispatches each admitted tool exactly once and opens one next frame containing
+  its results.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -550,7 +578,10 @@ Before this feature can move to =Done=, that E2E runs this scenario:
    - the promoted fact and prior durable user intent are present;
    - the stable prefix/clean anchor is reused when capabilities allow it;
    - a no-capability backend takes stateless fallback with the same semantics.
-6. Force a compaction boundary, restart the test-owned session, and prove the
+6. Interrupt a separate open canvas frame before settlement, mutate or remove
+   its durable source, restart, and prove that the old frame is explicitly
+   aborted and a newly captured frame opens without a stale inherited marker.
+7. Force a compaction boundary, restart the test-owned session, and prove the
    new generation resumes from its portable checkpoint without either old
    marker.
 
@@ -613,6 +644,15 @@ Review evidence must report exact first-turn, warm-turn, observation-turn, and
 post-compaction input/cached token counts for at least one capable profile.  A
 cache regression needs a first-principles justification; existing code layout
 is not sufficient justification.
+
+For an observation-bearing and a multi-tool transition, evidence also reports
+settlement-prefix record count and bytes, settlement-acknowledgement wait, and
+end-to-end time from provider completion to the next admitted tool or provider
+dispatch.  The acknowledgement path performs work proportional to the settling
+prefix, never scans the full journal, and performs no synchronous filesystem I/O
+on the Emacs main thread.  Any material latency regression requires
+first-principles justification.  A controlled-writer acknowledgement gate is
+contract evidence; queue/outbox microtests are mechanism evidence.
 
 * Compatibility and migration
 
@@ -680,8 +720,9 @@ is not sufficient justification.
    compaction.
 2. *Final direction?* A harness-owned logical state machine whose provider
    adapters accelerate, but do not define, context semantics.
-3. *Stable and uncertain decisions?* The four lifetimes, clean-anchor invariant,
-   and portable checkpoint are stable.  Provider wire capabilities and the exact
+3. *Stable and uncertain decisions?* The three model-visible lifetimes, the
+   existing external-handle delivery mode, the clean-anchor invariant, and the
+   portable checkpoint are stable.  Provider wire capabilities and the exact
    promotion UI are likely to change and remain local to adapters or one narrow
    core operation.
 4. *Owner?* Core context policy owns lifetime; session owns durable audit;

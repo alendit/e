@@ -10,6 +10,12 @@ reviewed.  Four prior findings close; =F88.4= remains textually inconsistent.
 Two new P1 findings and one P2 finding block implementation.  No required
 review cell remains unknown.
 
+* Current disposition
+
+=F88.4= and =F88.6-F88.8= were applied to =plan.org= in the subsequent
+specification Tock.  This historical review remains the negative witness; a
+fresh independent Tick must establish implementation readiness.
+
 * Prior finding dispositions
 
 ** CLOSED F88.1
