@@ -1,0 +1,164 @@
+#+title: Plan Review 01: Generational Context with Ephemeral Frames
+#+startup: overview
+
+* Decision
+
+Not implementation-ready at revision =27538be=.
+
+This was a rebaseline specification review.  No implementation was reviewed.
+The unrelated working-tree changes in =lisp/defaults/e-default-harnesses.el= and
+=test/e-dev-test.el= were excluded.
+
+* Scope and method
+
+The review checked =plan.org= against the current owners in =e-context=,
+=e-session=, =e-loop=, =e-harness=, =e-backend=, and the OpenAI adapter; the
+accepted contracts in Features 23, 28, 35, 45, 78, and 81; and the required
+owner -> representation -> lifetime -> transaction -> public surface -> metric
+-> evidence chain.
+
+* Findings
+
+** P1 F88.1: Frame settlement has no durable transaction or deterministic recovery contract
+
+*** Evidence
+
+The plan requires consumer output and promotions to be durably committed before
+frame close, but does not identify the persistence admission/acknowledgement
+boundary or distinguish provider consumption, response persistence, and safe
+settlement.
+
+Current =e-loop= appends a tool result and may immediately start the next
+provider request.  =e-session--append-record= may submit or queue persistence
+asynchronously, and the Feature 78 checkpoint manifest retains only named path
+entries.  The proposed recovery behavior is therefore not derivable from the
+current record order.
+
+*** Owning correction
+
+=e-session= must own append-only frame transitions and ordered durable
+settlement.  =e-loop= must asynchronously await acknowledgement of the settled
+prefix before excluding an observation or advancing a clean anchor.
+
+The corrected contract must define:
+
+- =frame-opened= before provider eligibility;
+- =frame-consumption-started= with an attempt id before dispatch;
+- at-least-once retry after ambiguous provider failure;
+- consuming response, validated promotions, then =frame-settled= order;
+- idempotent recovery when response/promotions exist without settlement; and
+- checkpoint retention of every unsettled frame and its referenced records.
+
+** P1 F88.2: An ordinary promotion tool would violate the one-transition invariant
+
+*** Evidence
+
+The plan allows =context-promote= to be an ordinary built-in tool while limiting
+an observation to one consuming transition.  The standard tool path appends the
+tool call and result to =turn-messages= and starts its follow-up from the whole
+accumulated list.  A tool-shaped promotion would therefore expose the consumed
+observation to a second model invocation.
+
+*** Owning correction
+
+Promotion must be a reserved core effect of the consuming response, not an
+ordinary observation-producing tool.  It needs bounded admission before
+session mutation, source-frame validation, and settlement in the same durable
+transaction as the consuming response.
+
+The initial contract must bound one promotion effect per response, at most 16
+facts, and at most 8 KiB of normalized UTF-8 content.  An ordinary tool call
+emitted by that response becomes durable transition state; its result opens the
+next frame.
+
+** P1 F88.3: Capability data leaks provider wire names and has no discovery surface
+
+*** Evidence
+
+The plan forbids core policy from branching on provider fields, but proposes
+=:replaceable-context instructions= as core-readable data.  Current =e-backend=
+has no capability query.  OpenAI capabilities are adapter/profile-local while
+the harness currently chooses provider anchors before request construction.
+
+*** Owning correction
+
+Add a pure =e-backend-context-capabilities= query.  Its values must remain
+semantic:
+
+#+begin_src elisp
+(:continuation branchable
+ :observation-delivery request-local-replaceable
+ :prefix-cache explicit
+ :provider-compaction opaque
+ :reasoning-state replayable)
+#+end_src
+
+Core understands semantic values only.  Missing capabilities choose stateless
+reconstruction; unknown values are configuration errors.  Only the OpenAI
+adapter maps request-local replacement to top-level =instructions=.
+
+** P1 F88.4: EXTERNAL duplicates resource/reference ownership
+
+*** Evidence
+
+The plan declares =EXTERNAL= as a fourth lifetime without a frame/generation
+record, transaction, metric, slice, or acceptance assertion.  Feature 45
+already owns durable current-state/resource references and volatile
+reconstruction.
+
+*** Owning correction
+
+Keep three model-visible lifetimes.  Treat an external handle as the existing
+resource/reference delivery mode; resolving it creates a bounded ephemeral
+observation.  Do not create another registry or persist external payloads in
+frame state.
+
+** P2 F88.5: The deterministic E2E cannot prove inherited-state absence
+
+*** Evidence
+
+The plan asks an “instrumented backend transport” to prove that a sentinel is
+absent from inherited and explicit input, but raw request capture cannot reveal
+what a continuation id causes the provider to inherit.  The stock fake backend
+does not model continuation, and current integration coverage asserts request
+shape rather than effective inherited context.
+
+*** Owning correction
+
+The E2E transport must store effective context per synthetic response id and
+separately record literal input, inherited context, request-local replaceable
+context, and resulting effective model context.  It must implement the
+=none=, =linear=, =branchable=, and =request-local-replaceable= profiles.  The
+test must use a newly loaded test-owned harness/store for restart and must not
+mock the projector, frame state machine, or replay.
+
+* Coverage ledger
+
+| Contract cell | Status | Evidence or next question |
+|---------------+--------+---------------------------|
+| Lifetime taxonomy and scope | candidate | F88.4 |
+| Frame representation and lifetime | candidate | F88.1 |
+| Settlement, abort, retry, recovery | candidate | F88.1 |
+| Promotion/public composition | candidate | F88.2 |
+| Provider capability and dependency direction | candidate | F88.3 |
+| Clean-anchor/stateless semantics | cleared | Plan anchor rule joins Feature 35 local authority |
+| Prompt-cache independence | cleared | Plan joins Features 23 and 81 |
+| Generational portable compaction | cleared | Existing readable summary remains canonical |
+| Resume-checkpoint retention | candidate | F88.1 |
+| Migration and branch inheritance | cleared | Compatibility contract is explicit |
+| Deterministic full-stack acceptance | candidate | F88.5 |
+| Credentialed provider claims | cleared | Claims require live evidence |
+| Performance and boundedness | candidate | F88.2 requires measurable promotion bounds |
+| Presentation | cleared | Optional and downstream |
+| Unknown required cells | none | Re-review after correcting findings |
+
+* Verification
+
+The primary agent checked the material source claims against the cited owners.
+No runtime mutation, live Emacs probe, or implementation test was appropriate
+for this specification-only Tick.
+
+* Fixed-point disposition
+
+The plan has not reached a fixed point.  Correct all five findings and run a
+fresh independent specification Tick before implementation.
