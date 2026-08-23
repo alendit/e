@@ -295,14 +295,22 @@ state separate from frame settlement.  =admitted= and =dispatch-started= are
 nonterminal states; =outcome-unknown= is a blocked, nonterminal recovery state;
 =finished=, =failed=, and =resolved= are terminal.  The resume checkpoint retains
 every =admitted=, =dispatch-started=, and =outcome-unknown= obligation together
-with the normalized call, required provider linkage, and any persisted
-idempotency key.
+with the normalized call and required provider linkage.
 
 The loop durably acknowledges =dispatch-started= before invocation.  On
 recovery, an admitted call with no =dispatch-started= record may dispatch.  A
 =dispatch-started= call without a terminal record first appends and acknowledges
 =outcome-unknown=.  It neither redispatches nor permits provider follow-up until
-it is retried through an allowed idempotency contract or explicitly resolved.
+it is explicitly resolved.  Feature 88 never automatically redispatches an
+execution after =dispatch-started=.
+
+A live =finished= or =failed= outcome, its provider-linked tool result, and the
+next =frame-opened= record form one ordered terminal prefix.  The loop must
+durably acknowledge that entire prefix before clearing the active execution or
+starting any later tool/provider follow-up.  Failed or withheld acknowledgement
+starts nothing.  A live retry resubmits the same record identities; after a
+crash, the absence of an acknowledged terminal prefix yields
+=outcome-unknown=, even when the old process observed a result.
 
 Add the consumer-shaped core operation =e-harness-resolve-tool-execution=.  It
 accepts a session id, execution id, and one bounded resolution: a normalized
@@ -313,15 +321,27 @@ Repeating the same resolution is a no-op; a conflicting resolution is an
 explicit error.  Presentation may expose this operation but does not own its
 policy.
 
-For the initial feature, add one narrow optional =:idempotency-key-function= to
-=e-tools-register=.  It receives normalized arguments and the stable execution
-id before admission and returns a nonempty key or nil.  Persist the returned key
-in the admitted record and pass that exact key through tool execution context on
-every attempt.  Only a persisted non-nil key permits automatic retry after
-=dispatch-started=.  Defer a broader resumable-execution protocol until a
-concrete tool requires it.  This protocol promises one live dispatch per
-execution attempt, not impossible exactly-once external side effects across
-arbitrary crashes.
+*** Pending-transition recovery service
+
+=e-session= derives and checkpoints a provider-neutral pending-transition
+descriptor containing the transition and turn identities, consuming response,
+ordered execution ids, provider replay linkage, and next durable action.  It
+contains no process-local callbacks, promises, or tool objects.
+
+=e-harness-resume-pending-transition= is the sole application service that
+turns this durable descriptor back into live work.  Session resume calls it
+after replay and before accepting a new prompt.  It claims the descriptor in the
+active-turn registry, is idempotent on repeated calls, dispatches only calls
+proven not to have reached =dispatch-started=, exposes =outcome-unknown= as a
+blocked state, and reconstructs exactly one provider follow-up after every
+ordered terminal prefix is acknowledged.  A reconstruction mismatch fails
+visibly and leaves the descriptor recoverable.
+
+=e-harness-resolve-tool-execution= persists the bounded resolution, then
+delegates release to that service.  Feature 88 adds no generic idempotency-key
+hook and no automatic retry after =dispatch-started=.  A later feature may add a
+versioned resume contract for a concrete tool adapter that actually transmits a
+stable key to a deduplicating external operation.
 
 * Generational compaction
 
@@ -411,6 +431,8 @@ If the lifecycle is large enough to deserve a module, use a core name such as
 - Keep the journal authoritative and append-only.
 - Restore the active generation and any recoverable open frame through the
   Feature 78 resume-checkpoint manifest.
+- Derive and checkpoint the provider-neutral pending-transition descriptor used
+  to resume tool work without retaining process-local callbacks.
 - Treat pre-feature session messages conservatively as durable unless an
   explicit migrated lifetime record proves otherwise.
 
@@ -422,6 +444,8 @@ If the lifecycle is large enough to deserve a module, use a core name such as
   capabilities.
 - Advance, retain, or discard provider anchors according to the returned anchor
   safety decision.
+- Own =e-harness-resume-pending-transition= as the single idempotent bridge from
+  a durable pending-transition descriptor to claimed live work.
 - Emit bounded lifecycle and cache diagnostics without observation bodies.
 
 ** Tool and resource boundaries
@@ -452,9 +476,9 @@ It does not own frame lifetime, promotion policy, or provider fallback.
   cohesive enough to stand alone; otherwise keep its pure projection helpers in
   =lisp/core/e-context.el= until that boundary is proven.
 - Modify =lisp/core/e-backend.el=, =e-context.el=, =e-session.el=,
-  =e-harness.el=, =e-loop.el=, =e-tools.el=, and =e-compaction.el= for the
+  =e-harness.el=, =e-loop.el=, and =e-compaction.el= for the
   semantic capability query, projection, persistence, transaction orchestration,
-  optional tool idempotency/resume declaration, and generation boundaries.
+  pending-transition recovery service, and generation boundaries.
 - Modify =lisp/adapters/openai/e-openai.el= for replaceable instructions,
   capability declaration, clean-anchor decisions, and optional opaque
   compaction.
@@ -521,8 +545,9 @@ Add bounded events/diagnostics sufficient to explain context behavior:
 
 - generation id and checkpoint boundary;
 - frame opened, consumed, promoted, closed, failed, or recovered;
-- tool execution admitted, dispatch-started, terminal, outcome-unknown, retried,
-  or explicitly resolved, keyed by bounded execution id;
+- tool execution admitted, dispatch-started, terminal-prefix-acknowledged,
+  outcome-unknown, recovery-claimed, or explicitly resolved, keyed by bounded
+  execution id;
 - observation and promoted token/character estimates, never full content;
 - provider anchor held, advanced, rebuilt, or discarded, with reason;
 - rendering strategy: stateless, clean-anchor branch, or replaceable channel;
@@ -593,12 +618,16 @@ restart; do not add live-reload compatibility shims for them.
 - After restart, a durably admitted but provably undispatched call may resume.
   A =dispatch-started= call without a terminal result becomes
   blocked =outcome-unknown= and remains checkpoint-retained.  It is not
-  automatically redispatched unless its admitted record contains a stable
-  idempotency key.  Completed results stay terminal, and no provider follow-up
-  occurs until every admitted call is terminal.
+  automatically redispatched.  Completed results stay terminal, and no provider
+  follow-up occurs until every admitted call has an acknowledged terminal
+  prefix.
 - =e-harness-resolve-tool-execution= appends and acknowledges exactly one linked
   terminal result before releasing follow-up.  Repeating an identical resolution
   is a no-op and a conflicting resolution fails explicitly.
+- =e-harness-resume-pending-transition= is invoked through the real
+  session-resume path before a new prompt is accepted, claims recovered work at
+  most once, blocks on ambiguity, and reconstructs exactly one follow-up from
+  durable records after all terminal prefixes are acknowledged.
 - A changed canvas replaces the prior snapshot.  It does not become another
   durable transcript item and does not force stable-prefix invalidation.
 - A provider anchor never advances across inherited ephemeral input.  It may
@@ -669,11 +698,15 @@ tool:
 - the public resolver appends one linked terminal result, waits for durable
   acknowledgement, and only then permits follow-up;
 - an identical repeated resolution is a no-op and a conflicting one fails;
-- a registered idempotency-key function runs before admission and its persisted
-  key is reused on the recovered attempt;
+- the scenario crosses the real session-resume service, repeated resume claims
+  are idempotent, and new prompts remain blocked until the pending transition is
+  settled;
+- no generic idempotency key is persisted and no execution at or beyond
+  =dispatch-started= is automatically redispatched;
 - completed multi-tool results remain terminal, ambiguous calls do not rerun,
   and only provably undispatched calls may start; and
-- provider follow-up waits until every admitted call is terminal.
+- provider follow-up waits until every admitted call has an acknowledged
+  terminal prefix and is reconstructed exactly once after restart.
 
 Place this coverage under =e2e/= and give it one documented command that runs
 without credentials.  The planned direct command is:
@@ -736,13 +769,14 @@ cache regression needs a first-principles justification; existing code layout
 is not sufficient justification.
 
 For an observation-bearing and a multi-tool transition, evidence also reports
-settlement-prefix record count and bytes, settlement-acknowledgement wait, and
-end-to-end time from provider completion to the next admitted tool or provider
-dispatch.  The acknowledgement path performs work proportional to the settling
-prefix, never scans the full journal, and performs no synchronous filesystem I/O
-on the Emacs main thread.  Any material latency regression requires
-first-principles justification.  A controlled-writer acknowledgement gate is
-contract evidence; queue/outbox microtests are mechanism evidence.
+frame-settlement and tool-terminal-prefix record count and bytes, their separate
+acknowledgement waits, and end-to-end time from provider completion to first tool
+dispatch and from tool completion to the next tool or provider dispatch.  The
+acknowledgement paths perform work proportional to their prefixes, never scan
+the full journal, and perform no synchronous filesystem I/O on the Emacs main
+thread.  Any material latency regression requires first-principles
+justification.  A controlled-writer acknowledgement gate is contract evidence;
+queue/outbox microtests are mechanism evidence.
 
 * Compatibility and migration
 
@@ -780,9 +814,9 @@ contract evidence; queue/outbox microtests are mechanism evidence.
 - Do not add a second external-resource registry or persist external payloads in
   generation/frame state.  This feature only classifies the bounded observation
   produced when an existing handle is resolved.
-- Do not promise exactly-once external side effects for arbitrary tools.  Only a
-  tool-owned stable idempotency or resume contract permits automatic retry after
-  =dispatch-started= without a terminal result.
+- Do not promise exactly-once external side effects for arbitrary tools or add a
+  speculative generic idempotency interface.  Feature 88 never automatically
+  retries after =dispatch-started= without a terminal result.
 
 * Risks and explicit mitigations
 
@@ -804,8 +838,8 @@ contract evidence; queue/outbox microtests are mechanism evidence.
   state.
 - *Crash recovery duplicates an external tool side effect.* Persist execution
   admission and dispatch-started separately, never automatically rerun an
-  ambiguous ordinary tool, and reuse a stable key only when the tool owns a real
-  idempotency/resume contract.
+  ambiguous tool, retain it as =outcome-unknown=, and require an explicit durable
+  resolution before resuming the transition.
 - *Cache optimization leaks into semantic policy.* Keep provider capabilities
   and rendering in adapters, and prove core projection with a backend-free test.
 - *Journal size still grows.* This feature bounds model context, not audit

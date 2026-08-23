@@ -115,6 +115,15 @@ identity.
 | Performance evidence | candidate | Terminal-prefix metrics |
 | Unknown required cells | none | Three findings remain |
 
+* Current disposition
+
+The plan now requires one acknowledged live terminal prefix before any later
+dispatch, assigns restart reconstruction to
+=e-harness-resume-pending-transition= through the real session-resume route,
+and removes the speculative idempotency hook and every automatic retry after
+=dispatch-started=.  F88.10--F88.12 are remediated in the candidate plan; the
+same reviewer must Tick the new exact revision before implementation starts.
+
 * Verification
 
 - Reviewed exact revision =fe4d7780b123ef7d55d2414107c619e009c6ce56=.
