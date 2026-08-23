@@ -9,6 +9,12 @@ This was a rebaseline specification review.  No implementation was reviewed.
 The unrelated working-tree changes in =lisp/defaults/e-default-harnesses.el= and
 =test/e-dev-test.el= were excluded.
 
+* Current disposition
+
+All five findings were applied to =plan.org= in the subsequent specification
+Tock.  This historical review remains the negative witness; a fresh independent
+Tick must decide whether the corrected plan is implementation-ready.
+
 * Scope and method
 
 The review checked =plan.org= against the current owners in =e-context=,
