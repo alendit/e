@@ -1050,8 +1050,9 @@ which positions belong to the frontier.  This is important when a durable
 history/delta message has the same role and content as the current observation.
 Callers without segments cannot prove the partition and therefore signal an
 explicit projection error instead of deleting an equal durable message by
-guesswork or copying the frontier into explicit input.  Callers that already
-removed the frontier may set `:replaceable-current-state-partitioned'."
+guesswork or copying the frontier into explicit input.  The harness owns the
+derived partition boundary; callers cannot forge an already-partitioned
+escape."
   (let* ((replaceable-p
           (eq (e-openai-codex--observation-delivery options)
               'request-local-replaceable))
@@ -1061,8 +1062,6 @@ removed the frontier may set `:replaceable-current-state-partitioned'."
     (cond
      ((not replaceable-p) messages)
      ((null frontier-messages) messages)
-     ((plist-get options :replaceable-current-state-partitioned)
-      messages)
      ((null segments)
       (signal 'e-openai-context-projection-invalid
               '("A non-empty replaceable frontier has no segment partition")))
@@ -1070,17 +1069,33 @@ removed the frontier may set `:replaceable-current-state-partitioned'."
       (let ((index 0)
             (frontier-indices nil)
             (segment-message-count
-             (plist-get options :context-segment-message-count)))
+             (plist-get options :context-segment-message-count))
+            (segment-messages nil)
+            (frontier-segment-messages nil))
         (dolist (segment segments)
-          (dolist (_message (plist-get segment :messages))
+          (dolist (message (plist-get segment :messages))
+            (push message segment-messages)
             (when (memq (plist-get segment :kind)
                         '(current-state dynamic-context))
-              (push index frontier-indices))
+              (push index frontier-indices)
+              (push message frontier-segment-messages))
             (setq index (1+ index))))
-        (unless (or (= index (length messages))
-                    (and (integerp segment-message-count)
-                         (= index segment-message-count)
-                         (<= segment-message-count (length messages))))
+        (setq segment-messages (nreverse segment-messages)
+              frontier-segment-messages (nreverse frontier-segment-messages))
+        ;; The segment list is the sole origin evidence.  It may cover a
+        ;; complete request or an exact prefix followed by later in-turn
+        ;; messages, but its contents must be that exact prefix.  The reserved
+        ;; count is checked when present, never used as an authority, and the
+        ;; frontier value must agree with the frontier-bearing segments.  In
+        ;; particular, a caller cannot forge a continuation-delta plist value
+        ;; to turn an absent or mismatched partition into a safe projection.
+        (unless (and (<= index (length messages))
+                     (equal segment-messages
+                            (cl-subseq messages 0 index))
+                     (or (null segment-message-count)
+                         (and (integerp segment-message-count)
+                              (= index segment-message-count)))
+                     (equal frontier-messages frontier-segment-messages))
           (signal 'e-openai-context-projection-invalid
                   '("Replaceable frontier segments do not cover the request prefix")))
         (cl-loop for message in messages

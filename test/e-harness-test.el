@@ -1691,6 +1691,239 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                                   :response-id)
                        "resp-new"))))))
 
+(defun e-harness-test--run-final-refresh-anchor-scenario
+    (kind second-candidate-p)
+  "Run a real harness refresh scenario for identity KIND.
+Return request options, persisted anchors, and the final context."
+  (let* ((stable-content "STABLE-A")
+         (current-state "STATE-A")
+         (tool-version "TOOL-A")
+         (request-count 0)
+         (requests nil)
+         (harness nil)
+         (backend
+          (e-backend-create
+           :name (format "anchor-refresh-%s" kind)
+           :context-capabilities
+           '(:continuation linear
+             :observation-delivery request-local-replaceable)
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages)
+              (push (copy-tree options) requests)
+              (cl-incf request-count)
+              (if (= request-count 1)
+                  (progn
+                    (funcall
+                     on-item
+                     '(:type tool-call
+                       :id "refresh-1"
+                       :name "refresh-anchor"
+                       :arguments nil))
+                    (funcall
+                     on-item
+                     '(:type provider-anchor-candidate
+                       :provider-id openai
+                       :metadata (:response-id "resp-A")))
+                    (funcall on-item '(:type done :reason stop)))
+                (funcall on-item
+                         '(:type assistant-message :content "answer-B"))
+                (when second-candidate-p
+                  (funcall
+                   on-item
+                   '(:type provider-anchor-candidate
+                     :provider-id openai
+                     :metadata (:response-id "resp-B"))))
+                (funcall on-item '(:type done :reason stop)))))))
+         (stable-provider
+          (e-context-provider-create
+           :name 'anchor-refresh-stable
+           :cache-placement 'stable-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content stable-content)))))
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'anchor-refresh-current
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-refresh-capability
+           :instructions "stable policy"
+           :context-providers (list stable-provider dynamic-provider)
+           :tools
+           (list
+            (lambda (registry)
+              (e-tools-register
+               registry
+               :name "refresh-anchor"
+               :description (format "Refresh %s" tool-version)
+               :work
+               (e-tools-cheap-work
+                "test.anchor-refresh"
+                (lambda (_arguments)
+                  (pcase kind
+                    ('stable
+                     (setq stable-content "STABLE-B"))
+                    ('current-state
+                     (setq current-state "STATE-B"))
+                    ('tool-schema
+                     (setq tool-version "TOOL-B"))
+                    ('provider-option
+                     (setf (e-harness-default-options harness)
+                           (plist-put
+                            (copy-sequence
+                             (e-harness-default-options harness))
+                            :max-tokens
+                            123)))
+                    ('compaction
+                     (let* ((store (e-harness-sessions harness))
+                            (first-entry
+                             (car (e-session-current-path
+                                   store "session-1"))))
+                       (e-session-append-compaction
+                        store "session-1" "refresh summary"
+                        :first-kept-entry-id
+                        (plist-get first-entry :id)))))
+                  (e-tools-result-create
+                   (plist-get (e-tools-current-context) :tool-call)
+                   'ok
+                   "refreshed"
+                   '(:refresh-context t)))))))))
+         )
+    (setq harness
+          (e-harness-create
+           :backend backend
+           :intrinsic-capabilities (list capability)
+           :default-options
+           '(:model "gpt-test"
+             :provider-continuation t
+             :provider-anchor-provider-id openai)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-prompt-batch harness "session-1" "refresh")
+    (list :requests (nreverse requests)
+          :anchors (e-session-provider-anchors
+                    (e-harness-sessions harness) "session-1")
+          :context (e-harness-turn-context
+                    harness "session-1" "after-refresh"))))
+
+(ert-deftest e-harness-test-provider-anchor-persistence-follows-final-refresh ()
+  "Only the candidate owned by the final refreshed request is persisted."
+  (e-harness-test--with-empty-layer-registry
+    (dolist (kind '(stable tool-schema provider-option compaction))
+      (let* ((result
+             (e-harness-test--run-final-refresh-anchor-scenario kind t))
+             (requests (plist-get result :requests))
+             (anchors (plist-get result :anchors))
+             (context (plist-get result :context)))
+        (should (= (length requests) 2))
+        (should-not (plist-get (nth 1 requests) :provider-anchor))
+        (should (= (length anchors) 1))
+        (should (equal (plist-get (plist-get (car anchors) :metadata)
+                                  :response-id)
+                       "resp-B"))
+        (should (equal (plist-get (car anchors) :fingerprints)
+                       (e-harness--provider-anchor-fingerprints context)))))
+    (let* ((result
+            (e-harness-test--run-final-refresh-anchor-scenario
+             'current-state t))
+           (requests (plist-get result :requests))
+           (anchors (plist-get result :anchors))
+           (context (plist-get result :context)))
+      ;; The replaceable frontier may use resp-A for this immediate follow-up,
+      ;; but the final persisted owner is still the refreshed response.
+      (should (equal
+               (plist-get
+                (plist-get (nth 1 requests) :provider-anchor)
+                :metadata)
+               '(:response-id "resp-A")))
+      (should (= (length anchors) 1))
+      (should (equal (plist-get (plist-get (car anchors) :metadata)
+                                :response-id)
+                     "resp-B"))
+      (should-not
+       (plist-member (plist-get (car anchors) :fingerprints)
+                     :current-state-fingerprint))
+      (should (equal (plist-get (car anchors) :fingerprints)
+                     (e-harness--provider-anchor-fingerprints context))))
+    (dolist (kind '(stable current-state))
+      (let* ((result
+              (e-harness-test--run-final-refresh-anchor-scenario kind nil))
+             (requests (plist-get result :requests))
+             (anchors (plist-get result :anchors)))
+        (should (= (length requests) 2))
+        (should (= (length anchors) 0))))))
+
+(ert-deftest e-harness-test-provider-anchor-reversion-selects-matching-old-fingerprint ()
+  "A later reversion selects an old compatible anchor, never a newer mismatch."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((stable-content "STABLE-A")
+           (request-count 0)
+           (requests nil)
+           (backend
+            (e-backend-create
+             :name "anchor-reversion"
+             :context-capabilities
+             '(:continuation linear
+               :observation-delivery request-local-replaceable)
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (ignore messages)
+                (push (copy-tree options) requests)
+                (cl-incf request-count)
+                (funcall on-item
+                         (list :type 'assistant-message
+                               :content (format "answer-%s" request-count)))
+                (funcall on-item
+                         (list :type 'provider-anchor-candidate
+                               :provider-id 'openai
+                               :metadata
+                               (list :response-id
+                                     (format "resp-%s" request-count))))
+                (funcall on-item '(:type done :reason stop))))))
+           (stable-provider
+            (e-context-provider-create
+             :name 'anchor-reversion-stable
+             :cache-placement 'stable-context
+             :build (lambda (&rest _)
+                      (list (list :role 'system :content stable-content)))))
+           (capability
+            (e-capability-create
+             :id 'anchor-reversion-capability
+             :instructions "stable policy"
+             :context-providers (list stable-provider)))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability)
+             :default-options
+             '(:model "gpt-test"
+               :provider-continuation t
+               :provider-anchor-provider-id openai))))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-test-prompt-batch harness "session-1" "one")
+      (setq stable-content "STABLE-B")
+      (e-harness-test-prompt-batch harness "session-1" "two")
+      (setq stable-content "STABLE-A")
+      (e-harness-test-prompt-batch harness "session-1" "three")
+      (let* ((ordered (nreverse requests))
+             (third (nth 2 ordered))
+             (anchors (e-session-provider-anchors
+                       (e-harness-sessions harness) "session-1")))
+        (should (= (length ordered) 3))
+        (should (equal
+                 (plist-get (plist-get third :provider-anchor) :metadata)
+                 '(:response-id "resp-1")))
+        (should (= (length anchors) 3))
+        (should (equal (mapcar (lambda (anchor)
+                                (plist-get (plist-get anchor :metadata)
+                                           :response-id))
+                              anchors)
+                       '("resp-1" "resp-2" "resp-3")))))))
+
 (ert-deftest e-harness-test-openai-anchor-candidates-require-continuation ()
   "OpenAI response ids are not persisted when the request was not store-enabled."
   (let* ((backend (e-backend-fake-create
@@ -2259,6 +2492,51 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (dolist (segment segments)
         (should (stringp (plist-get segment :fingerprint)))
         (should (plist-get segment :messages))))))
+
+(ert-deftest e-harness-test-context-partition-markers-are-derived-only ()
+  "Caller/default/session partition markers cannot forge the context boundary."
+  (let* ((dynamic-provider
+          (e-context-provider-create
+           :name 'hostile-dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    '((:role system :content "current state")))))
+         (capability
+          (e-capability-create
+           :id 'hostile-partition-capability
+           :instructions "stable instructions"
+           :context-providers (list dynamic-provider)))
+         (harness
+          (e-harness-create
+           :backend
+           (e-backend-fake-create
+            :context-capabilities
+            '(:continuation linear
+              :observation-delivery request-local-replaceable))
+           :intrinsic-capabilities (list capability)
+           :default-options
+           '(:context-segment-message-count 1
+             :replaceable-current-state-partitioned t))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-set-turn-options
+     (e-harness-sessions harness)
+     "session-1"
+     '(:context-segment-message-count 999
+       :replaceable-current-state-partitioned t))
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "prompt"))
+    (let* ((context (e-harness-turn-context harness "session-1" "turn-1"))
+           (options (plist-get context :options))
+           (messages (plist-get context :messages))
+           (segments (plist-get context :segments)))
+      (should-not (plist-member options :replaceable-current-state-partitioned))
+      (should (equal (plist-get options :context-segment-message-count)
+                     (length messages)))
+      (should (equal (plist-get options :context-segment-message-count)
+                     (cl-loop for segment in segments
+                              sum (length (plist-get segment :messages))))))))
 
 (ert-deftest e-harness-test-context-attaches-compatible-provider-anchor ()
   "Context options include a compatible provider anchor and transcript delta."

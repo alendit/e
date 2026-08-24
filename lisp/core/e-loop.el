@@ -117,6 +117,25 @@ results, that the stored response does not contain."
                  :provider-anchor-source-message-count
                  source-message-count))))
 
+(defun e-loop--accepted-continuation-candidate
+    (candidate projection-identity request-id request-ordinal)
+  "Return CANDIDATE marked as accepted by the current loop request.
+
+Acceptance is deliberately recorded at the promotion boundary rather than
+when a backend item first arrives.  A candidate that arrives before a tool
+refresh may be useful for an immediate follow-up, but it is not automatically
+the durable owner of the eventual turn.  REQUEST-ID and REQUEST-ORDINAL let
+the harness select only the candidate belonging to the final successful
+provider request; PROJECTION-IDENTITY lets it verify that the candidate was
+produced by the authoritative semantic projection."
+  (let ((accepted (copy-tree candidate)))
+    (plist-put accepted :accepted-for-persistence t)
+    (plist-put accepted :projection-identity
+               (copy-tree projection-identity))
+    (plist-put accepted :provider-request-id request-id)
+    (plist-put accepted :provider-request-ordinal request-ordinal)
+    accepted))
+
 (defun e-loop--continuation-projection-compatible-p (request-identity options)
   "Return non-nil when OPTIONS still describes REQUEST-IDENTITY.
 
@@ -377,7 +396,20 @@ settlement are callback-driven."
                              turn-options
                              provider-anchor-candidate
                              (length turn-messages)
-                             provider-followup-messages))))
+                             provider-followup-messages))
+                      ;; Only emit a candidate once this loop has accepted it
+                      ;; for the current request projection.  Raw provider
+                      ;; items are intentionally not durable ownership facts.
+                      (e-loop--emit
+                       :on-event on-event
+                       :type 'provider-anchor-candidate
+                       :payload
+                       (e-loop--accepted-continuation-candidate
+                        provider-anchor-candidate
+                        provider-request-projection-identity
+                        provider-request-id
+                        provider-request-ordinal))
+                      t))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -611,10 +643,11 @@ settlement are callback-driven."
                               (when (e-loop--continuation-candidate-p
                                      turn-options item)
                                 (setq provider-anchor-candidate item))
-                              (e-loop--emit
-                               :on-event on-event
-                               :type 'provider-anchor-candidate
-                               :payload item))
+                              ;; Do not forward the raw item.  The accepted
+                              ;; event is emitted by `promote-provider-anchor'
+                              ;; only after the loop has checked the current
+                              ;; projection identity.
+                              nil)
                              ('done
                               (setq done-reason
                                     (plist-get item :reason)))

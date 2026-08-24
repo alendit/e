@@ -641,8 +641,8 @@ Accepted parent-side on 2026-08-24.
 
 ** Slice 2 implementation evidence
 
-Parent-accepted candidate on 2026-08-24; independent fixed-point review remains
-required before Slice 3.
+Parent-accepted Tock 06 candidate on 2026-08-24; independent fixed-point review
+remains required before Slice 3.
 
 - Current-state and dynamic-context segments now form an explicit semantic
   observation frontier.  Backends declare inherited or request-local
@@ -657,7 +657,9 @@ required before Slice 3.
   observation-bearing response as its successor.
 - Anchor compatibility excludes replaceable current-state identities while
   retaining delivery semantics.  Candidate selection, in-turn promotion, and
-  persistence all require an advertised semantic continuation capability.
+  persistence all require an advertised semantic continuation capability.  Only
+  a loop-accepted candidate owned by the final successful provider request and
+  authoritative refreshed projection can enter durable anchor state.
 - Bounded request diagnostics report delivery, rendering strategy, fingerprint,
   and anchor safety without retaining the observation frontier or its content.
 - Tick 06 remediation made same-turn context refresh atomic.  A stable
@@ -667,15 +669,21 @@ required before Slice 3.
 - Effective endpoint and transport identity now gates the first-party OpenAI
   replacement claim.  Endpoint/requester overrides fall back conservatively;
   a named custom profile may carry an explicit proof for its own endpoint.
-- OpenAI removes current state by semantic segment position, retains equal
-  durable messages and already-partitioned continuation deltas, and fails
-  explicitly when a nonempty frontier has no unambiguous origin partition.
-- Parent verification after Tock 05 passed 381/381 focused backend, context,
-  harness, loop, OpenAI, Anthropic, and continuation-integration tests.  The
-  full suite produced 2260 expected results, the same two existing skips, and
-  zero unexpected results out of 2262.  The credential-gated live E2E file
-  loaded with all 16 tests skipped because no live backend was enabled.
-  =eldev compile --warnings-as-errors= and =git diff --check= passed.
+- OpenAI removes current state by semantic segment origin, retains equal durable
+  messages and clean continuation deltas, and fails explicitly when a nonempty
+  frontier has no exact message-prefix partition.  Caller/default/session
+  partition markers are stripped and cannot bypass that validation.
+- Tock 06 makes accepted candidate ownership explicit and updates the active
+  harness entry's context on atomic refresh.  Real harness tests cover stable,
+  tool-schema, provider-option, compaction, and replaceable-only refreshes,
+  including no-final-candidate and later-fingerprint-reversion cases.
+- Parent verification after Tock 06 passed 307/307 focused harness, loop,
+  OpenAI, and continuation-integration tests.  The full suite produced 2263
+  expected results, the same two existing skips, and zero unexpected results
+  out of 2265.  The focused OpenAI suite passed 126/126 after compile cleanup.
+  With =E_E2E=1= and no backend configuration, the credential-gated live E2E
+  file loaded and explicitly skipped all 16 tests.  =eldev compile
+  --warnings-as-errors= and =git diff --check= passed.
 - The user's running Emacs was left unchanged.  The core/harness/session/adapter
   changes require a full restart before they can affect it.
 

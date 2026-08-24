@@ -5,10 +5,10 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Implementation Tick 07 found two
-additional P1 defects in Slice 2 at
-=a976cc4f8ba406b7a58f4c08107f2ae635714b21=.  Slice 2 is not accepted, Slice 3
-remains gated, and this is not final feature acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Tock 06 remediates the two P1
+Slice 2 findings from Implementation Tick 07.  The parent has accepted the
+uncommitted candidate for an exact-revision Tick; Slice 2 is not yet fixed-point
+accepted, Slice 3 remains gated, and this is not final feature acceptance.
 
 * Tick 01 findings
 
@@ -556,3 +556,40 @@ harness context coverage.  Add hostile and stale-option tests for both keys.
 Remediate F88.I2.4--F88.I2.5 with the persistent implementer, commit the Tock,
 and return that exact clean revision to the same unattended reviewer.  Slice 3
 remains gated.
+
+* Tock 06 candidate disposition
+
+Parent acceptance completed on 2026-08-24.  The exact commit is supplied by the
+semantic commit containing this ledger entry; the same unattended reviewer must
+Tick that clean revision before Slice 3 begins.
+
+- F88.I2.4: raw backend candidates no longer enter the durable candidate stream.
+  The loop emits a candidate only after projection-compatible acceptance and
+  labels it with its producing request ordinal and projection identity.  The
+  harness tracks the final successful request, updates the active entry's
+  authoritative context atomically on refresh, and persists only a candidate
+  owned by that final request and context.
+- Real harness tests cover =request A -> refresh B -> request B= for stable
+  context, tool schema, provider option, compaction boundary, and replaceable
+  current state.  They prove =resp-B= carries the final B fingerprints, a
+  missing B candidate persists no stale =resp-A=, and returning to stable A
+  selects A's older compatible anchor rather than B's response.
+- F88.I2.5: the public =:replaceable-current-state-partitioned= escape is gone.
+  The harness strips caller/default/session partition markers and derives its
+  boundary only from exact semantic segment coverage.  The OpenAI adapter
+  independently requires segment messages to equal the actual request prefix
+  and frontier-bearing segments to equal the advertised frontier; a forged
+  continuation delta or stale count cannot authorize a mismatched partition.
+- Parent focused verification passed 307/307.  The full suite produced 2263
+  expected results, the same two existing skips, and zero unexpected results
+  out of 2265.  The focused OpenAI suite passed 126/126 after the compile-only
+  cleanup.
+- =eldev compile --warnings-as-errors= and =git diff --check= passed.  With
+  =E_E2E=1= and no =E_E2E_CONFIG=, the live E2E file loaded and explicitly
+  skipped all 16 credentialed tests; no provider claim is made from that run.
+- The user's running Emacs was left unchanged.  The core/harness/adapter changes
+  require a full restart before they can affect it.
+
+F88.I2.4--F88.I2.5 are candidate-closed.  Slice 3 remains gated until the same
+unattended reviewer accepts the exact clean Tock commit with zero P0--P3
+findings and zero required unknown cells for Slice 2.

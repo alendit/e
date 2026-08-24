@@ -409,7 +409,29 @@
              :messages ((:role system :content "Stable project guidance.")))
             (:kind current-state
              :id current
-             :messages ((:role system :content "Current canvas.")))))
+             :messages ((:role system :content "Current canvas.")))
+            (:kind history
+             :id history
+             :messages ((:role user :content "first prompt")))))
+         (second-segments
+          '((:kind static-prefix
+             :id static
+             :messages ((:role system :content "Static policy.")))
+            (:kind stable-context
+             :id stable
+             :messages ((:role system :content "Stable project guidance.")))
+            (:kind current-state
+             :id current
+             :messages ((:role system :content "Changed canvas.")))
+            (:kind history
+             :id first-prompt
+             :messages ((:role user :content "first prompt")))
+            (:kind history
+             :id first-answer
+             :messages ((:role assistant :content "first answer")))
+            (:kind history
+             :id second-prompt
+             :messages ((:role user :content "second prompt")))))
          (base-options
           `(:model "gpt-5.6-sol"
             :instructions "Base instructions."
@@ -421,7 +443,7 @@
                                    request-local-replaceable)
             :replaceable-current-state
             ((:role system :content "Current canvas."))
-            :context-segment-message-count 3
+            :context-segment-message-count 4
             :segments ,segments))
          (first-body
           (e-openai-codex-request-body
@@ -450,9 +472,16 @@
                        (:role assistant :content "first answer")
                        (:role user :content "second prompt"))
            :options
-           (plist-put second-options
-                      :replaceable-current-state
-                      '((:role system :content "Changed canvas."))))))
+           (plist-put
+            (plist-put
+             (plist-put second-options
+                        :replaceable-current-state
+                        '((:role system :content "Changed canvas.")))
+             :segments
+             second-segments)
+            :context-segment-message-count
+            (length (cl-loop for segment in second-segments
+                             append (plist-get segment :messages))))))
     (should (equal (plist-get first-body :instructions)
                    "Base instructions.\n\nCurrent canvas."))
     (should (equal (mapcar (lambda (item) (plist-get item :role))
@@ -469,7 +498,7 @@
                                      :content)
                           0)
                     :text)
-                   "Static policy."))))
+                   "Static policy.")))))
 
 (ert-deftest e-openai-test-replaceable-frontier-does-not-delete-equal-durable-messages ()
   "Semantic segments retain equal durable messages in full and anchored input."
@@ -479,7 +508,9 @@
                      (:kind history
                       :messages (,same-message))
                      (:kind current-state
-                      :messages (,same-message))))
+                      :messages (,same-message))
+                     (:kind history
+                      :messages ((:role user :content "prompt")))))
          (base-options `(:model "gpt-5.6-sol"
                          :prompt-cache-key "equal-key"
                          :prompt-cache-breakpoint-mode explicit
@@ -488,7 +519,7 @@
                          :context-capabilities
                          (:observation-delivery request-local-replaceable)
                          :replaceable-current-state (,same-message)
-                         :context-segment-message-count 3
+                         :context-segment-message-count 4
                          :segments ,segments))
          (messages `((:role system :content "stable")
                      ,same-message
@@ -542,15 +573,33 @@
               :responses-context-layout developer-input
               :observation-delivery request-local-replaceable
               :replaceable-current-state
-              ((:role system :content "current")))
+              ((:role system :content "current"))
+              ;; These are reserved harness-derived values.  A direct caller
+              ;; must not be able to turn them into an ambiguity escape.
+              :replaceable-current-state-partitioned t
+              :context-segment-message-count 999)
             '(:model "gpt-5.6-sol"
               :responses-context-layout developer-input
               :observation-delivery request-local-replaceable
               :replaceable-current-state
               ((:role system :content "current"))
+              :context-segment-message-count 1
               :segments
               ((:kind stable-context
-                :messages ((:role system :content "stable")))))))
+                :messages ((:role system :content "stable")))))
+            '(:model "gpt-5.6-sol"
+              :responses-context-layout developer-input
+              :observation-delivery request-local-replaceable
+              :replaceable-current-state
+              ((:role system :content "current"))
+              ;; A forged delta/count pair cannot authorize a segment list
+              ;; whose content is not the exact request prefix.
+              :provider-anchor-delta-messages
+              ((:role user :content "new prompt"))
+              :context-segment-message-count 1
+              :segments
+              ((:kind stable-context
+                :messages ((:role system :content "not the prefix")))))))
     (should-error
      (e-openai-codex-request-body
       :messages '((:role system :content "stable")

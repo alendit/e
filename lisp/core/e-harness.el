@@ -2184,7 +2184,9 @@ turn context work."
              :session-id session-id
              :turn-id turn-id
              :context-purpose context-purpose)))
-       (let* ((turn-options (e-harness-turn-options harness session-id))
+       (let* ((turn-options
+               (e-harness--strip-reserved-derived-context-options
+                (e-harness-turn-options harness session-id)))
               (context-capabilities
                (e-harness--context-capabilities harness turn-options))
               (context
@@ -2760,6 +2762,21 @@ profile names."
         (e-backend-context-capabilities backend options)
       (e-backend-default-context-capabilities))))
 
+(defconst e-harness--reserved-derived-context-option-keys
+  '(:context-segment-message-count
+    :replaceable-current-state-partitioned)
+  "Context options owned by the harness rather than callers.
+
+These values are derived from the semantic projection at request construction.
+They must not be inherited from defaults, session options, or a provider-facing
+caller because such values could forge or stale the frontier partition.")
+
+(defun e-harness--strip-reserved-derived-context-options (options)
+  "Return OPTIONS without harness-derived context partition markers."
+  (let ((clean (copy-sequence options)))
+    (dolist (key e-harness--reserved-derived-context-option-keys clean)
+      (cl-remf clean key))))
+
 (defun e-harness--context-observation-frontier (context capabilities)
   "Attach semantic observation metadata to CONTEXT for CAPABILITIES.
 
@@ -2767,7 +2784,9 @@ The frontier contains the complete current-state value and its fingerprint at
 request construction time.  Only the explicitly replaceable projection is
 handed to an adapter as a request-local replacement; inherited observations
 remain ordinary input and make an anchor unsafe to advance."
-  (let* ((options (copy-sequence (plist-get context :options)))
+  (let* ((options
+          (e-harness--strip-reserved-derived-context-options
+           (plist-get context :options)))
          (delivery (plist-get capabilities :observation-delivery))
          (messages (e-context-current-state-messages context))
          (fingerprint (and messages
@@ -2791,24 +2810,33 @@ remain ordinary input and make an anchor unsafe to advance."
     context))
 
 (defun e-harness--context-with-segment-message-boundary (context)
-  "Attach the exact context-prefix length represented by CONTEXT segments.
+  "Attach the exact message coverage represented by CONTEXT segments.
 
-OpenAI's request-local frontier partition is allowed to leave later in-turn
-tool/result messages outside the original context prefix.  Recording that
-boundary lets the adapter distinguish those legitimate suffixes from a
-partial/ambiguous segment description and fail closed in the latter case."
+Only a complete semantic segment projection receives the reserved derived
+boundary.  In-turn continuation deltas are already partitioned by the loop's
+lexical ownership and do not use this marker; a partial segment list remains
+ambiguous and is rejected by the provider adapter."
   (let* ((messages (plist-get context :messages))
          (segments (plist-get context :segments))
-         (segment-message-count
+         (segment-messages
           (cl-loop for segment in segments
-                   sum (length (plist-get segment :messages)))))
-    (when (= segment-message-count (length messages))
-      (let ((options (copy-sequence (plist-get context :options))))
-        (plist-put context
-                   :options
-                   (plist-put options
-                              :context-segment-message-count
-                              segment-message-count))))
+                   append (copy-tree (plist-get segment :messages))))
+         (segment-message-count (length segment-messages))
+         ;; Counting alone is insufficient: a hostile/stale segment list could
+         ;; have the right length while describing different messages.  The
+         ;; harness owns both sides of this comparison and only then derives
+         ;; the reserved prefix boundary.
+         (exact-coverage-p (and segments
+                                (equal segment-messages messages)))
+         (options
+          (e-harness--strip-reserved-derived-context-options
+           (plist-get context :options))))
+    (when exact-coverage-p
+      (setq options
+            (plist-put options
+                       :context-segment-message-count
+                       segment-message-count)))
+    (plist-put context :options options)
     context))
 
 (defun e-harness--provider-anchor-fingerprints (context)
@@ -3110,11 +3138,23 @@ inherited."
       (plist-put context :options options))
     context))
 
-(defun e-harness--provider-anchor-candidate-persistable-p (context candidate)
-  "Return non-nil when CANDIDATE is durable for CONTEXT."
+(defun e-harness--provider-anchor-candidate-persistable-p
+    (context candidate final-request-ordinal)
+  "Return non-nil when accepted CANDIDATE owns CONTEXT's final request.
+
+The loop marks candidates only after projection-compatible promotion.  The
+request ordinal and projection identity then fence a candidate from an
+earlier request in the same turn, including the case where a refreshed
+request emits no candidate at all."
   (let ((provider-id (plist-get candidate :provider-id))
         (options (plist-get context :options)))
-    (and provider-id
+    (and (plist-get candidate :accepted-for-persistence)
+         (plist-member candidate :projection-identity)
+         (equal (plist-get candidate :projection-identity)
+                (plist-get options :continuation-projection-identity))
+         (equal (plist-get candidate :provider-request-ordinal)
+                final-request-ordinal)
+         provider-id
          (memq (plist-get (plist-get options :context-capabilities)
                           :continuation)
                '(linear branchable))
@@ -3143,14 +3183,19 @@ inherited."
         (push candidate result)))))
 
 (defun e-harness--persist-provider-anchor-candidates
-    (harness session-id turn-id context candidates)
+    (harness session-id turn-id context candidates final-request-ordinal)
   "Persist provider anchor CANDIDATES for completed TURN-ID."
   (when-let ((assistant-message
               (e-harness--turn-assistant-message harness session-id turn-id)))
     (dolist (candidate
-             (e-harness--latest-provider-anchor-candidates candidates))
+             (e-harness--latest-provider-anchor-candidates
+              (cl-remove-if-not
+               (lambda (candidate)
+                 (e-harness--provider-anchor-candidate-persistable-p
+                  context candidate final-request-ordinal))
+               candidates)))
       (when (e-harness--provider-anchor-candidate-persistable-p
-             context candidate)
+             context candidate final-request-ordinal)
         (e-session-append-provider-anchor
          (e-harness-sessions harness)
          session-id
@@ -3176,7 +3221,8 @@ inherited."
 
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
-             cancelled-p append-message on-event context drain-pending-input)
+             cancelled-p append-message on-event context drain-pending-input
+             on-context-refresh)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -3212,7 +3258,11 @@ inherited."
           ;; A context refresh is atomic at the loop boundary: messages and
           ;; all request-derived options (segments, observation frontier, and
           ;; anchor decision) come from one fresh harness projection.
-          (e-harness-turn-context harness session-id turn-id))
+          (let ((fresh-context
+                 (e-harness-turn-context harness session-id turn-id)))
+            (when on-context-refresh
+              (funcall on-context-refresh fresh-context))
+            fresh-context))
         :drain-pending-input
         (or drain-pending-input
             (lambda ()
@@ -3409,7 +3459,8 @@ cancellation.  SESSION-ID identifies the session."
                 session-id
                 turn-id
                 (plist-get entry :context)
-                (nreverse (plist-get entry :provider-anchor-candidates)))
+                (nreverse (plist-get entry :provider-anchor-candidates))
+                (plist-get entry :provider-anchor-final-request-ordinal))
 	               (let ((hooked-result
 	                      (e-harness--run-turn-finished-hooks
 	                       harness session-id turn-id result
@@ -3433,9 +3484,10 @@ cancellation.  SESSION-ID identifies the session."
 	            (start-provider
 	             (context)
 	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-	               (plist-put entry :context context)
-	               (plist-put entry :provider-anchor-candidates nil)
-	               (e-harness--run-prompt-turn-async
+               (plist-put entry :context context)
+               (plist-put entry :provider-anchor-candidates nil)
+               (plist-put entry :provider-anchor-final-request-ordinal nil)
+               (e-harness--run-prompt-turn-async
 	                harness session-id turn-id
 	                :cancelled-p #'cancelled-p
 	                :on-request-start
@@ -3454,7 +3506,7 @@ cancellation.  SESSION-ID identifies the session."
 	                       (plist-put entry :open-tool-call payload))
 	                      ('tool-finished
 	                       (plist-put entry :open-tool-call nil))
-	                      ('provider-request-finished
+                      ('provider-request-finished
 	                       ;; A request that completes clears the transient-retry
 	                       ;; window: the budget bounds a consecutive failure
 	                       ;; burst, not the turn's total wall clock.  Without
@@ -3462,17 +3514,30 @@ cancellation.  SESSION-ID identifies the session."
 	                       ;; tools) lets the deadline planted by an early blip
 	                       ;; expire, so a late transport blip settles the turn
 	                       ;; failed instead of retrying.
-	                       (when (eq (plist-get payload :status) 'done)
-	                         (plist-put entry :retry-deadline nil)
-	                         (plist-put entry :retry-attempt nil)))
-	                      ('provider-anchor-candidate
-	                       (plist-put
-	                        entry
-	                        :provider-anchor-candidates
-	                        (cons payload
-	                              (plist-get
-	                               entry
-	                               :provider-anchor-candidates)))))
+                       (when (eq (plist-get payload :status) 'done)
+                         (plist-put entry :retry-deadline nil)
+                         (plist-put entry :retry-attempt nil)
+                         ;; Candidate ownership is per final successful
+                         ;; provider request, not per whole turn.  A prior
+                         ;; request may have produced a usable in-turn anchor
+                         ;; while a later refreshed request owns the final
+                         ;; assistant response.
+                         (plist-put
+                          entry
+                          :provider-anchor-final-request-ordinal
+                          (plist-get payload :provider-request-ordinal))))
+                      ('provider-anchor-candidate
+                       ;; Only loop-accepted candidates are ownership facts.
+                       ;; Raw backend candidate items never enter the durable
+                       ;; candidate collection.
+                       (when (plist-get payload :accepted-for-persistence)
+                         (plist-put
+                          entry
+                          :provider-anchor-candidates
+                          (cons payload
+                                (plist-get
+                                 entry
+                                 :provider-anchor-candidates))))))
 	                    ;; `turn-finished' here is the loop's private terminal
 	                    ;; edge.  The harness emits its public terminal event
 	                    ;; after `:turn-finished' hooks settle in `finish-done'.
@@ -3485,8 +3550,8 @@ cancellation.  SESSION-ID identifies the session."
 	                             (not (plist-get entry :cancelled)))
 	                    (e-harness--append-message
 	                     harness session-id turn-id message)))
-	                :drain-pending-input
-	                (lambda ()
+                :drain-pending-input
+                (lambda ()
 	                  (when (and (active-entry-p)
 	                             (not (plist-get entry :cancelled)))
 	                    (mapcar
@@ -3494,9 +3559,19 @@ cancellation.  SESSION-ID identifies the session."
 	                       (list :role 'user
 	                             :content (plist-get item :prompt)
 	                             :metadata (plist-get item :metadata)))
-	                     (e-harness--drain-pending-steering-input
-	                      harness entry))))
-	                :context context)))
+                     (e-harness--drain-pending-steering-input
+                      harness entry))))
+                :on-context-refresh
+                (lambda (fresh-context)
+                  ;; The loop calls this only for an atomic refresh that
+                  ;; belongs to this active entry.  Keep the entry's context
+                  ;; authoritative for final candidate ownership, but never
+                  ;; let a stale callback mutate a replacement turn.
+                  (when (and (active-entry-p)
+                             (equal (plist-get entry :id) turn-id)
+                             (not (plist-get entry :cancelled)))
+                    (plist-put entry :context fresh-context)))
+                :context context)))
 	            (start-auto-compaction
 	             (context)
 	             (condition-case err
