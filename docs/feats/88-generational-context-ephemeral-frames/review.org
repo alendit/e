@@ -1209,3 +1209,51 @@ state vocabulary—=e-context-lifetime-frame-states=,
 
 Remediate the remaining F88.P3 wording with the same persistent Luna
 implementer, then reuse the same unattended Sol reviewer for Tick 16.
+
+* Tick 16 narrowed-plan fixed-point review
+
+Reviewed exact HEAD =a7906ea8ad7ca509750d8c172a257cfb7b94ea2d= plus
+the sole WIP =plan.org=.  Decision: zero-finding fixed-point Tick; ready for
+implementation.  No P0, P1, or P2 findings remain.
+
+** F88.P3 disposition
+
+Closed.  The cleanup ledger now:
+
+- deletes rather than repurposes the obsolete lifecycle and bounded-retry test
+  helpers;
+- updates the actual local persistence-test =cl-letf= wrapper to the restored
+  generic submit signature;
+- removes callback-list dispatch, submit hooks, logical-record state, prefix
+  barriers, and the resume-state accessor while preserving generic
+  persistence;
+- replaces the old frame transition API with one consumer-bound runtime
+  completion operation; and
+- removes the obsolete frame-state vocabulary, slots/accessors, visibility
+  predicate, and transition error when their consumers are gone.
+
+Local source inspection confirmed that remaining old frame-state references
+are confined to the owning module and tests already scheduled for replacement.
+
+** Tick 16 evidence and fixed-point disposition
+
+- All reviewed cells are green: durable/ephemeral visibility, consumer-bound
+  runtime frames, core-derived promotion provenance, sole durable body source,
+  streamed ordinary-tool preservation, paired bundle visibility, transient
+  continuation scope, contaminated descendants, kind-scoped capabilities,
+  clean compaction ancestry, legacy compatibility, exact cleanup, opt-in,
+  performance, and mandatory credential-free E2E.
+- Crash recovery, transactional tool lifecycle, and exactly-once guarantees
+  remain explicitly excluded.
+- F88.P13 remains closed; no trust-boundary regression was found.
+- Org parsing and =git diff --check= passed; only =plan.org= was dirty before
+  this review artifact was recorded.
+- Credentialed provider conformance, live cache counters, and provider
+  compaction wire behavior remain explicitly gated implementation evidence,
+  not plan-readiness blockers.
+- The reused reviewer made zero prompts, approval requests, escalations, edits,
+  git writes, network calls, or live-Emacs calls.
+
+The plan has reached the required independent fixed point.  Begin implementation
+with the same persistent Luna implementer and reuse the same unattended Sol
+reviewer for fresh implementation Ticks.
