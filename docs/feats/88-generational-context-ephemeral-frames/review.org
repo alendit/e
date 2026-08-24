@@ -279,3 +279,24 @@ rejection.
 Remediate F88.I1.7 at logical-record attempt ownership, prove both predecessor
 success and predecessor failure are inert after replacement preflight rejection,
 then run the same unattended reviewer again.  Slice 2 remains gated.
+
+* Tock 04 candidate disposition
+
+The candidate fences the predecessor's logical key-to-command ownership before
+preparing a same-key replacement.  It deliberately retains the predecessor's
+physical command-to-key index, outbox entry, and caller callbacks.  If the new
+attempt fails preflight, the authoritative state becomes =preflight-failed= and
+all active logical watchers fail and detach immediately; later predecessor
+success or failure can complete only that physical command's lifecycle and
+cannot overwrite or satisfy the newer logical attempt.
+
+Controlled tests cover both late predecessor success and late predecessor
+terminal failure after replacement preflight rejection.  They also prove two
+simultaneous barriers fail exactly once and clean up, while the predecessor's
+caller callback and outbox lifecycle still complete.
+
+Parent verification passed 22/22 lifetime tests, 38/38 persistence tests, all
+2245 repository tests with 2243 expected results, the same two existing skips,
+and zero unexpected results.  Compilation and diff checks passed.  F88.I1.7 is
+candidate-closed; the same unattended reviewer must Tick the exact clean Tock
+commit before Slice 2.

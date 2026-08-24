@@ -274,6 +274,16 @@ success cache."
   (gethash (e-session-persistence--record-key session-id record-id)
            (e-session-persistence-record-states controller)))
 
+(defun e-session-persistence--fence-record-attempt (controller key)
+  "Fence the predecessor attempt currently owning logical record KEY.
+
+The predecessor command remains indexed by command identity so its physical
+outbox and caller callback can complete normally.  Removing only the logical
+KEY-to-command mapping makes every later predecessor response non-authoritative
+until a newly admitted replacement installs its own mapping."
+  (when key
+    (remhash key (e-session-persistence-record-command-ids controller))))
+
 (defun e-session-persistence--add-callback
     (controller command-id on-done on-error)
   "Attach one independent callback pair to COMMAND-ID.
@@ -328,6 +338,15 @@ identity for precise removal when a barrier rebinds or settles."
             (gethash key (e-session-persistence-record-watchers controller))))
     (when-let ((rebind (plist-get watcher :rebind)))
       (funcall rebind command-id))))
+
+(defun e-session-persistence--fail-record-watchers
+    (controller key error)
+  "Fail every active logical KEY watcher with terminal ERROR."
+  (dolist (watcher
+           (copy-sequence
+            (gethash key (e-session-persistence-record-watchers controller))))
+    (when-let ((fail (plist-get watcher :fail)))
+      (funcall fail error))))
 
 (defun e-session-persistence--resend-page (controller)
   "Resend one fixed retry page for CONTROLLER and yield between pages."
@@ -554,6 +573,10 @@ they do not introduce a checkpoint or a second write."
                         (plist-get record :entry_id)))
          (key (and session-id record-id
                    (e-session-persistence--record-key session-id record-id))))
+    ;; Advance logical ownership before command preparation.  If this attempt
+    ;; is rejected during preflight, the predecessor must remain physical
+    ;; work only; its response cannot become authoritative again.
+    (e-session-persistence--fence-record-attempt controller key)
     ;; `pending' exists only between the session mutation and the outbox
     ;; admission callback.  It is never treated as durable by the barrier.
     (e-session-persistence--set-record-state controller key 'pending)
@@ -569,12 +592,16 @@ they do not introduce a checkpoint or a second write."
        ;; replacement can settle even if its predecessor never responds.
        (e-session-persistence--rebind-record-watchers
         controller key queued-command-id))
-     (lambda (_error)
+     (lambda (error)
        ;; The command never entered the outbox.  Keep this negative fact at
        ;; the same owner as the command mapping so a later barrier cannot
        ;; mistake the missing mapping for durability.
        (e-session-persistence--set-record-state
-        controller key 'preflight-failed)))))
+        controller key 'preflight-failed)
+       ;; Reconcile logical waits immediately.  The predecessor callback, if
+       ;; any, remains attached to its own physical command below.
+       (e-session-persistence--fail-record-watchers
+        controller key error)))))
 
 (defun e-session-persistence-await-record-prefix
     (controller session-id record-ids on-done on-error
@@ -652,7 +679,8 @@ those exact entries came from disk replay."
              (detach-binding watch (nth 0 binding)))
            (e-session-persistence--unregister-record-watcher
             controller (plist-get watch :key) watch)
-           (plist-put watch :rebind nil))
+           (plist-put watch :rebind nil)
+           (plist-put watch :fail nil))
          (finish (value)
            (unless finished
              (setq finished t)
@@ -775,6 +803,9 @@ those exact entries came from disk replay."
             (plist-put watch :rebind
                        (lambda (new-command-id)
                          (rebind-watch watch new-command-id)))
+            (plist-put watch :fail
+                       (lambda (error)
+                         (fail error)))
             (push watch watchers)
             (e-session-persistence--register-record-watcher
              controller key watch)

@@ -288,6 +288,152 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-prefix-barrier-preflight-replacement-fences-success-predecessor ()
+  "A rejected replacement fences a predecessor success from logical state."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "preflight-fences-success"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (predecessor-done 0)
+         (predecessor-error 0)
+         (first-failure nil)
+         (second-failure nil)
+         (first-count 0)
+         (second-count 0)
+         (key (list "session-replacement" "same-key")))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil))
+              ((symbol-function 'display-warning)
+               (lambda (&rest _arguments) nil)))
+      (let* ((first
+              (e-session-persistence-submit-record
+               controller "session-replacement"
+               '(:type "message" :id "same-key" :content "predecessor")
+               (lambda (&rest _value)
+                 (setq predecessor-done (1+ predecessor-done)))
+               (lambda (&rest _error)
+                 (setq predecessor-error (1+ predecessor-error))))))
+        (e-session-persistence-await-record-prefix
+         controller "session-replacement" '("same-key")
+         (lambda (_value) nil)
+         (lambda (error)
+           (setq first-failure error
+                 first-count (1+ first-count))))
+        ;; A second logical waiter proves that terminal reconciliation cleans
+        ;; every watcher for the fenced key, not only the first callback.
+        (e-session-persistence-await-record-prefix
+         controller "session-replacement" '("same-key")
+         (lambda (_value) nil)
+         (lambda (error)
+           (setq second-failure error
+                 second-count (1+ second-count))))
+        (let ((e-session-persistence-command-byte-limit 8))
+          (should-error
+           (e-session-persistence-submit-record
+            controller "session-replacement"
+            '(:type "message" :id "same-key"
+              :content "replacement is rejected before admission"))
+           :type 'e-session-persistence-command-error))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'preflight-failed))
+        ;; Ownership is fenced while the predecessor command remains available
+        ;; through its physical command index and callback lifecycle.
+        (should-not
+         (gethash key (e-session-persistence-record-command-ids controller)))
+        (should (equal
+                 (gethash first
+                          (e-session-persistence-record-command-keys controller))
+                 key))
+        (should (= first-count 1))
+        (should (= second-count 1))
+        (should first-failure)
+        (should second-failure)
+        (should (= (hash-table-count
+                    (e-session-persistence-record-watchers controller))
+                   0))
+        ;; The predecessor's physical success remains caller-visible but
+        ;; cannot overwrite the newer failed logical attempt.
+        (e-session-persistence--handle-response
+         controller (list :id first :ok t :result 'old-success))
+        (should (= predecessor-done 1))
+        (should (= predecessor-error 0))
+        (should (= first-count 1))
+        (should (= second-count 1))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'preflight-failed))
+        (should (= (hash-table-count
+                    (e-session-persistence-outbox controller))
+                   0))))))
+
+(ert-deftest e-session-persistence-test-prefix-barrier-preflight-replacement-fences-failure-predecessor ()
+  "A rejected replacement fences a predecessor terminal failure too."
+  (let* ((store (e-session-store-create))
+         (controller (e-session-persistence--create
+                      :store store :instance-id "preflight-fences-failure"))
+         (e-session--unsettled-write-count 0)
+         (e-session--unsettled-generation 0)
+         (predecessor-done 0)
+         (predecessor-error 0)
+         (barrier-failure nil)
+         (barrier-count 0)
+         (key (list "session-replacement" "same-key")))
+    (cl-letf (((symbol-function 'e-session-persistence--send-submitted-command)
+               (lambda (&rest _arguments) nil))
+              ((symbol-function 'display-warning)
+               (lambda (&rest _arguments) nil)))
+      (let ((first
+             (e-session-persistence-submit-record
+              controller "session-replacement"
+              '(:type "message" :id "same-key" :content "predecessor")
+              (lambda (&rest _value)
+                (setq predecessor-done (1+ predecessor-done)))
+              (lambda (&rest _error)
+                (setq predecessor-error (1+ predecessor-error))))))
+        (e-session-persistence-await-record-prefix
+         controller "session-replacement" '("same-key")
+         (lambda (_value) nil)
+         (lambda (error)
+           (setq barrier-failure error
+                 barrier-count (1+ barrier-count))))
+        (let ((e-session-persistence-command-byte-limit 8))
+          (should-error
+           (e-session-persistence-submit-record
+            controller "session-replacement"
+            '(:type "message" :id "same-key"
+              :content "replacement is rejected before admission"))
+           :type 'e-session-persistence-command-error))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'preflight-failed))
+        (should-not
+         (gethash key (e-session-persistence-record-command-ids controller)))
+        (should barrier-failure)
+        (should (= barrier-count 1))
+        (should (= (hash-table-count
+                    (e-session-persistence-record-watchers controller))
+                   0))
+        ;; The old physical rejection still invokes its caller callback, but
+        ;; cannot change the terminal state of the replacement attempt.
+        (e-session-persistence--handle-response
+         controller
+         (list :id first :ok :json-false :retryable :json-false))
+        (should (= predecessor-done 0))
+        (should (= predecessor-error 1))
+        (should (= barrier-count 1))
+        (should (eq
+                 (e-session-persistence--record-state
+                  controller "session-replacement" "same-key")
+                 'preflight-failed))
+        (should (= (hash-table-count
+                    (e-session-persistence-outbox controller))
+                   0))))))
+
 (ert-deftest e-session-persistence-test-prefix-barrier-waits-for-submitted-ack ()
   "An admitted record remains pending until its explicit writer acknowledgement."
   (let* ((directory (make-temp-file "e-session-prefix-submitted-" t))
