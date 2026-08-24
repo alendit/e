@@ -1519,3 +1519,170 @@ zero.
 
 Slice 3 has reached the required independent pre-commit fixed point.  Slices 4
 through 6 remain unstarted.
+
+* Tick 23 Slice 4 initial portable-compaction review
+
+Reviewed exact HEAD =7f5a45fc4526404d7a8769e4ae82e7491b2a23b2= plus
+the initial four-file Slice 4 WIP.  Decision: not ready; six P1, two P2, and
+one P3 finding remained.
+
+The first implementation isolated durable-only portable input, minimal
+generation records, a derived post-boundary tail, fresh runtime frames, and
+generation-aware anchor fingerprints.  Independent reproduction nevertheless
+found that persisted string roles crashed adapters, apply recomputed a later
+boundary and could drop concurrent durable entries, old promotions were both
+duplicated and unreplayable, forks resurrected covered history, enabled
+projection erased ordinary compaction summaries, and empty checkpoints did no
+work.  Generation identity could also be reused, anchor fallback lacked an
+acceptance test, and disconnected public helpers duplicated the protocol.
+
+The owning corrections were a strict portable checkpoint codec, one captured
+prepare/apply boundary, absorption of covered promotions into C1, portable fork
+seeding, coordination with existing compaction, non-empty internally identified
+generations, real anchor rejection coverage, and removal of dead aliases.
+
+* Tick 24 Slice 4 first remediation review
+
+The reused unattended reviewer confirmed the strict codec, non-empty
+checkpoint, internally minted identity, production anchor invalidation, and
+dead-alias cleanup.  Decision remained not ready: five P1, one P2, and two P3
+findings.
+
+Late promotions could disappear between preparation and apply; production
+still summarized raw transcript E instead of portable C0+D0; fork semantics
+were not yet wired; realistic session metadata failed the exact checkpoint
+codec; and stale validation happened after the ordinary compaction append,
+leaving partial mutation.  Required production-boundary tests were missing,
+disabled compaction performed unnecessary lifetime work, and arbitrary role
+strings were interned before rejection.
+
+The remediation introduced a promotion frontier, provider-neutral production
+summary input, portable fork projection, exact role/content normalization,
+pre-mutation validation, explicit opt-in preparation, and finite role mapping.
+
+* Tick 25 Slice 4 production-integration review
+
+The reused reviewer found three P1, one P2, and one P3 finding.  Complete D0
+was still absent from the portable summary, preflight ran twice with an
+ordinary append between the checks, and generation-only forks became blank
+when the feature was later disabled.  The acceptance matrix still omitted real
+adapter/reopen/anchor/async paths, and parallel portable preparation/apply
+protocols had already diverged.
+
+The correction consolidated one portable input owner, made preflight return a
+detached application consumed by a rejection-free append, seeded portable
+forks for both enabled and disabled readers, and added credential-free adapter,
+reopen, anchor, async, and fork evidence.
+
+* Tick 26 Slice 4 boundary review
+
+The reused reviewer found one P1, one P2, and one P3 finding.  Portable
+preparation captured the current head instead of the ordinary compaction
+boundary, so automatic compaction could summarize and cover an explicitly
+excluded active prompt; =keep-recent-tokens= also became ineffective and
+opt-out replay duplicated the kept suffix.  Production async/stale acceptance
+was still incomplete, and a test-only prepare/apply protocol remained.
+
+The correction made portable input follow the ordinary summarized prefix and
+exclusions, covered only the last actually summarized durable entry, left
+retained/excluded/later messages as the derived tail, and removed the alternate
+preparation protocol.
+
+* Tick 27 Slice 4 acceptance and performance review
+
+No P0 or P1 correctness defect remained.  One P2 acceptance gap and one P3
+performance finding remained: enabled async/automatic and production stale-
+overlap tests were absent, while summarized-entry membership used a quadratic
+list scan.  The correction added real async success, stale-promotion, and
+automatic active-prompt tests with provider-state markers, and replaced the
+scan with equal-tested hash sets plus one canonical-path pass.
+
+* Tick 28 Slice 4 implementation fixed-point review
+
+Reviewed exact HEAD =7f5a45fc4526404d7a8769e4ae82e7491b2a23b2= plus
+the final seven-file Slice 4 WIP.  Decision: ready; zero-finding pre-commit
+fixed point with no P0, P1, P2, or P3 findings.
+
+** Acceptance disposition
+
+1. Portable preparation contains the current C0, every eligible durable entry
+   in the ordinary summarized prefix, and active selected promotions.
+2. Raw tool observations, replay metadata, provider anchors, continuation
+   state, runtime frames, and cache diagnostics never enter C1.
+3. C1 covers only the last actually summarized durable entry; first-kept,
+   excluded, and later entries remain a derived suffix exactly once.
+4. Pre-existing promotions are absorbed into C1 and become audit-only;
+   promotion/generation changes during summary reject before either append.
+5. Sync, async, and automatic production paths preflight once before mutation
+   and consume the detached application without a second domain rejection.
+6. An excluded active prompt is absent from the compaction summary request and
+   appears verbatim in the following provider request.
+7. Portable forks before, at, and after a boundary do not resurrect the covered
+   prefix and remain readable when the feature is disabled and after reopen.
+8. Persisted checkpoints rehydrate symbolic provider-neutral roles and render
+   through OpenAI and Anthropic without provider metadata.
+9. A generation change rejects the old provider anchor with
+   =context-generation-changed= and selects stateless fallback.
+10. The disabled path preserves existing manual/automatic compaction and does
+    not construct portable preparation.
+
+** Verification
+
+- Independent focused review passed 463/463 credential-free tests with zero
+  unexpected results.
+- Parent focused validation passed the same 463 logical tests.  Two local
+  socket tests initially failed only because the default sandbox prohibited
+  loopback binding; the unsandboxed local-loopback adapter file passed 132/132.
+- The full Eldev suite passed 2,283 expected tests out of 2,285 with zero
+  unexpected results and the same two pre-existing skips:
+  =e-chat-surface-integration-test-evil-escape-routes-transcript-commands= and
+  =e-chat-test-assistant-markdown-renders-with-text-properties=.
+- =eldev compile --warnings-as-errors= and =git diff --check= passed.
+- The same Luna Max implementer and the same unattended Sol High reviewer were
+  reused for every remediation/review tick.  The reviewer made zero prompts,
+  approval requests, escalations, edits, git writes, network calls, or live-
+  Emacs calls.
+- The running Emacs was untouched.  These core/session/harness changes require
+  a restart to use.
+
+** Architecture self-check
+
+1. This stopping point is independently useful: deliberate portable
+   compaction now produces C1 plus a correct durable suffix without depending
+   on provider compaction or presentation work.
+2. It advances generational append-only context: rare explicit boundaries
+   replace covered durable prefixes while normal turns retain the Slice 3
+   observe/promote/forget protocol.
+3. Stable portable semantics are direct.  Provider compaction remains an
+   uncertain optional adapter concern assigned to Slice 5.
+4. Core owns the checkpoint codec and selected-fact messages; session owns
+   canonical paths/forks; compaction owns generation transition; harness owns
+   sync/async orchestration.
+5. Coupling is reduced to one portable preparation and one preflighted apply
+   contract.  Disabled callers do not depend on lifetime preparation.
+6. Provider-neutral policy does not depend on OpenAI or Anthropic wire fields;
+   adapters consume the shared symbolic role vocabulary.
+7. Summary I/O and durable appends remain at the harness/compaction boundary;
+   pure validation and normalization occur before side effects.
+8. Generation records persist only identity, checkpoint, and covered boundary.
+   Durable tails remain derived from the session path; frames and provider
+   artifacts remain runtime-only.
+9. Preparation is linear in path plus summarized-prefix size through hash-backed
+   membership.  Ordinary turns add no compaction work, and disabled compaction
+   does not build portable state.
+10. Checkpoint, preparation, preflighted application, and anchor contracts are
+    substitutable across providers; unsupported optimization falls back to
+    stateless reconstruction.
+11. Existing compaction and fork behavior remain compatible when disabled;
+    enabled forks also preserve a legacy-readable semantic seed.
+12. The divergent kept-entry input builder, alternate preparation API, dead
+    alias, caller-supplied generation identity, and repeated preflight were
+    removed.
+13. Expected stale/invalid portable inputs use =e-compaction-error= before
+    mutation; unexpected adapter/session errors continue to surface.
+14. Pure codec/unit tests prove local policy; production sync/async/automatic,
+    fork/reopen, adapter-rendering, and anchor tests prove cross-module behavior
+    without provider credentials.
+
+Slice 4 has reached the required independent pre-commit fixed point.  Slices 5
+and 6 remain unstarted.
