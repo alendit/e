@@ -170,3 +170,61 @@ test("compaction accepts only the shared board record-type domain", () => {
     );
   }
 });
+
+test("compaction retains referenced context lifetime records", () => {
+  const records = [
+    {
+      type: "context-generation",
+      "session-id": "session-1",
+      id: "generation-entry",
+      "parent-id": "old-parent",
+      "context-record": {
+        "record-version": 2,
+        type: "context-generation",
+        id: "generation:message-1",
+        checkpoint: null,
+        "covered-session-boundary": "message-1",
+      },
+      "writer-command-id": "writer-a:1",
+    },
+    {
+      type: "context-promotion",
+      "session-id": "session-1",
+      id: "promotion-entry",
+      "parent-id": "generation-entry",
+      "context-record": {
+        "record-version": 2,
+        type: "context-promotion",
+        id: "promotion:1",
+      },
+      "writer-command-id": "writer-a:2",
+    },
+  ];
+  const compacted = compactRecords(records, {
+    ...manifest,
+    "board-message-identities": [],
+    "entry-ids": ["generation-entry", "promotion-entry"],
+  });
+  assert.deepEqual(
+    compacted.slice(1).map((record) => ({
+      type: record.type,
+      id: record.id,
+      "parent-id": record["parent-id"],
+      "writer-command-id": record["writer-command-id"],
+    })),
+    [
+      {
+        type: "context-generation",
+        id: "generation-entry",
+        "parent-id": "root",
+        "writer-command-id": undefined,
+      },
+      {
+        type: "context-promotion",
+        id: "promotion-entry",
+        "parent-id": "generation-entry",
+        "writer-command-id": undefined,
+      },
+    ],
+  );
+});

@@ -1,0 +1,76 @@
+#+title: Investigation: Context lifetime checkpoint entry reported absent
+#+startup: overview
+
+* Runtime evidence
+
+The reported session is
+=20260824T221013-87a83771367e=.  Its JSONL journal contains the allegedly absent
+entry exactly once:
+
+#+begin_example
+type: context-generation
+entry id: 01M0TX62X5TTRJV6BHSBDWVAZG
+record id: generation:01M0TX62T6KR6XQ40RDT3JVBJA
+covered boundary: 01M0TX62T6KR6XQ40RDT3JVBJA
+#+end_example
+
+The session checkpoint's byte offset is 1628.  The generation record appears
+after that offset, so it is present in the suffix read by the asynchronous
+writer.  The checkpoint remains at its initial three records, confirming that
+subsequent compaction attempts fail before replacement.
+
+The bounded =scripts/e-live-probe chat= probe reached the running Emacs.  The
+selected buffer was the attached =01-semantic-ir.md= canvas; no active chat
+turn was selected.  No live state was mutated.
+
+* Source finding
+
+=e-session-checkpoint-manifest= includes the active Feature 88 generation and
+promotion entry IDs in =:entry-ids=.  The Node writer then resolves every
+manifest ID through =compactRecords='s =byEntryId= map.
+
+=entryId= populates that map only for types in =ENTRY_RECORD_TYPES=.  That set
+included the older session entry types but omitted both =context-generation=
+and =context-promotion=.  Therefore a valid lifetime entry was read from the
+journal but deliberately excluded from lookup, producing the misleading
+"absent" error.
+
+Because the failed checkpoint does not clear the dirty session, periodic
+checkpointing submits the same invalid manifest repeatedly, explaining the
+notification spam.
+
+* Conclusion
+
+The session journal is intact.  This is an owning-boundary mismatch between the
+Feature 88 checkpoint manifest and the asynchronous writer's supported entry
+types, not missing or corrupt user data.
+
+* Fix
+
+Add =context-generation= and =context-promotion= to the writer's entry-record
+type set.  Add a regression test proving both referenced records survive
+compaction, are reparented in manifest order, and shed writer command metadata
+like the existing supported entries.
+
+* Verification
+
+#+begin_src shell
+node --test test/e-session-writer-test.mjs
+#+end_src
+
+Result: 10 tests passed, including the new lifetime-record checkpoint
+regression.
+
+#+begin_src shell
+eldev test -f test/e-session-persistence-test.el
+#+end_src
+
+Result: 23 tests passed with no unexpected results.
+
+#+begin_src shell
+eldev compile --warnings-as-errors
+eldev test
+#+end_src
+
+Result: compilation passed; the full suite ran 2312 tests with 2310 expected
+passes, 0 unexpected results, and 2 existing skips.

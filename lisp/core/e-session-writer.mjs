@@ -101,7 +101,7 @@ async function knownCommandIds(directory, sessionId) {
 const ENTRY_RECORD_TYPES = new Set([
   "message", "activity-event", "branch-summary", "compaction",
   "provider-anchor", "process-report", "current-branch", "session-info",
-  "messages-cleared",
+  "context-generation", "context-promotion", "messages-cleared",
 ]);
 
 function entryId(record) {

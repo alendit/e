@@ -1,0 +1,22 @@
+#+title: Context lifetime checkpoint entry reported absent
+#+startup: overview
+
+* Report
+
+After enabling Feature 88's generational context projection in the Doom host
+configuration and restarting Emacs, the user was repeatedly notified:
+
+#+begin_example
+Error (e-session-persistence): Session persistence error: "Checkpoint entry 01M0TX62X5TTRJV6BHSBDWVAZG is absent from 20260824T221013-87a83771367e"
+#+end_example
+
+* Expected
+
+The asynchronous session writer should checkpoint Feature 88 generation and
+promotion records without reporting persistence failures.
+
+* Actual
+
+The first enabled turn durably appends its =context-generation= record, but
+every later resume-checkpoint attempt rejects that record as absent and emits a
+new persistence error notification.
