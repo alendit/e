@@ -18,6 +18,7 @@
 (require 'e-dev-profile)
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(require 'e-loop)
 (require 'e-openai)
 (require 'url-http)
 
@@ -3796,6 +3797,291 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                     :content)
                          "real-ish answer")))
       (delete-file auth-file))))
+
+(ert-deftest e-openai-test-context-promotion-is-a-reserved-backend-effect ()
+  "The Responses adapter decodes context-promote without making a tool call."
+  (let ((item
+         (e-openai-codex--event-item
+          '(:type "response.output_item.done"
+            :item
+            (:type "function_call"
+             :call_id "promotion-call"
+             :name "context-promote"
+             :arguments
+             "{\"schema-version\":1,\"frame-id\":\"frame-1\",\
+\"source-observation-ids\":[\"observation-1\"],\
+\"facts\":[{\"id\":\"fact-1\",\"value\":\"selected\"}]}")))))
+    (should (eq (plist-get item :type) 'context-promote))
+    (should-not (plist-member item :name))
+    (should (equal (plist-get item :frame-id) "frame-1"))
+    (should (equal (plist-get item :source-observation-ids)
+                   '("observation-1")))
+    (should (equal (plist-get item :facts)
+                   '((:id "fact-1" :value "selected"))))))
+
+(ert-deftest e-openai-test-context-promotion-wire-is-opt-in ()
+  "The promotion carrier is present only in an opted-in Responses request."
+  (let* ((messages '((:role user :content "prompt")))
+         (enabled
+          (e-openai-codex-request-body
+           :messages messages
+           :options
+           `(:model "gpt-test"
+             :context-lifetime-enabled t
+             :reserved-effect-carrier context-promote-wire)
+           :tools nil))
+         (disabled
+          (e-openai-codex-request-body
+           :messages messages
+           :options '(:model "gpt-test")
+           :tools nil))
+         (enabled-tools (plist-get enabled :tools)))
+    (should (= (length enabled-tools) 1))
+    (should (equal (plist-get (aref enabled-tools 0) :name)
+                   "context-promote"))
+    ;; The carrier is a real Responses function schema.  In particular, an
+    ;; empty plist would encode as JSON null and would not describe the fact
+    ;; value accepted by the provider.
+    (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
+           (fact-schema
+            (plist-get (plist-get parameters :properties) :facts))
+           (value-schema
+            (plist-get
+             (plist-get
+              (plist-get
+               (plist-get fact-schema :items) :properties)
+              :value)
+             :type)))
+      (should (equal value-schema
+                     ["string" "number" "boolean" "object" "array"
+                      "null"]))
+      (should-not (string-match-p
+                   "\\\"value\\\":null"
+                   (json-encode enabled))))
+    (should-not (plist-member disabled :tools))))
+
+(ert-deftest e-openai-test-context-promotion-carries-function-output-ack ()
+  "A reserved Responses promotion retains its opaque wire acknowledgement."
+  (let* ((item
+          (e-openai-codex--event-item
+           '(:type "response.output_item.done"
+             :item
+             (:type "function_call"
+              :call_id "promotion-call"
+              :name "context-promote"
+              :arguments
+              "{\"schema-version\":1,\"frame-id\":\"frame-1\",\
+\"source-observation-ids\":[\"observation-1\"],\
+\"facts\":[{\"id\":\"fact-1\",\"value\":\"selected\"}]}"))))
+         (replay (plist-get item :provider-replay-item))
+         (wire-item (plist-get replay :item)))
+    (should (equal (plist-get replay :provider-id) 'openai))
+    (should (equal (plist-get wire-item :type) "function_call_output"))
+    (should (equal (plist-get wire-item :call_id) "promotion-call"))
+    (should (equal (plist-get wire-item :output) ""))))
+
+(ert-deftest e-openai-test-context-promotion-stream-carries-function-output-ack ()
+  "The streaming Responses parser preserves the reserved call identity."
+  (let* ((items
+          (e-openai-codex-parse-stream
+           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"promotion-call\",\"name\":\"context-promote\",\"arguments\":\"{\\\"schema-version\\\":1,\\\"frame-id\\\":\\\"frame-1\\\",\\\"source-observation-ids\\\":[\\\"observation-1\\\"],\\\"facts\\\":[{\\\"id\\\":\\\"fact-1\\\",\\\"value\\\":\\\"selected\\\"}]}\"}}\n\n"))
+         (item (car items))
+         (replay (plist-get item :provider-replay-item)))
+    (should (eq (plist-get item :type) 'context-promote))
+    (should (equal (plist-get (plist-get replay :item) :type)
+                   "function_call_output"))
+    (should (equal (plist-get (plist-get replay :item) :call_id)
+                   "promotion-call"))))
+
+(ert-deftest e-openai-test-context-promotion-request-emits-function-output ()
+  "The immediate continuation carries the reserved call acknowledgement."
+  (let* ((replay
+          '(:type provider-replay-item
+            :provider-id openai
+            :item (:type "function_call_output"
+                   :call_id "promotion-call"
+                   :output "")))
+         (body
+          (e-openai-codex-request-body
+           :messages
+           `((:role user :content "prompt")
+             (:role assistant
+              :content "selected"
+              :metadata (:provider-replay-items (,replay))))
+           :options
+           `(:model "gpt-test"
+             :provider-continuation t
+             :response-store t
+             :provider-anchor
+             (:provider-id openai :metadata (:response-id "resp-promotion"))
+             :provider-anchor-delta-messages
+             ((:role assistant
+               :content "selected"
+               :metadata (:provider-replay-items (,replay)))))
+           :tools nil))
+         (input (append (plist-get body :input) nil))
+         (ack (seq-find (lambda (item)
+                          (equal (plist-get item :type)
+                                 "function_call_output"))
+                        input)))
+    (should (equal (plist-get body :previous_response_id)
+                   "resp-promotion"))
+    (should ack)
+    (should (equal (plist-get ack :call_id) "promotion-call"))
+    (should (equal (plist-get ack :output) ""))
+    (should-not (seq-find (lambda (item)
+                            (equal (plist-get item :name)
+                                   "context-promote"))
+                          input))))
+
+(ert-deftest e-openai-test-loop-late-promotion-ack-joins-tool-followup ()
+  "A late reserved promotion ack joins the ordinary tool result on the wire."
+  (let* ((request-count 0)
+         (requests nil)
+         (durable-messages nil)
+         (started-tools nil)
+         (first-items nil)
+         (promotion-arguments
+          (json-encode
+           '(:schema-version 1
+             :frame-id "frame-openai-late-ack"
+             :source-observation-ids ["observation-openai-late-ack"]
+             :facts [(:id "selected" :value "keep")])))
+         (first-response
+          (mapconcat
+           (lambda (event)
+             (format "data: %s\n\n" (json-encode event)))
+           (list
+            (list :type "response.output_item.done"
+                  :item (list :type "function_call"
+                              :call_id "call-ordinary"
+                              :name "inspect"
+                              :arguments (json-encode
+                                          '(:target "state"))))
+            (list :type "response.output_item.done"
+                  :item (list :type "function_call"
+                              :call_id "promotion-call"
+                              :name "context-promote"
+                              :arguments promotion-arguments))
+            (list :type "response.completed"
+                  :response (list :id "resp-A" :status "completed")))
+           ""))
+         (second-response
+          (mapconcat
+           (lambda (event)
+             (format "data: %s\n\n" (json-encode event)))
+           (list
+            (list :type "response.output_text.done" :text "follow-up")
+            (list :type "response.completed"
+                  :response (list :id "resp-B" :status "completed")))
+           ""))
+         (backend
+          (e-backend-create
+           :name "openai-late-promotion-ack"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (cl-incf request-count)
+              (let ((items
+                     (e-openai-codex-parse-stream
+                      (if (= request-count 1)
+                          first-response
+                        second-response))))
+                (when (= request-count 1)
+                  (setq first-items (copy-tree items)))
+                (dolist (item items)
+                  (funcall on-item item)))))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (push (plist-get tool-call :name) started-tools)
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name (plist-get tool-call :name)
+                             :status 'ok
+                             :content "ordinary-result"))
+              nil))))
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-openai-late-ack"
+           :generation-id "generation-openai-late-ack"
+           :consumer-request-id "consumer-openai-late-ack"
+           :observations
+           '((:observation-id "observation-openai-late-ack"
+              :kind "current-state"
+              :source-entry-ref "external:canvas:openai-late-ack"
+              :source-fingerprint "canvas-openai-late-ack"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "canvas")))))
+         (options
+          '(:model "gpt-test"
+            :provider-continuation t
+            :provider-anchor-provider-id openai
+            :context-lifetime-enabled t
+            :context-capabilities
+            (:continuation linear
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-promote-wire)
+            :context-promotion-frame-id "frame-openai-late-ack"
+            :context-promotion-observation-ids
+            ("observation-openai-late-ack"))))
+    (e-loop-run-turn-batch
+     :session-id "session-openai-late-ack"
+     :turn-id "turn-openai-late-ack"
+     :messages '((:role user :content "inspect state"))
+     :backend backend
+     :tool-lifecycle tool-lifecycle
+     :options options
+     :lifetime-frame frame
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       ;; This callback represents the durable transcript boundary.  The
+       ;; loop must not retrofit the provider-only acknowledgement into it.
+       (setq durable-messages
+             (append durable-messages (list (copy-tree message))))))
+    (let* ((first-types (mapcar (lambda (item) (plist-get item :type))
+                                first-items))
+           (requests (nreverse requests))
+           (follow-up (nth 1 requests))
+           (body (e-openai-codex-request-body
+                  :messages (plist-get follow-up :messages)
+                  :options (plist-get follow-up :options)
+                  :tools nil))
+           (input (append (plist-get body :input) nil))
+           (outputs
+            (seq-filter (lambda (item)
+                          (equal (plist-get item :type)
+                                 "function_call_output"))
+                        input)))
+      ;; The actual adapter stream order is ordinary call, reserved control,
+      ;; then completion; the reserved control never enters ordinary tools.
+      (should (< (cl-position 'tool-call first-types)
+                 (cl-position 'context-promote first-types)))
+      (should (member 'done first-types))
+      (should (equal started-tools '("inspect")))
+      (should (= (length outputs) 2))
+      (should (seq-find (lambda (item)
+                          (and (equal (plist-get item :call_id)
+                                      "call-ordinary")
+                               (equal (plist-get item :output)
+                                      "ordinary-result")))
+                        outputs))
+      (should (seq-find (lambda (item)
+                          (and (equal (plist-get item :call_id)
+                                      "promotion-call")
+                               (equal (plist-get item :output) "")))
+                        outputs))
+      (should (equal (plist-get body :previous_response_id) "resp-A"))
+      (should-not (string-match-p "provider-replay-item"
+                                  (prin1-to-string durable-messages)))
+      (should-not (string-match-p "promotion-call"
+                                  (prin1-to-string durable-messages))))))
 
 (provide 'e-openai-test)
 

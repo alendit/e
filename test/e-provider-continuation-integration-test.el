@@ -16,6 +16,7 @@
 (require 'json)
 (require 'e)
 (require 'e-capabilities)
+(require 'e-context)
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-session)
@@ -42,6 +43,257 @@
   (alist-get
    'text
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
+
+(defun e-provider-continuation-integration--run-ephemeral-anchor-profile
+    (continuation observation-delivery)
+  "Run a normal tool follow-up for semantic CONTINUATION and DELIVERY.
+Return captured request options/messages and persisted anchor ids.  This fake
+backend is intentionally provider-neutral; OpenAI wire acknowledgement is
+covered by the adapter tests below."
+  (let* ((request-count 0)
+         (requests nil)
+         (current-state nil)
+         (harness-ref nil)
+         (promotion-input nil)
+         (promotions-at-later-request nil)
+         (replay-marker "REPLAY-EPHEMERAL")
+         (raw-result
+          (format "UNIQUE-%s-TOOL-RESULT"
+                  (symbol-name observation-delivery)))
+         (dynamic-provider
+          (e-context-provider-create
+           :name (intern (format "ephemeral-%s-state" observation-delivery))
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (when current-state
+                      (list (list :role 'system :content current-state))))))
+         (backend
+          (e-backend-create
+           :name (format "ephemeral-anchor-%s" continuation)
+           :context-capabilities
+           (list :continuation continuation
+                 :observation-delivery observation-delivery)
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (cl-incf request-count)
+              (pcase request-count
+                (1
+                 (funcall on-item
+                          '(:type assistant-message :content "seed"))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id fake
+                            :metadata (:response-id "resp-clean")))
+                 (funcall on-item '(:type done :reason stop)))
+                (2
+                 ;; Response A only emits a tool call.  Its candidate is
+                 ;; usable for the one matching result follow-up, but is not a
+                 ;; durable anchor owner.
+                 ;; The replay item is paired with the call before the tool
+                 ;; result is produced; it is part of the same ephemeral
+                 ;; bundle, not durable semantic context.
+                 (funcall on-item
+                          (list :type 'provider-replay-item
+                                :provider-id 'fake
+                                :item (list :type "fake-replay"
+                                             :id replay-marker)))
+                 (funcall on-item
+                          '(:type tool-call
+                            :id "call-ephemeral"
+                            :name "inspect-ephemeral"
+                            :arguments (:target "raw")))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id fake
+                            :metadata (:response-id "resp-A")))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (3
+                 ;; B is the sole consumer of the paired call/result bundle.
+                 (should (plist-get options :context-promotion-frame-id))
+                 (let* ((observation-ids
+                         (plist-get options
+                                    :context-promotion-observation-ids))
+                        (tool-observation-id
+                         (seq-find
+                          (lambda (observation-id)
+                            (string-prefix-p "observation:tool-bundle:"
+                                             observation-id))
+                          observation-ids)))
+                   (should tool-observation-id)
+                   (setq promotion-input
+                         (list
+                          :type 'context-promote
+                          :schema-version 1
+                          :frame-id
+                          (plist-get options :context-promotion-frame-id)
+                          :source-observation-ids (list tool-observation-id)
+                          :facts
+                          '((:id "selected-tool-fact"
+                             :value "selected from tool result"))))
+                   (funcall on-item promotion-input))
+                 (funcall on-item
+                          '(:type assistant-message :content "B"))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id fake
+                            :metadata (:response-id "resp-B")))
+                 (funcall on-item '(:type done :reason stop)))
+                (4
+                 ;; The durable promotion must already be committed before
+                 ;; this real later provider request is admitted.
+                 (setq promotions-at-later-request
+                       (copy-tree
+                        (mapcar
+                         #'e-session--context-record
+                         (e-session-context-promotions
+                          (e-harness-sessions harness-ref)
+                          "ephemeral-anchor-session"))))
+                 (funcall on-item
+                          '(:type assistant-message :content "later"))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id fake
+                            :metadata (:response-id "resp-later")))
+                 (funcall on-item '(:type done :reason stop))))))))
+         (capability
+          (e-capability-create
+           :id (intern (format "ephemeral-anchor-%s" continuation))
+           :context-providers (list dynamic-provider)
+           :tools
+           (list
+            (lambda (registry)
+              (e-tools-register
+               registry
+               :name "inspect-ephemeral"
+               :description "Return one uniquely identifiable ephemeral result."
+               :work
+               (e-tools-cheap-work
+                "e2e.ephemeral-anchor.inspect"
+                (lambda (_arguments) raw-result)))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :intrinsic-capabilities (list capability)
+           :default-options
+           (list :model "fake"
+                 :provider-continuation t
+                 :provider-anchor-provider-id 'fake))))
+    (setq harness-ref harness)
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-board-e2e-create-session harness :id "ephemeral-anchor-session")
+      (e-board-e2e-prompt-batch
+       harness "ephemeral-anchor-session" "seed prompt")
+      (setq current-state "STATE-ONE")
+      (e-board-e2e-prompt-batch
+       harness "ephemeral-anchor-session" "inspect prompt")
+      (setq current-state "STATE-TWO")
+      (e-board-e2e-prompt-batch
+       harness "ephemeral-anchor-session" "later prompt"))
+    (list :requests (nreverse requests)
+          :anchors
+          (mapcar (lambda (anchor)
+                    (plist-get (plist-get anchor :metadata) :response-id))
+                  (e-session-provider-anchors
+                   (e-harness-sessions harness)
+                   "ephemeral-anchor-session"))
+          :promotion-input promotion-input
+          :promotions-at-later-request promotions-at-later-request
+          :replay-marker replay-marker
+          :raw-result raw-result)))
+
+(ert-deftest e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor ()
+  "A tool bundle uses A once, and B cannot replace the prior clean anchor."
+  (dolist (profile '((linear inherited)
+                     (branchable inherited)
+                     (linear request-local-replaceable)))
+    (let* ((continuation (nth 0 profile))
+           (delivery (nth 1 profile))
+           (result
+            (e-provider-continuation-integration--run-ephemeral-anchor-profile
+             continuation delivery))
+           (requests (plist-get result :requests))
+           (follow-up (nth 2 requests))
+           (later (nth 3 requests))
+           (follow-up-options (plist-get follow-up :options))
+           (later-options (plist-get later :options))
+           (follow-up-messages (plist-get follow-up :messages))
+           (later-messages (plist-get later :messages))
+           (follow-up-printed (prin1-to-string follow-up-messages))
+           (later-printed (prin1-to-string later-messages))
+           (promotion-input (plist-get result :promotion-input))
+           (promotions-at-later-request
+            (plist-get result :promotions-at-later-request)))
+      (should (= (length requests) 4))
+      ;; A is allowed only at the frontier that carries the matching result.
+      (should (equal
+               (plist-get (plist-get follow-up-options :provider-anchor)
+                          :metadata)
+               '(:response-id "resp-A")))
+      (should (string-match-p
+               (regexp-quote (plist-get result :raw-result))
+               follow-up-printed))
+      (should (string-match-p "call-ephemeral" follow-up-printed))
+      (should (string-match-p
+               (regexp-quote (plist-get result :replay-marker))
+               follow-up-printed))
+      ;; B selected the tool-result observation, and the promotion was
+      ;; durable before the separate later request began.
+      (should (= (length (plist-get promotion-input
+                                    :source-observation-ids))
+                 1))
+      (should (string-prefix-p
+               "observation:tool-bundle:"
+               (car (plist-get promotion-input
+                               :source-observation-ids))))
+      (should (equal
+               (plist-get (car promotions-at-later-request) :facts)
+               '((:id "selected-tool-fact"
+                  :value "selected from tool result"))))
+      (should (string-match-p "selected from tool result" later-printed))
+      ;; Later context is rebuilt from the durable session path and never
+      ;; inherits the consumed call/result bundle or A/B response ids.
+      (should-not (string-match-p
+                   (regexp-quote (plist-get result :raw-result))
+                   later-printed))
+      (should-not (string-match-p "call-ephemeral" later-printed))
+      (should-not (string-match-p
+                   (regexp-quote (plist-get result :replay-marker))
+                   later-printed))
+      (should-not (string-match-p "resp-A" later-printed))
+      (should-not (string-match-p "resp-B" later-printed))
+      (should-not (equal
+                   (plist-get (plist-get later-options :provider-anchor)
+                              :metadata)
+                   '(:response-id "resp-A")))
+      (should-not (equal
+                   (plist-get (plist-get later-options :provider-anchor)
+                              :metadata)
+                   '(:response-id "resp-B")))
+      (should-not (member "resp-A" (plist-get result :anchors)))
+      (should-not (member "resp-B" (plist-get result :anchors)))
+      (cond
+       ((and (eq continuation 'linear)
+             (eq delivery 'inherited))
+        ;; Inherited observations cannot advance a linear continuation, so
+        ;; the later request takes the safe stateless path.
+        (should-not (plist-get later-options :provider-anchor)))
+       (t
+        ;; Branchable inherited observations and request-local replacement
+        ;; may repeatedly branch from the clean seed anchor, but never from
+        ;; contaminated descendants.
+        (should (equal
+                 (plist-get (plist-get later-options :provider-anchor)
+                            :metadata)
+                 '(:response-id "resp-clean")))))
+      (when (eq delivery 'request-local-replaceable)
+        ;; The replaceable canvas is safe by itself, but the inherited tool
+        ;; result makes this mixed frontier contaminated and non-persistable.
+        (should-not (plist-get follow-up-options
+                               :lifetime-ephemerals-clean-p))))))
 
 (ert-deftest e-provider-continuation-integration-test-null-summary-replays-safely ()
   "Provider reasoning summary JSON null becomes an array on next full replay."

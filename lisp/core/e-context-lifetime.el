@@ -361,6 +361,95 @@ unique within one response and declared order is retained."
      :consuming-response-entry-id nil
      :promotion-ids nil)))
 
+(defun e-context-lifetime--delivery-for-kind (delivery kind)
+  "Return effective DELIVERY mode for semantic KIND.
+
+The core accepts the provider-neutral mapping shape without importing the
+backend capability module.  A scalar is retained for legacy adapters and an
+omitted mapping entry is conservatively inherited."
+  (let ((kind (e-context-lifetime--canonical-observation-kind kind)))
+    (cond
+     ((eq delivery 'inherited) "inherited")
+     ((eq delivery 'request-local-replaceable)
+      (if (member kind '("current-state" "dynamic-context"))
+          "request-local-replaceable"
+        "inherited"))
+     ((and (listp delivery)
+           (not (e-context-lifetime--keyword-plist-p delivery)))
+      (let ((entry
+             (seq-find
+              (lambda (item)
+                (and (e-context-lifetime--keyword-plist-p item)
+                     (equal (format "%s" (plist-get item :kind)) kind)))
+              delivery)))
+        (or (and entry
+                 (e-context-lifetime--canonical-delivery-mode
+                  (plist-get entry :mode)))
+            "inherited")))
+     (t "inherited"))))
+
+(defun e-context-lifetime--segment-source-ref (segment)
+  "Return a stable provider-neutral source reference for SEGMENT."
+  (let ((id (plist-get segment :id)))
+    (if (and (or (stringp id) (symbolp id) (numberp id)) id)
+        (format "context-source:%s" id)
+      (format "context-source:%s"
+              (substring (secure-hash 'sha256 (prin1-to-string id)) 0 32)))))
+
+(defun e-context-lifetime--segment-observations (segments delivery)
+  "Return validated runtime observations from semantic context SEGMENTS."
+  (let (observations)
+    (cl-loop for segment in segments
+             for index from 0
+             for kind = (plist-get segment :kind)
+             when (member (format "%s" kind)
+                          e-context-lifetime-observation-kinds)
+             do (let* ((kind (e-context-lifetime--canonical-observation-kind
+                              kind))
+                       (messages (copy-tree (plist-get segment :messages)))
+                       (fingerprint
+                        (or (plist-get segment :fingerprint)
+                            (secure-hash 'sha256
+                                         (prin1-to-string messages))))
+                       (observation-id
+                        (format "observation:%s:%s"
+                                (substring
+                                 (secure-hash 'sha256
+                                              (prin1-to-string
+                                               (list kind
+                                                     (plist-get segment :id)
+                                                     index)))
+                                 0 24)
+                                index)))
+                  (push
+                   (list :observation-id observation-id
+                         :kind kind
+                         :source-entry-ref
+                         (e-context-lifetime--segment-source-ref segment)
+                         :source-fingerprint
+                         (e-context-lifetime--require-id
+                          fingerprint 'source-fingerprint)
+                         :effective-delivery
+                         (e-context-lifetime--delivery-for-kind
+                          delivery kind)
+                         :body messages)
+                   observations)))
+    (nreverse observations)))
+
+(cl-defun e-context-lifetime-frame-create-from-segments
+    (&key id generation-id consumer-request-id segments observation-delivery)
+  "Create a runtime FRAME from validated semantic context SEGMENTS.
+
+Only observation segments become frame items.  Source identities and
+fingerprints are derived here from the segment identity/value; callers cannot
+provide parallel provenance arrays that could drift from the body."
+  (e-context-lifetime-frame-create
+   :id id
+   :generation-id generation-id
+   :consumer-request-id consumer-request-id
+   :observations
+   (e-context-lifetime--segment-observations segments observation-delivery)))
+
 (defun e-context-lifetime--frame-retain-provenance
     (frame response-entry-id promotion-ids)
   "Copy trusted retained provenance from FRAME after its body is consumed.

@@ -15,6 +15,7 @@
 (require 'seq)
 (require 'e)
 (require 'e-backend)
+(require 'e-context-lifetime)
 (require 'e-dev-profile)
 (require 'e-loop)
 (require 'e-request)
@@ -1827,6 +1828,557 @@
       (should (numberp (plist-get (plist-get started :payload) :deadline)))
       (should (eq (plist-get (plist-get finished :payload) :status)
                   'error)))))
+
+(ert-deftest e-loop-test-context-promotion-stays-out-of-tool-queue ()
+  "The reserved promotion carrier is consumed by the loop, not dispatched."
+  (let* ((frame
+          (e-context-lifetime-frame-create
+           :id "frame-loop"
+           :generation-id "generation-loop"
+           :consumer-request-id "consumer-loop"
+           :observations
+           '((:observation-id "observation-loop"
+              :kind "current-state"
+              :source-entry-ref "external:canvas:loop"
+              :source-fingerprint "canvas-loop"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "canvas")))))
+         (backend
+          (e-backend-create
+           :name "promotion-carrier"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall
+               on-item
+               '(:type context-promote
+                 :schema-version 1
+                 :frame-id "frame-loop"
+                 :source-observation-ids ("observation-loop")
+                 :facts ((:id "selected" :value "keep this"))))
+              (funcall on-item
+                       '(:type assistant-message :content "answer"))
+              (funcall on-item '(:type done :reason stop))))))
+         (messages nil)
+         (promotion-effects nil))
+    (e-loop-run-turn-batch
+     :session-id "session-loop"
+     :turn-id "turn-loop"
+     :messages '((:role user :content "prompt"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options
+     '(:model "fake"
+       :context-lifetime-enabled t
+       :context-capabilities
+       (:continuation none
+        :observation-delivery request-local-replaceable
+        :reserved-effect-carrier context-promote-wire)
+       :context-promotion-frame-id "frame-loop"
+       :context-promotion-observation-ids ("observation-loop"))
+     :lifetime-frame frame
+     :on-response-complete
+     (lambda (payload)
+       (setq promotion-effects (plist-get payload :promotion-effects)))
+     :on-event #'ignore
+     :append-message (lambda (message)
+                       (setq messages (append messages (list message)))))
+    (should (= (length promotion-effects) 1))
+    (should (equal (plist-get (car promotion-effects) :frame-id)
+                   "frame-loop"))
+    (should (equal (plist-get (car promotion-effects) :facts)
+                   '((:id "selected" :value "keep this"))))
+    (should-not (seq-find (lambda (message)
+                            (eq (plist-get message :role) 'tool-call))
+                          messages))
+    (should (equal (plist-get (car messages) :content) "answer"))))
+
+(ert-deftest e-loop-test-tool-descendant-frame-survives-response-race ()
+  "A tool bundle frame remains current whichever completion callback wins."
+  (dolist (provider-first '(t nil))
+    (let* ((request-count 0)
+           (pending-tool-done nil)
+           (captured-requests nil)
+           (tool-frame nil)
+           (response-frames nil)
+           (settled nil)
+           (frame-a
+            (e-context-lifetime-frame-create
+             :id "frame-A"
+             :generation-id "generation-race"
+             :consumer-request-id "consumer-A"
+             :observations
+             '((:observation-id "observation-A"
+                :kind "current-state"
+                :source-entry-ref "external:canvas:A"
+                :source-fingerprint "canvas-A"
+                :effective-delivery "request-local-replaceable"
+                :body (:content "CANVAS-A")))))
+           (backend
+            (e-backend-create
+             :name "tool-descendant-frame-race"
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done on-error
+                             on-request-start)
+                (ignore on-error on-request-start)
+                (push (list :messages (copy-tree messages)
+                            :options (copy-tree options))
+                      captured-requests)
+                (setq request-count (1+ request-count))
+                (if (= request-count 1)
+                    (progn
+                      (funcall on-item
+                               '(:type tool-call
+                                 :id "call-race"
+                                 :name "race-tool"
+                                 :arguments nil))
+                      (funcall on-item '(:type done :reason tool-use))
+                      (let ((finish
+                             (lambda ()
+                               (funcall pending-tool-done
+                                        '(:tool-call-id "call-race"
+                                          :name "race-tool"
+                                          :status ok
+                                          :content "BUNDLE-RESULT")))))
+                        (if provider-first
+                            (progn
+                              (funcall on-done '(:status done))
+                              (funcall finish))
+                          (funcall finish)
+                          (funcall on-done '(:status done)))))
+                  (funcall on-item
+                           '(:type assistant-message
+                             :content "follow-up"))
+                  (funcall on-item '(:type done :reason stop))
+                  (funcall on-done '(:status done)))))))
+           (tool-lifecycle
+            (e-tool-lifecycle-create
+             :start
+             (cl-function
+              (lambda (_tool-call &key on-done &allow-other-keys)
+                (setq pending-tool-done on-done)
+                nil))))
+           (options
+            '(:model "fake"
+              :context-lifetime-enabled t
+              :context-capabilities
+              (:continuation none
+               :observation-delivery request-local-replaceable)
+              :context-promotion-frame-id "frame-A"
+              :context-promotion-observation-ids ("observation-A"))))
+      (e-loop-start-turn
+       :session-id "session-race"
+       :turn-id "turn-race"
+       :messages '((:role user :content "prompt"))
+       :backend backend
+       :tool-lifecycle tool-lifecycle
+       :options options
+       :lifetime-frame frame-a
+       :on-response-complete
+       (lambda (payload)
+         (let ((frame (plist-get payload :frame)))
+           (push frame response-frames)
+           (when (e-context-lifetime-frame-p frame)
+             (e-context-lifetime-frame-complete-for-consumer
+              frame
+              (e-context-lifetime-frame-consumer-request-id frame)
+              (format "response-%s"
+                      (plist-get payload :provider-request-ordinal))))))
+       :on-tool-observation
+       (lambda (payload)
+         (let* ((tool-call (plist-get payload :tool-call))
+                (result (plist-get payload :result))
+                (frame
+                 (e-context-lifetime-frame-create
+                  :id (format "frame-B-%s" (if provider-first "first" "last"))
+                  :generation-id "generation-race"
+                  :consumer-request-id "consumer-B"
+                  :observations
+                  (list
+                   (list :observation-id "observation-B"
+                         :kind "tool-result"
+                         :source-entry-ref "external:tool-result:call-race"
+                         :source-fingerprint "tool-result-B"
+                         :effective-delivery "inherited"
+                         :body (list :tool-call tool-call
+                                     :tool-result result))))))
+           (setq tool-frame frame)
+           frame))
+       :on-done (lambda (result) (setq settled result))
+       :on-error (lambda (err) (setq settled (list :error err)))
+       :on-event #'ignore
+       :append-message (lambda (&rest _message)))
+      (should (e-loop-test--wait-until (lambda () settled)))
+      (should (equal (plist-get settled :status) 'done))
+      (should (= request-count 2))
+      (should (e-context-lifetime-frame-p tool-frame))
+      (should (equal (e-context-lifetime-frame-id tool-frame)
+                     (format "frame-B-%s"
+                             (if provider-first "first" "last"))))
+      (should (equal (plist-get
+                      (plist-get
+                       (car captured-requests)
+                       :options)
+                      :context-promotion-frame-id)
+                     (e-context-lifetime-frame-id tool-frame)))
+      (let ((follow-up-messages
+             (plist-get (car captured-requests) :messages)))
+        ;; The descendant frame is not merely metadata: the actual follow-up
+        ;; request carries the paired call/result bundle in either callback
+        ;; ordering.
+        (should (string-match-p "call-race"
+                                (prin1-to-string follow-up-messages)))
+        (should (string-match-p "BUNDLE-RESULT"
+                                (prin1-to-string follow-up-messages))))
+      (let ((observation (car (e-context-lifetime-frame-observations
+                               tool-frame))))
+        (should (equal (plist-get observation :kind) "tool-result"))
+        (should (equal (plist-get (plist-get observation :body)
+                                  :tool-result)
+                       '(:tool-call-id "call-race"
+                         :name "race-tool"
+                         :status ok
+                         :content "BUNDLE-RESULT")))))))
+
+(ert-deftest e-loop-test-invalid-promotion-stops-later-tool-calls ()
+  "An invalid reserved control stops later calls without semantic mutation."
+  (let* ((started nil)
+         (messages nil)
+         (promotion-effects nil)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-invalid-control"
+           :generation-id "generation-invalid-control"
+           :consumer-request-id "consumer-invalid-control"
+           :observations
+           '((:observation-id "observation-invalid-control"
+              :kind "current-state"
+              :source-entry-ref "external:canvas:invalid-control"
+              :source-fingerprint "invalid-control"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "canvas")))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :prepare #'identity
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (push (plist-get tool-call :name) started)
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name (plist-get tool-call :name)
+                             :status 'ok
+                             :content (format "result-%s"
+                                               (plist-get tool-call :name))))
+              nil))))
+         (backend
+          (e-backend-create
+           :name "invalid-promotion-order"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type tool-call
+                         :id "call-before-invalid"
+                         :name "before-invalid"
+                         :arguments nil))
+              ;; Missing facts is a malformed reserved control.  The later
+              ;; ordinary call must not be dispatched after this point.
+              (funcall on-item
+                       '(:type context-promote
+                         :schema-version 1
+                         :frame-id "frame-invalid-control"
+                         :source-observation-ids
+                         ("observation-invalid-control")))
+              (funcall on-item
+                       '(:type tool-call
+                         :id "call-after-invalid"
+                         :name "after-invalid"
+                         :arguments nil))
+              (funcall on-item '(:type done :reason stop))))))
+         (tools (e-tools-registry-create)))
+    (should-error
+     (e-loop-run-turn-batch
+      :session-id "session-invalid-control"
+      :turn-id "turn-invalid-control"
+      :messages '((:role user :content "prompt"))
+      :backend backend
+      :tools tools
+      :tool-lifecycle tool-lifecycle
+      :options
+      '(:model "fake"
+        :context-lifetime-enabled t
+        :context-capabilities
+        (:continuation none
+         :observation-delivery request-local-replaceable
+         :reserved-effect-carrier context-promote-wire))
+      :lifetime-frame frame
+      :on-response-complete
+      (lambda (payload)
+        (setq promotion-effects (plist-get payload :promotion-effects)))
+      :on-event #'ignore
+      :append-message
+      (lambda (message)
+        (setq messages (append messages (list message)))))
+     :type 'e-context-lifetime-invalid-record)
+    (should (equal started '("before-invalid")))
+    (should-not promotion-effects)
+    (should-not
+     (seq-find (lambda (message)
+                 (equal (plist-get (plist-get message :content) :name)
+                        "after-invalid"))
+               messages))
+    ;; The malformed response never reaches the completed-response boundary,
+    ;; so no assistant/session semantic completion is emitted.
+    (should-not (seq-find (lambda (message)
+                            (eq (plist-get message :role) 'assistant))
+                          messages))))
+
+(ert-deftest e-loop-test-disabled-lifetime-does-not-refresh-before-pending-steering ()
+  "Callbacks do not opt a disabled turn into a lifetime projection turn."
+  (let* ((calls 0)
+         (drains 0)
+         (refresh-count 0)
+         (settled nil)
+         (requests nil)
+         (backend
+          (e-backend-create
+           :name "fake-disabled-pending-refresh"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (setq calls (1+ calls))
+              (funcall on-item
+                       (list :type 'assistant-message
+                             :content (if (= calls 1) "A" "B")))
+              (funcall on-item '(:type done :reason stop)))))))
+    (e-loop-start-turn
+     :session-id "session-disabled-pending"
+     :turn-id "turn-disabled-pending"
+     :messages '((:role user :content "prompt"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:state "A" :context-lifetime-enabled nil)
+     :on-event #'ignore
+     :append-message #'ignore
+     :on-response-complete (lambda (_payload) nil)
+     :refresh-context
+     (lambda ()
+       (setq refresh-count (1+ refresh-count))
+       (list :messages '((:role system :content "STATE-B")
+                         (:role user :content "prompt"))
+             :options '(:state "B" :context-lifetime-enabled t)))
+     :drain-pending-input
+     (lambda ()
+       (setq drains (1+ drains))
+       (when (= drains 2)
+         '((:role user :content "steer after A"))))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :status 'error
+                                                    :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal (plist-get settled :status) 'done))
+    (let* ((ordered (nreverse requests))
+           (request-b (nth 1 ordered))
+           (messages-b (plist-get request-b :messages))
+           (printed-b (prin1-to-string messages-b)))
+      (should (= calls 2))
+      (should (= refresh-count 0))
+      (should (string-match-p "steer after A" printed-b))
+      (should-not (string-match-p "STATE-B" printed-b)))))
+
+(ert-deftest e-loop-test-disabled-lifetime-refresh-does-not-merge-runtime-bundle ()
+  "A disabled refresh remains authoritative and drops the runtime bundle."
+  (let* ((calls 0)
+         (refresh-count 0)
+         (settled nil)
+         (requests nil)
+         (backend
+          (e-backend-create
+           :name "fake-disabled-bundle-refresh"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type provider-replay-item
+                               :provider-id fake
+                               :item (:type "disabled-replay"
+                                      :id "REPLAY-DISABLED")))
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-disabled-refresh"
+                               :name "disabled_refreshing_tool"
+                               :arguments nil))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "disabled_refreshing_tool"
+     :description "Refresh without enabling lifetime projection."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "RAW-DISABLED-BUNDLE"
+        '(:refresh-context t))))
+    (e-loop-start-turn
+     :session-id "session-disabled-bundle"
+     :turn-id "turn-disabled-bundle"
+     :messages '((:role system :content "STATE-A")
+                 (:role user :content "prompt"))
+     :backend backend
+     :tools tools
+     :options '(:state "A" :context-lifetime-enabled nil)
+     :on-event #'ignore
+     :append-message #'ignore
+     :on-response-complete (lambda (_payload) nil)
+     :on-tool-observation (lambda (_payload) nil)
+     :refresh-context
+     (lambda ()
+       (setq refresh-count (1+ refresh-count))
+       (list :messages '((:role system :content "STATE-B")
+                         (:role user :content "prompt"))
+             :options '(:state "B" :context-lifetime-enabled nil)))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :status 'error
+                                                    :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal (plist-get settled :status) 'done))
+    (let* ((ordered (nreverse requests))
+           (request-b (nth 1 ordered))
+           (messages-b (plist-get request-b :messages))
+           (printed-b (prin1-to-string messages-b)))
+      (should (= calls 2))
+      (should (= refresh-count 1))
+      (should (string-match-p "STATE-B" printed-b))
+      (dolist (marker '("RAW-DISABLED-BUNDLE"
+                         "call-disabled-refresh"
+                         "REPLAY-DISABLED"))
+        (should-not (string-match-p marker printed-b))))))
+
+(ert-deftest e-loop-test-refresh-keeps-runtime-bundle-for-one-stateless-followup ()
+  "An incompatible refresh keeps the tool bundle for B, but not for C."
+  (let* ((calls 0)
+         (drains 0)
+         (settled nil)
+         (refresh-bundle-requests nil)
+         (backend
+          (e-backend-create
+           :name "fake-refresh-stateless-bundle"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    refresh-bundle-requests)
+              (setq calls (1+ calls))
+              (pcase calls
+                (1
+                 (funcall on-item
+                          '(:type provider-replay-item
+                            :provider-id fake
+                            :item (:type "refresh-replay"
+                                   :id "REPLAY-REFRESH"
+                                   :response-id "RESP-A-ID")))
+                 (funcall on-item
+                          '(:type tool-call
+                            :id "call-refresh-bundle"
+                            :name "refreshing_tool"
+                            :arguments nil))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (2
+                 (funcall on-item
+                          '(:type assistant-message :content "RESP-B-ID"))
+                 (funcall on-item '(:type done :reason stop)))
+                (3
+                 (funcall on-item
+                          '(:type assistant-message :content "RESP-C-ID"))
+                 (funcall on-item '(:type done :reason stop)))
+                (_
+                 (error "Unexpected refresh bundle request %S" calls)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "refreshing_tool"
+     :description "Refresh context while preserving the immediate bundle."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "RAW-REFRESH-BUNDLE"
+        '(:refresh-context t))))
+    (e-loop-start-turn
+     :session-id "session-refresh-bundle"
+     :turn-id "turn-refresh-bundle"
+     :messages '((:role system :content "STATE-A")
+                 (:role user :content "prompt"))
+     :backend backend
+     :tools tools
+     :options '(:state "A" :context-lifetime-enabled t)
+     :on-event #'ignore
+     :append-message #'ignore
+     ;; A non-nil lifetime callback opts this loop into the runtime bundle
+     ;; merge.  The callback itself is intentionally not part of this seam.
+     :on-tool-observation (lambda (_payload) nil)
+     :refresh-context
+     (lambda ()
+       (list :messages '((:role system :content "STATE-B")
+                         (:role user :content "prompt"))
+             :options '(:state "B"
+                        :context-lifetime-enabled t
+                        :context-rendering-strategy stateless
+                        :continuation-projection-identity
+                        (:stable-prefix "B"))))
+     :drain-pending-input
+     (lambda ()
+       (setq drains (1+ drains))
+       (when (= drains 3)
+         '((:role user :content "steer after B"))))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (let* ((ordered (nreverse refresh-bundle-requests))
+           (request-b (nth 1 ordered))
+           (request-c (nth 2 ordered))
+           (messages-b (plist-get request-b :messages))
+           (messages-c (plist-get request-c :messages))
+           (printed-b (prin1-to-string messages-b))
+           (printed-c (prin1-to-string messages-c)))
+      (should (= calls 3))
+      (should (= drains 5))
+      (should (equal (plist-get (plist-get request-b :options) :state)
+                     "B"))
+      (should (eq (plist-get (plist-get request-b :options)
+                            :context-rendering-strategy)
+                  'stateless))
+      (dolist (marker '("STATE-B" "RAW-REFRESH-BUNDLE"
+                         "call-refresh-bundle" "REPLAY-REFRESH"
+                         "RESP-A-ID"))
+        (should (string-match-p (regexp-quote marker) printed-b)))
+      (dolist (marker '("STATE-B" "steer after B"))
+        (should (string-match-p (regexp-quote marker) printed-c)))
+      (dolist (marker '("RAW-REFRESH-BUNDLE" "call-refresh-bundle"
+                         "REPLAY-REFRESH" "RESP-A-ID" "RESP-B-ID"))
+        (should-not (string-match-p (regexp-quote marker) printed-c)))
+      (should-not
+       (seq-some (lambda (message)
+                 (memq (plist-get message :role) '(tool-call tool)))
+                 messages-c)))))
 
 (provide 'e-loop-test)
 

@@ -18,6 +18,7 @@
 (require 'e-compaction)
 (require 'e-context)
 (require 'e-context-budget)
+(require 'e-context-lifetime)
 (require 'e-events)
 (require 'e-hooks)
 (require 'e-layers)
@@ -2187,7 +2188,7 @@ turn context work."
        (let* ((turn-options
                (e-harness--strip-reserved-derived-context-options
                 (e-harness-turn-options harness session-id)))
-              (context-capabilities
+         (context-capabilities
                (e-harness--context-capabilities harness turn-options))
               (context
                (e-context-build
@@ -2197,6 +2198,10 @@ turn context work."
                 :options turn-options
                 :prefix-messages (plist-get capability-context :messages)
                 :prefix-segments (plist-get capability-context :segments))))
+         (when (e-harness--context-lifetime-enabled-p context-purpose)
+           (setq context
+                 (e-harness--context-lifetime-apply-projection
+                  harness session-id turn-id context context-capabilities)))
          (plist-put context
                     :provider-anchor-active-layer-ids
                     (e-harness--effective-layer-id-strings
@@ -2762,9 +2767,257 @@ profile names."
         (e-backend-context-capabilities backend options)
       (e-backend-default-context-capabilities))))
 
+(defun e-harness--context-lifetime-enabled-p (context-purpose)
+  "Return non-nil when semantic lifetime projection is opted in for PURPOSE.
+
+The feature is deliberately limited to correctness-critical turn context.  A
+preview/status caller must not create a consumer frame or append a generation
+just because the global opt-in is enabled."
+  (and e-context-lifetime-shadow-projection-enabled
+       (eq context-purpose 'turn)))
+
+(defun e-harness--context-lifetime-ensure-generation (harness session-id)
+  "Return SESSION-ID's current v2 generation, creating its first boundary."
+  (or (e-session-context-lifetime-current-generation
+       (e-harness-sessions harness) session-id)
+      (let* ((store (e-harness-sessions harness))
+             (session (e-session-get store session-id))
+             (boundary (or (plist-get session :current-head-id)
+                           (plist-get session :root-event-id)))
+             (generation
+              (e-context-lifetime-generation-create
+               :id (format "generation:%s" boundary)
+               :checkpoint nil
+               :covered-session-boundary boundary)))
+        (e-session-append-context-generation store session-id generation)
+        generation)))
+
+(defun e-harness--context-lifetime-fact-messages (promotions)
+  "Return backend-facing durable messages for selected PROMOTIONS."
+  (cl-loop for promotion in promotions
+           append
+           (cl-loop for fact in (e-context-lifetime-promotion-facts promotion)
+                    collect
+                    (list :role 'system
+                          :content
+                          (format "Promoted fact %s: %s"
+                                  (plist-get fact :id)
+                                  (let ((value (plist-get fact :value)))
+                                    (if (stringp value)
+                                        value
+                                      (prin1-to-string value))))
+                          :metadata
+                          (list :context-lifetime 'promotion
+                                :promotion-id
+                                (e-context-lifetime-promotion-id promotion)
+                                :fact-id (plist-get fact :id))))))
+
+(defun e-harness--context-lifetime-apply-projection
+    (harness session-id turn-id context capabilities)
+  "Apply the opted-in semantic projection to CONTEXT for TURN-ID.
+
+The canonical session path supplies durable message bodies and promotions.  A
+new runtime frame is captured for every invocation, even when the source
+fingerprints happen to be unchanged."
+  (let* ((store (e-harness-sessions harness))
+         (projection (e-session-context-lifetime-projection store session-id))
+         (generation (or (plist-get projection :generation)
+                         (e-harness--context-lifetime-ensure-generation
+                          harness session-id)))
+         ;; The generation may have been created above; read the projection
+         ;; again so the covered branch boundary and durable tail are current.
+         (projection (if (plist-get projection :generation)
+                         projection
+                       (e-session-context-lifetime-projection
+                        store session-id)))
+         (promotions (plist-get projection :promotions))
+         (durable-tail
+          (append (copy-tree (plist-get projection :durable-tail))
+                  (e-harness--context-lifetime-fact-messages promotions)))
+         (segments (plist-get context :segments))
+         (consumer-request-id (format "consumer:%s:%s"
+                                      turn-id (e-session-generate-ulid)))
+         (frame-id (format "frame:%s" consumer-request-id))
+         (frame
+          (e-context-lifetime-frame-create-from-segments
+           :id frame-id
+           :generation-id (e-context-lifetime-generation-id generation)
+           :consumer-request-id consumer-request-id
+           :segments segments
+           :observation-delivery
+           (plist-get capabilities :observation-delivery)))
+         (filtered-segments
+          (mapcar
+           (lambda (segment)
+             (if (eq (plist-get segment :kind) 'history)
+                 (plist-put (copy-tree segment) :messages durable-tail)
+               segment))
+           segments))
+         (messages
+          (cl-loop for segment in filtered-segments
+                   append (copy-tree (plist-get segment :messages))))
+         (semantic-projection
+          (e-context-lifetime-project
+           generation frame
+           :durable-tail durable-tail
+           :static-prefix
+           (cl-loop for segment in segments
+                    when (eq (plist-get segment :kind) 'static-prefix)
+                    append (copy-tree (plist-get segment :messages)))
+           :stable-context
+           (cl-loop for segment in segments
+                    when (eq (plist-get segment :kind) 'stable-context)
+                    append (copy-tree (plist-get segment :messages))))))
+    (plist-put context :segments filtered-segments)
+    (plist-put context :messages messages)
+    (plist-put context :context-lifetime-enabled t)
+    (plist-put context :lifetime-generation generation)
+    (plist-put context :lifetime-frame frame)
+    (plist-put context :lifetime-promotions promotions)
+    (plist-put context :lifetime-projection semantic-projection)
+    context))
+
+(defun e-harness--lifetime-response-entry-id
+    (harness session-id turn-id fallback)
+  "Return the current durable response entry for TURN-ID.
+
+Assistant and tool-call messages are the existing session representation of a
+completed provider response.  FALLBACK is used only by synthetic backends that
+returned no durable message; it remains an opaque runtime response identity."
+  (or (plist-get
+       (car (last
+             (seq-filter
+              (lambda (entry)
+                (and (eq (plist-get entry :type) 'message)
+                     (equal (plist-get entry :turn-id) turn-id)
+                     (memq (plist-get entry :role)
+                           '(assistant tool-call))))
+              (e-session-current-path (e-harness-sessions harness)
+                                      session-id))))
+       :id)
+      fallback))
+
+(defun e-harness--lifetime-commit-response
+    (harness session-id turn-id active-entry payload)
+  "Complete the runtime frame in PAYLOAD and append valid promotions.
+
+The loop has already validated the effect shape while streaming.  This
+boundary resolves source observation IDs against the trusted consumed frame,
+derives provenance in core, and performs the ordinary session appends before
+the next provider request is started."
+  (when (and (e-context-lifetime-shadow-enabled-p)
+             (e-harness--active-turn-running-p active-entry))
+    (let* ((frame (or (plist-get payload :frame)
+                      (plist-get active-entry :context-frame)))
+           (effects (plist-get payload :promotion-effects))
+           (response-id
+            (e-harness--lifetime-response-entry-id
+             harness session-id turn-id
+             (plist-get payload :provider-request-id))))
+      (when (and frame (e-context-lifetime-frame-p frame))
+        (unless (e-context-lifetime-frame-consumed-p frame)
+          ;; Calculate deterministic ids against the trusted response-bound
+          ;; frame, then perform the one public completion operation with that
+          ;; exact ordered declaration.
+          (let* ((consumer-id
+                  (e-context-lifetime-frame-consumer-request-id frame))
+                 (candidate
+                  (e-context-lifetime-frame-complete-for-consumer
+                   frame consumer-id response-id))
+                 (promotion-ids
+                  (mapcar
+                   (lambda (effect)
+                     (e-context-lifetime-promotion-id-for candidate effect))
+                   effects))
+                 (consumed
+                  (e-context-lifetime-frame-complete-for-consumer
+                   frame consumer-id response-id promotion-ids))
+                 (promotions
+                  (mapcar
+                   (lambda (effect)
+                     (e-context-lifetime-promotion-from-effect
+                      consumed effect))
+                   effects)))
+            (dolist (promotion promotions)
+              (e-session-append-context-promotion
+               (e-harness-sessions harness) session-id promotion))
+            (plist-put active-entry :context-frame consumed)
+            (e-harness--emit-turn-event
+             harness session-id turn-id 'context-frame-consumed
+             (list :frame-id (e-context-lifetime-frame-id consumed)
+                   :consumer-request-id consumer-id
+                   :response-entry-id response-id
+                   :promotion-ids promotion-ids))
+            consumed))))))
+
+(defun e-harness--lifetime-tool-observation-frame
+    (harness session-id turn-id active-entry payload)
+  "Return a fresh consumer-bound frame for one tool result PAYLOAD."
+  (when (and e-context-lifetime-shadow-projection-enabled
+             (e-harness--active-turn-running-p active-entry))
+    (let* ((previous (plist-get payload :previous-frame))
+           (generation (or (and previous
+                                (e-session-context-lifetime-current-generation
+                                 (e-harness-sessions harness) session-id))
+                           (plist-get active-entry :lifetime-generation)
+                           (e-harness--context-lifetime-ensure-generation
+                            harness session-id)))
+           (tool-call (plist-get payload :tool-call))
+           (result (plist-get payload :result))
+           (message (plist-get payload :message))
+           (tool-id (or (plist-get tool-call :id)
+                        (plist-get result :tool-call-id)
+                        (e-session-generate-ulid)))
+           (existing-observations
+            (and previous
+                 (not (e-context-lifetime-frame-consumed-p previous))
+                 (e-context-lifetime-frame-observations previous)))
+           (consumer-id
+            (or (and existing-observations
+                     (e-context-lifetime-frame-consumer-request-id previous))
+                (format "consumer:%s:tool:%s"
+                        turn-id (e-session-generate-ulid))))
+           (body (list :tool-call (copy-tree tool-call)
+                       :tool-result (copy-tree result)
+                       :message-id (plist-get message :id)))
+           (observation
+            (list :observation-id (format "observation:tool-bundle:%s" tool-id)
+                  :kind "tool-result"
+                  :source-entry-ref
+                  (or (plist-get message :id)
+                      (format "external:tool-result:%s" tool-id))
+                  :source-fingerprint
+                  (secure-hash 'sha256 (prin1-to-string body))
+                  :effective-delivery "inherited"
+                  :body body))
+           (observations (append (copy-tree existing-observations)
+                                 (list observation)))
+           (frame
+            (e-context-lifetime-frame-create
+             :id (format "frame:%s:%s"
+                         consumer-id
+                         (substring (secure-hash 'sha256
+                                                  (prin1-to-string
+                                                   (mapcar
+                                                    (lambda (item)
+                                                      (plist-get item
+                                                                 :observation-id))
+                                                    observations)))
+                                    0 16))
+             :generation-id
+             (e-context-lifetime-generation-id generation)
+             :consumer-request-id consumer-id
+             :observations observations)))
+      (plist-put active-entry :context-frame frame)
+      (plist-put active-entry :lifetime-generation generation)
+      frame)))
+
 (defconst e-harness--reserved-derived-context-option-keys
   '(:context-segment-message-count
     :replaceable-current-state-partitioned
+    :context-lifetime-enabled
+    :context-promotion-observation-ids
+    :context-promotion-frame-id
     :provider-anchor
     :provider-anchor-delta-messages
     :provider-anchor-source-message-count)
@@ -2795,24 +3048,63 @@ caller because such values could forge or stale the frontier partition.")
 (defun e-harness--context-observation-frontier (context capabilities)
   "Attach semantic observation metadata to CONTEXT for CAPABILITIES.
 
-The frontier contains the complete current-state value and its fingerprint at
-request construction time.  Only the explicitly replaceable projection is
-handed to an adapter as a request-local replacement; inherited observations
-remain ordinary input and make an anchor unsafe to advance."
+The frontier is kind-scoped.  Only observations whose own capability entry is
+proven replaceable may be removed from a provider continuation; a replaceable
+canvas never authorizes dropping an inherited tool result or trace."
   (let* ((options
           (e-harness--strip-reserved-derived-context-options
            (plist-get context :options)))
-         (delivery (plist-get capabilities :observation-delivery))
+         (delivery-map (plist-get capabilities :observation-delivery))
+         (delivery (e-backend-observation-delivery-for-kind
+                    capabilities 'current-state))
          (messages (e-context-current-state-messages context))
          (fingerprint (and messages
                            (e-context-current-state-fingerprint context)))
+         (observations
+          (cl-loop for segment in (plist-get context :segments)
+                   for kind = (plist-get segment :kind)
+                   when (memq kind '(current-state dynamic-context))
+                   collect
+                   (list :kind kind
+                         :delivery
+                         (e-backend-observation-delivery-for-kind
+                          capabilities kind)
+                         :messages (copy-tree (plist-get segment :messages))
+                         :fingerprint (plist-get segment :fingerprint))))
          (frontier (list :delivery delivery
+                         :delivery-map (copy-tree delivery-map)
                          :messages (copy-tree messages)
-                         :fingerprint fingerprint)))
+                         :fingerprint fingerprint
+                         :observations observations))
+         (frame (plist-get context :lifetime-frame))
+         (clean-p
+          (or (null frame)
+              (cl-every
+               (lambda (observation)
+                 (equal (plist-get observation :effective-delivery)
+                        "request-local-replaceable"))
+               (e-context-lifetime-frame-observations frame)))))
     (setq options (plist-put options :context-capabilities
                              (copy-sequence capabilities)))
     (setq options (plist-put options :observation-delivery delivery))
+    (setq options (plist-put options :observation-delivery-map
+                             (copy-tree delivery-map)))
     (setq options (plist-put options :observation-frontier frontier))
+    (setq options (plist-put options :lifetime-ephemerals-clean-p clean-p))
+    (when (plist-get context :context-lifetime-enabled)
+      (setq options (plist-put options :context-lifetime-enabled t)))
+    (when frame
+      (setq options
+            (plist-put
+             options
+             :context-promotion-frame-id
+             (e-context-lifetime-frame-id frame)))
+      (setq options
+            (plist-put
+             options
+             :context-promotion-observation-ids
+             (copy-sequence
+              (e-context-lifetime-frame-observation-ids frame)))))
     (when (eq delivery 'request-local-replaceable)
       (setq options
             (plist-put options :replaceable-current-state
@@ -2846,6 +3138,23 @@ ambiguous and is rejected by the provider adapter."
          (options
           (e-harness--strip-reserved-derived-context-options
            (plist-get context :options))))
+    ;; The boundary pass removes caller-supplied derived values, but the
+    ;; semantic lifetime fields are re-derived from the trusted runtime
+    ;; projection rather than allowed to disappear between frontier and
+    ;; adapter construction.
+    (when (plist-get context :context-lifetime-enabled)
+      (setq options (plist-put options :context-lifetime-enabled t)))
+    (when-let ((frame (plist-get context :lifetime-frame)))
+      (setq options
+            (plist-put options
+                       :context-promotion-frame-id
+                       (e-context-lifetime-frame-id frame)))
+      (setq options
+            (plist-put options
+                       :context-promotion-observation-ids
+                       (copy-sequence
+                        (e-context-lifetime-frame-observation-ids
+                         frame)))))
     (when exact-coverage-p
       (setq options
             (plist-put options
@@ -2857,8 +3166,10 @@ ambiguous and is rejected by the provider adapter."
 (defun e-harness--provider-anchor-fingerprints (context)
   "Return JSON-stable provider-relevant fingerprints from CONTEXT."
   (let* ((options (plist-get context :options))
+         (capabilities (plist-get options :context-capabilities))
          (delivery (plist-get options :observation-delivery))
-         (replaceable-p (eq delivery 'request-local-replaceable))
+         (delivery-map (or (plist-get options :observation-delivery-map)
+                           (plist-get capabilities :observation-delivery)))
          (fingerprints
           (list
            :segments
@@ -2870,9 +3181,12 @@ ambiguous and is rejected by the provider adapter."
             (cl-remove-if
              (lambda (segment)
                (or (memq (plist-get segment :kind) '(history delta))
-                   (and replaceable-p
-                        (memq (plist-get segment :kind)
-                              '(current-state dynamic-context)))))
+                   (and (memq (plist-get segment :kind)
+                              '(current-state dynamic-context))
+                        (eq (e-backend-observation-delivery-for-kind
+                             (list :observation-delivery delivery-map)
+                             (plist-get segment :kind))
+                            'request-local-replaceable))))
              (plist-get context :segments)))
            :active-layer-ids
            (copy-sequence (plist-get context :provider-anchor-active-layer-ids))
@@ -2906,7 +3220,19 @@ ambiguous and is rejected by the provider adapter."
            ;; itself is compared only for inherited delivery; a replaceable
            ;; observation may change without invalidating the stable anchor.
            :observation-delivery
-           (and delivery (symbol-name delivery)))))
+           (and delivery (symbol-name delivery))
+           :observation-delivery-map
+           (copy-tree delivery-map)
+           :reserved-effect-carrier
+           (plist-get capabilities :reserved-effect-carrier)
+           :reserved-effect-schema-version
+           (when (eq (plist-get capabilities :reserved-effect-carrier)
+                     'context-promote-wire)
+             e-context-lifetime-promotion-schema-version)
+           :lifetime-observation-safety
+           (if (plist-get options :lifetime-ephemerals-clean-p)
+               'clean
+             'contaminated))))
     (when (and (not (eq delivery 'request-local-replaceable))
                (plist-get options :current-state-fingerprint))
       (setq fingerprints
@@ -3011,6 +3337,9 @@ not contaminate the anchor and is safe for either supported continuation mode."
           (plist-get options :current-state-fingerprint)))
     (and (plist-get options :provider-continuation)
          (memq continuation '(linear branchable))
+         (or (not (plist-member options :lifetime-ephemerals-clean-p))
+             (plist-get options :lifetime-ephemerals-clean-p)
+             (eq continuation 'branchable))
          (or (null current-state-fingerprint)
              (eq delivery 'request-local-replaceable)
              (eq continuation 'branchable)))))
@@ -3028,9 +3357,14 @@ by `e-harness--provider-anchor-selection-allowed-p' when an observation is
 inherited."
   (let* ((options (plist-get context :options))
          (capabilities (plist-get options :context-capabilities))
-         (fingerprints (e-harness--provider-anchor-fingerprints context)))
-    (if (and (eq (plist-get options :observation-delivery) 'inherited)
-             (plist-get options :current-state-fingerprint)
+         (fingerprints (e-harness--provider-anchor-fingerprints context))
+         (inherited-observation-p
+          (cl-some
+           (lambda (observation)
+             (equal (plist-get observation :delivery) 'inherited))
+           (plist-get (plist-get context :observation-frontier)
+                      :observations))))
+    (if (and inherited-observation-p
              (eq (plist-get capabilities :continuation) 'branchable))
         (let ((lookup (copy-tree fingerprints)))
           ;; A clean anchor was produced before any current-state segment
@@ -3068,6 +3402,9 @@ inherited."
            (eq delivery 'inherited)
            (eq continuation 'branchable))
       'branchable-clean-anchor-only)
+     ((and (plist-member options :lifetime-ephemerals-clean-p)
+           (not (plist-get options :lifetime-ephemerals-clean-p)))
+      'hold-inherited-observation)
      (t
       'advance-eligible))))
 
@@ -3172,8 +3509,16 @@ The loop marks candidates only after projection-compatible promotion.  The
 request ordinal and projection identity then fence a candidate from an
 earlier request in the same turn, including the case where a refreshed
 request emits no candidate at all."
-  (let ((provider-id (plist-get candidate :provider-id))
-        (options (plist-get context :options)))
+  (let* ((provider-id (plist-get candidate :provider-id))
+         (options (plist-get context :options))
+         (frontier (plist-get options :observation-frontier))
+         (inherited-observation-p
+          (or (and (eq (plist-get options :observation-delivery) 'inherited)
+                   (plist-get options :current-state-fingerprint))
+              (cl-some
+               (lambda (observation)
+                 (eq (plist-get observation :delivery) 'inherited))
+               (plist-get frontier :observations)))))
     (and (plist-get candidate :accepted-for-persistence)
          (plist-member candidate :projection-identity)
          (equal (plist-get candidate :projection-identity)
@@ -3184,9 +3529,9 @@ request emits no candidate at all."
          (memq (plist-get (plist-get options :context-capabilities)
                           :continuation)
                '(linear branchable))
-         (or (eq (plist-get options :observation-delivery)
-                 'request-local-replaceable)
-             (null (plist-get options :current-state-fingerprint)))
+         (not inherited-observation-p)
+         (or (not (plist-member options :lifetime-ephemerals-clean-p))
+             (plist-get options :lifetime-ephemerals-clean-p))
          (pcase provider-id
            ('openai
             (and (plist-get options :provider-continuation)
@@ -3248,7 +3593,7 @@ request emits no candidate at all."
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
              cancelled-p append-message on-event context drain-pending-input
-             on-context-refresh)
+             on-context-refresh on-response-complete on-tool-observation)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -3265,7 +3610,10 @@ request emits no candidate at all."
         :tools (e-harness-tools harness session-id turn-id)
         :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
         :options (plist-get context :options)
-         :segments (plist-get context :segments)
+        :segments (plist-get context :segments)
+        :lifetime-frame (plist-get context :lifetime-frame)
+        :on-response-complete on-response-complete
+        :on-tool-observation on-tool-observation
          :turn-work-handle (plist-get
                             (gethash session-id
                              (e-harness-active-turns harness))
@@ -3511,6 +3859,10 @@ cancellation.  SESSION-ID identifies the session."
 	             (context)
 	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
                (plist-put entry :context context)
+               (plist-put entry :context-frame
+                          (plist-get context :lifetime-frame))
+               (plist-put entry :lifetime-generation
+                          (plist-get context :lifetime-generation))
                (plist-put entry :provider-anchor-candidates nil)
                (plist-put entry :provider-anchor-final-request-ordinal nil)
                (e-harness--run-prompt-turn-async
@@ -3596,7 +3948,24 @@ cancellation.  SESSION-ID identifies the session."
                   (when (and (active-entry-p)
                              (equal (plist-get entry :id) turn-id)
                              (not (plist-get entry :cancelled)))
-                    (plist-put entry :context fresh-context)))
+                    (plist-put entry :context fresh-context)
+                    (plist-put entry :context-frame
+                               (plist-get fresh-context :lifetime-frame))
+                    (plist-put entry :lifetime-generation
+                               (plist-get fresh-context
+                                          :lifetime-generation))))
+                :on-response-complete
+                (lambda (payload)
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (e-harness--lifetime-commit-response
+                     harness session-id turn-id entry payload)))
+                :on-tool-observation
+                (lambda (payload)
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (e-harness--lifetime-tool-observation-frame
+                     harness session-id turn-id entry payload)))
                 :context context)))
 	            (start-auto-compaction
 	             (context)

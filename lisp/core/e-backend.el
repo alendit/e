@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'e-request)
+(require 'seq)
 
 (cl-defstruct (e-backend-request (:constructor e-backend-request-create))
   cancel
@@ -29,10 +30,15 @@
 
 (defconst e-backend-context-capability-values
   '((:continuation none linear branchable)
+    ;; A scalar remains accepted for old adapters.  New adapters may return a
+    ;; list of `(:kind KIND :mode MODE)' entries; the helper below gives core a
+    ;; single kind-scoped query without making provider wire fields part of the
+    ;; contract.
     (:observation-delivery inherited request-local-replaceable)
     (:prefix-cache none implicit explicit)
     (:provider-compaction none opaque)
-    (:reasoning-state none replayable provider-managed))
+    (:reasoning-state none replayable)
+    (:reserved-effect-carrier none context-promote-wire))
   "Provider-neutral values accepted by `e-backend-context-capabilities'.")
 
 (defconst e-backend--default-context-capabilities
@@ -64,6 +70,71 @@
              (setq valid nil)))
          (and valid (null rest)))))
 
+(defconst e-backend-observation-kinds
+  '(current-state dynamic-context tool-result trace retrieved-excerpt)
+  "Semantic observation kinds understood by the generic backend contract.")
+
+(defun e-backend--observation-delivery-entry (entry)
+  "Return normalized delivery ENTRY or signal an invalid capability."
+  (unless (and (e-backend--keyword-plist-p entry)
+               (= (length entry) 4)
+               (plist-member entry :kind)
+               (plist-member entry :mode))
+    (signal 'e-backend-invalid-context-capabilities
+            (list :observation-delivery entry)))
+  (let ((kind (plist-get entry :kind))
+        (mode (plist-get entry :mode)))
+    (unless (and (memq kind e-backend-observation-kinds)
+                 (memq mode '(inherited request-local-replaceable)))
+      (signal 'e-backend-invalid-context-capabilities
+              (list :observation-delivery entry)))
+    (list :kind kind :mode mode)))
+
+(defun e-backend--normalize-observation-delivery (value)
+  "Return scalar or canonical kind-scoped observation delivery VALUE."
+  (cond
+   ((memq value '(inherited request-local-replaceable)) value)
+   ((and (proper-list-p value)
+         (not (e-backend--keyword-plist-p value)))
+    (let (entries kinds)
+      (dolist (entry value)
+        (let ((normalized (e-backend--observation-delivery-entry entry)))
+          (when (memq (plist-get normalized :kind) kinds)
+            (signal 'e-backend-invalid-context-capabilities
+                    (list :observation-delivery :duplicate-kind
+                          (plist-get normalized :kind))))
+          (push (plist-get normalized :kind) kinds)
+          (push normalized entries)))
+      (nreverse entries)))
+   (t
+    (signal 'e-backend-invalid-context-capabilities
+            (list :observation-delivery value)))))
+
+(defun e-backend-observation-delivery-for-kind (capabilities kind)
+  "Return effective delivery for semantic observation KIND.
+
+CAPABILITIES may use the legacy scalar observation value or the preferred
+kind-scoped mapping.  Missing mapping entries are conservative inherited
+observations."
+  (let ((kind (if (symbolp kind) kind (intern (format "%s" kind))))
+        (value (plist-get capabilities :observation-delivery)))
+    (cond
+     ((eq value 'inherited) 'inherited)
+     ((eq value 'request-local-replaceable)
+      ;; Legacy scalar claims describe the existing current-state channel only;
+      ;; they never silently authorize dropping tool results or traces.
+      (if (memq kind '(current-state dynamic-context))
+          value
+        'inherited))
+     ((and (listp value) (not (e-backend--keyword-plist-p value)))
+      (or (plist-get (seq-find
+                      (lambda (entry)
+                        (eq (plist-get entry :kind) kind))
+                      value)
+                     :mode)
+          'inherited))
+     (t 'inherited))))
+
 (defun e-backend--validate-context-capabilities (capabilities)
   "Return normalized CAPABILITIES or signal for an unknown semantic value."
   (unless (e-backend--keyword-plist-p capabilities)
@@ -75,7 +146,13 @@
              (allowed (cdr descriptor)))
         (when (plist-member capabilities key)
           (let ((value (plist-get capabilities key)))
-            (unless (memq value allowed)
+            (setq value
+                  (if (eq key :observation-delivery)
+                      (e-backend--normalize-observation-delivery value)
+                    value))
+            (unless (or (and (eq key :observation-delivery)
+                             (listp value))
+                        (memq value allowed))
               (signal 'e-backend-invalid-context-capabilities
                       (list key value allowed)))
             (setq normalized (plist-put normalized key value))))))

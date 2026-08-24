@@ -2633,6 +2633,74 @@
                                (e-session-messages store fork-id))
                        '("keep")))))))
 
+(ert-deftest e-session-test-context-projection-keeps-durable-body-and-forgets-tool-bundle ()
+  "The later-request projection keeps intent/facts but not a consumed tool pair."
+  (let* ((store (e-session-store-create))
+         (session-id "context-projection")
+         (session (e-session-create store :id session-id))
+         (generation
+          (e-context-lifetime-generation-create
+           :id "generation-projection"
+           :checkpoint '((:role system :content "policy"))
+           :covered-session-boundary (plist-get session :root-event-id))))
+    (e-session-append-context-generation store session-id generation)
+    (e-session-append-message
+     store session-id '(:id "prompt" :role user :content "durable intent"))
+    (e-session-append-message
+     store session-id
+     '(:id "call-entry" :role tool-call
+       :content (:id "call-1" :name "inspect" :arguments (:path "/tmp"))
+       :metadata (:provider-replay-items
+                  ((:provider-id openai :item (:type "reasoning"))))))
+    (e-session-append-message
+     store session-id
+     '(:id "result-entry" :role tool
+       :content (:tool-call-id "call-1" :name "inspect"
+                 :status ok :content "BULKY-TOOL-RESULT")))
+    (e-session-append-message
+     store session-id
+     '(:id "answer" :role assistant :content "ordinary answer"))
+    (let* ((frame
+            (e-context-lifetime-frame-create
+             :id "frame-projection"
+             :generation-id "generation-projection"
+             :consumer-request-id "consumer-projection"
+             :observations
+             '((:observation-id "observation-tool"
+                :kind "tool-result"
+                :source-entry-ref "result-entry"
+                :source-fingerprint "tool-fingerprint"
+                :effective-delivery "inherited"
+                :body (:content "BULKY-TOOL-RESULT")))))
+           (consumed
+            (e-context-lifetime-frame-complete-for-consumer
+             frame "consumer-projection" "answer"))
+           (promotion
+            (e-context-lifetime-promotion-from-effect
+             consumed
+             '(:type context-promote :schema-version 1
+               :frame-id "frame-projection"
+               :source-observation-ids ("observation-tool")
+               :facts ((:id "fact-selected" :value "first divergence"))))))
+      (e-session-append-context-promotion store session-id promotion)
+      (let* ((projection (e-session-context-lifetime-projection
+                          store session-id))
+             (tail (plist-get projection :durable-tail))
+             (contents (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               tail)))
+        (should (equal contents '("durable intent" "ordinary answer")))
+        (should-not (seq-some
+                     (lambda (content)
+                       (string-match-p "BULKY-TOOL-RESULT"
+                                       (format "%S" content)))
+                     contents))
+        (should (= (length (plist-get projection :promotions)) 1))
+        (should (equal
+                 (e-context-lifetime-promotion-facts
+                  (car (plist-get projection :promotions)))
+                 '((:id "fact-selected" :value "first divergence"))))))))
+
 (provide 'e-session-test)
 
 ;;; e-session-test.el ends here

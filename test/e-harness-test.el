@@ -5162,6 +5162,511 @@ an empty summary\"."
       (delete-directory specific t)
       (delete-directory default t))))
 
+(ert-deftest e-harness-test-context-lifetime-tool-bundle-promotes-and-forgets ()
+  "A normal opted-in tool turn exposes a paired bundle once and keeps its fact."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((request-count 0)
+           (requests nil)
+           (promotion-input nil)
+           (backend
+            (e-backend-create
+             :name "context-lifetime-tool"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery request-local-replaceable
+               :reserved-effect-carrier context-promote-wire)
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (push (list :messages (copy-tree messages)
+                            :options (copy-tree options))
+                      requests)
+                (setq request-count (1+ request-count))
+                (if (= request-count 1)
+                    (progn
+                      ;; The ordinary call remains an ordinary streamed tool
+                      ;; item; the reserved effect is carried beside it.
+                      (funcall
+                       on-item
+                       '(:type tool-call
+                         :id "call-context-lifetime"
+                         :name "remember-fact"
+                         :arguments (:value "canvas marker")))
+                      (setq promotion-input
+                            (list
+                             :type 'context-promote
+                             :schema-version 1
+                             :frame-id
+                             (plist-get options
+                                        :context-promotion-frame-id)
+                             :source-observation-ids
+                             (copy-sequence
+                              (plist-get
+                               options
+                               :context-promotion-observation-ids))
+                             :facts
+                             '((:id "selected-fact"
+                                :value "selected durable fact"))))
+                      (funcall on-item promotion-input)
+                      (funcall on-item '(:type done :reason tool-use)))
+                  (funcall on-item
+                           '(:type assistant-message
+                             :content "follow-up answer"))
+                  (funcall on-item '(:type done :reason stop)))))))
+           (provider
+            (e-context-provider-create
+             :name 'context-lifetime-canvas
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system
+                         :content "CANVAS-OBSERVATION")))))
+           (capability
+            (e-capability-create
+             :id 'context-lifetime-tool-capability
+             :context-providers (list provider)
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "remember-fact"
+                 :description "Return the selected marker."
+                 :handler (lambda (_arguments)
+                            "BULKY-TOOL-RESULT"))))))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability))))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-create-session harness :id "session-1")
+        (let ((probe (e-harness-turn-context harness "session-1" "probe")))
+          (should (plist-get probe :lifetime-frame))
+          (should (plist-get (plist-get probe :options)
+                             :context-promotion-frame-id)))
+        (e-harness-test-prompt-batch harness "session-1" "remember this"))
+      (should (= request-count 2))
+      (should promotion-input)
+      (let* ((ordered-requests (reverse requests))
+             (first-request (car ordered-requests))
+             (second-request (cadr ordered-requests))
+             (first-options (plist-get first-request :options))
+             (second-messages (plist-get second-request :messages))
+             (roles (mapcar (lambda (message) (plist-get message :role))
+                            second-messages)))
+        (should (plist-get first-options :context-lifetime-enabled))
+        (should (plist-get first-options :context-promotion-frame-id))
+        (should (plist-get first-options
+                           :context-promotion-observation-ids))
+        (should (member 'tool-call roles))
+        (should (member 'tool roles))
+        (should (equal
+                 (plist-get
+                  (plist-get
+                   (seq-find
+                    (lambda (message)
+                      (eq (plist-get message :role) 'tool))
+                    second-messages)
+                   :content)
+                  :tool-call-id)
+                 "call-context-lifetime")))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (let* ((store (e-harness-sessions harness))
+               (projection (e-session-context-lifetime-projection
+                            store "session-1"))
+               (promotions (plist-get projection :promotions))
+               (context (e-harness-turn-context
+                         harness "session-1" "next-consumer"))
+               (messages (plist-get context :messages))
+               (printed (prin1-to-string messages))
+               (first-frame-id
+                (plist-get
+                 (plist-get (car (reverse requests)) :options)
+                 :context-promotion-frame-id))
+               (next-frame (plist-get context :lifetime-frame))
+               (next-roles
+                (mapcar (lambda (message) (plist-get message :role))
+                        messages)))
+          (should (= (length promotions) 1))
+          (should (equal
+                   (e-context-lifetime-promotion-facts (car promotions))
+                   '((:id "selected-fact"
+                      :value "selected durable fact"))))
+          (should (string-match-p "selected durable fact" printed))
+          (should-not (string-match-p "BULKY-TOOL-RESULT" printed))
+          (should-not (member 'tool-call next-roles))
+          (should-not (member 'tool next-roles))
+          (should (e-context-lifetime-frame-p next-frame))
+          (should-not (equal first-frame-id
+                             (e-context-lifetime-frame-id next-frame))))))))
+
+(ert-deftest e-harness-test-context-lifetime-disabled-keeps-default-path ()
+  "The opt-in boundary leaves the existing path without a runtime frame."
+  (let* ((captured-options nil)
+         (backend
+          (e-backend-create
+           :name "context-lifetime-disabled"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (ignore messages)
+              (setq captured-options (copy-tree options))
+              (funcall on-item
+                       '(:type assistant-message :content "ordinary answer"))
+              (funcall on-item '(:type done :reason stop))))))
+         (harness (e-harness-create :backend backend)))
+    (let ((e-context-lifetime-shadow-projection-enabled nil))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-test-prompt-batch harness "session-1" "ordinary"))
+    (should-not (plist-get captured-options :context-lifetime-enabled))
+    (should-not (plist-get captured-options :context-promotion-frame-id))
+    (should-not (e-session-context-generations
+                 (e-harness-sessions harness) "session-1"))
+    (should-not (e-session-context-promotions
+                 (e-harness-sessions harness) "session-1"))))
+
+(ert-deftest e-harness-test-context-lifetime-tool-result-promotes-on-follow-up ()
+  "A tool result is observed by B, promoted there, then forgotten afterward."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((request-count 0)
+           (requests nil)
+           (promotion-input nil)
+           (raw-result "UNIQUE-RAW-TOOL-RESULT")
+           (backend
+            (e-backend-create
+             :name "context-lifetime-tool-result"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery request-local-replaceable
+               :reserved-effect-carrier context-promote-wire)
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (push (list :messages (copy-tree messages)
+                            :options (copy-tree options))
+                      requests)
+                (setq request-count (1+ request-count))
+                (if (= request-count 1)
+                    (progn
+                      ;; Response A only requests the ordinary tool.  The
+                      ;; promotion is deliberately withheld until B sees the
+                      ;; paired call/result bundle.
+                      (funcall
+                       on-item
+                       '(:type tool-call
+                         :id "call-tool-result"
+                         :name "inspect-result"
+                         :arguments (:target "raw")))
+                      (funcall on-item '(:type done :reason tool-use)))
+                  (setq promotion-input
+                        (list
+                         :type 'context-promote
+                         :schema-version 1
+                         :frame-id
+                         (plist-get options :context-promotion-frame-id)
+                         :source-observation-ids
+                         (copy-sequence
+                          (plist-get options
+                                     :context-promotion-observation-ids))
+                         :facts
+                         '((:id "tool-result-fact"
+                            :value "selected from tool result"))))
+                  (funcall on-item promotion-input)
+                  (funcall on-item
+                           '(:type assistant-message
+                             :content "follow-up selected"))
+                  (funcall on-item '(:type done :reason stop)))))))
+           (provider
+            (e-context-provider-create
+             :name 'context-lifetime-tool-result-canvas
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "CANVAS-A")))))
+           (capability
+            (e-capability-create
+             :id 'context-lifetime-tool-result-capability
+             :context-providers (list provider)
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "inspect-result"
+                 :description "Return a uniquely identifiable result."
+                 :handler (lambda (_arguments) raw-result))))))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability))))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-create-session harness :id "session-1")
+        (e-harness-test-prompt-batch harness "session-1" "inspect"))
+      (should (= request-count 2))
+      (let* ((ordered (reverse requests))
+             (request-a (car ordered))
+             (request-b (cadr ordered))
+             (messages-b (plist-get request-b :messages))
+             (roles-b (mapcar (lambda (message) (plist-get message :role))
+                              messages-b))
+             (options-b (plist-get request-b :options))
+             (source-ids (plist-get promotion-input
+                                    :source-observation-ids)))
+        (should (equal roles-b '(system user tool-call tool)))
+        (should (string-match-p raw-result (prin1-to-string messages-b)))
+        (should (equal source-ids
+                       (plist-get options-b
+                                  :context-promotion-observation-ids)))
+        (should-not (equal source-ids
+                            (plist-get (plist-get request-a :options)
+                                       :context-promotion-observation-ids))))
+      (should (equal (mapcar (lambda (message) (plist-get message :role))
+                             (e-harness-messages harness "session-1"))
+                     '(user tool-call tool assistant)))
+      (let* ((store (e-harness-sessions harness))
+             (projection (e-session-context-lifetime-projection
+                          store "session-1"))
+             (promotions (plist-get projection :promotions))
+             (next-context
+              (let ((e-context-lifetime-shadow-projection-enabled t))
+                (e-harness-turn-context
+                 harness "session-1" "next-consumer")))
+             (next-messages (plist-get next-context :messages))
+             (printed (prin1-to-string next-messages)))
+        (should (= (length promotions) 1))
+        (should (equal
+                 (e-context-lifetime-promotion-facts (car promotions))
+                 '((:id "tool-result-fact"
+                    :value "selected from tool result"))))
+        (should (string-match-p "selected from tool result" printed))
+        (should-not (string-match-p raw-result printed))
+        (should-not (string-match-p "call-tool-result" printed))
+        (should-not (member 'tool-call
+                            (mapcar (lambda (message) (plist-get message :role))
+                                    next-messages)))
+        (should-not (member 'tool
+                            (mapcar (lambda (message) (plist-get message :role))
+                                    next-messages)))))))
+
+(ert-deftest e-harness-test-invalid-promotion-does-not-mutate-session ()
+  "Invalid reserved control stops later tools and creates no promotion."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((started nil)
+           (request-count 0)
+           (backend
+            (e-backend-create
+             :name "invalid-promotion-session"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery request-local-replaceable
+               :reserved-effect-carrier context-promote-wire)
+             :stream
+             (cl-function
+              (lambda (&key on-item &allow-other-keys)
+                (cl-incf request-count)
+                (funcall on-item
+                         '(:type tool-call
+                           :id "call-before-invalid-session"
+                           :name "before-invalid-session"
+                           :arguments nil))
+                (funcall on-item
+                         '(:type context-promote
+                           :schema-version 1
+                           :frame-id "not-the-current-frame"
+                           :source-observation-ids ("not-the-current-observation")))
+                (funcall on-item
+                         '(:type tool-call
+                           :id "call-after-invalid-session"
+                           :name "after-invalid-session"
+                           :arguments nil))))))
+           (capability
+            (e-capability-create
+             :id 'invalid-promotion-tools
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "before-invalid-session"
+                 :description "Record the ordinary call before malformed control."
+                 :handler
+                 (lambda (_arguments)
+                   (push "before-invalid-session" started)
+                   "ordinary result"))
+                (e-tools-test-register
+                 registry
+                 :name "after-invalid-session"
+                 :description "Must not run after malformed control."
+                 :handler
+                 (lambda (_arguments)
+                   (push "after-invalid-session" started)
+                   "should not run"))))))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability))))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-create-session harness :id "invalid-promotion-session")
+        (should-error
+         (e-harness-test-prompt-batch
+          harness "invalid-promotion-session" "trigger malformed control")
+         :type 'e-context-lifetime-invalid-record))
+      (should (= request-count 1))
+      (should (equal started '("before-invalid-session")))
+      (should-not
+       (e-session-context-promotions
+        (e-harness-sessions harness) "invalid-promotion-session"))
+      (should-not
+       (seq-find
+        (lambda (message)
+          (equal (plist-get (plist-get message :content) :name)
+                 "after-invalid-session"))
+        (e-harness-messages harness "invalid-promotion-session")))
+      (should-not
+       (seq-find (lambda (message)
+                 (eq (plist-get message :role) 'assistant))
+                 (e-harness-messages harness "invalid-promotion-session"))))))
+
+(ert-deftest e-harness-test-context-lifetime-steering-rebuilds-after-follow-up ()
+  "Steering after a tool follow-up uses the fresh projection exactly once."
+  (e-harness-test--with-empty-layer-registry
+    (let (backend provider capability harness turn-id
+          (request-count 0) requests finish-b raw-result)
+      (setq raw-result "RAW-STEERING-RESULT")
+      (setq backend
+            (e-backend-create
+             :name "context-lifetime-steering-refresh"
+             :context-capabilities
+             '(:continuation linear
+               :observation-delivery inherited
+               :reserved-effect-carrier context-promote-wire)
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done on-request-start
+                             &allow-other-keys)
+                (setq request-count (1+ request-count))
+                (push (list :messages (copy-tree messages)
+                            :options (copy-tree options))
+                      requests)
+                (let ((request (e-backend-request-create))
+                      (ordinal request-count))
+                  (funcall on-request-start request)
+                  (cond
+                   ((= ordinal 1)
+                    (funcall on-item
+                             '(:type provider-replay-item
+                               :provider-id fake
+                               :item (:type "steering-replay"
+                                      :id "REPLAY-STEERING")))
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-steering"
+                               :name "inspect-steering"
+                               :arguments nil))
+                    (funcall on-item
+                             '(:type provider-anchor-candidate
+                               :provider-id fake
+                               :metadata (:response-id "resp-A")))
+                    (funcall on-item '(:type done :reason tool-use))
+                    (funcall on-done '(:status done)))
+                   ((= ordinal 2)
+                    ;; Leave B in flight so steering is queued while its
+                    ;; consumed frame has not yet been finalized.
+                    (setq finish-b
+                          (lambda ()
+                            (let* ((frame-id
+                                    (plist-get options
+                                               :context-promotion-frame-id))
+                                   (observation-ids
+                                    (plist-get options
+                                               :context-promotion-observation-ids)))
+                              (should frame-id)
+                              (should observation-ids)
+                              (funcall
+                               on-item
+                               (list :type 'context-promote
+                                     :schema-version 1
+                                     :frame-id frame-id
+                                     :source-observation-ids observation-ids
+                                     :facts
+                                     '((:id "steered-fact"
+                                        :value "selected after B"))))
+                              (funcall on-item
+                                       '(:type assistant-message
+                                         :content "B"))
+                              (funcall on-item
+                                       '(:type provider-anchor-candidate
+                                         :provider-id fake
+                                         :metadata (:response-id "resp-B")))
+                              (funcall on-item '(:type done :reason stop))
+                              (funcall on-done '(:status done))))))
+                   ((= ordinal 3)
+                    (funcall on-item
+                             '(:type assistant-message :content "C"))
+                    (funcall on-item '(:type done :reason stop))
+                    (funcall on-done '(:status done)))
+                   (t (error "unexpected request %S" ordinal)))
+                  )))))
+      (setq provider
+            (e-context-provider-create
+             :name 'context-lifetime-steering-canvas
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "CANVAS-STEERING")))))
+      (setq capability
+            (e-capability-create
+             :id 'context-lifetime-steering-capability
+             :context-providers (list provider)
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "inspect-steering"
+                 :description "Produce one ephemeral steering result."
+                 :handler (lambda (_arguments) raw-result))))))
+      (setq harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability)
+             :default-options '(:provider-continuation t
+                                :provider-anchor-provider-id fake)))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-create-session harness :id "session-1")
+        (setq turn-id
+              (e-harness-test-prompt-async harness "session-1" "inspect"))
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (< request-count 2)
+                      (not finish-b)
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should (= request-count 2))
+        (should finish-b)
+        (should (equal
+                 (e-harness-test-steer-active-turn
+                  harness "session-1" "steer now")
+                 turn-id))
+        (funcall finish-b)
+        (let ((entry (e-harness-wait-batch harness "session-1" 1.0)))
+          (should (eq (plist-get entry :status) 'done))))
+      (let* ((ordered (nreverse requests))
+             (request-b (nth 1 ordered))
+             (request-c (nth 2 ordered))
+             (messages-b (plist-get request-b :messages))
+             (messages-c (plist-get request-c :messages))
+             (printed-b (prin1-to-string messages-b))
+             (printed-c (prin1-to-string messages-c)))
+        (should (= request-count 3))
+        (should (string-match-p raw-result printed-b))
+        (should (string-match-p "call-steering" printed-b))
+        (should (string-match-p "REPLAY-STEERING" printed-b))
+        (should (string-match-p "selected after B" printed-c))
+        (should (string-match-p "steer now" printed-c))
+        (dolist (marker (list raw-result "call-steering" "REPLAY-STEERING"
+                               "resp-A" "resp-B"))
+          (should-not (string-match-p marker printed-c)))
+        (should-not
+         (e-session-provider-anchors
+          (e-harness-sessions harness) "session-1"))))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

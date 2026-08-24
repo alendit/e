@@ -2902,6 +2902,76 @@ its dedicated board journal accessors."
   (copy-tree
    (plist-get (e-session--get-live store session-id) :context-promotions)))
 
+(defun e-session-context-lifetime-current-generation (store session-id)
+  "Return the latest narrowed semantic generation on SESSION-ID's path.
+
+Legacy frame/generation journal entries are intentionally not reconstructed as
+runtime frames.  Only the current v2 generation codec participates in this
+projection."
+  (when-let ((entry (e-session--context-active-generation store session-id)))
+    (condition-case error
+        (e-context-lifetime-generation-from-record
+         (e-session--context-record entry))
+      (e-context-lifetime-invalid-record
+       (signal 'e-session-error
+               (list "Invalid current context generation" session-id error))))))
+
+(defun e-session--context-lifetime-durable-message (entry)
+  "Return model-facing durable MESSAGE from canonical session ENTRY."
+  (when (eq (plist-get entry :type) 'message)
+    (let ((role (plist-get entry :role)))
+      (unless (memq role '(tool-call tool))
+        (let ((message (copy-tree entry)))
+          ;; Provider replay items travel with a paired tool observation.  They
+          ;; are not durable model context after that consuming request.
+          (cl-remf message :id)
+          (cl-remf message :parent-id)
+          (cl-remf message :created-at)
+          (cl-remf message :turn-id)
+          (cl-remf message :type)
+          (when-let ((metadata (plist-get message :metadata)))
+            (setq metadata (copy-tree metadata))
+            (cl-remf metadata :provider-replay-items)
+            (if metadata
+                (plist-put message :metadata metadata)
+              (cl-remf message :metadata)))
+          message)))))
+
+(defun e-session-context-lifetime-projection (store session-id)
+  "Return canonical inputs for the semantic later-request projection.
+
+The session transcript/current branch is the sole durable body source.  The
+result contains no runtime frame or observation body; callers may add a fresh
+consumer-bound frame at request construction time."
+  (let* ((path (e-session--checkpoint-path-suffix store session-id))
+         (generation (e-session-context-lifetime-current-generation
+                      store session-id))
+         (generation-id (and generation
+                            (e-context-lifetime-generation-id generation)))
+         (messages (delq nil
+                         (mapcar #'e-session--context-lifetime-durable-message
+                                 path)))
+         (promotions
+          (delq nil
+                (mapcar
+                 (lambda (entry)
+                   (when (and (eq (plist-get entry :type)
+                                  'context-promotion)
+                              generation-id)
+                     (condition-case error
+                         (let ((record (e-session--context-record entry)))
+                           (when (equal (plist-get record :generation-id)
+                                        generation-id)
+                             (e-context-lifetime-promotion-from-record record)))
+                       (e-context-lifetime-invalid-record
+                        (signal 'e-session-error
+                                (list "Invalid current context promotion"
+                                      session-id error))))))
+                 path))))
+    (list :generation generation
+          :durable-tail messages
+          :promotions promotions)))
+
 (defun e-session-process-reports (store session-id)
   "Return process reports for SESSION-ID in STORE in insertion order."
   (copy-sequence

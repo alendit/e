@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-backend)
+(require 'e-context-lifetime)
 (require 'e-request)
 (require 'e-session)
 (require 'e-tools)
@@ -76,11 +77,19 @@
       (plist-put (copy-sequence item) :type 'tool-call))
      (t item))))
 
-(defun e-loop--continuation-candidate-p (options candidate)
+(defun e-loop--continuation-candidate-p (options candidate &optional immediate-only-p)
   "Return non-nil when CANDIDATE may continue the request in OPTIONS."
-  (let ((continuation
-         (plist-get (plist-get options :context-capabilities)
-                    :continuation)))
+  (let* ((continuation
+          (plist-get (plist-get options :context-capabilities)
+                     :continuation))
+         (frontier (plist-get options :observation-frontier))
+         (inherited-observation-p
+          (or (and (eq (plist-get options :observation-delivery) 'inherited)
+                   (plist-get options :current-state-fingerprint))
+              (cl-some
+               (lambda (observation)
+                 (eq (plist-get observation :delivery) 'inherited))
+               (plist-get frontier :observations)))))
     (and (plist-get options :provider-continuation)
        (memq continuation '(linear branchable))
        (eq (plist-get candidate :provider-id)
@@ -90,17 +99,28 @@
        ;; clean anchor for the next request.  A proven request-local
        ;; replacement may advance normally; a turn with no observation may
        ;; also retain its ordinary continuation candidate.
-       (or (eq (plist-get options :observation-delivery)
-               'request-local-replaceable)
-           (null (plist-get options :current-state-fingerprint))))))
+       (or immediate-only-p
+           (and
+            ;; A scalar inherited marker is the legacy/synthetic form of the
+            ;; same semantic frontier.  It must be unsafe even when the newer
+            ;; frame-derived cleanliness field is absent.
+            (not inherited-observation-p)
+            ;; A request-local canvas replacement is not sufficient when the
+            ;; same frontier also contains an inherited tool result or another
+            ;; ephemeral kind.  The harness computes this flag from every
+            ;; trusted frame observation; require the whole frontier to be
+            ;; clean before a candidate can become durable.
+            (or (not (plist-member options :lifetime-ephemerals-clean-p))
+                (plist-get options :lifetime-ephemerals-clean-p)))))))
 
 (defun e-loop--promote-continuation-candidate
-    (options candidate source-message-count delta-messages)
+    (options candidate source-message-count delta-messages &optional immediate-only-p)
   "Return OPTIONS advanced to CANDIDATE for an in-turn follow-up.
 SOURCE-MESSAGE-COUNT covers the local transcript through the completed
 provider response.  DELTA-MESSAGES are new client inputs, normally tool
 results, that the stored response does not contain."
-  (if (not (e-loop--continuation-candidate-p options candidate))
+  (if (not (e-loop--continuation-candidate-p
+            options candidate immediate-only-p))
       options
     (let ((advanced (copy-sequence options)))
       (setq advanced
@@ -118,7 +138,8 @@ results, that the stored response does not contain."
                  source-message-count))))
 
 (defun e-loop--accepted-continuation-candidate
-    (candidate projection-identity request-id request-ordinal)
+    (candidate projection-identity request-id request-ordinal
+                &optional immediate-only-p)
   "Return CANDIDATE marked as accepted by the current loop request.
 
 Acceptance is deliberately recorded at the promotion boundary rather than
@@ -129,7 +150,8 @@ the harness select only the candidate belonging to the final successful
 provider request; PROJECTION-IDENTITY lets it verify that the candidate was
 produced by the authoritative semantic projection."
   (let ((accepted (copy-tree candidate)))
-    (plist-put accepted :accepted-for-persistence t)
+    (plist-put accepted :accepted-for-persistence (not immediate-only-p))
+    (plist-put accepted :immediate-followup-only immediate-only-p)
     (plist-put accepted :projection-identity
                (copy-tree projection-identity))
     (plist-put accepted :provider-request-id request-id)
@@ -221,7 +243,8 @@ CAUSES lists every completed tool call that induced a follow-up request."
             append-message refresh-context refresh-messages on-request-start
             on-done on-error
             cancelled-p drain-pending-input segments turn-work-handle
-            board-enroll-work)
+            board-enroll-work lifetime-frame on-response-complete
+            on-tool-observation)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
@@ -251,7 +274,8 @@ settlement are callback-driven."
         (settled nil)
         (active-request nil)
         (provider-request-sequence 0)
-        (next-request-causes nil))
+        (next-request-causes nil)
+        (active-lifetime-frame lifetime-frame))
     (cl-labels
         ((cancelled ()
            (and cancelled-p (funcall cancelled-p)))
@@ -278,11 +302,26 @@ settlement are callback-driven."
           (setq active-request request)
           (when on-request-start
             (funcall on-request-start request)))
-         (drain-pending
+         (lifetime-projection-enabled-p
           ()
+          ;; Callbacks are installed by the harness for both legacy and
+          ;; opted-in turns.  The semantic option on the current request is
+          ;; the authority for the new context-lifetime projection behavior.
+          (plist-get turn-options :context-lifetime-enabled))
+         (drain-pending
+          (&optional refresh-before-pending-p)
           (let ((pending (and drain-pending-input
                               (funcall drain-pending-input))))
             (when pending
+              ;; A same-turn steering message after an immediate tool
+              ;; follow-up must start from the harness's newly committed
+              ;; projection.  The refresh callback is invoked only when there
+              ;; is actually pending input, so ordinary turns keep their
+              ;; existing transcript path.
+              (when (and refresh-before-pending-p
+                         refresh-context
+                         (lifetime-projection-enabled-p))
+                (apply-context-refresh (funcall refresh-context)))
               (dolist (message pending)
                 (setq turn-messages (append turn-messages (list message)))
                 (funcall append-message message))
@@ -320,7 +359,11 @@ settlement are callback-driven."
                     (plist-put new-options :observation-frontier
                                new-frontier)))
             (setq turn-messages new-messages
-                  turn-options new-options)))
+                  turn-options new-options)
+            (when (plist-member projection :lifetime-frame)
+              (setq active-lifetime-frame
+                    (plist-get projection :lifetime-frame))))
+         )
          (start-request
           ()
           (unless (or settled (cancelled))
@@ -342,7 +385,10 @@ settlement are callback-driven."
                   (provider-request-ordinal nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
+                  (response-complete-notified nil)
+                  (response-promotion-effects nil)
                   (provider-request-causes next-request-causes)
+                  (provider-request-lifetime-frame active-lifetime-frame)
                   (provider-request-projection-identity
                    (plist-get turn-options
                               :continuation-projection-identity))
@@ -392,11 +438,12 @@ settlement are callback-driven."
                                     provider-request-projection-identity
                                     turn-options)))
                       (setq turn-options
-                            (e-loop--promote-continuation-candidate
+                             (e-loop--promote-continuation-candidate
                              turn-options
                              provider-anchor-candidate
                              (length turn-messages)
-                             provider-followup-messages))
+                             provider-followup-messages
+                             tool-called))
                       ;; Only emit a candidate once this loop has accepted it
                       ;; for the current request projection.  Raw provider
                       ;; items are intentionally not durable ownership facts.
@@ -408,8 +455,85 @@ settlement are callback-driven."
                         provider-anchor-candidate
                         provider-request-projection-identity
                         provider-request-id
-                        provider-request-ordinal))
+                        provider-request-ordinal
+                        tool-called))
                       t))
+                  (notify-response-complete
+                    ()
+                    (when (and on-response-complete
+                               (not response-complete-notified))
+                      (setq response-complete-notified t)
+                      (let ((completed
+                             (funcall
+                              on-response-complete
+                              (list :frame provider-request-lifetime-frame
+                                    :provider-request-id provider-request-id
+                                    :provider-request-ordinal provider-request-ordinal
+                                    :promotion-effects
+                                    (copy-tree response-promotion-effects)
+                                    :assistant-content (response-text)
+                                    :tool-called tool-called
+                                    :reason done-reason))))
+                        ;; A tool may finish before the provider reports its
+                        ;; response complete.  In that ordering the tool
+                        ;; callback has already installed the descendant
+                        ;; bundle frame; completing the producer frame must
+                        ;; not roll the frontier back to that older frame.
+                        (when (and (e-context-lifetime-frame-p completed)
+                                   (or (null active-lifetime-frame)
+                                       (equal
+                                        (e-context-lifetime-frame-id
+                                         active-lifetime-frame)
+                                        (and provider-request-lifetime-frame
+                                             (e-context-lifetime-frame-id
+                                              provider-request-lifetime-frame)))))
+                          (setq active-lifetime-frame completed)))))
+                   (attach-pending-provider-replay-items
+                    ()
+                    ;; A reserved provider effect may arrive after an
+                    ;; ordinary tool call in the same response.  Its opaque
+                    ;; acknowledgement still belongs to this immediate
+                    ;; tool-result follow-up, even though the tool result was
+                    ;; appended before the effect was decoded.  Replace the
+                    ;; in-memory request message rather than mutating the
+                    ;; message handed to the session append callback: replay
+                    ;; metadata is wire-only and must not leak into durable
+                    ;; transcript state.
+                    (when pending-provider-replay-items
+                      (let ((tool-message
+                             (car (last
+                                   (cl-remove-if-not
+                                    (lambda (message)
+                                      (eq (plist-get message :role) 'tool))
+                                    provider-followup-messages)))))
+                        (when tool-message
+                          (let* ((request-message (copy-tree tool-message))
+                                 (metadata
+                                  (copy-tree
+                                   (plist-get request-message :metadata))))
+                            (setq metadata
+                                  (plist-put
+                                   metadata
+                                   :provider-replay-items
+                                   (copy-tree pending-provider-replay-items)))
+                            (setq request-message
+                                  (plist-put request-message
+                                             :metadata metadata))
+                            (setq turn-messages
+                                  (mapcar
+                                   (lambda (message)
+                                     (if (eq message tool-message)
+                                         request-message
+                                       message))
+                                   turn-messages))
+                            (setq provider-followup-messages
+                                  (mapcar
+                                   (lambda (message)
+                                     (if (eq message tool-message)
+                                         request-message
+                                       message))
+                                   provider-followup-messages))
+                            (setq pending-provider-replay-items nil))))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -433,12 +557,41 @@ settlement are callback-driven."
                          (list :type 'reasoning-delta
                                :stream-kind 'summary
                                :content (response-text))))
+                      (attach-pending-provider-replay-items)
                       (promote-provider-anchor)
                       (start-request)))
                    (current-tool-p
                     (token)
                     (and (listp active-tool)
                          (eq (plist-get active-tool :token) token)))
+                   (provider-followup-message-key
+                    (message)
+                    (let ((role (plist-get message :role))
+                          (content (plist-get message :content)))
+                      (pcase role
+                        ('tool-call
+                         (and (plist-get content :id)
+                              (list role (plist-get content :id))))
+                        ('tool
+                         (and (plist-get content :tool-call-id)
+                              (list role
+                                    (plist-get content :tool-call-id)))))))
+                   (merge-provider-followup-bundle
+                    (bundle)
+                    ;; Refresh projections are authoritative for later
+                    ;; context, but the current stateless follow-up still
+                    ;; needs the runtime-only call/result bundle exactly once.
+                    (dolist (message bundle)
+                      (let ((key (provider-followup-message-key message)))
+                        (unless (and key
+                                     (cl-some
+                                      (lambda (existing)
+                                        (equal key
+                                               (provider-followup-message-key
+                                                existing)))
+                                      turn-messages))
+                          (setq turn-messages
+                                (append turn-messages (list message)))))))
                    (publish-tool-request
                     (token request)
                     (when (and (current-tool-p token)
@@ -453,26 +606,50 @@ settlement are callback-driven."
                                (not (cancelled))
                                (current-tool-p token))
                       (setq active-tool nil)
-                      (let ((message
-                             (list :role 'tool
-                                   :content result
-                                   :metadata (plist-get result :metadata))))
+                      (let* ((message
+                              (list :role 'tool
+                                    :content result
+                                    :metadata (plist-get result :metadata)))
+                             (stored-message nil)
+                             (tool-call-ids nil)
+                             (provider-followup-bundle nil))
                         (setq turn-messages
                               (append turn-messages (list message)))
                         (setq provider-followup-messages
                               (append provider-followup-messages
                                       (list message)))
-                        (funcall append-message message)
+                        (setq tool-call-ids
+                              (mapcar
+                               (lambda (result-message)
+                                 (plist-get (plist-get result-message :content)
+                                            :tool-call-id))
+                               provider-followup-messages))
+                        (setq provider-followup-bundle
+                              (append
+                               (cl-remove-if-not
+                                (lambda (candidate)
+                                  (and (eq (plist-get candidate :role)
+                                           'tool-call)
+                                       (member
+                                        (plist-get
+                                         (plist-get candidate :content) :id)
+                                        tool-call-ids)))
+                                turn-messages)
+                               provider-followup-messages))
+                        (setq stored-message (funcall append-message message))
                         (e-loop--emit
                          :on-event on-event
                          :type 'tool-finished
                          :payload (list :tool-call tool-call
-                                        :result result)))
+                                        :result result))
                       (when (plist-get (plist-get result :metadata)
                                        :refresh-context)
                         (cond
                          (refresh-context
                           (apply-context-refresh (funcall refresh-context))
+                          (when (lifetime-projection-enabled-p)
+                            (merge-provider-followup-bundle
+                             provider-followup-bundle))
                           (setq context-refreshed-p t))
                          (refresh-messages
                           ;; Compatibility for callers that have not yet
@@ -484,11 +661,50 @@ settlement are callback-driven."
                                  :observation-frontier
                                  (plist-get turn-options
                                             :observation-frontier)))
+                          (when (lifetime-projection-enabled-p)
+                            (merge-provider-followup-bundle
+                             provider-followup-bundle))
                           (setq context-refreshed-p t))))
+                      ;; Refresh is a whole request projection.  Capture the
+                      ;; tool/result bundle after it so a refreshed current
+                      ;; state and the inherited result remain one frame.
+                      (when on-tool-observation
+                        (setq active-lifetime-frame
+                              (funcall on-tool-observation
+                                       (list :tool-call tool-call
+                                             :result result
+                                             :message (or stored-message message)
+                                             :previous-frame
+                                             active-lifetime-frame)))
+                        (when active-lifetime-frame
+                          ;; Provider options are a request snapshot.  Do not
+                          ;; mutate the plist captured by the still-running
+                          ;; provider callback while installing the descendant
+                          ;; frame for its follow-up.
+                          (setq turn-options (copy-sequence turn-options))
+                          (setq turn-options
+                                (plist-put turn-options
+                                           :lifetime-ephemerals-clean-p nil))
+                          (setq turn-options
+                                (plist-put turn-options
+                                           :lifetime-frame-id
+                                           (e-context-lifetime-frame-id
+                                            active-lifetime-frame)))
+                          (setq turn-options
+                                (plist-put turn-options
+                                           :context-promotion-frame-id
+                                           (e-context-lifetime-frame-id
+                                            active-lifetime-frame)))
+                          (setq turn-options
+                                (plist-put turn-options
+                                           :context-promotion-observation-ids
+                                           (copy-sequence
+                                            (e-context-lifetime-frame-observation-ids
+                                             active-lifetime-frame))))))
                       (setq next-request-causes
                             (append next-request-causes (list tool-call)))
                       (start-next-tool)
-                      (maybe-start-followup)))
+                      (maybe-start-followup))))
                    (start-next-tool
                     ()
                     (when (and (not active-tool)
@@ -594,6 +810,28 @@ settlement are callback-driven."
                          (progn
                            (setq item (e-loop--normalized-backend-item item))
                            (pcase (plist-get item :type)
+                             ('context-promote
+                              (when response-promotion-effects
+                                (signal 'e-context-lifetime-invalid-record
+                                        (list 'multiple-promotions
+                                              provider-request-id)))
+                              ;; A provider adapter may attach one opaque
+                              ;; acknowledgement item for its reserved
+                              ;; carrier.  It is replay metadata for the
+                              ;; immediate wire continuation, never an
+                              ;; ordinary model-facing tool or semantic fact.
+                              (when-let ((replay-item
+                                          (plist-get item
+                                                     :provider-replay-item)))
+                                (setq pending-provider-replay-items
+                                      (append pending-provider-replay-items
+                                              (list replay-item))))
+                              (setq item (copy-sequence item))
+                              (cl-remf item :provider-replay-item)
+                              (setq response-promotion-effects
+                                    (list
+                                     (e-context-lifetime-normalize-promotion-effect
+                                      item))))
                              ('assistant-delta
                               (setq response-assistant-content
                                     (concat response-assistant-content
@@ -641,7 +879,7 @@ settlement are callback-driven."
                                :payload token-usage))
                              ('provider-anchor-candidate
                               (when (e-loop--continuation-candidate-p
-                                     turn-options item)
+                                     turn-options item tool-called)
                                 (setq provider-anchor-candidate item))
                               ;; Do not forward the raw item.  The accepted
                               ;; event is emitted by `promote-provider-anchor'
@@ -725,7 +963,9 @@ settlement are callback-driven."
                                            (finish-provider-request 'done)
                                            (setq provider-done t)
                                            (if tool-called
-                                               (maybe-start-followup)
+                                               (progn
+                                                 (notify-response-complete)
+                                                 (maybe-start-followup))
                                              (if (string-empty-p
                                                   (or (response-text) ""))
                                                  (progn
@@ -746,8 +986,9 @@ settlement are callback-driven."
                                                        (append turn-messages
                                                                (list message)))
                                                  (funcall append-message message)
+                                                 (notify-response-complete)
                                                  (promote-provider-anchor)
-                                                 (if (drain-pending)
+                                                 (if (drain-pending t)
                                                      (start-request)
                                                    (finish done-reason
                                                            (response-text)))))))
@@ -780,7 +1021,8 @@ settlement are callback-driven."
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
             segments turn-work-handle
-            board-enroll-work)
+            board-enroll-work lifetime-frame on-response-complete
+            on-tool-observation)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -810,6 +1052,9 @@ one."
      :refresh-context refresh-context
      :refresh-messages refresh-messages
      :on-request-start on-request-start
+     :lifetime-frame lifetime-frame
+     :on-response-complete on-response-complete
+     :on-tool-observation on-tool-observation
      :on-done (lambda (value)
                 (setq result value)
                 (setq done t))

@@ -191,6 +191,52 @@
        (e-backend-context-capabilities backend nil)
        :type 'e-backend-invalid-context-capabilities))))
 
+(ert-deftest e-backend-test-observation-delivery-is-kind-scoped ()
+  "A replaceable canvas does not authorize dropping inherited tool results."
+  (let* ((declaration
+          '(:continuation linear
+            :observation-delivery
+            ((:kind current-state :mode request-local-replaceable)
+             (:kind dynamic-context :mode request-local-replaceable)
+             (:kind tool-result :mode inherited))
+            :reserved-effect-carrier context-promote-wire))
+         (backend (e-backend-create
+                   :name "kind-scoped"
+                   :context-capabilities declaration))
+         (capabilities (e-backend-context-capabilities backend nil)))
+    (should (equal
+             (e-backend-observation-delivery-for-kind
+              capabilities 'current-state)
+             'request-local-replaceable))
+    (should (equal
+             (e-backend-observation-delivery-for-kind
+              capabilities 'dynamic-context)
+             'request-local-replaceable))
+    (should (equal
+             (e-backend-observation-delivery-for-kind
+              capabilities 'tool-result)
+             'inherited))
+    (should (equal
+             (e-backend-observation-delivery-for-kind
+              capabilities 'trace)
+             'inherited))
+    (should (eq (plist-get capabilities :reserved-effect-carrier)
+                'context-promote-wire))))
+
+(ert-deftest e-backend-test-legacy-replaceable-scalar-is-canvas-only ()
+  "The legacy scalar capability remains conservative for other kinds."
+  (let* ((backend (e-backend-create
+                   :name "legacy-replaceable"
+                   :context-capabilities
+                   '(:observation-delivery request-local-replaceable)))
+         (capabilities (e-backend-context-capabilities backend nil)))
+    (should (eq (e-backend-observation-delivery-for-kind
+                 capabilities 'current-state)
+                'request-local-replaceable))
+    (should (eq (e-backend-observation-delivery-for-kind
+                 capabilities 'tool-result)
+                'inherited))))
+
 (provide 'e-backend-test)
 
 ;;; e-backend-test.el ends here
