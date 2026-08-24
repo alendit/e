@@ -1257,3 +1257,59 @@ are confined to the owning module and tests already scheduled for replacement.
 The plan has reached the required independent fixed point.  Begin implementation
 with the same persistent Luna implementer and reuse the same unattended Sol
 reviewer for fresh implementation Ticks.
+
+* Tick 17 Slice 1 implementation review
+
+Reviewed clean base HEAD =a4a1ec76203bbd02ef8a56135ca80d443010b125=
+plus the six-file Semantic Lifetime Foundation WIP.  Decision: not ready for a
+pre-commit fixed point; one P1 and one P2 finding remain.
+
+** P1 F88.I1.1: public frame construction bypasses sole completion
+
+=e-context-lifetime-frame-create= still accepts
+=:consuming-response-entry-id= and =:promotion-ids=.  A caller can therefore
+construct a frame classified as consumed while its =:observations=, including
+the full body, remain present.  This bypasses consumer ownership,
+already-consumed validation, and body removal in the declared sole completion
+operation; promotion resolution then accepts the forged consumed frame.
+
+Owning correction: remove both completion fields from the public constructor
+and always initialize them to nil.  Only the private provenance-retention path
+may produce a consumed frame.  Test that completion keywords are rejected and
+the public constructor always creates an open frame.
+
+** P2 F88.I1.2: session generation validation bypasses the strict core codec
+
+The session boundary manually reimplements the generation record schema,
+performs numeric equality before proving a version exists/is numeric, and does
+not reject duplicate keys.  Promotions pass through the core decoder, but
+generations do not.  Read-only reproduction admitted duplicate version keys
+and made a missing version signal =wrong-type-argument= instead of
+=e-session-error=.
+
+Owning correction: route generation records through
+=e-context-lifetime-generation-from-record= just as promotions use their core
+decoder, wrap the domain condition consistently as =e-session-error=, and
+remove the unsafe duplicate schema gate.  Add append/replay coverage for
+missing, duplicate, extra, and wrong-type version fields for both durable record
+kinds.
+
+** Tick 17 evidence and disposition
+
+- The reviewer confirmed the complete-effect 8 KiB bound, consumer mismatch
+  and repeated completion checks, open/consumed copy behavior, derived
+  provenance arrays, exact observation/fact schemas, forged provenance
+  rejection, core codecs, v2 reopen, legacy-v1 ignore behavior, and cleanup of
+  rejected recovery machinery.
+- Generic persistence callbacks/retry/outbox/checkpoint behavior and existing
+  ordinary tool lifecycle remained green; accepted Slice 2 files were
+  untouched and opt-in remains conservative.
+- Focused tests passed 134/134; the full suite passed 2,244 expected with two
+  expected skips and zero unexpected results.  =git diff --check= passed.
+- Later paired-tool E2E/provider evidence remains outside this foundation
+  slice.
+- The same reviewer made zero prompts, approval requests, escalations, edits,
+  git writes, network calls, or live-Emacs calls.
+
+Remediate F88.I1.1 and F88.I1.2 with the same persistent Luna implementer, then
+reuse the same unattended Sol reviewer for Tick 18.
