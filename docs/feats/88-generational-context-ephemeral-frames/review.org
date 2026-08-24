@@ -4,14 +4,12 @@
 
 * Current decision
 
-Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Slice 2 is accepted after
-Implementation Tick 09 at
-=3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  The user materially narrowed
-Feature 88 after Tick 10: tool-lifecycle durability and crash recovery are no
-longer in scope and belong with future SQLite atomic persistence.  Tick 11,
-Tick 12, and Tick 13 found the revised context-protocol plan not ready for
-implementation.  This is not final feature acceptance.
+Feature 88 is accepted after Slice 6 Implementation Tick 37.  The final frozen
+tree has zero P0, P1, P2, or P3 findings.  Its authoritative scope is normal
+successful-turn context visibility, explicit promotion, cache-safe
+continuation, and portable plus optional provider compaction.  Lifecycle
+durability and crash recovery remain deferred to the planned SQLite atomic-
+persistence work.
 
 * Tick 01 findings
 
@@ -1838,3 +1836,184 @@ calls, or live-Emacs calls.
 
 Slice 5 has reached the required independent pre-commit fixed point.  Slice 6
 remains unstarted.
+
+* Tick 34 Slice 6 initial E2E and performance review
+
+The same unattended Sol High reviewer performed a fresh read-only review of
+the initial Slice 6 WIP.  Decision: not ready; two P1 and two P2 findings.
+
+- =F88.I6.1= found that the instrumented transport inherited only the prior
+  response output rather than the full recursive provider-visible chain.
+- =F88.I6.2= found that =CANVAS-TWO= and the inherited two-tool result bundle
+  never occupied the same mixed frontier.
+- =F88.I6.3= found that the E2E used promotion provenance without positively
+  verifying the exact core-resolved observation, transcript ref, and
+  fingerprint.
+- =F88.I6.4= found approximate printed byte counts, duplicate-insensitive raw
+  marker evidence, hard-coded outcome booleans, and no proof that portable
+  summary input itself excluded consumed raw observations.
+
+The new cross-module P1 count was exactly two, not more than two, so the
+required conceptual split threshold did not fire.  The same Luna Max
+implementer made the transport ancestry recursive, changed the canvas during
+ordinary tool execution through the existing refresh-context result, captured
+the unmodified core-produced frame for provenance assertions, and replaced
+the approximate report with exact UTF-8 JSON and occurrence-count evidence.
+
+* Tick 35 Slice 6 provider-boundary review
+
+The same reviewer closed =I6.1= through =I6.4= and reported one P1,
+=F88.I6.5=.  The performance E2E exercised portable compaction but did not
+cross the optional provider compaction operation.  The same implementer added
+an eligible first-party OpenAI test profile, a separate credential-free
+=/responses/compact= requester, one opaque output item, and a following normal
+harness/backend request.  No direct provider-candidate mutation or production
+change was required.
+
+* Tick 36 Slice 6 exact-suffix review
+
+The same reviewer closed =I6.5= and reported one P1, =F88.I6.6=.  A
+post-coverage length assertion was tautological and the response-ID negative
+checks named IDs from another profile.  The same implementer replaced the
+length check with full structural equality for the entire fresh request and
+derived forbidden response IDs from captured continuations and anchors.
+
+* Tick 37 Slice 6 implementation fixed-point review
+
+The same unattended Sol High reviewer re-read the final frozen tree and reran
+the evidence against E2E SHA-256
+=2431f5a812bb100e0c6cca2231d8bca9f866eda51706adbcce9955ec9ef58f0f=.
+Decision: ready; zero P0, P1, P2, or P3 findings.  All prior findings remained
+closed.  The reviewer passed the four mandatory credential-free E2Es and 348
+focused affected tests, and found no debug instrumentation, direct provider
+candidate mutation, weakened assertion, scope expansion, recovery machinery,
+transaction machinery, presentation work, or legacy regression.  It made no
+prompts, approval requests, escalations, edits, git writes, network calls, or
+live-Emacs calls.
+
+* Slice 6 accepted E2E and performance evidence
+
+** Accepted behavior
+
+1. The mandatory credential-free E2E uses the real harness, session, loop,
+   capability, ordinary tool lifecycle, provider capability resolver, and
+   OpenAI request projector.  Only the transport boundary is injected.
+2. A raw tool-result frame is visible exactly once to its paired follow-up.
+   The follow-up sees the matching call, replay item, and result together;
+   the following turn sees the selected promoted fact and none of that raw
+   bundle.
+3. Promotion occurs only after observation, cites the tool-result observation,
+   commits before the next request, and persists core-resolved canonical
+   source ref and fingerprint.  The provider supplies no trusted provenance
+   fields.
+4. Both provider-done/tool-completion orderings retain the frame.  Invalid
+   promotion preserves already-dispatched calls, dispatches no later calls,
+   performs no promotion mutation, and follows the existing error path.
+5. The OpenAI reserved effect carrier emits the matching
+   =function_call_output= without ordinary tool dispatch or durable semantic
+   retention.
+6. =none=, =linear=, =branchable=, and proven request-local replacement
+   profiles preserve equivalent semantics.  Replacement stays kind-scoped;
+   incompatible or contaminated paths use clean-anchor or stateless fallback.
+7. The ordinary two-tool scenario changes to =CANVAS-TWO= through the existing
+   refresh-context path.  Its consuming mixed frontier contains the new canvas
+   exactly once plus both calls, replay, and results, while later requests
+   contain the canvas but no orphaned or raw bundle item.
+8. The tool-producing response ID is immediate-followup-only.  Neither it nor
+   its contaminated final descendant becomes a durable anchor.
+9. Portable compaction runs once rather than per observation.  Its summary
+   input is durable-only.  Optional provider compaction then crosses the
+   normal harness to the OpenAI =/responses/compact= adapter once, returns one
+   opaque item, and starts a fresh normal request containing exactly that item
+   followed by one durable post-coverage user message.
+10. Lifetime-aware anchor deltas use the session durable-message projector;
+    the legacy opt-out path retains the historical raw delta behavior.
+
+** Performance evidence
+
+All byte counts are UTF-8 lengths of the exact JSON-encoded provider input.
+Raw marker counts are occurrence-sensitive, so duplicate call IDs are visible.
+
+- First turn: 1 literal/effective item, 95 bytes, no continuation.
+- Warm turn: 3 literal items / 286 bytes and 5 effective items / 473 bytes;
+  the clean seed continuation is reused.
+- Tool-producing observation turn: 1 literal item / 95 bytes and 3 effective
+  items / 282 bytes.
+- Consuming follow-up: 2 literal items / 161 bytes and 8 effective items /
+  738 bytes.  It contains 74 raw-marker bytes, including two occurrences of
+  each tool call ID.
+- Portable summary: 1 literal/effective item, 218 bytes, zero raw markers.
+- Provider compact input: 3 literal/effective items, 283 bytes, zero raw
+  markers, no anchor, and no =previous_response_id=.
+- Fresh post-compaction request: 2 literal/effective items, 150 bytes, zero raw
+  markers, no =previous_response_id=, and exactly one post-coverage delta.
+- One portable summary and one provider compact request occur; no summary is
+  performed per observation.  Stable fingerprints remain unchanged across
+  the canvas replacement while the current-state fingerprint changes.
+
+No material ordinary-turn regression was introduced: the only added
+production work is a durable-message filter while constructing a lifetime-
+enabled anchor delta.  It is linear in that already-selected delta and absent
+from the legacy path.  Compaction work remains confined to deliberate
+generation boundaries.
+
+** Verification
+
+- Independent focused review passed 348/348 affected credential-free tests
+  plus all four mandatory E2Es with zero unexpected results.
+- Parent mandatory E2E validation passed 4/4.  The focused provider-compaction
+  and continuation gate passed 27/27 during the final remediation.
+- The unrestricted full Eldev suite ran 2,311 tests: 2,306 passed, two known
+  tests skipped, and three unrelated order-sensitive presentation tests failed.
+  Those exact three passed 3/3 in isolation and passed 3/3 after all four
+  Feature 88 E2Es in the same Emacs process, yielding a 7/7 sequence gate and
+  ruling out leaked Feature 88 E2E state.
+- =eldev compile --warnings-as-errors= and =git diff --check= passed.
+- Graphical E2E was not applicable because Slice 6 changes no presentation,
+  redisplay, focus, geometry, scrolling, or workspace behavior.
+- Credentialed live-provider behavior, including live endpoint availability,
+  remains explicitly unknown.  The first-party wire path is covered through
+  the credential-free injected requesters.
+- The running Emacs was untouched.  The harness and adapter changes require a
+  restart to use.
+
+** Architecture self-check
+
+1. This is a useful stopping point: the complete successful observe, promote,
+   forget, continue, and compact loop is independently executable and measured.
+2. It completes the direction toward generational append-only durable context
+   with one-shot ephemeral observation frames and rare explicit boundaries.
+3. Stable semantics are direct in core/session.  Provider continuation and
+   opaque compaction remain local, optional, and reversible adapter decisions.
+4. Session owns the durable body; lifetime core owns frame/provenance policy;
+   harness owns projection and candidate selection; OpenAI owns wire mapping;
+   the E2E owns only injected transport evidence.
+5. Coupling is reduced: the generic contracts remain kind-scoped capabilities,
+   durable projection, and opaque output.  Unsupported providers stay stateless.
+6. Stable policy has no dependency on OpenAI fields.  The OpenAI adapter maps
+   its proven profile capabilities into the provider-neutral vocabulary.
+7. Network and compact side effects remain in adapters/harness orchestration;
+   promotion validation and durable mutation remain outside the transport.
+8. Frames, immediate-followup response identities, and provider compact output
+   are runtime-only.  Facts and portable checkpoints use the smallest durable
+   session lifetime that satisfies reconstruction.
+9. Ordinary-turn filtering is bounded by the selected anchor delta.  Exact E2E
+   evidence shows consumed bytes disappear and summaries occur only at one
+   deliberate boundary.
+10. =none=, =linear=, =branchable=, and request-local replacement profiles
+    preserve the same semantic result without weakened preconditions or
+    unsupported-operation branches in shared interfaces.
+11. Lifetime behavior is explicit opt-in; the legacy delta path and existing
+    tool lifecycle remain compatible.  No provider compaction state is made
+    durable.
+12. No new legacy code remains from Slice 6.  Temporary debug wrappers, manual
+    candidate injection, hard-coded wrong IDs, and tautological assertions were
+    removed during the fixed point.
+13. Expected invalid promotion uses the established error path and stops later
+    dispatch; optional provider-compaction failure falls back safely; unexpected
+    core and adapter errors continue to surface.
+14. Focused core/adapter tests prove local contracts, while the mandatory E2E
+    proves their composition through real successful single-tool, multi-tool,
+    continuation, portable-compaction, and provider-compaction flows.
+
+Feature 88 has reached its required independent fixed point and is complete.

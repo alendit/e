@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
 semantic context visibility, explicit promotion, and cache-safe continuation
