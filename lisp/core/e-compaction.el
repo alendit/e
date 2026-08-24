@@ -310,10 +310,39 @@ that survived the compaction boundary."
                       (plist-get preparation :summary-input))))
        "\n\n")))))
 
+(defun e-compaction--portable-summarized-entries
+    (store session-id entries exclude-entry-ids)
+  "Return the ordinary summarized ENTRIES safe for portable input.
+
+When an excluded entry is present on the current path, portable context must
+not cover it accidentally through a later boundary.  Keep only the ordinary
+prefix before the first excluded entry; later entries remain the derived tail
+even when the legacy summarizer selected them for its own request."
+  (let ((excluded (make-hash-table :test #'equal))
+        (summarized (make-hash-table :test #'equal))
+        result)
+    (dolist (id exclude-entry-ids)
+      (puthash id t excluded))
+    (dolist (entry entries)
+      (puthash (plist-get entry :id) t summarized))
+    (catch 'first-excluded
+      (dolist (entry (e-session-current-path store session-id))
+        (let ((id (plist-get entry :id)))
+          (when (gethash id excluded)
+            (throw 'first-excluded t))
+          (when (gethash id summarized)
+            (when (e-session-context-lifetime-durable-message entry)
+              (push entry result))))))
+    (nreverse result)))
+
 (cl-defun e-compaction-prepare
     (store session-id &key keep-recent-tokens instructions allow-split-turn
-           exclude-entry-ids (reason 'manual))
-  "Prepare compaction data for SESSION-ID in STORE."
+           exclude-entry-ids (reason 'manual) portable)
+  "Prepare compaction data for SESSION-ID in STORE.
+
+When PORTABLE is non-nil, also capture the opt-in provider-neutral input and
+summary request.  The default path deliberately does not build or decode any
+portable generation data."
   (let* ((keep (or keep-recent-tokens e-compaction-keep-recent-tokens))
          (entries (cl-remove-if
                    (lambda (entry)
@@ -347,22 +376,253 @@ that survived the compaction boundary."
                                                to-summarize)))
              (tokens-kept (apply #'+ (mapcar #'e-compaction-entry-token-estimate
                                              to-keep)))
-             (resources (e-compaction--affected-resources to-summarize)))
-        (list :session-id session-id
-              :first-kept-entry-id boundary-id
-              :summary-input (e-compaction--serialize-entries to-summarize)
-              :tokens-before tokens-before
-              :tokens-kept tokens-kept
-              :metadata
-              (list :reason reason
-                    :instructions instructions
-                    :previous-compaction-id (plist-get previous :id)
-                    :previous-summary (plist-get previous :summary)
-                    :boundary-role boundary-role
-                    :split-turn (not (eq boundary-role 'user))
-                    :compacted-entry-count (length to-summarize)
-                    :kept-entry-count (length to-keep)
-                    :affected-resources resources))))))
+             (resources (e-compaction--affected-resources to-summarize))
+             (portable-summarized-entries
+              (when portable
+                (e-compaction--portable-summarized-entries
+                 store session-id to-summarize exclude-entry-ids)))
+             (portable-input
+              (when portable
+                (unless portable-summarized-entries
+                  (signal 'e-compaction-error
+                          (list "No eligible durable portable boundary")))
+                (e-compaction-portable-input
+                 store session-id portable-summarized-entries
+                 (plist-get (car (last portable-summarized-entries)) :id))))
+             (result
+              (list :session-id session-id
+                    :first-kept-entry-id boundary-id
+                    :summary-input (e-compaction--serialize-entries to-summarize)
+                    :tokens-before tokens-before
+                    :tokens-kept tokens-kept
+                    :metadata
+                    (list :reason reason
+                          :instructions instructions
+                          :previous-compaction-id (plist-get previous :id)
+                          :previous-summary (plist-get previous :summary)
+                          :boundary-role boundary-role
+                          :split-turn (not (eq boundary-role 'user))
+                          :compacted-entry-count (length to-summarize)
+                          :kept-entry-count (length to-keep)
+                          :affected-resources resources))))
+        (if portable
+            (progn
+              (plist-put result :portable-input portable-input)
+              (plist-put result :summary-messages
+                         (e-compaction-portable-summary-messages
+                          portable-input))
+              result)
+          result)))))
+
+(defun e-compaction-portable-input
+    (store session-id summarized-entries covered-session-boundary)
+  "Return the provider-neutral input for a portable generation boundary.
+
+The input is derived from the ordinary compaction prefix represented by
+SUMMARIZED-ENTRIES.  It includes the current portable checkpoint and only
+eligible durable messages through COVERED-SESSION-BOUNDARY; retained,
+excluded, and later entries remain a derived tail.  The durable projection
+removes tool bodies, provider replay metadata, anchors, continuation ids,
+cache counters, runtime frames, and diagnostics."
+  (let* ((projection (e-session-context-lifetime-projection store session-id))
+         (generation (plist-get projection :generation))
+         (promotions
+          (mapcar #'e-context-lifetime-promotion-record
+                  (plist-get projection :promotions))))
+    (list :generation-id
+          (and generation
+               (e-context-lifetime-generation-id generation))
+          :checkpoint
+          (and generation
+               (copy-tree
+                (e-context-lifetime-generation-checkpoint generation)))
+          :durable-tail
+          (delq nil
+                (mapcar
+                 (lambda (entry)
+                   (when-let ((message
+                               (e-session-context-lifetime-durable-message
+                                entry)))
+                     (e-context-lifetime-portable-message message)))
+                 summarized-entries))
+          :promotions (copy-tree promotions)
+          :promotion-frontier
+          (mapcar (lambda (record) (plist-get record :id)) promotions)
+          :covered-session-boundary covered-session-boundary)))
+
+(defun e-compaction-portable-summary-messages (portable-input)
+  "Return provider-neutral summary messages for PORTABLE-INPUT.
+
+This helper is intentionally a pure presentation of the portable input.  A
+caller may pass it to the existing summary backend, but the backend sees only
+the checkpoint, eligible durable tail, and promotion facts; it cannot receive
+runtime observation bodies or provider continuation artifacts through this
+boundary."
+  (let ((checkpoint (plist-get portable-input :checkpoint))
+        (durable-tail (plist-get portable-input :durable-tail))
+        (promotions (plist-get portable-input :promotions)))
+    (list
+     (list :role 'system
+           :content
+           "Compact only the portable semantic context. Preserve intent, decisions, selected facts, and unresolved work. Do not invent facts.")
+     (list :role 'user
+           :content
+           (string-join
+            (list (format "Portable checkpoint:\n%s"
+                          (e-compaction--stringify checkpoint))
+                  (format "Durable tail:\n%s"
+                          (e-compaction--stringify durable-tail))
+                  (format "Promoted facts and provenance:\n%s"
+                          (e-compaction--stringify promotions)))
+            "\n\n")))))
+
+(defun e-compaction-prepared-summary-messages (preparation)
+  "Return the summary request for PREPARATION's selected mode."
+  (or (plist-get preparation :summary-messages)
+      (e-compaction-summary-messages preparation)))
+
+(defun e-compaction--portable-fact-messages (portable-input)
+  "Return selected promotion facts from PORTABLE-INPUT as messages."
+  (e-context-lifetime-promotion-fact-messages
+   (mapcar #'e-context-lifetime-promotion-from-record
+           (plist-get portable-input :promotions))))
+
+(defun e-compaction--append-new-portable-facts (checkpoint portable-input)
+  "Return CHECKPOINT with pre-boundary facts from PORTABLE-INPUT absorbed."
+  (let ((messages (copy-tree checkpoint)))
+    (dolist (message (e-compaction--portable-fact-messages portable-input))
+      (unless (member message messages)
+        (setq messages (append messages (list message)))))
+    messages))
+
+(defun e-compaction-portable-checkpoint-from-summary
+    (preparation summary)
+  "Build a strict portable CHECKPOINT from SUMMARY and PREPARATION.
+
+This is the bridge used by normal manual and automatic compaction.  The
+summary replaces the captured portable prefix, and selected facts are
+explicitly absorbed into the new checkpoint.  The durable tail was already
+part of the summary input and is not copied a second time.  No provider
+artifact or runtime observation is copied."
+  (let* ((input (e-compaction--portable-preparation-input
+                 preparation))
+         (messages (list (list :role 'system :content summary))))
+    (e-context-lifetime-portable-checkpoint
+     (e-compaction--append-new-portable-facts messages input)
+     t)))
+
+(defun e-compaction--portable-boundary-on-path-p
+    (store session-id boundary-id)
+  "Return non-nil when prepared BOUNDARY-ID remains on SESSION-ID's path."
+  (and boundary-id
+       (seq-some (lambda (entry)
+                   (equal (plist-get entry :id) boundary-id))
+                 (e-session-current-path store session-id))))
+
+(defun e-compaction--portable-preparation-input (preparation)
+  "Validate and return the captured portable input in PREPARATION."
+  (let ((input (plist-get preparation :portable-input)))
+    (unless (and (e-context-lifetime--keyword-plist-p input)
+                 (= (length input) 12)
+                 (plist-member input :generation-id)
+                 (plist-member input :checkpoint)
+                 (plist-member input :durable-tail)
+                 (plist-member input :promotions)
+                 (plist-member input :promotion-frontier)
+                 (plist-member input :covered-session-boundary))
+      (signal 'e-compaction-error
+              (list "Invalid portable compaction preparation" preparation)))
+    input))
+
+(defun e-compaction--portable-promotion-frontier (store session-id)
+  "Return the active promotion IDs on SESSION-ID's current path."
+  (mapcar #'e-context-lifetime-promotion-id
+          (plist-get (e-session-context-lifetime-projection
+                      store session-id)
+                     :promotions)))
+
+(defun e-compaction-preflight-portable-boundary
+    (store session-id preparation checkpoint)
+  "Validate portable PREPARATION and return one application value.
+
+This is a pure optimistic preflight.  It validates the captured generation,
+branch, and promotion frontier immediately before an application service
+performs its ordinary append(s); it does not mutate STORE.  The returned
+checkpoint and captured input are detached so the append step cannot redo
+domain validation or observe a different preparation."
+  (let* ((input (e-compaction--portable-preparation-input preparation))
+         (boundary (plist-get input :covered-session-boundary))
+         (prepared-generation-id (plist-get input :generation-id))
+         (current-generation
+          (e-session-context-lifetime-current-generation store session-id))
+         (current-generation-id
+          (and current-generation
+               (e-context-lifetime-generation-id current-generation)))
+         (checkpoint
+          (condition-case error
+              (e-context-lifetime-portable-checkpoint checkpoint t)
+            (e-context-lifetime-invalid-record
+             (signal 'e-compaction-error
+                     (list "Invalid portable checkpoint" error))))))
+    (unless (equal prepared-generation-id current-generation-id)
+      (signal 'e-compaction-error
+              (list "Portable preparation is stale: generation changed"
+                    prepared-generation-id current-generation-id)))
+    (unless (e-compaction--portable-boundary-on-path-p
+             store session-id boundary)
+      (signal 'e-compaction-error
+              (list "Portable preparation is stale: boundary left current path"
+                    boundary)))
+    (unless (equal (plist-get input :promotion-frontier)
+                   (e-compaction--portable-promotion-frontier
+                    store session-id))
+      (signal 'e-compaction-error
+              (list "Portable preparation is stale: promotion frontier changed")))
+    (list :portable-input (copy-tree input)
+          :checkpoint
+          (condition-case error
+              (e-context-lifetime-portable-checkpoint
+               (e-compaction--append-new-portable-facts checkpoint input)
+               t)
+            (e-context-lifetime-invalid-record
+             (signal 'e-compaction-error
+                     (list "Invalid portable checkpoint" error))))
+          :covered-session-boundary boundary)))
+
+(defun e-compaction--append-portable-boundary-preflighted
+    (store session-id application)
+  "Append already-preflighted portable APPLICATION for SESSION-ID.
+
+Only the pure preflight may reject domain input.  This private append operation
+is intentionally narrow so a harness can preflight before its ordinary audit
+append and then perform both serialized appends without a second rejection."
+  (let* ((input (plist-get application :portable-input))
+         (checkpoint (plist-get application :checkpoint))
+         (generation
+          (e-context-lifetime-generation-create
+           :id (format "generation:%s" (e-session-generate-ulid))
+           :checkpoint checkpoint
+           :covered-session-boundary
+           (plist-get input :covered-session-boundary))))
+    (e-session-append-context-generation store session-id generation)))
+
+(cl-defun e-compaction-apply-portable-boundary
+    (store session-id application)
+  "Apply preflighted portable APPLICATION for SESSION-ID.
+
+APPLICATION is the immutable value returned by
+`e-compaction-preflight-portable-boundary'.  This append operation deliberately
+does not repeat domain validation; callers that have not preflighted an
+application fail at the narrow shape boundary rather than silently rebuilding
+portable input."
+  (unless (and (e-context-lifetime--keyword-plist-p application)
+               (plist-member application :portable-input)
+               (plist-member application :checkpoint)
+               (plist-member application :covered-session-boundary))
+    (signal 'e-compaction-error
+            (list "Expected preflighted portable application" application)))
+  (e-compaction--append-portable-boundary-preflighted
+   store session-id application))
 
 (provide 'e-compaction)
 

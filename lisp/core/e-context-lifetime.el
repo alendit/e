@@ -36,6 +36,30 @@ projection."
 (defconst e-context-lifetime-record-version 2
   "Version of the narrowed durable generation and promotion records.")
 
+(defconst e-context-lifetime-portable-message-roles
+  '(system user assistant)
+  "Backend-neutral roles allowed in a portable generation checkpoint.
+
+Tool calls/results and provider-specific roles are observations or wire
+artifacts, not portable checkpoint content.  The codec rehydrates JSON role
+strings to these established symbolic roles before a checkpoint is exposed to
+the rest of E.")
+
+(defun e-context-lifetime--portable-role (role)
+  "Return the finite backend-neutral ROLE mapping or signal an error.
+
+Do not intern provider or caller supplied strings here: a checkpoint codec must
+have a closed role vocabulary."
+  (let ((role (cond
+               ((memq role e-context-lifetime-portable-message-roles) role)
+               ((equal role "system") 'system)
+               ((equal role "user") 'user)
+               ((equal role "assistant") 'assistant))))
+    (unless (memq role e-context-lifetime-portable-message-roles)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'portable-message :role role)))
+    role))
+
 (defconst e-context-lifetime-promotion-schema-version 1
   "Version of the model-facing context promotion effect.")
 
@@ -250,6 +274,68 @@ unique within one response and declared order is retained."
         (push id ids)
         (push normalized result)))))
 
+(defun e-context-lifetime--portable-message (message)
+  "Return canonical portable MESSAGE or signal an invalid-record error.
+
+Portable checkpoint messages deliberately have only ROLE and CONTENT.  This
+keeps storage/projection metadata, transcript identity, provider controls, and
+tool wire fields out of the persisted semantic checkpoint."
+  (e-context-lifetime--validate-exact-plist
+   message '(:role :content) 'portable-message)
+  (let* ((role (e-context-lifetime--portable-role
+                (plist-get message :role))))
+    (list :role role
+          :content (e-context-lifetime-canonicalize
+                    (plist-get message :content)))))
+
+(defun e-context-lifetime-portable-message (message)
+  "Return the exact portable ROLE/CONTENT projection of real MESSAGE.
+
+Metadata and transcript identity are discarded before the strict portable
+checkpoint codec is called.  Existing checkpoint messages should instead use
+`e-context-lifetime-portable-checkpoint', which rejects extra fields."
+  (unless (and (e-context-lifetime--keyword-plist-p message)
+               (plist-member message :role)
+               (plist-member message :content))
+    (signal 'e-context-lifetime-invalid-record
+            (list 'portable-message :missing-fields message)))
+  (e-context-lifetime--portable-message
+   (list :role (plist-get message :role)
+         :content (plist-get message :content))))
+
+(defun e-context-lifetime--portable-checkpoint
+    (checkpoint &optional require-nonempty)
+  "Return canonical portable CHECKPOINT message sequence.
+
+JSON arrays may arrive as lists or vectors.  A single keyword plist is never
+accepted as a message sequence.  When REQUIRE-NONEMPTY is non-nil, reject the
+empty checkpoint used only by the initial identity generation."
+  (let ((messages
+         (cond
+          ((null checkpoint) nil)
+          ((vectorp checkpoint) (append checkpoint nil))
+          ((and (proper-list-p checkpoint)
+                (not (e-context-lifetime--keyword-plist-p checkpoint)))
+           checkpoint)
+          (t
+           (signal 'e-context-lifetime-invalid-record
+                   (list 'generation :checkpoint checkpoint)))))
+        result)
+    (when (and require-nonempty (null messages))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'generation :empty-checkpoint)))
+    (dolist (message messages (nreverse result))
+      (push (e-context-lifetime--portable-message message) result))))
+
+(defun e-context-lifetime-portable-checkpoint
+    (checkpoint &optional require-nonempty)
+  "Return canonical portable CHECKPOINT messages.
+
+This is the public codec used by compaction and provider-neutral projection
+consumers.  REQUIRE-NONEMPTY is used only for a deliberate new generation;
+the initial identity generation may retain a nil checkpoint."
+  (e-context-lifetime--portable-checkpoint checkpoint require-nonempty))
+
 (defun e-context-lifetime--canonical-observation-kind (kind)
   "Return canonical observation KIND or signal a shape error."
   (let ((kind (cond
@@ -320,7 +406,10 @@ unique within one response and declared order is retained."
                   covered-session-boundary)))
   (e-context-lifetime-generation--create
    :id (e-context-lifetime--require-id id 'generation)
-   :checkpoint (e-context-lifetime-canonicalize checkpoint)
+   ;; NIL is reserved for the initial opt-in identity generation.  Deliberate
+   ;; portable boundaries validate a non-empty checkpoint at their service
+   ;; boundary, while the core codec still preserves this initialization form.
+   :checkpoint (e-context-lifetime--portable-checkpoint checkpoint)
    :covered-session-boundary
    (e-context-lifetime--require-id
     covered-session-boundary 'covered-session-boundary)))
@@ -817,6 +906,25 @@ tail on the generation record and never copies source observation bodies."
   (append (e-context-lifetime-canonicalize durable-tail)
           (e-context-lifetime--copy
            (e-context-lifetime-promotion-facts promotion))))
+
+(defun e-context-lifetime-promotion-fact-messages (promotions)
+  "Return portable model messages for durable PROMOTIONS.
+
+The selected bounded fact is the durable semantic value.  Source observation
+bodies and provenance metadata remain outside the model-facing message; the
+session record retains provenance separately for audit and validation."
+  (cl-loop for promotion in promotions
+           append
+           (cl-loop for fact in (e-context-lifetime-promotion-facts promotion)
+                    collect
+                    (list :role 'system
+                          :content
+                          (format "Promoted fact %s: %s"
+                                  (plist-get fact :id)
+                                  (let ((value (plist-get fact :value)))
+                                    (if (stringp value)
+                                        value
+                                      (prin1-to-string value))))))))
 
 (defun e-context-lifetime--items (value)
   "Return VALUE as a detached sequence of semantic context items."

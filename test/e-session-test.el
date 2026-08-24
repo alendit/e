@@ -42,8 +42,8 @@
                    :id "generation-v2"
                    :checkpoint
                    '((:role system
-                      :content "policy"
-                      :nested (:enabled :json-false)))
+                      :content (:text "policy"
+                                :nested (:enabled :json-false))))
                    :covered-session-boundary generation-id))
             (e-session-append-context-generation
              store session-id generation)
@@ -2632,6 +2632,107 @@
         (should (equal (mapcar (lambda (m) (plist-get m :content))
                                (e-session-messages store fork-id))
                        '("keep")))))))
+
+(ert-deftest e-session-test-fork-portable-generation-preserves-selected-at-boundary ()
+  "A deliberate portable generation seeds forks without resurrecting its prefix."
+  (let* ((store (e-session-store-create))
+         (source (e-session-create store :id "portable-source"))
+         (old (e-session-append-message
+               store "portable-source"
+               '(:role user :content "covered prefix")))
+         (generation-entry
+          (e-session-append-context-generation
+           store "portable-source"
+           (e-context-lifetime-generation-create
+            :id "generation-source-portable"
+            :checkpoint '((:role system :content "C1 selected fact"))
+            :covered-session-boundary (plist-get old :id))))
+         (after (e-session-append-message
+                 store "portable-source"
+                 '(:role user :content "post-boundary tail")))
+         (before-fork
+          (e-session-fork store "portable-source" :at (plist-get old :id)))
+         (at-fork
+          (e-session-fork store "portable-source"
+                          :at (plist-get generation-entry :id)))
+         (after-fork (e-session-fork store "portable-source"
+                                     :at (plist-get after :id)))
+         (at-id (plist-get at-fork :id))
+         (after-id (plist-get after-fork :id))
+         (before-id (plist-get before-fork :id))
+         (at-projection
+          (e-session-context-lifetime-projection store at-id))
+         (after-projection
+          (e-session-context-lifetime-projection store after-id)))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store before-id))
+                   '("covered prefix")))
+    (should-not (e-session-context-lifetime-current-generation store before-id))
+    (should (string-prefix-p "generation:fork:"
+                             (e-context-lifetime-generation-id
+                              (plist-get at-projection :generation))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store at-id))
+                   '("C1 selected fact")))
+    (should (equal (e-context-lifetime-generation-checkpoint
+                    (plist-get at-projection :generation))
+                   '((:role system :content "C1 selected fact"))))
+    (should (string-prefix-p "generation:fork:"
+                             (e-context-lifetime-generation-id
+                              (plist-get after-projection :generation))))
+    (should (equal (e-context-lifetime-generation-checkpoint
+                    (plist-get after-projection :generation))
+                   '((:role system :content "C1 selected fact")
+                     (:role user :content "post-boundary tail"))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store after-id))
+                   '("C1 selected fact" "post-boundary tail")))
+    (should-not (equal
+                 (e-context-lifetime-generation-id
+                  (plist-get after-projection :generation))
+                 (e-context-lifetime-generation-id
+                  (e-session-context-lifetime-current-generation
+                   store "portable-source"))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store "portable-source"))
+                   '("covered prefix" "post-boundary tail")))
+    (should source)))
+
+(ert-deftest e-session-test-portable-fork-seeds-ordinary-messages-through-reopen ()
+  "Portable fork seeds remain visible after persistent reopen."
+  (let ((directory (make-temp-file "e-session-portable-fork-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (source (e-session-create store :id "portable-source"))
+               (old (e-session-append-message
+                     store "portable-source"
+                     '(:role user :content "covered prefix"))))
+          (e-session-append-context-generation
+           store "portable-source"
+           (e-context-lifetime-generation-create
+            :id "generation-source-reopen"
+            :checkpoint '((:role system :content "C1 selected fact"))
+            :covered-session-boundary (plist-get old :id)))
+          (e-session-append-message store "portable-source"
+                                    '(:role user :content "post tail"))
+          (let* ((fork (e-session-fork store "portable-source"))
+                 (fork-id (plist-get fork :id)))
+            (e-session-flush-write-queue store)
+            (let* ((reopened (e-session-persistent-store-create directory))
+                   (messages (e-session-messages reopened fork-id))
+                   (projection
+                    (e-session-context-lifetime-projection reopened fork-id)))
+              (should (equal (mapcar (lambda (message)
+                                       (plist-get message :content))
+                                     messages)
+                             '("C1 selected fact" "post tail")))
+              (should (equal
+                       (e-context-lifetime-generation-checkpoint
+                        (plist-get projection :generation))
+                       '((:role system :content "C1 selected fact")
+                         (:role user :content "post tail"))))
+              (should source))))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-test-context-projection-keeps-durable-body-and-forgets-tool-bundle ()
   "The later-request projection keeps intent/facts but not a consumed tool pair."

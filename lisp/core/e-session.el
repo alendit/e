@@ -1296,6 +1296,22 @@ a compaction, the complete current path remains model context and is retained."
      ((listp value) (copy-sequence value))
      (t (list value)))))
 
+(defun e-session--context-path-after-boundary (path boundary-id)
+  "Return PATH entries strictly after durable context BOUNDARY-ID.
+
+The current canonical path is ordered from the root toward its head.  A
+generation boundary covers the entry named by BOUNDARY-ID, so that entry and
+everything before it are represented by the generation checkpoint.  If a
+legacy or hand-built record names no entry on this path, retain the complete
+path rather than silently dropping durable context; the narrowed compaction
+application service always supplies a current-path boundary."
+  (if-let ((boundary (seq-find
+                      (lambda (entry)
+                        (equal (plist-get entry :id) boundary-id))
+                      path)))
+      (cdr (member boundary path))
+    path))
+
 (defun e-session--checkpoint-context-lifetime-state (store session-id)
   "Return the narrowed generation and promotion projection for SESSION-ID.
 
@@ -1312,14 +1328,18 @@ bodies are reconstructed by the later context consumer from session entries."
          (generation
           (and generation-entry
                (e-session--context-record generation-entry)))
-         (generation-id (and generation (plist-get generation :id)))
+         ;; Promotions are durable semantic facts, not frame bodies.  Keep
+         ;; them from the complete current canonical path even when an older
+         ;; generation is covered by the latest checkpoint only when they are
+         ;; owned by that active generation.  Older records remain audit-only;
+         ;; their selected facts are carried by the portable checkpoint.
          (promotions
           (seq-filter
            (lambda (entry)
-             (let ((record (e-session--context-record entry)))
-               (and (eq (plist-get entry :type) 'context-promotion)
-                    (equal (plist-get record :generation-id)
-                           generation-id))))
+             (and (eq (plist-get entry :type) 'context-promotion)
+                  generation
+                  (equal (plist-get (e-session--context-record entry) :generation-id)
+                         (plist-get generation :id))))
            path))
          (entries
           (seq-filter (lambda (entry)
@@ -1621,12 +1641,16 @@ bodies are reconstructed by the later context consumer from session entries."
      ((not (equal (plist-get anchor-fingerprints :compaction-boundary)
                   (plist-get fingerprints :compaction-boundary)))
       'compaction-boundary-changed)
+     ((not (equal (plist-get anchor-fingerprints :lifetime-generation)
+                  (plist-get fingerprints :lifetime-generation)))
+      'context-generation-changed)
      ((and (not (or (plist-member anchor-fingerprints :segments)
                     (plist-member anchor-fingerprints :active-layer-ids)
                     (plist-member anchor-fingerprints :tools)
                     (plist-member anchor-fingerprints :reasoning)
                     (plist-member anchor-fingerprints :provider-options)
-                    (plist-member anchor-fingerprints :compaction-boundary)))
+                    (plist-member anchor-fingerprints :compaction-boundary)
+                    (plist-member anchor-fingerprints :lifetime-generation)))
            (not (equal anchor-fingerprints fingerprints)))
       'fingerprint-mismatch)
      ((not (member anchor-id path-ids))
@@ -2836,6 +2860,26 @@ fork's session name (otherwise it inherits the source name)."
   (let* ((source (e-session--get-live store session-id))
          (head-id (or at (plist-get source :current-head-id)))
          (path (e-session-current-path store session-id head-id))
+         (portable-projection
+          (e-session-context-lifetime-projection store session-id head-id))
+         (source-generation (plist-get portable-projection :generation))
+         (source-checkpoint
+          (and source-generation
+               (e-context-lifetime-generation-checkpoint source-generation)))
+         ;; A deliberate non-empty portable generation is the only fork seed
+         ;; that may replace the ordinary message copy.  Its checkpoint and
+         ;; eligible tail/facts are the source semantic projection; covered
+         ;; prefix messages are never resurrected in the fork.
+         (portable-checkpoint
+          (when source-checkpoint
+            (e-context-lifetime-portable-checkpoint
+             (append
+              (copy-tree source-checkpoint)
+              (mapcar #'e-context-lifetime-portable-message
+                      (plist-get portable-projection :durable-tail))
+              (e-context-lifetime-promotion-fact-messages
+               (plist-get portable-projection :promotions)))
+             t)))
          (messages (seq-filter (lambda (entry)
                                  (eq (plist-get entry :type) 'message))
                                path))
@@ -2846,9 +2890,29 @@ fork's session name (otherwise it inherits the source name)."
                             merged-metadata))
          (turn-options (plist-get source :turn-options))
          (fork (e-session-create store :metadata merged-metadata)))
-    (dolist (message messages)
-      (e-session-append-message store (plist-get fork :id)
-                                (e-session--fork-message-seed message)))
+    (if portable-checkpoint
+        (let (last-seed)
+          ;; Keep the portable projection as ordinary fork messages so a
+          ;; lifetime-disabled reader still sees the same semantic context.
+          ;; The fresh generation then covers those seed messages, avoiding a
+          ;; duplicate enabled projection and preventing covered source history
+          ;; from returning.
+          (dolist (message portable-checkpoint)
+            (setq last-seed
+                  (e-session-append-message
+                   store
+                   (plist-get fork :id)
+                   (e-session--fork-message-seed message))))
+          (e-session-append-context-generation
+           store
+           (plist-get fork :id)
+           (e-context-lifetime-generation-create
+            :id (format "generation:fork:%s" (e-session-generate-ulid))
+            :checkpoint portable-checkpoint
+            :covered-session-boundary (plist-get last-seed :id))))
+      (dolist (message messages)
+        (e-session-append-message store (plist-get fork :id)
+                                  (e-session--fork-message-seed message))))
     (when turn-options
       (e-session-set-turn-options store (plist-get fork :id) turn-options))
     (e-session-get store (plist-get fork :id))))
@@ -2902,13 +2966,15 @@ its dedicated board journal accessors."
   (copy-tree
    (plist-get (e-session--get-live store session-id) :context-promotions)))
 
-(defun e-session-context-lifetime-current-generation (store session-id)
+(defun e-session-context-lifetime-current-generation
+    (store session-id &optional head-id)
   "Return the latest narrowed semantic generation on SESSION-ID's path.
 
 Legacy frame/generation journal entries are intentionally not reconstructed as
 runtime frames.  Only the current v2 generation codec participates in this
 projection."
-  (when-let ((entry (e-session--context-active-generation store session-id)))
+  (when-let ((entry (e-session--context-active-generation
+                     store session-id head-id)))
     (condition-case error
         (e-context-lifetime-generation-from-record
          (e-session--context-record entry))
@@ -2929,6 +2995,7 @@ projection."
           (cl-remf message :created-at)
           (cl-remf message :turn-id)
           (cl-remf message :type)
+          (cl-remf message :durability-state)
           (when-let ((metadata (plist-get message :metadata)))
             (setq metadata (copy-tree metadata))
             (cl-remf metadata :provider-replay-items)
@@ -2937,20 +3004,45 @@ projection."
               (cl-remf message :metadata)))
           message)))))
 
-(defun e-session-context-lifetime-projection (store session-id)
+(defun e-session-context-lifetime-durable-message (entry)
+  "Return the portable durable projection of canonical message ENTRY.
+
+This narrow consumer-facing wrapper keeps compaction and fork ownership from
+duplicating the session transcript/body filtering rules."
+  (e-session--context-lifetime-durable-message entry))
+
+(defun e-session-context-lifetime-projection
+    (store session-id &optional head-id)
   "Return canonical inputs for the semantic later-request projection.
 
 The session transcript/current branch is the sole durable body source.  The
 result contains no runtime frame or observation body; callers may add a fresh
 consumer-bound frame at request construction time."
-  (let* ((path (e-session--checkpoint-path-suffix store session-id))
+  (let* ((path (if head-id
+                   (e-session-current-path store session-id head-id)
+                 (e-session--checkpoint-path-suffix store session-id)))
          (generation (e-session-context-lifetime-current-generation
-                      store session-id))
-         (generation-id (and generation
-                            (e-context-lifetime-generation-id generation)))
+                      store session-id head-id))
+         (generation-path
+          ;; The first opt-in generation is an identity boundary with no
+          ;; checkpoint; keep the ordinary transcript until a deliberate
+          ;; portable compaction supplies a real checkpoint.  A non-empty
+          ;; checkpoint is the replacement boundary that covers its prefix.
+          (if (and generation
+                   (e-context-lifetime-generation-checkpoint generation))
+              (e-session--context-path-after-boundary
+               path
+               (e-context-lifetime-generation-covered-session-boundary
+                generation))
+            path))
          (messages (delq nil
                          (mapcar #'e-session--context-lifetime-durable-message
-                                 path)))
+                                 generation-path)))
+         (generation-id (and generation
+                             (e-context-lifetime-generation-id generation)))
+         ;; Promotions before a deliberate portable boundary are absorbed into
+         ;; its checkpoint.  Historical records remain in the audit journal but
+         ;; only facts owned by the active generation are eligible here.
          (promotions
           (delq nil
                 (mapcar
@@ -3451,7 +3543,7 @@ validator."
     (e-context-lifetime-invalid-record
      (signal 'e-session-error
              (list "Invalid context lifetime record" type error)))))
-(defun e-session--context-current-path (store session-id)
+(defun e-session--context-current-path (store session-id &optional head-id)
   "Return the current canonical path for context ownership validation."
   (let* ((session (gethash session-id (e-session-store-sessions store)))
          (entries (and session
@@ -3466,7 +3558,8 @@ validator."
                                (plist-get session :context-promotions))))
          (by-id (make-hash-table :test #'equal))
          path
-         (head-id (and session (plist-get session :current-head-id))))
+         (head-id (or head-id
+                      (and session (plist-get session :current-head-id)))))
     (dolist (entry entries)
       (puthash (plist-get entry :id) entry by-id))
     (while head-id
@@ -3475,11 +3568,11 @@ validator."
         (setq head-id (plist-get entry :parent-id))))
     path))
 
-(defun e-session--context-active-generation (store session-id)
+(defun e-session--context-active-generation (store session-id &optional head-id)
   "Return the latest context generation on SESSION-ID's current path."
   (seq-find (lambda (entry)
               (eq (plist-get entry :type) 'context-generation))
-            (reverse (e-session--context-current-path store session-id))))
+            (reverse (e-session--context-current-path store session-id head-id))))
 
 (defun e-session--validate-context-entry-ownership
     (store session-id type context-record)

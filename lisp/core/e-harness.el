@@ -2273,7 +2273,8 @@ the live dynamic providers needed for the model-facing request."
                                        allow-active-turn
                                      allow-split-turn)
                  :exclude-entry-ids exclude-entry-ids
-                 :reason reason))
+                 :reason reason
+                 :portable e-context-lifetime-shadow-projection-enabled))
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-prepared
            (list :first-kept-entry-id
@@ -2286,7 +2287,7 @@ the live dynamic providers needed for the model-facing request."
            (list :backend t :reason reason))
           (e-backend-stream-batch
            (e-harness-backend harness)
-           :messages (e-compaction-summary-messages preparation)
+           :messages (e-compaction-prepared-summary-messages preparation)
            ;; Summarization is a pure text task.  Strip the tool set from the
            ;; options: with tools present the model may answer with a tool-call
            ;; instead of an assistant message, yielding an empty summary and a
@@ -2317,19 +2318,50 @@ the live dynamic providers needed for the model-facing request."
                              (nreverse (delq nil summary-item-types))
                              :summary-source
                              'none))))
-            (let ((record
-                   (e-session-append-compaction
-                    (e-harness-sessions harness)
-                    session-id
-                    summary
-                    :first-kept-entry-id
-                    (plist-get preparation :first-kept-entry-id)
-                    :tokens-before (plist-get preparation :tokens-before)
-                    :tokens-kept (plist-get preparation :tokens-kept)
-                    :metadata metadata)))
+            (let* ((portable-preparation
+                    (plist-get preparation :portable-input))
+                   (portable-checkpoint
+                    (when portable-preparation
+                      (e-compaction-portable-checkpoint-from-summary
+                       preparation summary)))
+                   ;; Preflight both semantic inputs before the legacy
+                   ;; compaction append, so stale generation/promotion state
+                   ;; cannot leave a partial ordinary-only mutation.
+                   (portable-application
+                    (when portable-preparation
+                      (e-compaction-preflight-portable-boundary
+                       (e-harness-sessions harness)
+                       session-id
+                       preparation
+                       portable-checkpoint)))
+                   (record
+                    (e-session-append-compaction
+                     (e-harness-sessions harness)
+                     session-id
+                     summary
+                     :first-kept-entry-id
+                     (plist-get preparation :first-kept-entry-id)
+                     :tokens-before (plist-get preparation :tokens-before)
+                     :tokens-kept (plist-get preparation :tokens-kept)
+                     :metadata metadata))
+                   ;; Preserve the established compaction record as the
+                   ;; audit/legacy owner, then deliberately supersede its
+                   ;; model prefix with a portable generation only when the
+                   ;; semantic lifetime feature is opted in.
+                   (portable-generation
+                    (when portable-application
+                      (e-compaction-apply-portable-boundary
+                       (e-harness-sessions harness)
+                       session-id
+                       portable-application))))
               (e-harness--emit-turn-event
                harness session-id turn-id 'compaction-finished
                (list :compaction-id (plist-get record :id)
+                     :portable-generation-id
+                     (and portable-generation
+                          (e-context-lifetime-generation-id
+                           (e-context-lifetime-generation-from-record
+                            (e-session--context-record portable-generation))))
                      :reason (plist-get (plist-get record :metadata) :reason)
                      :first-kept-entry-id
                      (plist-get record :first-kept-entry-id)
@@ -2419,6 +2451,19 @@ also emitting the normal compaction failure event."
                                     :summary-source
                                     'none))))
                    (let* ((metadata (plist-get preparation :metadata))
+                          (portable-preparation
+                           (plist-get preparation :portable-input))
+                          (portable-checkpoint
+                           (when portable-preparation
+                             (e-compaction-portable-checkpoint-from-summary
+                              preparation summary)))
+                          (portable-application
+                           (when portable-preparation
+                             (e-compaction-preflight-portable-boundary
+                              (e-harness-sessions harness)
+                              session-id
+                              preparation
+                              portable-checkpoint)))
                           (record
                            (e-session-append-compaction
                             (e-harness-sessions harness)
@@ -2430,11 +2475,23 @@ also emitting the normal compaction failure event."
                             (plist-get preparation :tokens-before)
                             :tokens-kept
                             (plist-get preparation :tokens-kept)
-                            :metadata metadata)))
+                            :metadata metadata))
+                          (portable-generation
+                           (when portable-application
+                             (e-compaction-apply-portable-boundary
+                              (e-harness-sessions harness)
+                              session-id
+                              portable-application))))
                      (setq settled t)
                      (e-harness--emit-turn-event
                       harness session-id turn-id 'compaction-finished
                       (list :compaction-id (plist-get record :id)
+                            :portable-generation-id
+                            (and portable-generation
+                                 (e-context-lifetime-generation-id
+                                  (e-context-lifetime-generation-from-record
+                                   (e-session--context-record
+                                    portable-generation))))
                             :reason
                             (plist-get (plist-get record :metadata) :reason)
                             :first-kept-entry-id
@@ -2472,7 +2529,8 @@ also emitting the normal compaction failure event."
                                          allow-active-turn
                                        allow-split-turn)
                    :exclude-entry-ids exclude-entry-ids
-                   :reason reason))
+                   :reason reason
+                   :portable e-context-lifetime-shadow-projection-enabled))
             (e-harness--emit-turn-event
              harness session-id turn-id 'compaction-prepared
              (list :first-kept-entry-id
@@ -2494,7 +2552,8 @@ also emitting the normal compaction failure event."
                     :backend (lambda (_arguments _context)
                                (e-harness-backend harness))
                     :messages (lambda (_arguments _context)
-                                (e-compaction-summary-messages preparation))
+                                (e-compaction-prepared-summary-messages
+                                 preparation))
                     :options (lambda (_arguments _context)
                                (e-harness--options-without-tools
                                 (e-harness-turn-options harness session-id)))
@@ -2831,6 +2890,17 @@ fingerprints happen to be unchanged."
                        (e-session-context-lifetime-projection
                         store session-id)))
          (promotions (plist-get projection :promotions))
+         (checkpoint
+          (let ((value (and generation
+                            (e-context-lifetime-generation-checkpoint
+                             generation))))
+            (cond
+             ((null value) nil)
+             ((and (listp value)
+                   (e-context-lifetime--keyword-plist-p value))
+              (list (copy-tree value)))
+             ((listp value) (copy-tree value))
+             (t (list (copy-tree value))))))
          (durable-tail
           (append (copy-tree (plist-get projection :durable-tail))
                   (e-harness--context-lifetime-fact-messages promotions)))
@@ -2850,7 +2920,8 @@ fingerprints happen to be unchanged."
           (mapcar
            (lambda (segment)
              (if (eq (plist-get segment :kind) 'history)
-                 (plist-put (copy-tree segment) :messages durable-tail)
+                 (plist-put (copy-tree segment) :messages
+                            (append checkpoint durable-tail))
                segment))
            segments))
          (messages
@@ -3216,6 +3287,17 @@ ambiguous and is rejected by the provider adapter."
                  (plist-get options :anthropic-beta-headers))
            :compaction-boundary
            (plist-get context :provider-anchor-compaction-boundary)
+           :lifetime-generation
+           (when-let ((generation (plist-get context :lifetime-generation)))
+             (list :id (e-context-lifetime-generation-id generation)
+                   :covered-session-boundary
+                   (e-context-lifetime-generation-covered-session-boundary
+                    generation)
+                   :checkpoint-fingerprint
+                   (secure-hash
+                    'sha256
+                    (prin1-to-string
+                     (e-context-lifetime-generation-checkpoint generation)))))
            ;; Keep semantic control values JSON-stable.  The observation value
            ;; itself is compared only for inherited delivery; a replaceable
            ;; observation may change without invalidating the stable anchor.

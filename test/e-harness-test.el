@@ -4727,6 +4727,370 @@ Return request options, persisted anchors, and the final context."
                (eq (plist-get event :event-type) 'compaction-finished)))
         (e-session-activity-events store "session-1"))))))
 
+(ert-deftest e-harness-test-enabled-compaction-summarizes-portable-context-only ()
+  "Enabled compaction sends C0/D0/facts, never a raw consumed observation."
+  (let* ((captured-messages nil)
+        (backend
+         (e-backend-create
+          :name 'portable-summary
+          :stream
+          (cl-function
+           (lambda (&key messages options on-item)
+             (ignore options)
+             (setq captured-messages (copy-tree messages))
+             (funcall on-item
+                      '(:type assistant-message :content "Portable C1."))))))
+        (harness (e-harness-create :backend backend))
+        (store nil))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id "session-1")
+      (setq store (e-harness-sessions harness))
+      ;; Establish the opted-in identity generation before the durable input
+      ;; and selected fact are captured by the portable summary request.
+      (e-harness-turn-context harness "session-1" "seed")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old intent"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1"
+                                '(:role tool :content "RAW-E-MUST-NOT-ESCAPE"))
+      (e-session-append-message store "session-1"
+                                '(:role user :content "kept intent"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "kept answer"))
+      (let* ((generation
+              (e-session-context-lifetime-current-generation store "session-1"))
+             (frame
+              (e-context-lifetime-frame-create
+               :id "frame-portable-summary"
+               :generation-id
+               (e-context-lifetime-generation-id generation)
+               :consumer-request-id "consumer-portable-summary"
+               :observations
+               '((:observation-id "observation-portable-summary"
+                  :kind "tool-result"
+                  :source-entry-ref "external:portable-summary"
+                  :source-fingerprint "portable-summary-fingerprint"
+                  :effective-delivery "inherited"
+                  :body (:content "RAW-E-MUST-NOT-ESCAPE")))))
+             (promotion
+              (e-context-lifetime-promotion-from-effect
+               (e-context-lifetime-frame-complete-for-consumer
+                frame "consumer-portable-summary" "response-portable-summary")
+               '(:type context-promote :schema-version 1
+                 :frame-id "frame-portable-summary"
+                 :source-observation-ids ("observation-portable-summary")
+                 :facts ((:id "portable-selected-fact"
+                           :value "selected durable fact"))))))
+        (e-session-append-context-promotion store "session-1" promotion))
+      (e-harness-compact-session-batch harness "session-1"
+                                       :keep-recent-tokens 1)
+      (let* ((prompt (prin1-to-string captured-messages))
+             (generation (e-session-context-lifetime-current-generation
+                          store "session-1")))
+        (should (string-match-p "Portable checkpoint" prompt))
+        (should (string-match-p "Durable tail" prompt))
+        (should (string-match-p "old intent" prompt))
+        (should (string-match-p "old answer" prompt))
+        (should-not (string-match-p "kept answer" prompt))
+        (should (string-match-p "selected durable fact" prompt))
+        (should-not (string-match-p "RAW-E-MUST-NOT-ESCAPE" prompt))
+        (should-not (string-match-p "provider-replay-items" prompt))
+        (should-not (string-match-p "provider-anchor" prompt))
+        (should generation)
+        (should (string-match-p "Portable C1"
+                                (prin1-to-string
+                                 (e-context-lifetime-generation-checkpoint
+                                  generation))))
+        (should (equal
+                 (mapcar (lambda (message) (plist-get message :content))
+                         (plist-get
+                          (e-session-context-lifetime-projection
+                           store "session-1")
+                          :durable-tail))
+                 '("kept intent" "kept answer")))))))
+
+(defun e-harness-test--append-compaction-promotion
+    (store session-id generation-id suffix)
+  "Append one valid selected fact for GENERATION-ID to SESSION-ID.
+SUFFIX makes the runtime identities and fact unique to the owning test."
+  (let* ((frame-id (format "frame-compaction-%s" suffix))
+         (consumer-id (format "consumer-compaction-%s" suffix))
+         (response-id (format "response-compaction-%s" suffix))
+         (observation-id (format "observation-compaction-%s" suffix))
+         (frame
+          (e-context-lifetime-frame-create
+           :id frame-id
+           :generation-id generation-id
+           :consumer-request-id consumer-id
+           :observations
+           (list
+            (list :observation-id observation-id
+                  :kind "tool-result"
+                  :source-entry-ref
+                  (format "external:compaction-%s" suffix)
+                  :source-fingerprint
+                  (format "compaction-fingerprint-%s" suffix)
+                  :effective-delivery "inherited"
+                  :body (list :content
+                              (format "RAW-COMPACTION-%s" suffix))))))
+         (consumed
+          (e-context-lifetime-frame-complete-for-consumer
+           frame consumer-id response-id))
+         (promotion
+          (e-context-lifetime-promotion-from-effect
+           consumed
+           (list :type 'context-promote
+                 :schema-version 1
+                 :frame-id frame-id
+                 :source-observation-ids (list observation-id)
+                 :facts (list (list :id (format "fact-%s" suffix)
+                                    :value
+                                    (format "selected-%s" suffix)))))))
+    (e-session-append-context-promotion store session-id promotion)))
+
+(ert-deftest e-harness-test-enabled-async-compaction-absorbs-promotion-and-filters-provider-state ()
+  "Async enabled compaction absorbs facts and excludes runtime/provider state."
+  (let* ((store (e-session-store-create))
+         (session-id "enabled-async-compaction")
+         (captured-messages nil)
+         (record nil)
+         (failure nil)
+         (backend
+          (e-backend-create
+           :name 'enabled-async-summary
+           :start
+           (cl-function
+            (lambda (&key messages on-item on-done &allow-other-keys)
+              (setq captured-messages (copy-tree messages))
+              (run-at-time
+               0.01 nil
+               (lambda ()
+                 (funcall on-item
+                          '(:type assistant-message
+                            :content "ASYNC-PORTABLE-C1"))
+                 (funcall on-done '(:status done))))
+              (e-backend-request-create)))))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id session-id)
+      (e-harness-turn-context harness session-id "seed")
+      (e-session-append-message
+       store session-id
+       '(:role user :content "ASYNC-OLD-INTENT"))
+      (e-session-append-message
+       store session-id
+       '(:role assistant :content "ASYNC-OLD-ANSWER"))
+      (let ((tool-call
+             (e-session-append-message
+              store session-id
+              '(:role tool-call
+                :content (:id "async-call" :name "inspect"
+                          :arguments (:marker "ASYNC-RAW-CALL"))
+                :metadata (:provider-replay-items
+                           ((:id "ASYNC-REPLAY-MARKER")))))))
+        (e-session-append-message
+         store session-id
+         '(:role tool
+           :content (:tool-call-id "async-call"
+                     :content "ASYNC-RAW-RESULT")))
+        (e-session-append-message
+         store session-id
+         '(:role user :content "ASYNC-RETAINED-SUFFIX"))
+        (e-session-append-message
+         store session-id
+         '(:role assistant :content "ASYNC-RETAINED-ANSWER"))
+        (e-session-append-provider-anchor
+         store session-id 'fake
+         :model "async-model"
+         :covered-entry-id (plist-get tool-call :id)
+         :fingerprints '(:prompt-layout async-layout)
+         :metadata '(:response-id "ASYNC-ANCHOR-MARKER")))
+      (let* ((generation
+              (e-session-context-lifetime-current-generation store session-id))
+             (generations-before
+              (length (e-session-context-generations store session-id))))
+        (e-harness-test--append-compaction-promotion
+         store session-id
+         (e-context-lifetime-generation-id generation)
+         "async")
+        (e-harness-compact-session-start
+         harness session-id
+         :keep-recent-tokens 1
+         :on-done (lambda (value) (setq record value))
+         :on-error (lambda (err) (setq failure err)))
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (not (or record failure))
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should record)
+        (should-not failure)
+        (should captured-messages)
+        (let* ((prompt (prin1-to-string captured-messages))
+               (projection
+                (e-session-context-lifetime-projection store session-id))
+               (checkpoint
+                (e-context-lifetime-generation-checkpoint
+                 (plist-get projection :generation)))
+               (tail (plist-get projection :durable-tail))
+               (tail-contents
+                (mapcar (lambda (message) (plist-get message :content))
+                        tail)))
+          (should (= (length (e-session-compactions store session-id)) 1))
+          (should (= (length (e-session-context-generations store session-id))
+                     (1+ generations-before)))
+          (should (string-match-p "ASYNC-OLD-INTENT" prompt))
+          (should (string-match-p "ASYNC-OLD-ANSWER" prompt))
+          (should (string-match-p "selected-async" prompt))
+          (should-not (string-match-p "ASYNC-RAW-CALL" prompt))
+          (should-not (string-match-p "ASYNC-RAW-RESULT" prompt))
+          (should-not (string-match-p "ASYNC-REPLAY-MARKER" prompt))
+          (should-not (string-match-p "ASYNC-ANCHOR-MARKER" prompt))
+          (should-not (plist-get projection :promotions))
+          (should (string-match-p "selected-async"
+                                  (prin1-to-string checkpoint)))
+          (should (= (cl-count "ASYNC-RETAINED-SUFFIX"
+                               tail-contents :test #'equal)
+                     1))
+          (should (= (cl-count "ASYNC-RETAINED-ANSWER"
+                               tail-contents :test #'equal)
+                     1)))))))
+
+(ert-deftest e-harness-test-enabled-async-compaction-rejects-stale-promotion-without-mutation ()
+  "A promotion appended during async summary rejects without partial append."
+  (let* ((store (e-session-store-create))
+         (session-id "enabled-async-stale-promotion")
+         (captured-messages nil)
+         (overlap-appended nil)
+         (record nil)
+         (failure nil)
+         (backend
+          (e-backend-create
+           :name 'enabled-async-stale-summary
+           :start
+           (cl-function
+            (lambda (&key messages on-item on-done &allow-other-keys)
+              (setq captured-messages (copy-tree messages))
+              (run-at-time
+               0.01 nil
+               (lambda ()
+                 (e-harness-test--append-compaction-promotion
+                  store session-id
+                  (e-context-lifetime-generation-id
+                   (e-session-context-lifetime-current-generation
+                    store session-id))
+                  "late")
+                 (setq overlap-appended t)
+                 (funcall on-item
+                          '(:type assistant-message
+                            :content "STALE-PORTABLE-C1"))
+                 (funcall on-done '(:status done))))
+              (e-backend-request-create)))))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id session-id)
+      (e-harness-turn-context harness session-id "seed")
+      (e-session-append-message store session-id
+                                '(:role user :content "STALE-OLD-INTENT"))
+      (e-session-append-message store session-id
+                                '(:role assistant :content "STALE-OLD-ANSWER"))
+      (e-session-append-message store session-id
+                                '(:role user :content "STALE-RETAINED"))
+      (let ((generations-before
+             (length (e-session-context-generations store session-id)))
+            (compactions-before
+             (length (e-session-compactions store session-id))))
+        (e-harness-compact-session-start
+         harness session-id
+         :keep-recent-tokens 1
+         :on-done (lambda (value) (setq record value))
+         :on-error (lambda (err) (setq failure err)))
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (not (or record failure))
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should overlap-appended)
+        (should-not record)
+        (should failure)
+        (should (eq (car failure) 'e-compaction-error))
+        (should (= (length (e-session-compactions store session-id))
+                   compactions-before))
+        (should (= (length (e-session-context-generations store session-id))
+                   generations-before))
+        (should (= (length (e-session-context-promotions store session-id))
+                   1))
+        (should captured-messages)))))
+
+(ert-deftest e-harness-test-enabled-auto-compaction-excludes-active-prompt-and-preserves-tail ()
+  "Enabled automatic compaction excludes the active prompt and retains suffix once."
+  (let* ((calls nil)
+         (backend
+          (e-backend-create
+           :name 'enabled-auto-summary
+           :start
+           (cl-function
+            (lambda (&key messages on-item on-done &allow-other-keys)
+              (let ((ordinal (1+ (length calls))))
+                (push (copy-tree messages) calls)
+                (run-at-time
+                 0.01 nil
+                 (lambda ()
+                   (funcall on-item
+                            (list :type 'assistant-message
+                                  :content
+                                  (if (= ordinal 1)
+                                      "AUTO-PORTABLE-C1"
+                                    "AUTO-ANSWER")))
+                   (funcall on-done '(:status done)))))
+              (e-backend-request-create)))))
+         (harness (e-harness-create
+                   :backend backend
+                   :default-options '(:model "enabled-auto-model")))
+         (store (e-harness-sessions harness))
+         (e-context-budget-model-token-limits
+          '(("enabled-auto-model" . 100)))
+         (e-harness-auto-compaction-reserve-tokens 10)
+         (e-compaction-keep-recent-tokens 1))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id "enabled-auto-session")
+      (e-session-append-message store "enabled-auto-session"
+                                '(:role user :content "AUTO-OLD-INTENT"))
+      (e-session-append-message store "enabled-auto-session"
+                                '(:role assistant :content "AUTO-OLD-ANSWER"))
+      (e-session-append-message store "enabled-auto-session"
+                                '(:role user :content "AUTO-RETAINED-SUFFIX"))
+      (e-session-append-activity-event
+       store "enabled-auto-session" "auto-seed" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-test-prompt-async
+       harness "enabled-auto-session" "AUTO-ACTIVE-PROMPT")
+      (should (eq (plist-get
+                   (e-harness-wait-batch harness "enabled-auto-session" 1.0)
+                   :status)
+                  'done)))
+    (let* ((ordered (reverse calls))
+           (summary-prompt (prin1-to-string (car ordered)))
+           (provider-messages (cadr ordered))
+           (provider-prompt (prin1-to-string provider-messages))
+           (provider-contents
+            (mapcar (lambda (message) (plist-get message :content))
+                    provider-messages)))
+      (should (= (length ordered) 2))
+      (should (string-match-p "AUTO-OLD-INTENT" summary-prompt))
+      (should-not (string-match-p "AUTO-ACTIVE-PROMPT" summary-prompt))
+      (should (string-match-p "AUTO-ACTIVE-PROMPT" provider-prompt))
+      (should (= (cl-count "AUTO-RETAINED-SUFFIX"
+                           provider-contents :test #'equal)
+                 1))
+      (let ((e-context-lifetime-shadow-projection-enabled nil))
+        (let* ((legacy (e-harness-context harness "enabled-auto-session"))
+               (legacy-contents
+                (mapcar (lambda (message) (plist-get message :content))
+                        (plist-get legacy :messages))))
+          (should (= (cl-count "AUTO-RETAINED-SUFFIX"
+                               legacy-contents :test #'equal)
+                     1)))))))
+
 (ert-deftest e-harness-test-repeated-compaction-summarizes-from-previous-summary ()
   "Repeated compaction summarizes previous summary plus newly compacted suffix."
   (let ((calls nil)
