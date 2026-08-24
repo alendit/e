@@ -9,9 +9,9 @@ Slice 1 is accepted after Implementation Tick 05 at
 Implementation Tick 09 at
 =3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  The user materially narrowed
 Feature 88 after Tick 10: tool-lifecycle durability and crash recovery are no
-longer in scope and belong with future SQLite atomic persistence.  Tick 11 and
-Tick 12 found the revised context-protocol plan not ready for implementation.
-This is not final feature acceptance.
+longer in scope and belong with future SQLite atomic persistence.  Tick 11,
+Tick 12, and Tick 13 found the revised context-protocol plan not ready for
+implementation.  This is not final feature acceptance.
 
 * Tick 01 findings
 
@@ -1019,3 +1019,80 @@ selected verbatim content is durable by choice and subject to the same limit.
 
 Remediate F88.P2, F88.P3, and F88.P8--F88.P12 with the same persistent Luna
 implementer, then reuse the same unattended Sol reviewer for Tick 13.
+
+* Tick 13 narrowed-plan interaction review
+
+Reviewed exact HEAD =0719e5e335fc24a825451c3ee93d866ce6c3fb25= plus
+the sole WIP =plan.org=.  Decision: not ready for implementation; three P1 and
+one P2 findings remain.  F88.P2, F88.P8, and F88.P10--F88.P12 are closed;
+F88.P3 and F88.P9 remain open.
+
+** P1 F88.P9: tool-producing responses need transient anchor scope
+
+The paired call/replay/result bundle is now explicit, but anchor cleanliness
+only evaluates observations in the request.  A response can introduce a tool
+call whose provider continuation is useful for its immediate result follow-up
+yet must not become a reusable session anchor; descendants inheriting that
+bundle remain contaminated.
+
+Owning correction: mark such candidates =immediate-followup-only=.  Use them
+only to deliver the matching result within the current in-memory follow-up;
+never persist them as reusable session anchors.  Later descendants stay
+contaminated unless a separately conformed capability replaces the whole
+bundle.  E2E proves the immediate response id is used for paired delivery while
+neither it nor its contaminated final descendant replaces the prior clean
+anchor.
+
+** P1 F88.P13: promotion provenance excludes non-transcript observations
+
+Runtime observations may reference an external/context source, but promotion
+persistence requires an existing transcript entry.  Canvas and dynamic-context
+observations are derived segments and cannot satisfy that shape.
+
+Owning correction: every source resolves to a canonical provider-neutral
+reference: an existing transcript entry when session-backed, otherwise an
+existing external/context-source handle plus fingerprint.  Durable promotion
+stores references and frame/generation/consumer identities, never referenced
+bodies.  Do not manufacture transcript entries for provenance.
+
+** P1 F88.P3: cleanup and legacy compatibility are not implementation-safe
+
+The ledger misspells real persistence-controller slots, leaves helper/branch
+removal as a vague range, and changes/removes version-1 lifetime records while
+promising old journals remain readable.
+
+Owning correction: use actual slots =record-states=, =record-watchers=, and
+=acknowledged-record-state-order=; enumerate the Feature 88 record-state,
+fencing, watcher, response, submit, and await functions/branches.  Bump the
+narrowed generation/promotion schema.  Recognize legacy v1 Slice 1 records but
+ignore them for narrowed semantic projection (or migrate only at a deliberate
+boundary); never recreate runtime frames.  Update the queued-record-criticality
+test to retain generation/promotion and remove frame/settlement as new writable
+types.  Add an old-journal fixture proving transcript readability without
+frame/recovery restoration.
+
+** P2 F88.P14: reopen-test wording is incomplete
+
+The plan says “before and after durable runtime frame state,” leaving no valid
+boundary.
+
+Owning correction: compare canonical projection/fingerprint before and after
+reopening the durable session store, covering only narrowed generation-boundary
+and promotion-record serialization.  Runtime frames have no restart promise.
+
+** Tick 13 evidence and disposition
+
+- Current continuation integration proves an early tool response id is used
+  for immediate result delivery while the final candidate is the current
+  durable candidate; Feature 88 must classify both ancestry scopes.
+- Current-state observations are segment-derived rather than transcript
+  messages, confirming the provenance mismatch.
+- Current persistence-controller slot names and lifetime record version were
+  checked directly against source.
+- Org parsing and =git diff --check= passed; only =plan.org= was dirty.
+- Provider docs/credentials remain deferred.
+- The same reviewer made zero prompts, approvals, escalations, edits, git
+  writes, network calls, live-Emacs calls, or provider tests.
+
+Remediate F88.P3, F88.P9, F88.P13, and F88.P14 with the same persistent Luna
+implementer, then reuse the same unattended Sol reviewer for Tick 14.
