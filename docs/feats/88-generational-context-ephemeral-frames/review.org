@@ -4,11 +4,10 @@
 
 * Current decision
 
-Needs remediation after Implementation Tick 04 at
-=1f67e016b65194743bd5e8fd09e46e55071474bd=.
-
-Slice 1 has one open P1 finding.  Later slices have not started.  This review
-is not the final feature acceptance.
+Slice 1 accepted after Implementation Tick 05 at
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f= with zero P0--P3 findings and
+zero unknown required cells.  Later slices have not started.  This review is
+not the final feature acceptance.
 
 * Tick 01 findings
 
@@ -300,3 +299,31 @@ Parent verification passed 22/22 lifetime tests, 38/38 persistence tests, all
 and zero unexpected results.  Compilation and diff checks passed.  F88.I1.7 is
 candidate-closed; the same unattended reviewer must Tick the exact clean Tock
 commit before Slice 2.
+
+* Tick 05 fixed-point review
+
+Reviewed exact clean commit
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.
+
+Decision: zero P0--P3 findings and zero unknown required cells.  F88.I1.7 is
+closed.  F88.I1.1--F88.I1.6 remain closed.  Slice 1 is accepted and Slice 2 may
+begin.
+
+*** Evidence
+
+- Logical attempt ownership is fenced before preflight by removing only the
+  authoritative key-to-command relation.  The predecessor's reverse mapping,
+  outbox entry, and caller callbacks remain intact.
+- Rejected replacements fail and clean up every watcher for the exact logical
+  key.  Late predecessor success and failure remain physical lifecycle events
+  and leave =preflight-failed= unchanged.
+- The independent reviewer reproduced immediate logical failure with one
+  predecessor callback/outbox item retained, followed by late predecessor
+  completion with the logical state unchanged and physical lifecycle cleared.
+- Focused lifetime/persistence tests passed 60/60.  The full suite produced
+  2243 expected results, the same two skips, and zero unexpected results out of
+  2245.  Diff checks passed and the worktree remained clean.
+- Indexed work remains O(1) for ownership fencing and proportional only to
+  active watchers for the exact key.
+- No edits, approvals, escalation, runtime mutation, or live Emacs interaction
+  occurred during review.
