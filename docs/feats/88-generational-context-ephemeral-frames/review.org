@@ -5,11 +5,10 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Tock 07 remediates the remaining
-P1 continuation-forgery path from Implementation Tick 08.  The parent has
-accepted the uncommitted candidate for an exact-revision Tick; Slice 2 is not
-yet fixed-point accepted, Slice 3 remains gated, and this is not final feature
-acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Slice 2 is accepted after
+Implementation Tick 09 at
+=3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  Slice 3 may begin; this is not
+final feature acceptance.
 
 * Tick 01 findings
 
@@ -683,3 +682,41 @@ Tick that clean revision before Slice 3 begins.
 The remaining F88.I2.5 path is candidate-closed.  Slice 3 remains gated until
 the same unattended reviewer accepts the exact clean Tock commit with zero
 P0--P3 findings and zero required unknown cells for Slice 2.
+
+* Tick 09 fixed-point acceptance
+
+Reviewed exact clean commit
+=3f7129db6a3d12d15960e18e192e061c0cc4a8f5= in unattended read-only mode.
+
+Decision: zero P0--P3 findings and zero required unknown cells.  F88.I2.5 is
+closed, F88.I2.1--F88.I2.4 remain closed, and Slice 2 opens Slice 3.
+
+** Tick 09 cleared cells
+
+- Caller/default/session continuation fields are reserved and stripped at the
+  harness boundary.
+- Anchor attachment installs cleaned options first and repopulates the
+  anchor/delta/source-count triplet only from the latest compatible
+  session-owned anchor.
+- Initial, refresh, retry, and follow-up paths rebuild through the same
+  authoritative context boundary.
+- The real harness-to-OpenAI hostile regression has no continuation id or
+  explicit current-state copy and persists only the genuine response anchor.
+- Positive compatible-anchor/tool-follow-up, equal durable content, in-turn
+  suffix, refresh ownership, legacy profile, inherited branchable, and
+  Anthropic behavior remain green.
+
+** Tick 09 evidence
+
+- Focused cross-provider verification passed 479/479.  The full suite produced
+  2264 expected results, two existing skips, and zero unexpected results out of
+  2266.
+- Credentialed live-provider tests were intentionally not run under the
+  unattended local-only constraint; they remain a later provider-runtime gate,
+  not a required Slice 2 unknown.
+- HEAD remained exact and clean; =git diff --check= passed.
+- Review made no edits, git writes, live Emacs calls, network calls, escalation,
+  or permission prompts.
+
+Slice 2 is fixed-point accepted.  Begin Slice 3 with the persistent implementer;
+later feature slices and the mandatory credential-free E2E remain outstanding.

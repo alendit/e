@@ -641,8 +641,8 @@ Accepted parent-side on 2026-08-24.
 
 ** Slice 2 implementation evidence
 
-Parent-accepted Tock 07 candidate on 2026-08-24; independent fixed-point review
-remains required before Slice 3.
+Fixed-point accepted on 2026-08-24 at
+=3f7129db6a3d12d15960e18e192e061c0cc4a8f5= after Implementation Tick 09.
 
 - Current-state and dynamic-context segments now form an explicit semantic
   observation frontier.  Backends declare inherited or request-local
@@ -691,6 +691,10 @@ remains required before Slice 3.
   --warnings-as-errors= and =git diff --check= passed.
 - The user's running Emacs was left unchanged.  The core/harness/session/adapter
   changes require a full restart before they can affect it.
+- Independent Tick 09 review passed 479/479 focused cross-provider tests and the
+  full 2266-test suite with 2264 expected results, the same two existing skips,
+  zero unexpected results, zero P0--P3 findings, and zero required unknown
+  cells.  Slice 3 is open.
 
 * Acceptance criteria
 
