@@ -1162,3 +1162,50 @@ read/ignore boundary, never a resume-state projection.
 
 Remediate F88.P3 and F88.P13 with the same persistent Luna implementer, then
 reuse the same unattended Sol reviewer for Tick 15.
+
+* Tick 15 narrowed-plan cleanup review
+
+Reviewed exact HEAD =2f08c116003395ba5b4561894d3c09ef5358a7d2= plus
+the sole WIP =plan.org=.  Decision: not yet a zero-finding Tick; no P0/P1
+findings remain, but one narrow P2 cleanup defect remains.
+
+** P2 F88.P3: cleanup misclassifies obsolete test helpers
+
+The plan correctly covers the production callback helpers and dispatch, submit
+hooks, resume-state accessor, transition APIs, and generic persistence
+preservation.  It incorrectly groups
+=e-context-lifetime-test--append-lifecycle= with the generic persistence test
+wrapper.  The former appends durable frames/settlements and returns resume
+state; it never calls the generic submit API.  Its only consumers are already
+obsolete lifecycle tests.  The bounded-retry helper has the same disposition.
+
+Owning correction: update the wrapper local to
+=e-session-persistence-test-checkpoints-dirty-sessions-before-one-reindex= to
+the restored generic submit signature.  Delete
+=e-context-lifetime-test--append-lifecycle= and
+=e-context-lifetime-test--append-bounded-retries= with their obsolete
+consumers; do not repurpose them.  Also explicitly remove the obsolete frame
+state vocabulary—=e-context-lifetime-frame-states=,
+=e-context-lifetime--normalize-state=, the old state slot/accessors, and
+=e-context-lifetime-invalid-transition= when no consumer remains.
+
+** Tick 15 evidence and disposition
+
+- F88.P13 is closed: the effect accepts no provenance, core derives durable v2
+  transcript or external/context-source provenance, forged controls are
+  rejected, and both cases have explicit tests.
+- F88.P3 is otherwise closed; only the test-helper/state-vocabulary inventory
+  above remains.
+- Every substantive design cell is green: context visibility, consumer-bound
+  frames, promotion, streaming lifecycle preservation, transient tool anchors,
+  clean/stateless continuation, compaction ancestry, compatibility, mandatory
+  E2E, opt-in, and performance.
+- Org parsing and =git diff --check= passed; only =plan.org= was dirty before
+  this review artifact was recorded.
+- Credentialed provider conformance, live cache counters, and provider
+  compaction wire behavior remain externally gated unknowns.
+- The same reviewer made zero prompts, approval requests, escalations, edits,
+  git writes, network calls, or live-Emacs calls.
+
+Remediate the remaining F88.P3 wording with the same persistent Luna
+implementer, then reuse the same unattended Sol reviewer for Tick 16.
