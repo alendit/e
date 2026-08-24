@@ -720,3 +720,68 @@ closed, F88.I2.1--F88.I2.4 remain closed, and Slice 2 opens Slice 3.
 
 Slice 2 is fixed-point accepted.  Begin Slice 3 with the persistent implementer;
 later feature slices and the mandatory credential-free E2E remain outstanding.
+
+* Tick 10 pre-commit design findings
+
+Reviewed the uncommitted Slice 3 pure-lifetime WIP over base commit
+=e178f6024a46724254cfdc397893fdddbb69c1ce= in unattended read-only mode.
+
+Decision: Slice 3 has not reached a pre-commit fixed point.  The focused suite
+passes 41/41, but three required chained-turn and recovery cells fail.
+
+** P1 F88.I3.1: chained tool turns collapse the consumer into the producer
+
+The aggregate result frame produced by transition A retains A as its only
+transition identity.  A response consuming that frame therefore admits its new
+tool calls into A instead of a distinct transition B.  After B's executions
+settle, A already owns its aggregate frame, so the reducer cannot open B's
+result frame and the chain stalls.
+
+Owning correction: make the response link durably identify a consumer
+transition and turn distinct from the frame's producer transition.  Bind the
+response's calls to that consumer transition, let it own its own aggregate
+frame, and prove A-results to B-calls to B-results to C-response across every
+restart prefix.
+
+** P1 F88.I3.2: response admission validation accepts undeclared extras
+
+The reducer verifies that declared execution ids occur in increasing order but
+does not prove exact equality with all admissions owned by that consuming
+response.  Extra calls before or after the declared sequence can therefore
+survive settlement and become dispatchable.
+
+Owning correction: bind each admission to its consuming response, frame, and
+consumer transition, then require exact ordered equality before frame
+settlement or tool dispatch.  Cover extras before and after, omissions,
+reordering, duplicates, cross-owner records, and the exact-match case.
+
+** P1 F88.I3.3: ordinary Phase A frames have no recovery descriptor
+
+Pending descriptors are derived only from tool-execution transitions.  An
+ordinary =frame-opened= record does not create one, so open, consuming, and
+consumed crash prefixes can all replay with no pending descriptor or completion
+input.  A linked response whose declared admissions have not yet been written
+is lost for the same reason.
+
+Owning correction: derive recovery from every active Phase A frame independently
+of whether execution admissions exist.  Open frames must expose their provider
+consumption action, consuming frames their explicit retryable state, and
+consumed frames the exact admit/promote/settle work.  Settled and aborted frames
+must expose none.
+
+** Tick 10 evidence and disposition
+
+- Direct chained-turn reproduction ended with one aggregate frame containing
+  both A and B executions, no active frame, and no pending transition.
+- A response declaring only one execution settled successfully with an extra
+  execution admitted before it.
+- Ordinary open, consuming, and consumed frame prefixes each replayed with no
+  pending descriptor.
+- Focused verification passed 41/41, demonstrating missing coverage rather than
+  closure; =git diff --check= passed.
+- The review made no edits, git writes, live Emacs calls, network calls,
+  escalation, or permission prompts.
+
+Remediate F88.I3.1--F88.I3.3 with the same persistent implementer.  Slice 3
+remains gated; session, harness, and loop integration must not begin until the
+pure provider-neutral model reaches this fixed point.
