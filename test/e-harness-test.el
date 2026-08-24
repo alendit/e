@@ -1463,6 +1463,137 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
             (should-not (plist-member usage-payload :unknown))))
       (delete-directory directory t))))
 
+(ert-deftest e-harness-test-provider-diagnostics-retain-context-semantics-only ()
+  "Durable provider activity keeps context semantics without observation data."
+  (let* ((directory (make-temp-file "e-harness-provider-context-diagnostics-" t))
+         (fingerprint "sha256:current-state-v1")
+         (raw "raw-current-state-secret")
+         (diagnostics
+          (list :model "gpt-test"
+                :observation-delivery 'request-local-replaceable
+                :replaceable-current-state-present t
+                :current-state-fingerprint fingerprint
+                :context-rendering-strategy 'replaceable-channel
+                :provider-anchor-safety 'advance-eligible
+                ;; These fields intentionally model the full frontier and
+                ;; request-local value.  They must never cross the activity
+                ;; projection or journal boundary.
+                :observation-frontier
+                (list :messages (list (list :role 'system :content raw))
+                      :fingerprint fingerprint)
+                :replaceable-current-state
+                (list (list :role 'system :content raw))
+                :current-state-messages
+                (list (list :role 'system :content raw))
+                :current-state-content raw
+                :messages (list (list :role 'system :content raw))))
+         (backend
+          (e-backend-create
+           :name "context-diagnostics"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              (funcall on-request-start
+                       (e-backend-request-create
+                        :metadata
+                        (list :provider 'openai
+                              :transport 'http
+                              :diagnostics diagnostics)))
+              (funcall on-item '(:type assistant-message :content "answer"))
+              (funcall on-item '(:type done :reason stop))
+              (funcall on-done '(:status done))
+              nil))))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (unwind-protect
+        (progn
+          (let ((projected
+                 (e-harness--provider-diagnostics-activity-projection
+                  diagnostics)))
+            (dolist (key '(:observation-delivery
+                           :replaceable-current-state-present
+                           :current-state-fingerprint
+                           :context-rendering-strategy
+                           :provider-anchor-safety))
+              (should (plist-member projected key)))
+            (should (equal (plist-get projected :current-state-fingerprint)
+                           fingerprint))
+            (should-not (plist-member projected :observation-frontier))
+            (should-not (plist-member projected :replaceable-current-state))
+            (should-not (plist-member projected :current-state-messages))
+            (should-not (plist-member projected :current-state-content))
+            (should-not (plist-member projected :messages))
+            (should-not (string-match-p (regexp-quote raw)
+                                        (prin1-to-string projected))))
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-test-prompt-batch harness "session-1" "question")
+          (let* ((activity (e-harness-session-activity-events
+                            harness "session-1"))
+                 (started
+                  (seq-find
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'provider-request-started))
+                   activity))
+                 (projected (plist-get (plist-get started :payload)
+                                       :diagnostics)))
+            (should started)
+            (should (eq (plist-get projected :observation-delivery)
+                        'request-local-replaceable))
+            (should (eq (plist-get projected :context-rendering-strategy)
+                        'replaceable-channel))
+            (should (eq (plist-get projected :provider-anchor-safety)
+                        'advance-eligible)))
+          (e-session-flush-write-queue store)
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (activity (e-session-activity-events loaded "session-1"))
+                 (started
+                  (seq-find
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'provider-request-started))
+                   activity))
+                 (payload (plist-get started :payload))
+                 (journal
+                  (with-temp-buffer
+                    (insert-file-contents
+                     (e-session--session-file store "session-1"))
+                    (buffer-string)))
+                 (projected (plist-get payload :diagnostics)))
+            (should started)
+            (dolist (key '(:observation-delivery
+                           :replaceable-current-state-present
+                           :current-state-fingerprint
+                           :context-rendering-strategy
+                           :provider-anchor-safety))
+              (should (plist-member projected key)))
+            ;; JSONL keeps scalar enum values as strings on replay; the
+            ;; semantic value remains present and the live activity projection
+            ;; above retains the original symbols used by the E2E consumers.
+            (should (member (plist-get projected :observation-delivery)
+                            '(request-local-replaceable
+                              "request-local-replaceable")))
+            (should (equal (plist-get projected
+                                      :replaceable-current-state-present)
+                           t))
+            (should (equal (plist-get projected :current-state-fingerprint)
+                           fingerprint))
+            (should (member (plist-get projected :context-rendering-strategy)
+                            '(replaceable-channel "replaceable-channel")))
+            (should (member (plist-get projected :provider-anchor-safety)
+                            '(advance-eligible "advance-eligible")))
+            (dolist (key '(:observation-frontier
+                           :replaceable-current-state
+                           :current-state-messages
+                           :current-state-content
+                           :messages))
+              (should-not (plist-member (plist-get payload :diagnostics)
+                                        key)))
+            (should-not (string-match-p (regexp-quote raw) journal))))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-provider-anchor-candidates-are-persisted ()
   "Provider anchor candidates persist with covered entry and context metadata."
   (e-harness-test--with-empty-layer-registry
@@ -1478,6 +1609,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
              :instructions "stable instructions"
              :context-providers (list dynamic-provider)))
            (backend (e-backend-fake-create
+                     :context-capabilities
+                     '(:continuation linear
+                       :observation-delivery request-local-replaceable)
                      :items '((:type assistant-message :content "answer")
                               (:type provider-anchor-candidate
                                :provider-id openai
@@ -1519,7 +1653,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (should (equal (mapcar (lambda (fingerprint)
                                  (plist-get fingerprint :kind))
                                (plist-get fingerprints :segments))
-                       '("static-prefix" "current-state")))
+                       '("static-prefix")))
+        (should-not (plist-member fingerprints :current-state-fingerprint))
         (should (equal (plist-get fingerprints :active-layer-ids)
                        '("context-anchor-layer")))
         (should (equal (plist-get fingerprints :reasoning)
@@ -1532,6 +1667,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   "Provider anchor persistence keeps only the final candidate for a provider."
   (e-harness-test--with-empty-layer-registry
     (let* ((backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
                      :items '((:type assistant-message :content "answer")
                               (:type provider-anchor-candidate
                                :provider-id openai
@@ -2144,7 +2280,12 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  :capabilities (list capability)))
          (harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend
+           (e-backend-fake-create
+            :items nil
+            :context-capabilities
+            '(:continuation linear
+              :observation-delivery request-local-replaceable))
            :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
@@ -2182,14 +2323,19 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                        "resp-1"))
         (should (equal (mapcar (lambda (message)
                                  (plist-get message :content))
+                               (plist-get options
+                                          :replaceable-current-state))
+                       '("dynamic context")))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
                                delta)
-                       '("dynamic context" "new prompt")))
+                       '("new prompt")))
         (should (equal (plist-get options
                                   :provider-anchor-source-message-count)
                        (length (plist-get context :messages))))))))
 
 (ert-deftest e-harness-test-context-uses-provider-anchor-after-dynamic-state-change ()
-  "Changed dynamic-context fingerprints keep provider continuation anchors usable."
+  "Replaceable current-state changes preserve the stable provider anchor."
   (let* ((current-state "dynamic context")
          (dynamic-provider
           (e-context-provider-create
@@ -2208,7 +2354,12 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  :capabilities (list capability)))
          (harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend
+           (e-backend-fake-create
+            :items nil
+            :context-capabilities
+            '(:continuation linear
+              :observation-delivery request-local-replaceable))
            :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
@@ -2240,6 +2391,13 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (let ((options (plist-get
                       (e-harness-context harness "session-1" "turn-2")
                       :options)))
+        (should (eq (plist-get options :observation-delivery)
+                    'request-local-replaceable))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               (plist-get options
+                                          :replaceable-current-state))
+                       '("changed dynamic context")))
         (should (equal (plist-get
                         (plist-get
                          (plist-get options :provider-anchor)
@@ -2250,7 +2408,189 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                                  (plist-get message :content))
                                (plist-get options
                                           :provider-anchor-delta-messages))
+                       '("new prompt")))))))
+
+(ert-deftest e-harness-test-context-holds-linear-anchor-for-inherited-state ()
+  "Linear continuation reconstructs statelessly around inherited current state."
+  (let* ((current-state "dynamic context")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
+           :intrinsic-capabilities (e-layer-capabilities layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setq current-state "changed dynamic context")
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let* ((options (plist-get
+                       (e-harness-context harness "session-1" "turn-2")
+                       :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (eq (plist-get options :observation-delivery) 'inherited))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'inherited-observation-requires-branchable))
+        (should (eq (plist-get options :context-rendering-strategy)
+                    'stateless))
+        (should (eq (plist-get options :provider-anchor-safety)
+                    'hold-inherited-observation))))))
+
+(ert-deftest e-harness-test-branchable-inherited-state-uses-clean-anchor ()
+  "Branchable inherited state reuses only a clean anchor and stays unadvanced."
+  (let* ((current-state "dynamic context")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create
+                     :context-capabilities
+                     '(:continuation branchable)
+                     :items nil)
+           :intrinsic-capabilities (e-layer-capabilities layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1"))
+           (clean-fingerprints
+            (plist-put
+             (copy-sequence
+              (e-harness--provider-anchor-fingerprints anchor-context))
+             :current-state-fingerprint
+             nil)))
+      ;; This is the clean response id from before current state was observed.
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints clean-fingerprints
+       :metadata '(:response-id "resp-clean"))
+      ;; A contaminated anchor must not win merely because it is newer.
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-contaminated"))
+      (setq current-state "changed dynamic context")
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let* ((context (e-harness-context harness "session-1" "turn-2"))
+             (options (plist-get context :options))
+             (anchor (plist-get options :provider-anchor))
+             (delta (plist-get options :provider-anchor-delta-messages)))
+        (should (equal (plist-get (plist-get anchor :metadata) :response-id)
+                       "resp-clean"))
+        (should (eq (plist-get options :provider-anchor-safety)
+                    'branchable-clean-anchor-only))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               delta)
                        '("changed dynamic context" "new prompt")))))))
+
+(ert-deftest e-harness-test-context-without-capability-is-stateless ()
+  "An undeclared backend keeps semantic current state but drops anchor reuse."
+  (let* ((dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    '((:role system :content "current state")))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :intrinsic-capabilities (e-layer-capabilities layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "prompt"))
+    (let* ((context (e-harness-context harness "session-1" "turn-1"))
+           (options (plist-get context :options)))
+      (should (equal (plist-get options :context-capabilities)
+                     '(:continuation none
+                       :observation-delivery inherited
+                       :prefix-cache none
+                       :provider-compaction none
+                       :reasoning-state none)))
+      (should (equal (mapcar (lambda (message) (plist-get message :content))
+                             (plist-get options :replaceable-current-state))
+                     nil))
+      (should (equal (mapcar (lambda (message) (plist-get message :content))
+                             (e-context-current-state-messages context))
+                     '("current state")))
+      (should-not (plist-get options :provider-anchor))
+      (should (eq (plist-get options :provider-anchor-invalidation-reason)
+                  'continuation-capability-unavailable))
+      (should (eq (plist-get options :context-rendering-strategy)
+                  'stateless))
+      (should (eq (plist-get options :provider-anchor-safety)
+                  'hold-unavailable-capability)))))
 
 (ert-deftest e-harness-test-context-reports-provider-anchor-invalidation-reason ()
   "Context options report why an otherwise current provider anchor was skipped."
@@ -2272,7 +2612,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  :capabilities (list capability)))
          (harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
@@ -2311,7 +2653,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   "Provider continuation anchors include reasoning options in compatibility."
   (let* ((harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :default-options '(:model "gpt-test"
                               :reasoning-effort "high"
                               :provider-continuation t
@@ -2366,7 +2710,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  :capabilities (list capability)))
          (harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
@@ -2403,7 +2749,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   (e-harness-test--with-empty-layer-registry
     (let* ((harness
             (e-harness-create
-             :backend (e-backend-fake-create :items nil)
+             :backend (e-backend-fake-create
+                       :context-capabilities '(:continuation linear)
+                       :items nil)
              :enabled-layer-ids '(base-layer)
              :default-options '(:model "gpt-test"
                                 :provider-continuation t
@@ -2448,7 +2796,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   "Provider continuation anchors include provider request-shaping options."
   (let* ((harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :default-options '(:model "claude-test"
                               :provider-continuation t
                               :provider-anchor-provider-id anthropic
@@ -2493,7 +2843,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   "Provider continuation anchors include explicit request instructions."
   (let* ((harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :default-options '(:model "gpt-test"
                               :instructions "Be terse."
                               :provider-continuation t
@@ -2532,7 +2884,9 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
   "Provider continuation anchors include Anthropic max token request shaping."
   (let* ((harness
           (e-harness-create
-           :backend (e-backend-fake-create :items nil)
+           :backend (e-backend-fake-create
+                     :context-capabilities '(:continuation linear)
+                     :items nil)
            :default-options '(:model "claude-test"
                               :max-tokens 1024
                               :provider-continuation t

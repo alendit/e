@@ -1323,6 +1323,9 @@ board activity message unpublishable."
                    :prompt-cache-mode :prompt-layout-revision
                    :provider-continuation :previous-response-id-present
                    :provider-anchor-present :input-message-count :tool-count
+                   :observation-delivery :replaceable-current-state-present
+                   :current-state-fingerprint :context-rendering-strategy
+                   :provider-anchor-safety
                    :responses-transport :max-tokens :prompt-cache
                    :websocket-connection-id :websocket-reused
                    :websocket-reuse-count :websocket-request-mode
@@ -2181,14 +2184,17 @@ turn context work."
              :session-id session-id
              :turn-id turn-id
              :context-purpose context-purpose)))
-       (let ((context
-              (e-context-build
-               (e-harness-context-strategy harness)
-               :sessions (e-harness-sessions harness)
-               :session-id session-id
-               :options (e-harness-turn-options harness session-id)
-               :prefix-messages (plist-get capability-context :messages)
-               :prefix-segments (plist-get capability-context :segments))))
+       (let* ((turn-options (e-harness-turn-options harness session-id))
+              (context-capabilities
+               (e-harness--context-capabilities harness turn-options))
+              (context
+               (e-context-build
+                (e-harness-context-strategy harness)
+                :sessions (e-harness-sessions harness)
+                :session-id session-id
+                :options turn-options
+                :prefix-messages (plist-get capability-context :messages)
+                :prefix-segments (plist-get capability-context :segments))))
          (plist-put context
                     :provider-anchor-active-layer-ids
                     (e-harness--effective-layer-id-strings
@@ -2197,6 +2203,9 @@ turn context work."
                     :provider-anchor-compaction-boundary
                     (e-harness--provider-anchor-compaction-boundary
                      harness session-id))
+         (e-harness--context-observation-frontier
+          context
+          context-capabilities)
          (e-harness--context-with-provider-anchor
           harness
           session-id
@@ -2737,48 +2746,107 @@ When a turn produced multiple assistant messages, return the last one."
                      (equal (plist-get message :turn-id) turn-id)))
               (e-harness-messages harness session-id)))))
 
+(defun e-harness--context-capabilities (harness options)
+  "Return normalized semantic context capabilities for OPTIONS.
+
+The harness asks the backend at the provider-neutral boundary.  It stores the
+answer on the request context, but does not interpret provider wire fields or
+profile names."
+  (let ((backend (e-harness-backend harness)))
+    (if (e-backend-p backend)
+        (e-backend-context-capabilities backend options)
+      (e-backend-default-context-capabilities))))
+
+(defun e-harness--context-observation-frontier (context capabilities)
+  "Attach semantic observation metadata to CONTEXT for CAPABILITIES.
+
+The frontier contains the complete current-state value and its fingerprint at
+request construction time.  Only the explicitly replaceable projection is
+handed to an adapter as a request-local replacement; inherited observations
+remain ordinary input and make an anchor unsafe to advance."
+  (let* ((options (copy-sequence (plist-get context :options)))
+         (delivery (plist-get capabilities :observation-delivery))
+         (messages (e-context-current-state-messages context))
+         (fingerprint (and messages
+                           (e-context-current-state-fingerprint context)))
+         (frontier (list :delivery delivery
+                         :messages (copy-tree messages)
+                         :fingerprint fingerprint)))
+    (setq options (plist-put options :context-capabilities
+                             (copy-sequence capabilities)))
+    (setq options (plist-put options :observation-delivery delivery))
+    (setq options (plist-put options :observation-frontier frontier))
+    (when (eq delivery 'request-local-replaceable)
+      (setq options
+            (plist-put options :replaceable-current-state
+                       (copy-tree messages))))
+    (when fingerprint
+      (setq options
+            (plist-put options :current-state-fingerprint fingerprint)))
+    (plist-put context :options options)
+    (plist-put context :observation-frontier frontier)
+    context))
+
 (defun e-harness--provider-anchor-fingerprints (context)
   "Return JSON-stable provider-relevant fingerprints from CONTEXT."
-  (let ((options (plist-get context :options)))
-    (list
-     :segments
-     (mapcar
-      (lambda (segment)
-        (list :kind (symbol-name (plist-get segment :kind))
-              :id (prin1-to-string (plist-get segment :id))
-              :fingerprint (plist-get segment :fingerprint)))
-      (cl-remove-if
-       (lambda (segment)
-         (memq (plist-get segment :kind) '(history delta)))
-       (plist-get context :segments)))
-     :active-layer-ids
-     (copy-sequence (plist-get context :provider-anchor-active-layer-ids))
-     :tools
-     (mapcar
-      (lambda (tool)
-        (list :name (plist-get tool :name)
-              :fingerprint
-              (secure-hash 'sha256 (prin1-to-string tool))))
-      (plist-get options :tools))
-     :reasoning
-     (list :reasoning (plist-get options :reasoning)
-           :reasoning-effort (plist-get options :reasoning-effort)
-           :effort (plist-get options :effort))
-     :provider-options
-     (list :instructions (plist-get options :instructions)
-           :max-tokens (plist-get options :max-tokens)
-           :prompt-cache (plist-get options :prompt-cache)
-           :prompt-cache-mode (plist-get options :prompt-cache-mode)
-           :prompt-cache-ttl (plist-get options :prompt-cache-ttl)
-           :prompt-cache-key (plist-get options :prompt-cache-key)
-           :prompt-cache-retention (plist-get options :prompt-cache-retention)
-           :anthropic-container-id (plist-get options :anthropic-container-id)
-           :anthropic-context-management
-           (plist-get options :anthropic-context-management)
-           :anthropic-beta-headers
-           (plist-get options :anthropic-beta-headers))
-     :compaction-boundary
-     (plist-get context :provider-anchor-compaction-boundary))))
+  (let* ((options (plist-get context :options))
+         (delivery (plist-get options :observation-delivery))
+         (replaceable-p (eq delivery 'request-local-replaceable))
+         (fingerprints
+          (list
+           :segments
+           (mapcar
+            (lambda (segment)
+              (list :kind (symbol-name (plist-get segment :kind))
+                    :id (prin1-to-string (plist-get segment :id))
+                    :fingerprint (plist-get segment :fingerprint)))
+            (cl-remove-if
+             (lambda (segment)
+               (or (memq (plist-get segment :kind) '(history delta))
+                   (and replaceable-p
+                        (memq (plist-get segment :kind)
+                              '(current-state dynamic-context)))))
+             (plist-get context :segments)))
+           :active-layer-ids
+           (copy-sequence (plist-get context :provider-anchor-active-layer-ids))
+           :tools
+           (mapcar
+            (lambda (tool)
+              (list :name (plist-get tool :name)
+                    :fingerprint
+                    (secure-hash 'sha256 (prin1-to-string tool))))
+            (plist-get options :tools))
+           :reasoning
+           (list :reasoning (plist-get options :reasoning)
+                 :reasoning-effort (plist-get options :reasoning-effort)
+                 :effort (plist-get options :effort))
+           :provider-options
+           (list :instructions (plist-get options :instructions)
+                 :max-tokens (plist-get options :max-tokens)
+                 :prompt-cache (plist-get options :prompt-cache)
+                 :prompt-cache-mode (plist-get options :prompt-cache-mode)
+                 :prompt-cache-ttl (plist-get options :prompt-cache-ttl)
+                 :prompt-cache-key (plist-get options :prompt-cache-key)
+                 :prompt-cache-retention (plist-get options :prompt-cache-retention)
+                 :anthropic-container-id (plist-get options :anthropic-container-id)
+                 :anthropic-context-management
+                 (plist-get options :anthropic-context-management)
+                 :anthropic-beta-headers
+                 (plist-get options :anthropic-beta-headers))
+           :compaction-boundary
+           (plist-get context :provider-anchor-compaction-boundary)
+           ;; Keep semantic control values JSON-stable.  The observation value
+           ;; itself is compared only for inherited delivery; a replaceable
+           ;; observation may change without invalidating the stable anchor.
+           :observation-delivery
+           (and delivery (symbol-name delivery)))))
+    (when (and (not (eq delivery 'request-local-replaceable))
+               (plist-get options :current-state-fingerprint))
+      (setq fingerprints
+            (plist-put fingerprints
+                       :current-state-fingerprint
+                       (plist-get options :current-state-fingerprint))))
+    fingerprints))
 
 (defun e-harness--provider-anchor-compaction-boundary (harness session-id)
   "Return provider-anchor compatibility data for latest compaction boundary."
@@ -2810,11 +2878,10 @@ When a turn produced multiple assistant messages, return the last one."
 
 (defun e-harness--provider-anchor-dynamic-context-messages (context)
   "Return backend-neutral dynamic-context messages from CONTEXT."
-  (cl-loop for segment in (plist-get context :segments)
-           when (memq (plist-get segment :kind)
-                      '(current-state dynamic-context))
-           append (mapcar #'e-context--backend-message
-                          (plist-get segment :messages))))
+  (unless (eq (plist-get (plist-get context :options)
+                         :observation-delivery)
+              'request-local-replaceable)
+    (e-context-current-state-messages context)))
 
 (defun e-harness--provider-anchor-delta-messages
     (harness session-id anchor &optional context)
@@ -2830,23 +2897,100 @@ When a turn produced multiple assistant messages, return the last one."
      dynamic-messages
      (mapcar #'e-context--backend-message
              (cl-remove-if-not
-              (lambda (entry)
-                (eq (plist-get entry :type) 'message))
+             (lambda (entry)
+               (eq (plist-get entry :type) 'message))
               entries)))))
+
+(defun e-harness--provider-anchor-selection-allowed-p (options)
+  "Return non-nil when OPTIONS can safely select a provider anchor.
+
+Continuation is a semantic backend capability, not merely a request option.
+An inherited current-state observation may only branch from a clean anchor when
+the backend explicitly supports branchable continuation; a linear continuation
+must reconstruct statelessly in that case.  A request-local replacement does
+not contaminate the anchor and is safe for either supported continuation mode."
+  (let* ((capabilities (plist-get options :context-capabilities))
+         (continuation (plist-get capabilities :continuation))
+         (delivery (plist-get options :observation-delivery))
+         (current-state-fingerprint
+          (plist-get options :current-state-fingerprint)))
+    (and (plist-get options :provider-continuation)
+         (memq continuation '(linear branchable))
+         (or (null current-state-fingerprint)
+             (eq delivery 'request-local-replaceable)
+             (eq continuation 'branchable)))))
+
+(defun e-harness--provider-anchor-lookup-fingerprints (context)
+  "Return fingerprints used to select an anchor for CONTEXT.
+
+An inherited observation may branch repeatedly only from a clean anchor.  For
+a branchable backend, omit the current observation from the lookup identity;
+this lets a clean anchor match while
+`e-session-provider-anchor-incompatibility-reason' still rejects any
+persisted anchor that carries a non-nil observation
+fingerprint.  Linear backends keep the ordinary fingerprint and are rejected
+by `e-harness--provider-anchor-selection-allowed-p' when an observation is
+inherited."
+  (let* ((options (plist-get context :options))
+         (capabilities (plist-get options :context-capabilities))
+         (fingerprints (e-harness--provider-anchor-fingerprints context)))
+    (if (and (eq (plist-get options :observation-delivery) 'inherited)
+             (plist-get options :current-state-fingerprint)
+             (eq (plist-get capabilities :continuation) 'branchable))
+        (let ((lookup (copy-tree fingerprints)))
+          ;; A clean anchor was produced before any current-state segment
+          ;; existed.  Remove those volatile segment identities as well as the
+          ;; separate value fingerprint; contaminated persisted anchors still
+          ;; fail the non-nil fingerprint comparison below.
+          (setq lookup
+                (plist-put
+                 lookup
+                 :segments
+                 (cl-remove-if
+                  (lambda (segment)
+                    (member (plist-get segment :kind)
+                            '(current-state dynamic-context
+                              "current-state" "dynamic-context")))
+                  (plist-get lookup :segments))))
+          (plist-put lookup :current-state-fingerprint nil))
+      fingerprints)))
+
+(defun e-harness--provider-anchor-safety (options)
+  "Return the anchor advancement/safety diagnostic for OPTIONS."
+  (let* ((capabilities (plist-get options :context-capabilities))
+         (continuation (plist-get capabilities :continuation))
+         (delivery (plist-get options :observation-delivery))
+         (current-state-fingerprint
+          (plist-get options :current-state-fingerprint)))
+    (cond
+     ((not (memq continuation '(linear branchable)))
+      'hold-unavailable-capability)
+     ((and current-state-fingerprint
+           (eq delivery 'inherited)
+           (eq continuation 'linear))
+      'hold-inherited-observation)
+     ((and current-state-fingerprint
+           (eq delivery 'inherited)
+           (eq continuation 'branchable))
+      'branchable-clean-anchor-only)
+     (t
+      'advance-eligible))))
 
 (defun e-harness--context-with-provider-anchor (harness session-id context)
   "Attach a compatible provider anchor to CONTEXT options when available."
   (let* ((options (plist-get context :options))
          (provider-id (plist-get options :provider-anchor-provider-id))
-         (fingerprints (e-harness--provider-anchor-fingerprints context)))
-    (when (and (plist-get options :provider-continuation) provider-id)
+         (lookup-fingerprints
+          (e-harness--provider-anchor-lookup-fingerprints context)))
+    (when (and provider-id
+               (e-harness--provider-anchor-selection-allowed-p options))
       (let ((anchor
              (e-session-latest-compatible-provider-anchor
               (e-harness-sessions harness)
               session-id
               provider-id
               :model (plist-get options :model)
-              :fingerprints fingerprints))
+              :fingerprints lookup-fingerprints))
             (options (copy-sequence options)))
         (if anchor
             (progn
@@ -2871,8 +3015,47 @@ When a turn produced multiple assistant messages, return the last one."
                   session-id
                   provider-id
                   (plist-get options :model)
-                  fingerprints))))
+                  lookup-fingerprints))))
+        (setq options
+              (plist-put
+               options
+               :context-rendering-strategy
+               (cond
+                ((eq (plist-get options :observation-delivery)
+                     'request-local-replaceable)
+                 'replaceable-channel)
+                (anchor 'clean-anchor-branch)
+                (t 'stateless))))
         (plist-put context :options options)))
+    (unless (e-harness--provider-anchor-selection-allowed-p options)
+      (setq options (copy-sequence (plist-get context :options)))
+      (setq options
+            (plist-put options :provider-anchor-invalidation-reason
+                       (cond
+                        ((not (memq
+                               (plist-get
+                                (plist-get options :context-capabilities)
+                                :continuation)
+                               '(linear branchable)))
+                         'continuation-capability-unavailable)
+                        ((and (plist-get options :current-state-fingerprint)
+                              (eq (plist-get options :observation-delivery)
+                                  'inherited))
+                         'inherited-observation-requires-branchable)
+                        (t 'provider-continuation-disabled))))
+      (setq options
+            (plist-put options
+                       :context-rendering-strategy
+                       (if (eq (plist-get options :observation-delivery)
+                               'request-local-replaceable)
+                           'replaceable-channel
+                         'stateless)))
+      (plist-put context :options options))
+    (let ((options (copy-sequence (plist-get context :options))))
+      (setq options
+            (plist-put options :provider-anchor-safety
+                       (e-harness--provider-anchor-safety options)))
+      (plist-put context :options options))
     context))
 
 (defun e-harness--provider-anchor-candidate-persistable-p (context candidate)
@@ -2880,6 +3063,12 @@ When a turn produced multiple assistant messages, return the last one."
   (let ((provider-id (plist-get candidate :provider-id))
         (options (plist-get context :options)))
     (and provider-id
+         (memq (plist-get (plist-get options :context-capabilities)
+                          :continuation)
+               '(linear branchable))
+         (or (eq (plist-get options :observation-delivery)
+                 'request-local-replaceable)
+             (null (plist-get options :current-state-fingerprint)))
          (pcase provider-id
            ('openai
             (and (plist-get options :provider-continuation)

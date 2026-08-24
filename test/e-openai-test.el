@@ -398,6 +398,114 @@
     (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
     (should-not (plist-member body :prompt_cache_options))))
 
+(ert-deftest e-openai-test-request-local-current-state-replaces-instructions ()
+  "A proven replaceable frontier stays in request-local instructions."
+  (let* ((segments
+          '((:kind static-prefix
+             :id static
+             :messages ((:role system :content "Static policy.")))
+            (:kind stable-context
+             :id stable
+             :messages ((:role system :content "Stable project guidance.")))
+            (:kind current-state
+             :id current
+             :messages ((:role system :content "Current canvas.")))))
+         (base-options
+          `(:model "gpt-5.6-sol"
+            :instructions "Base instructions."
+            :prompt-cache-key "cache-key"
+            :prompt-cache-breakpoint-mode explicit
+            :responses-context-layout developer-input
+            :observation-delivery request-local-replaceable
+            :context-capabilities (:observation-delivery
+                                   request-local-replaceable)
+            :replaceable-current-state
+            ((:role system :content "Current canvas."))
+            :segments ,segments))
+         (first-body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Static policy.")
+                       (:role system :content "Stable project guidance.")
+                       (:role system :content "Current canvas.")
+                       (:role user :content "first prompt"))
+           :options base-options))
+         (second-options
+          (append
+           base-options
+           `(:provider-continuation t
+             :provider-anchor
+             (:provider-id openai
+              :metadata (:response-id "resp-1"
+                         :prompt-layout-revision
+                         ,e-openai-gpt56-explicit-cache-layout-revision))
+             :provider-anchor-delta-messages
+             ((:role user :content "second prompt")))))
+         (second-body
+          (e-openai-codex-request-body
+           :messages '((:role system :content "Static policy.")
+                       (:role system :content "Stable project guidance.")
+                       (:role system :content "Changed canvas.")
+                       (:role user :content "first prompt")
+                       (:role assistant :content "first answer")
+                       (:role user :content "second prompt"))
+           :options
+           (plist-put second-options
+                      :replaceable-current-state
+                      '((:role system :content "Changed canvas."))))))
+    (should (equal (plist-get first-body :instructions)
+                   "Base instructions.\n\nCurrent canvas."))
+    (should (equal (mapcar (lambda (item) (plist-get item :role))
+                           (append (plist-get first-body :input) nil))
+                   '("developer" "developer" "user")))
+    (should (equal (plist-get second-body :instructions)
+                   "Base instructions.\n\nChanged canvas."))
+    (should (equal (plist-get second-body :previous_response_id) "resp-1"))
+    (should (equal (mapcar (lambda (item) (plist-get item :role))
+                           (append (plist-get second-body :input) nil))
+                   '("user")))
+    (should (equal (plist-get
+                    (aref (plist-get (aref (plist-get first-body :input) 0)
+                                     :content)
+                          0)
+                    :text)
+                   "Static policy."))))
+
+(ert-deftest e-openai-test-profile-context-capabilities-are-conservative ()
+  "Only an explicitly proven OpenAI profile gets replaceable delivery."
+  (let ((replaceable
+         (e-openai--profile-context-capabilities
+          '(:wire-api responses
+            :continuation t
+            :observation-delivery request-local-replaceable
+            :prompt-cache-breakpoint-mode explicit)
+          nil))
+        (inherited
+         (e-openai--profile-context-capabilities
+          '(:wire-api responses
+            :continuation t
+            :prompt-cache-breakpoint-mode explicit)
+          nil))
+        (chat
+         (e-openai--profile-context-capabilities
+          '(:wire-api chat-completion :continuation t)
+          nil)))
+    (should (equal (plist-get replaceable :observation-delivery)
+                   'request-local-replaceable))
+    (should (eq (plist-get replaceable :continuation) 'linear))
+    (should (eq (plist-get inherited :observation-delivery) 'inherited))
+    (should (eq (plist-get chat :observation-delivery) 'inherited))
+    (should (eq (plist-get chat :continuation) 'none))))
+
+(ert-deftest e-openai-test-profile-context-capabilities-reject-unknown-delivery ()
+  "A misspelled observation delivery never silently selects inherited mode."
+  (should-error
+   (e-openai--profile-context-capabilities
+    '(:wire-api responses
+      :continuation t
+      :observation-delivery request-local-replacable)
+    nil)
+   :type 'e-openai-provider-invalid))
+
 (ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
   "The safe body for a failed continuation contains the stable marker."
   (let* ((revision e-openai-gpt56-explicit-cache-layout-revision)
@@ -1229,6 +1337,7 @@
        :response-store :json-false
        :responses-context-layout developer-input
        :prompt-cache-breakpoint-mode explicit
+       :observation-delivery request-local-replaceable
        :include-encrypted-reasoning t
        :continuation t
        :requires-openai-auth nil

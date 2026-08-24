@@ -138,6 +138,34 @@ contributing adapter without becoming part of claim policy."
   "Return deterministic fingerprint for backend-neutral MESSAGES."
   (secure-hash 'sha256 (prin1-to-string messages)))
 
+(defun e-context-current-state-segments (context)
+  "Return volatile current-state segments from backend-neutral CONTEXT.
+
+The returned segment values are the request-time observation frontier.  They
+are deliberately derived from segment metadata rather than from transcript
+messages, so a caller can move them to a provider-local replacement channel
+without changing the durable history projection."
+  (seq-filter
+   (lambda (segment)
+     (memq (plist-get segment :kind) '(current-state dynamic-context)))
+   (plist-get context :segments)))
+
+(defun e-context-current-state-messages (context)
+  "Return backend-neutral current-state messages from CONTEXT.
+
+Storage and presentation metadata are removed before the messages cross this
+semantic boundary.  An empty result means that the request has no current
+state observation; it is distinct from a durable transcript message with the
+same content."
+  (cl-loop for segment in (e-context-current-state-segments context)
+           append (mapcar #'e-context--backend-message
+                          (plist-get segment :messages))))
+
+(defun e-context-current-state-fingerprint (context)
+  "Return the current-state fingerprint for CONTEXT, or nil when absent."
+  (let ((messages (e-context-current-state-messages context)))
+    (and messages (e-context-segment-fingerprint messages))))
+
 (cl-defun e-context-segment-create (&key kind id messages)
   "Create a backend-neutral context segment."
   (list :kind kind

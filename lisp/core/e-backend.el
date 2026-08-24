@@ -43,6 +43,10 @@
     :reasoning-state none)
   "Conservative capabilities used when an adapter declares none.")
 
+(defun e-backend-default-context-capabilities ()
+  "Return a fresh copy of the conservative context capability defaults."
+  (copy-sequence e-backend--default-context-capabilities))
+
 (define-error 'e-backend-invalid-context-capabilities
   "Invalid provider-neutral backend context capabilities")
 
@@ -101,10 +105,10 @@ values and never provider wire field names."
                         ((functionp declaration)
                          (funcall declaration options))
                         ((null declaration)
-                         e-backend--default-context-capabilities)
+                         (e-backend-default-context-capabilities))
                         (t declaration))))
     (setq capabilities (or capabilities
-                           e-backend--default-context-capabilities))
+                           (e-backend-default-context-capabilities)))
     (e-backend--validate-context-capabilities capabilities)))
 
 (defvar e-backend--request-start-callback nil
@@ -232,12 +236,15 @@ receives an Emacs condition list.  ON-REQUEST-START receives an optional
     (signal 'wrong-type-argument
             (list 'functionp (e-backend--start backend))))))
 
-(cl-defun e-backend-fake-create (&key name items cancel-function delay)
+(cl-defun e-backend-fake-create
+    (&key name items cancel-function delay context-capabilities)
   "Create fake backend NAME that streams ITEMS synchronously.
 CANCEL-FUNCTION is attached to the fake request handle when non-nil.
-DELAY controls async fake delivery in seconds."
+DELAY controls async fake delivery in seconds.  CONTEXT-CAPABILITIES is an
+optional semantic declaration used by context/anchor tests."
   (e-backend-create
    :name (or name "fake")
+   :context-capabilities context-capabilities
    :stream (cl-function
             (lambda (&key messages options on-item)
               (ignore messages options)

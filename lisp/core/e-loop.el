@@ -78,9 +78,21 @@
 
 (defun e-loop--continuation-candidate-p (options candidate)
   "Return non-nil when CANDIDATE may continue the request in OPTIONS."
-  (and (plist-get options :provider-continuation)
+  (let ((continuation
+         (plist-get (plist-get options :context-capabilities)
+                    :continuation)))
+    (and (plist-get options :provider-continuation)
+       (memq continuation '(linear branchable))
        (eq (plist-get candidate :provider-id)
-           (plist-get options :provider-anchor-provider-id))))
+           (plist-get options :provider-anchor-provider-id))
+       ;; An inherited current-state observation is already part of the
+       ;; provider's causal response.  Its response id is therefore not a
+       ;; clean anchor for the next request.  A proven request-local
+       ;; replacement may advance normally; a turn with no observation may
+       ;; also retain its ordinary continuation candidate.
+       (or (eq (plist-get options :observation-delivery)
+               'request-local-replaceable)
+           (null (plist-get options :current-state-fingerprint))))))
 
 (defun e-loop--promote-continuation-candidate
     (options candidate source-message-count delta-messages)

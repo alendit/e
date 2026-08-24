@@ -31,6 +31,39 @@
       (accept-process-output nil 0.01))
     value))
 
+(ert-deftest e-loop-test-inherited-observation-does-not-promote-anchor ()
+  "An inherited observation cannot advance a provider anchor candidate."
+  (let* ((candidate '(:provider-id openai :metadata (:response-id "resp-2")))
+         (options '(:provider-continuation t
+                    :provider-anchor-provider-id openai
+                    :context-capabilities (:continuation linear
+                                           :observation-delivery inherited)
+                    :observation-delivery inherited
+                    :current-state-fingerprint "state-fingerprint"))
+         (promoted
+          (e-loop--promote-continuation-candidate
+           options candidate 3 '((:role user :content "tool result")))))
+    (should (equal promoted options))))
+
+(ert-deftest e-loop-test-replaceable-observation-promotes-linear-anchor ()
+  "A request-local replacement can advance a linear provider anchor."
+  (let* ((candidate '(:provider-id openai :metadata (:response-id "resp-2")))
+         (options '(:provider-continuation t
+                    :provider-anchor-provider-id openai
+                    :context-capabilities
+                    (:continuation linear
+                     :observation-delivery request-local-replaceable)
+                    :observation-delivery request-local-replaceable
+                    :current-state-fingerprint "state-fingerprint"))
+         (promoted
+          (e-loop--promote-continuation-candidate
+           options candidate 3 '((:role user :content "tool result")))))
+    (should (equal (plist-get (plist-get promoted :provider-anchor)
+                              :metadata)
+                   '(:response-id "resp-2")))
+    (should (equal (plist-get promoted :provider-anchor-delta-messages)
+                   '((:role user :content "tool result"))))))
+
 (ert-deftest e-loop-test-persists-assistant-message ()
   "Assistant stream messages are appended and lifecycle events are emitted."
   (let* ((backend (e-backend-fake-create

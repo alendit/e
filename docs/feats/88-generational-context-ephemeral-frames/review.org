@@ -4,10 +4,11 @@
 
 * Current decision
 
-Slice 1 accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f= with zero P0--P3 findings and
-zero unknown required cells.  Later slices have not started.  This review is
-not the final feature acceptance.
+Slice 1 is accepted after Implementation Tick 05 at
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  The parent has accepted the
+uncommitted Slice 2 candidate for independent review after its exact semantic
+commit.  Slice 2 is not yet fixed-point accepted, and this is not the final
+feature acceptance.
 
 * Tick 01 findings
 
@@ -327,3 +328,34 @@ begin.
   active watchers for the exact key.
 - No edits, approvals, escalation, runtime mutation, or live Emacs interaction
   occurred during review.
+
+* Slice 2 implementation candidate
+
+Parent acceptance completed on 2026-08-24.  The exact commit is intentionally
+filled by the semantic commit that includes this ledger entry; the same
+unattended reviewer must review that clean revision before Slice 3 begins.
+
+- The semantic observation frontier separates current-state delivery from
+  durable transcript history and asks the backend for provider-neutral
+  capabilities before anchor selection.
+- Proven replaceable OpenAI Responses profiles project complete current state to
+  request-local =instructions=.  Inherited profiles either replay statelessly or
+  branch repeatedly from one older clean anchor; they never advance through an
+  observation-bearing response.
+- Adapter integration coverage proves two changed inherited observations reuse
+  one anchor created with no current state, exclude the superseded observation,
+  and persist no later response id.  Replaceable coverage proves changed state
+  leaves explicit continuation input while stable developer input remains.
+- Unknown explicit OpenAI delivery declarations fail instead of silently
+  weakening to inherited behavior.  Providers without semantic capabilities
+  preserve correctness through stateless reconstruction.
+- Durable request diagnostics retain only bounded semantic scalars and a
+  fingerprint.  Persistence coverage proves raw frontier messages, current
+  state, and secrets never enter the activity journal.
+- Parent focused verification passed 468/468.  The full suite passed with 2253
+  expected results, two existing skips, and zero unexpected results out of
+  2255.  The live E2E gate loaded 16 tests and skipped all of them because no
+  live backend was enabled.  Compile with warnings as errors and diff checks
+  passed.
+- The running Emacs was not read, reloaded, or changed.  A full restart is
+  required to use this core/session/harness/adapter slice.

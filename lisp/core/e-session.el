@@ -1753,6 +1753,17 @@ source for them.  Returned entry ids follow journal order."
                   (e-session--provider-anchor-stable-segments
                    fingerprints)))
       'segment-fingerprint-mismatch)
+     ((and (or (plist-member anchor-fingerprints :observation-delivery)
+               (plist-member fingerprints :observation-delivery))
+           (not (equal (plist-get anchor-fingerprints :observation-delivery)
+                       (plist-get fingerprints :observation-delivery))))
+      'observation-delivery-changed)
+     ((and (or (plist-member anchor-fingerprints :current-state-fingerprint)
+               (plist-member fingerprints :current-state-fingerprint))
+           (not (equal
+                 (plist-get anchor-fingerprints :current-state-fingerprint)
+                 (plist-get fingerprints :current-state-fingerprint))))
+      'current-state-changed)
      ((not (equal (plist-get anchor-fingerprints :active-layer-ids)
                   (plist-get fingerprints :active-layer-ids)))
       'active-layers-changed)

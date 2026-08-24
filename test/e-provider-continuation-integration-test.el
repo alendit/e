@@ -347,7 +347,7 @@
                   'done)))))
 
 (ert-deftest e-provider-continuation-integration-test-websocket-gpt56-explicit-cache ()
-  "GPT-5.6 retains a stable breakpoint while current-state input changes."
+  "GPT-5.6 replaces request-local current state without growing input history."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-harness-auto-compaction-enabled nil)
@@ -363,6 +363,7 @@
              :responses-transport websocket
              :response-store :json-false
              :prompt-cache-breakpoint-mode explicit
+             :observation-delivery request-local-replaceable
              :continuation t
              :requires-openai-auth nil)))
          (current-state "state one")
@@ -428,8 +429,6 @@
              (second-input (plist-get second :input))
              (stable-block
               (car (plist-get (car first-input) :content)))
-             (dynamic-block
-              (car (plist-get (car second-input) :content))))
         (should (= open-count 1))
         (should (= send-count 2))
         (should (stringp (plist-get first :prompt_cache_key)))
@@ -439,18 +438,128 @@
                        "stable instructions"))
         (should (equal (plist-get stable-block :prompt_cache_breakpoint)
                        '(:mode "explicit")))
+        (should (equal (plist-get first :instructions)
+                       "You are a helpful assistant.\n\nstate one"))
         (should (equal (plist-get second :previous_response_id) "resp-1"))
+        (should (equal (plist-get second :instructions)
+                       "You are a helpful assistant.\n\nstate two"))
         (should (equal (plist-get second :prompt_cache_options)
                        '(:mode "explicit")))
         (should (equal (mapcar (lambda (item) (plist-get item :role))
                                second-input)
-                       '("developer" "user")))
-        (should (equal (plist-get dynamic-block :text) "state two"))
-        (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
+                       '("user")))
         (should (equal (plist-get
-                        (car (plist-get (cadr second-input) :content))
+                        (car (plist-get (car second-input) :content))
                         :text)
-                       "second prompt"))))))
+                       "second prompt")))))))
+
+(ert-deftest e-provider-continuation-integration-test-branchable-inherited-reuses-clean-anchor ()
+  "Branchable inherited observations reuse one clean anchor without promotion."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+                process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-model-providers
+          '((branchable-inherited-e2e
+             :name "Branchable Inherited E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :response-store t
+             :responses-context-layout developer-input
+             :prompt-cache-breakpoint-mode explicit
+             :continuation t
+             :requires-openai-auth nil)))
+         (current-state nil)
+         (requests nil)
+         (call-count 0)
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'branchable-inherited-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (when current-state
+                      (list (list :role 'system :content current-state))))))
+         (harness
+          (e-openai-create-harness
+           :provider 'branchable-inherited-e2e
+           :model "gpt-5.6-sol"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (let ((parsed (json-read-from-string body)))
+                (push parsed requests)
+                (cl-incf call-count)
+                (e-provider-continuation-integration--sse
+                 `((type . "response.output_text.done")
+                   (text . ,(format "answer-%d" call-count)))
+                 `((type . "response.completed")
+                   (response . ((id . ,(format "resp-%d" call-count))
+                                (status . "completed")))))))))))
+    ;; Exercise the provider-neutral branchable contract while retaining the
+    ;; real OpenAI request renderer for effective-input assertions.
+    (setf (e-backend--context-capabilities (e-harness-backend harness))
+          (lambda (&rest _)
+            '(:continuation branchable
+              :observation-delivery inherited
+              :prefix-cache explicit
+              :provider-compaction none
+              :reasoning-state replayable)))
+    (e-harness-activate-capability
+     harness
+     (e-capability-create
+      :id 'branchable-inherited-current-state-capability
+      :instructions "stable instructions"
+      :context-providers (list dynamic-provider)))
+    (e-board-e2e-create-session harness :id "branchable-inherited")
+    (e-session-set-turn-options
+     (e-harness-sessions harness)
+     "branchable-inherited"
+     '(:prompt-cache-default t))
+    ;; The first response is the clean anchor: no current-state observation
+    ;; exists yet, so it is safe to persist and reuse.
+    (e-board-e2e-prompt-batch
+     harness "branchable-inherited" "first durable prompt")
+    (setq current-state "inherited state one")
+    (e-board-e2e-prompt-batch
+     harness "branchable-inherited" "second durable delta")
+    (setq current-state "inherited state two")
+    (e-board-e2e-prompt-batch
+     harness "branchable-inherited" "third durable delta")
+    (let* ((ordered (nreverse requests))
+           (first (nth 0 ordered))
+           (second (nth 1 ordered))
+           (third (nth 2 ordered))
+           (input-texts
+            (lambda (body)
+              (mapcar
+               (lambda (item)
+                 (alist-get 'text
+                            (aref (alist-get 'content item) 0)))
+               (append (alist-get 'input body) nil))))
+           (anchors (e-session-provider-anchors
+                     (e-harness-sessions harness)
+                     "branchable-inherited")))
+      (should (= call-count 3))
+      (should (= (length anchors) 1))
+      (should (equal (plist-get (plist-get (car anchors) :metadata)
+                                :response-id)
+                     "resp-1"))
+      (should (equal (alist-get 'previous_response_id second) "resp-1"))
+      (should (equal (alist-get 'previous_response_id third) "resp-1"))
+      (should (equal (funcall input-texts second)
+                     '("inherited state one" "second durable delta")))
+      (should (equal (funcall input-texts third)
+                     '("inherited state two" "second durable delta"
+                       "answer-2" "third durable delta")))
+      (should-not (member "first durable prompt"
+                          (funcall input-texts second)))
+      (should-not (member "first durable prompt"
+                          (funcall input-texts third)))
+      (should-not (member "inherited state one"
+                          (funcall input-texts third))))))
 
 (ert-deftest e-provider-continuation-integration-test-websocket-failure-retry-clears-active-request ()
   "A terminal Responses failure releases the socket before harness retry."

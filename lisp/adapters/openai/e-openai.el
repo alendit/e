@@ -434,6 +434,12 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
         :response-store :json-false
         :responses-context-layout 'developer-input
         :prompt-cache-breakpoint-mode 'explicit
+        ;; The first-party Responses API documents that top-level
+        ;; `instructions' are request-local when `previous_response_id' is
+        ;; supplied.  Gate this semantic claim per profile; OpenAI-shaped
+        ;; gateways and the ChatGPT Codex endpoint remain conservative unless
+        ;; they opt in explicitly.
+        :observation-delivery 'request-local-replaceable
         :include-encrypted-reasoning t
         :continuation t
         :requires-openai-auth nil
@@ -486,6 +492,7 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
      :response-store :json-false
      :responses-context-layout developer-input
      :prompt-cache-breakpoint-mode explicit
+     :observation-delivery request-local-replaceable
      :include-encrypted-reasoning t
      :continuation t
      :requires-openai-auth nil
@@ -508,7 +515,11 @@ breakpoints and `prompt_cache_options', or leave it nil when unsupported.
 Profiles can independently set `:responses-context-layout' to
 `developer-input' when system segments should remain distinct even without an
 explicit breakpoint.  Set `:include-encrypted-reasoning' when a provider
-supports returning stateless reasoning items for complete replay."
+supports returning stateless reasoning items for complete replay.  A Responses
+profile may set `:observation-delivery' to `request-local-replaceable' only
+when that profile and transport have proven that top-level `instructions' are
+not inherited by its continuation response; otherwise the conservative
+default is `inherited'."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -688,6 +699,53 @@ TTL is the default, so the legacy retention option must not reach the wire."
   "Return non-nil when PROFILE should use Responses continuation anchors."
   (and (eq (e-openai--provider-wire-api profile) 'responses)
        (plist-get profile :continuation)))
+
+(defun e-openai--profile-observation-delivery (profile)
+  "Return the validated semantic observation delivery for PROFILE.
+An absent profile field is the conservative inherited default.  An explicitly
+unknown value is a provider configuration error rather than an implicit
+fallback, because selecting replacement changes continuation safety."
+  (if (not (plist-member profile :observation-delivery))
+      'inherited
+    (let ((delivery (plist-get profile :observation-delivery)))
+      (unless (memq delivery '(inherited request-local-replaceable))
+        (signal 'e-openai-provider-invalid
+                (list (format "Unsupported :observation-delivery %S"
+                              delivery))))
+      delivery)))
+
+(defun e-openai--profile-context-capabilities (profile options)
+  "Return provider-neutral context capabilities for PROFILE and OPTIONS.
+
+Only explicit profile evidence can select a request-local replaceable
+observation channel.  The adapter owns this profile/transport decision; the
+harness sees only the normalized semantic values."
+  (let* ((wire-api (e-openai--provider-wire-api profile))
+         (declared-delivery (e-openai--profile-observation-delivery profile))
+         (observation-delivery
+          (if (and (eq wire-api 'responses)
+                   (eq declared-delivery 'request-local-replaceable))
+              'request-local-replaceable
+            'inherited))
+         (prefix-cache
+          (cond
+           ((and (eq wire-api 'responses)
+                 (eq (plist-get profile :prompt-cache-breakpoint-mode)
+                     'explicit))
+            'explicit)
+           ((plist-get options :prompt-cache-key) 'implicit)
+           (t 'none))))
+    (list :continuation
+          (if (e-openai--profile-continuation-supported-p profile)
+              'linear
+            'none)
+          :observation-delivery observation-delivery
+          :prefix-cache prefix-cache
+          :provider-compaction 'none
+          :reasoning-state
+          (if (plist-get profile :include-encrypted-reasoning)
+              'replayable
+            'none))))
 
 (defun e-openai--harness-default-options (profile model)
   "Return backend-neutral harness options for PROFILE and MODEL."
@@ -897,21 +955,111 @@ while Responses input requires the field to contain an array."
   "Return non-nil when MESSAGE is a backend-neutral system message."
   (eq (plist-get message :role) 'system))
 
-(defun e-openai-codex--instructions (messages options)
-  "Return top-level Codex instructions from MESSAGES and OPTIONS."
-  (let ((base (or (plist-get options :instructions)
-                  "You are a helpful assistant.")))
-    (if (e-openai-codex--prompt-layout-revision options)
-        base
+(defun e-openai-codex--observation-delivery (options)
+  "Return semantic observation delivery declared by OPTIONS."
+  (or (plist-get options :observation-delivery)
+      (plist-get (plist-get options :context-capabilities)
+                 :observation-delivery)))
+
+(defun e-openai-codex--replaceable-current-state-messages (options)
+  "Return complete request-local current-state messages from OPTIONS.
+
+The harness supplies the canonical frontier explicitly.  Direct adapter
+callers may instead provide semantic segments, which keeps request-body tests
+and other provider-neutral callers honest without making the adapter infer a
+replaceable channel from a raw system-message role."
+  (when (eq (e-openai-codex--observation-delivery options)
+            'request-local-replaceable)
+    (copy-tree
+     (or (plist-get options :replaceable-current-state)
+         (cl-loop for segment in (plist-get options :segments)
+                  when (memq (plist-get segment :kind)
+                             '(current-state dynamic-context))
+                  append (copy-tree (plist-get segment :messages)))))))
+
+(defun e-openai-codex--replaceable-current-state-content (options)
+  "Return complete current-state value suitable for Responses instructions."
+  (let ((messages (e-openai-codex--replaceable-current-state-messages options)))
+    (when messages
       (string-join
        (delq nil
-             (append
-              (list base)
-              (mapcar (lambda (message)
-                        (plist-get message :content))
-                      (seq-filter #'e-openai-codex--system-message-p
-                                  messages))))
+             (mapcar
+              (lambda (message)
+                (let ((content (plist-get message :content)))
+                  (cond
+                   ((stringp content) content)
+                   ((null content) nil)
+                   (t (json-encode content)))))
+              messages))
        "\n\n"))))
+
+(defun e-openai-codex--remove-replaceable-current-state
+    (messages options)
+  "Return MESSAGES without the request-local current-state frontier.
+
+This removes one matching occurrence per frontier message, preserving any
+equal text that independently belongs to durable transcript history."
+  (let ((remaining
+         (copy-tree
+          (e-openai-codex--replaceable-current-state-messages options))))
+    (if (null remaining)
+        messages
+      (let (result)
+        (dolist (message messages (nreverse result))
+          (let ((match (seq-position remaining message #'equal)))
+            (if match
+                (setq remaining
+                      (append (seq-take remaining match)
+                              (seq-drop remaining (1+ match))))
+              (push message result))))))))
+
+(defun e-openai-codex--instructions (messages options)
+  "Return top-level Codex instructions from MESSAGES and OPTIONS."
+  (let* ((base (or (plist-get options :instructions)
+                   "You are a helpful assistant."))
+         (current
+          (e-openai-codex--replaceable-current-state-content options))
+         (layout (e-openai-codex--prompt-layout-revision options)))
+    (cond
+     ;; In segmented GPT-5.6 layouts stable system guidance remains a
+     ;; developer-input prefix.  The current value is the only changing
+     ;; request-local part and is resent in full here.
+     ((and current layout)
+      (string-join (delq nil (list base current)) "\n\n"))
+     ;; Older/flattened Responses layouts have no separate stable developer
+     ;; input.  Preserve their existing stable system guidance while replacing
+     ;; the old current-state suffix with the complete current value.
+     (current
+      (let ((stable-messages
+             (if (plist-get options :segments)
+                 (cl-loop for segment in (plist-get options :segments)
+                          unless (memq (plist-get segment :kind)
+                                       '(current-state dynamic-context))
+                          append (seq-filter
+                                  #'e-openai-codex--system-message-p
+                                  (plist-get segment :messages)))
+               (seq-filter
+                #'e-openai-codex--system-message-p
+                (e-openai-codex--remove-replaceable-current-state
+                 messages options)))))
+        (string-join
+         (delq nil
+               (append
+                (list base)
+                (mapcar (lambda (message)
+                          (plist-get message :content))
+                        stable-messages)
+                (list current)))
+         "\n\n")))
+     (layout base)
+     (t
+      (string-join
+       (delq nil
+             (append (list base)
+                     (mapcar (lambda (message) (plist-get message :content))
+                             (seq-filter #'e-openai-codex--system-message-p
+                                         messages))))
+       "\n\n")))))
 
 (defun e-openai-codex--continuation-response-id (options)
   "Return previous Responses id from OPTIONS when continuation is enabled."
@@ -945,7 +1093,9 @@ while Responses input requires the field to contain an array."
             (nthcdr source-count messages)))
          (source (if (and response-id (listp delta-messages))
                      (append delta-messages in-turn-messages)
-                   messages)))
+                   messages))
+         (source (e-openai-codex--remove-replaceable-current-state
+                  source options)))
     (if (e-openai-codex--prompt-layout-revision options)
         source
       (seq-remove #'e-openai-codex--system-message-p source))))
@@ -1088,6 +1238,28 @@ retained response already carries the stable segment and its earlier marker."
            (metadata (list :provider-continuation continuation-state
                            :responses-transport responses-transport
                            :diagnostics diagnostics)))
+      (when (or (plist-member options :observation-delivery)
+                (plist-member options :context-capabilities)
+                (plist-member options :replaceable-current-state)
+                (plist-member options :current-state-fingerprint))
+        (setq diagnostics
+              (append diagnostics
+                      (list :observation-delivery
+                            (or (plist-get options :observation-delivery)
+                                (plist-get
+                                 (plist-get options :context-capabilities)
+                                 :observation-delivery))
+                            :replaceable-current-state-present
+                            (and (e-openai-codex--replaceable-current-state-messages
+                                  options)
+                                 t)
+                            :current-state-fingerprint
+                            (plist-get options :current-state-fingerprint)
+                            :context-rendering-strategy
+                            (plist-get options :context-rendering-strategy)
+                            :provider-anchor-safety
+                            (plist-get options :provider-anchor-safety))))
+        (setq metadata (plist-put metadata :diagnostics diagnostics)))
       (when-let ((revision (e-openai-codex--prompt-layout-revision options)))
         (setq diagnostics
               (append diagnostics
@@ -2814,6 +2986,11 @@ default when turn options do not include `:model'.  The provider profile's
       (e-backend-create
        :name (or name (e-openai-provider-name provider))
        :normalize-error-details #'e-openai--normalize-error-details
+       :context-capabilities
+       (lambda (options)
+         (e-openai--profile-context-capabilities
+          (e-openai-provider-profile provider)
+          options))
        :stream
        (cl-function
         (lambda (&key messages options on-item)
