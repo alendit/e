@@ -7,8 +7,11 @@
 Slice 1 is accepted after Implementation Tick 05 at
 =b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Slice 2 is accepted after
 Implementation Tick 09 at
-=3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  Slice 3 may begin; this is not
-final feature acceptance.
+=3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  The user materially narrowed
+Feature 88 after Tick 10: tool-lifecycle durability and crash recovery are no
+longer in scope and belong with future SQLite atomic persistence.  Tick 11
+found the revised context-protocol plan not ready for implementation.  This is
+not final feature acceptance.
 
 * Tick 01 findings
 
@@ -785,3 +788,119 @@ must expose none.
 Remediate F88.I3.1--F88.I3.3 with the same persistent implementer.  Slice 3
 remains gated; session, harness, and loop integration must not begin until the
 pure provider-neutral model reaches this fixed point.
+
+* Tick 11 narrowed-plan rebaseline
+
+Reviewed base =8dfd32b57902053e497542514aeef2da8c5533b0= plus the sole WIP
+=plan.org= rewrite in unattended read-only mode.  The authoritative target is
+now durable/ephemeral visibility, explicit promotion, and cache-safe
+provider-neutral continuation on normal successful turns.  Tick 10's recovery
+findings are superseded rather than remediated: their entire transaction model
+is outside the revised feature.
+
+Decision: not ready for implementation.  Zero P0, three P1, four P2, and zero
+P3 findings remain.
+
+** P1 F88.P1: replacement must be classified per observation kind
+
+The plan treats =request-local-replaceable= as a scalar property of the whole
+frontier.  Accepted Slice 2 proves replacement only for current-state/dynamic
+context through OpenAI top-level =instructions=.  An invocation may contain
+both that replaceable canvas and an inherited tool result; the scalar value
+would incorrectly authorize anchor advancement across the tool observation.
+
+Owning correction: classify delivery per semantic observation kind.  Advance
+an anchor only when every ephemeral observation in the effective request is
+proven non-inherited.  OpenAI =instructions= proves replacement only for
+current state unless another channel is separately conformed.  Add a mixed
+canvas-plus-tool-result contract/E2E case.
+
+** P1 F88.P2: promotion ownership and mixed-response behavior are incomplete
+
+The plan alternates between core-owned and adapter-owned promotion syntax and
+does not define a response containing malformed promotion plus ordinary tool
+calls.  That ambiguity could dispatch the reserved effect as a tool, allow
+calls from a semantically invalid response, or recreate lifecycle machinery.
+
+Owning correction: core owns the normalized =context-promote= schema, limits,
+source identity, and validation; adapters own only wire encoding/decoding.  The
+loop removes it from the ordinary tool queue and validates the completed
+response before semantic mutation.  A valid promotion is applied once and
+ordinary calls retain the existing lifecycle.  An invalid reserved effect uses
+the existing response-failure path and dispatches no calls from that response,
+without journals, barriers, outboxes, or recovery state.  Include the reserved
+schema in effective request/anchor compatibility.
+
+** P1 F88.P3: obsolete Slice 1 machinery needs an exact deletion ledger
+
+The plan says to remove or reduce lifecycle settlement but does not name the
+accepted persistence/barrier code and tests that now have no semantic owner.
+That could preserve most of the rejected transaction design as vague audit
+support.
+
+Owning correction: retain pure cross-generation and opt-in projection tests;
+strengthen consumed-observation and promotion-copy tests; replace record,
+reopen, corruption, transition, checkpoint, and abort witnesses with minimal
+semantic or durable-only equivalents that promise no open-frame recovery; and
+delete settlement/retry/resume/acknowledgement tests and the Feature 88 named
+record-prefix barrier machinery.  Remove =context-frame-settlement= from
+critical record handling.  Keep only generation/frame/promotion persistence
+that has a concrete audit or projection consumer.
+
+** P2 F88.P4: mandatory E2E exceeds the successful-turn boundary
+
+The E2E declares normal successful turns only but requires tool error and
+cancellation scenarios, while core acceptance also names error, cancellation,
+and timeout behavior.
+
+Owning correction: make the Feature 88 E2E cover successful single- and
+multi-tool follow-ups.  Existing failure suites remain unchanged regression
+gates, not new lifecycle acceptance.  Run graphical E2E only if a presentation
+change depends on graphical redisplay.
+
+** P2 F88.P5: opt-in activation is inconsistent
+
+The plan promises disabled behavior is unchanged but also allows a generation
+boundary by itself to begin new visibility.
+
+Owning correction: require explicit opt-in.  For an existing opted-in session,
+activation takes effect at the next deliberate generation boundary; a boundary
+never enables the feature or reclassifies old tool results by itself.
+
+** P2 F88.P6: portable compaction lacks an application-service owner
+
+The plan specifies records and pure projection but no component that initiates
+and commits a generation transition.
+
+Owning correction: make =e-compaction= own the deliberate generation-transition
+application service.  It calls pure core checkpoint logic, persists through the
+existing session append surface, and delegates optional opaque projection to
+the adapter.  It never closes ordinary frames or owns tool lifecycle state.
+
+** P2 F88.P7: =provider-managed= reasoning state is speculative
+
+The capability conflicts with local semantic authority and stateless fallback,
+and no accepted adapter implements it.
+
+Owning correction: remove it until a real substitutable contract exists, or
+define it strictly as disposable acceleration that semantic correctness never
+requires.  Provider-required ordinary follow-up replay retains local
+provider-neutral identity plus adapter-owned wire encoding.
+
+** Tick 11 evidence and disposition
+
+- The reviewer traced current-state frontier construction, OpenAI
+  =instructions= projection, function-call outputs, and loop anchor candidate
+  advancement at the accepted Slice 2 baseline.
+- The complete revised plan was checked across goal, invariants, frame and
+  promotion protocol, compaction, capabilities, ownership, slices, acceptance,
+  E2E, performance, compatibility, non-goals, risks, and self-check.
+- Org parsing and =git diff --check= passed.  The reviewed WIP was only
+  =plan.org= with 421 insertions and 838 deletions.
+- Official provider contracts and credentialed behavior remain explicitly
+  deferred because network/credentials were outside this unattended review.
+- The reviewer made zero prompts, permission requests, escalations, edits, git
+  writes, network calls, live-Emacs calls, or provider tests.
+
+Remediate F88.P1--F88.P7 in =plan.org= with the same persistent implementer,
+then reuse the same unattended reviewer for the next plan Tick.
