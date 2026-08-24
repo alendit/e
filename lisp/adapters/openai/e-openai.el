@@ -724,7 +724,8 @@ fallback, because selecting replacement changes continuation safety."
               (string-remove-suffix "/" right))))
 
 (cl-defun e-openai--profile-context-capabilities
-    (profile options &key provider base-url request-function)
+    (profile options &key provider base-url request-function
+             provider-compaction-supported)
   "Return provider-neutral context capabilities for PROFILE and OPTIONS.
 
 Only explicit profile evidence can select a request-local replaceable
@@ -789,7 +790,8 @@ injected requester for conformance tests."
             'none)
           :observation-delivery observation-delivery
           :prefix-cache prefix-cache
-          :provider-compaction 'none
+          :provider-compaction
+          (if provider-compaction-supported 'opaque 'none)
           :reasoning-state
           (if (plist-get profile :include-encrypted-reasoning)
               'replayable
@@ -1045,6 +1047,18 @@ replaceable channel from a raw system-message role."
               messages))
        "\n\n"))))
 
+(defun e-openai-codex--provider-compaction-stable-messages (options)
+  "Return trusted stable semantic prefix messages from OPTIONS.
+
+Opaque provider output replaces covered session history, but it does not carry
+the harness capability prefix.  Only the named static/stable segments may be
+resent here; deriving this from the full request would duplicate the portable
+checkpoint represented by the opaque output."
+  (cl-loop for segment in (plist-get options :segments)
+           when (memq (plist-get segment :kind)
+                      '(static-prefix stable-context))
+           append (copy-tree (plist-get segment :messages))))
+
 (defun e-openai-codex--remove-replaceable-current-state
     (messages options)
   "Return MESSAGES without the request-local current-state frontier.
@@ -1111,8 +1125,14 @@ escape."
   "Return top-level Codex instructions from MESSAGES and OPTIONS."
   (let* ((base (or (plist-get options :instructions)
                    "You are a helpful assistant."))
+         (provider-compaction-p
+          (plist-member options :provider-compaction-output))
          (current
           (e-openai-codex--replaceable-current-state-content options))
+         (stable-messages
+          (and provider-compaction-p
+               (e-openai-codex--provider-compaction-stable-messages
+                options)))
          (layout (e-openai-codex--prompt-layout-revision options)))
     ;; Validate the semantic partition even when the segmented instruction
     ;; branch can otherwise derive stable system text without filtering input.
@@ -1131,7 +1151,9 @@ escape."
      ;; the old current-state suffix with the complete current value.
      (current
       (let ((stable-messages
-             (if (plist-get options :segments)
+             (if provider-compaction-p
+                 stable-messages
+               (if (plist-get options :segments)
                  (cl-loop for segment in (plist-get options :segments)
                           unless (memq (plist-get segment :kind)
                                        '(current-state dynamic-context))
@@ -1141,7 +1163,7 @@ escape."
                (seq-filter
                 #'e-openai-codex--system-message-p
                 (e-openai-codex--remove-replaceable-current-state
-                 messages options)))))
+                 messages options))))))
         (string-join
          (delq nil
                (append
@@ -1151,6 +1173,18 @@ escape."
                         stable-messages)
                 (list current)))
          "\n\n")))
+     ;; A flattened provider-compaction request has no separate input channel
+     ;; for stable capability context, so keep only the trusted stable prefix
+     ;; in instructions.  Covered checkpoint/history messages stay exclusively
+     ;; in opaque provider output.
+     ((and provider-compaction-p (not layout))
+      (string-join
+       (delq nil
+             (append (list base)
+                     (mapcar (lambda (message)
+                               (plist-get message :content))
+                             stable-messages)))
+       "\n\n"))
      (layout base)
      (t
       (string-join
@@ -1163,7 +1197,8 @@ escape."
 
 (defun e-openai-codex--continuation-response-id (options)
   "Return previous Responses id from OPTIONS when continuation is enabled."
-  (when (and (plist-get options :provider-continuation)
+  (when (and (not (plist-member options :provider-compaction-output))
+             (plist-get options :provider-continuation)
              ;; WebSocket mode retains the latest response in connection-local
              ;; memory even with store=false.  HTTP continuation still needs a
              ;; stored response.
@@ -1182,7 +1217,14 @@ escape."
 
 (defun e-openai-codex--request-input-messages (messages options)
   "Return Responses input messages from MESSAGES and OPTIONS."
-  (let* ((response-id (e-openai-codex--continuation-response-id options))
+  (let* ((provider-compaction-p
+          (plist-member options :provider-compaction-output))
+         (provider-compaction-output
+          (and provider-compaction-p
+               (plist-get options :provider-compaction-output)))
+         (provider-compaction-delta
+          (plist-get options :provider-compaction-delta-messages))
+         (response-id (e-openai-codex--continuation-response-id options))
          (delta-messages (plist-get options :provider-anchor-delta-messages))
          (source-count
           (plist-get options :provider-anchor-source-message-count))
@@ -1191,17 +1233,27 @@ escape."
                      (>= source-count 0)
                      (<= source-count (length messages)))
             (nthcdr source-count messages)))
-         (source (if (and response-id (listp delta-messages))
+         (source (cond
+                  (provider-compaction-p
+                   (append (if (vectorp provider-compaction-output)
+                               (append provider-compaction-output nil)
+                             provider-compaction-output)
+                           (mapcar #'e-openai-codex--input-message
+                                   provider-compaction-delta)))
+                  ((and response-id (listp delta-messages))
                      (append delta-messages in-turn-messages)
-                   messages))
+                   )
+                  (t messages)))
          ;; A harness-built continuation delta is already partitioned at the
          ;; semantic boundary and contains no request-local replacement.  Do
          ;; not structurally re-filter it: equal durable deltas must survive.
-         (source (if (and response-id (listp delta-messages))
+         (source (if (or provider-compaction-p
+                         (and response-id (listp delta-messages)))
                      source
                    (e-openai-codex--remove-replaceable-current-state
                     source options))))
-    (if (e-openai-codex--prompt-layout-revision options)
+    (if (or provider-compaction-p
+            (e-openai-codex--prompt-layout-revision options))
         source
       (seq-remove #'e-openai-codex--system-message-p source))))
 
@@ -1227,6 +1279,31 @@ retained response already carries the stable segment and its earlier marker."
         (dolist (replay-item (e-openai-codex--message-replay-items message))
           (push replay-item items))
         (push (e-openai-codex--input-message message breakpoint-p) items)))))
+
+(defun e-openai-codex--request-input-items
+    (messages options continuation-response-id)
+  "Return provider input items, including opaque compact output when selected."
+  (if (plist-member options :provider-compaction-output)
+      (let* ((output (plist-get options :provider-compaction-output))
+             (output (if (vectorp output) (append output nil) output))
+             (stable-messages
+              (if (e-openai-codex--prompt-layout-revision options)
+                  (e-openai-codex--provider-compaction-stable-messages
+                   options)))
+             (stable-items
+              (if stable-messages
+                  (append
+                   (e-openai-codex--input-items
+                    stable-messages options nil)
+                   nil)))
+             (delta (plist-get options :provider-compaction-delta-messages)))
+        (vconcat (append output
+                         stable-items
+                         (mapcar #'e-openai-codex--input-message delta))))
+    (e-openai-codex--input-items
+     (e-openai-codex--request-input-messages messages options)
+     options
+     continuation-response-id)))
 
 (defun e-openai-codex--without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."
@@ -1282,10 +1359,7 @@ retained response already carries the stable segment and its earlier marker."
 
 (cl-defun e-openai-codex-request-body (&key messages options tools)
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
-  (let* ((input-messages (e-openai-codex--request-input-messages
-                          messages
-                          options))
-         (model (or (plist-get options :model)
+  (let* ((model (or (plist-get options :model)
                     e-openai-default-model))
          (text-verbosity (e-openai-codex--text-verbosity model options))
          (continuation-response-id
@@ -1306,8 +1380,8 @@ retained response already carries the stable segment and its earlier marker."
                 (list :instructions (e-openai-codex--instructions
                                      messages
                                      options)
-                      :input (e-openai-codex--input-items
-                              input-messages options continuation-response-id)
+                      :input (e-openai-codex--request-input-items
+                              messages options continuation-response-id)
                       :tool_choice "auto"
                       :parallel_tool_calls t))))
     (when (or tools
@@ -1383,6 +1457,10 @@ retained response already carries the stable segment and its earlier marker."
                   (not (null (plist-member body :previous_response_id)))
                   :provider-anchor-present
                   (and (plist-get options :provider-anchor) t)
+                  :provider-compaction-selected
+                  (plist-member options :provider-compaction-output)
+                  :provider-compaction-source-entry-id
+                  (plist-get options :provider-compaction-source-entry-id)
                   :input-message-count (length (plist-get body :input))
                   ;; The reserved promotion carrier is an adapter wire
                   ;; detail, not a user-dispatchable tool.  Keep diagnostics
@@ -3164,16 +3242,193 @@ OpenAI request and backend-neutral context."
   (dolist (item (e-openai--complete-response-items response context))
     (funcall on-item (e-openai--normalize-backend-error-item item))))
 
+(defun e-openai--provider-compaction-eligible-p
+    (provider profile base-url request-function compaction-request-function)
+  "Return non-nil when PROFILE proves the public compact endpoint.
+
+The compact operation is deliberately narrower than ordinary Responses
+continuation.  It requires the first-party API base URL and Responses wire
+format.  A separate injected compaction requester is a test seam for that
+known endpoint; an arbitrary ordinary request override is not evidence for
+the compact capability."
+  (and (eq (e-openai--provider-wire-api profile) 'responses)
+       (or (eq provider 'openai)
+           (eq (plist-get profile :provider-compaction) 'opaque))
+       (e-openai--context-base-url-equal-p
+        (or base-url (plist-get profile :base-url))
+        e-openai-api-default-base-url)
+       (or (null request-function)
+           compaction-request-function)))
+
+(defun e-openai--provider-compaction-input (messages)
+  "Return Responses input items for portable MESSAGES.
+
+MESSAGES have already crossed the provider-neutral portable projection.  This
+adapter mapping adds no replay, anchor, diagnostic, or current-state fields."
+  (vconcat (mapcar (lambda (message)
+                     (e-openai-codex--input-message message))
+                   messages)))
+
+(defun e-openai--provider-compaction-headers (profile auth-file session-id)
+  "Return JSON response headers for PROFILE's compact endpoint."
+  (let ((headers (e-openai--headers :profile profile
+                                    :auth-file auth-file
+                                    :session-id session-id)))
+    (cons '("Accept" . "application/json")
+          (seq-remove (lambda (header)
+                        (equal (car header) "Accept"))
+                      headers))))
+
+(defun e-openai--provider-compaction-usage (usage)
+  "Return bounded generic usage from OpenAI compact USAGE."
+  (when (listp usage)
+    (let (result)
+      (dolist (mapping '((:input_tokens . :input-tokens)
+                         (:output_tokens . :output-tokens)
+                         (:total_tokens . :total-tokens)))
+        (when-let ((value (plist-get usage (car mapping))))
+          (unless (and (integerp value) (>= value 0))
+            (signal 'e-openai-provider-invalid
+                    (list "Invalid compact usage" usage)))
+          (setq result (append result (list (cdr mapping) value)))))
+      result)))
+
+(defun e-openai--provider-compaction-decode (response)
+  "Decode one complete OpenAI compact RESPONSE into the generic result."
+  (let* ((body (e-openai--response-body-text response))
+         ;; `json-parse-string' represents both an empty object and an empty
+         ;; plist as nil.  Reject an object-valued output before that loss of
+         ;; shape so only the documented array is accepted.
+         (object-output-p
+          (and (stringp body)
+               (string-match-p
+                "\\\"output\\\"[[:space:]]*:[[:space:]]*{"
+                body)))
+         (parsed
+          (if (and (listp body)
+                   (or (null body) (keywordp (car body))))
+            body
+            (json-parse-string body
+                               :object-type 'plist
+                               :array-type 'list
+                               :null-object :json-null
+                               :false-object :json-false)))
+         (object (plist-get parsed :object))
+         (output (plist-get parsed :output)))
+    (when (e-openai--http-error-status-p response)
+      (signal 'e-openai-provider-invalid
+              (list "OpenAI compact request failed" response)))
+    (when object-output-p
+      (signal 'e-openai-provider-invalid
+              (list "OpenAI compact output is an object" parsed)))
+    (unless (member object '("response.compaction" response.compaction))
+      (signal 'e-openai-provider-invalid
+              (list "Unexpected OpenAI compact object" object)))
+    (unless (plist-member parsed :output)
+      (signal 'e-openai-provider-invalid
+              (list "OpenAI compact response has no output field" parsed)))
+    (when (eq output :json-null)
+      (signal 'e-openai-provider-invalid
+              (list "OpenAI compact response has no output" parsed)))
+    (unless (or (vectorp output)
+                (and (listp output)
+                     (or (null output)
+                         (not (keywordp (car output))))))
+      (signal 'e-openai-provider-invalid
+              (list "OpenAI compact output is not an array" output)))
+    (list :output output
+          :usage (e-openai--provider-compaction-usage
+                  (plist-get parsed :usage)))))
+
+(cl-defun e-openai--provider-compaction
+    (profile auth-file base-url model compaction-request-function
+             &key messages options on-done on-error)
+  "Run the public OpenAI compact endpoint for portable MESSAGES."
+  (let* ((url (concat (string-remove-suffix "/"
+                                           (or base-url
+                                               (plist-get profile :base-url)))
+                      "/responses/compact"))
+         (body-data (list :model (or (plist-get options :model)
+                                     model
+                                     (plist-get profile :default-model)
+                                     e-openai-default-model)
+                          :input (e-openai--provider-compaction-input messages)))
+         (body (json-encode body-data))
+         (headers (e-openai--provider-compaction-headers
+                   profile auth-file (plist-get options :session-id)))
+         (requester (or compaction-request-function
+                        #'e-openai-codex--http-request)))
+    (if (or on-done on-error)
+        (if compaction-request-function
+            (let ((cancelled nil)
+                  (timer nil)
+                  request)
+              (setq request
+                    (e-backend-request-create
+                     :cancel (lambda ()
+                               (setq cancelled t)
+                               (when (timerp timer)
+                                 (cancel-timer timer))
+                               t)
+                     :metadata (list :transport 'injected-compaction
+                                     :url url)))
+              (setq timer
+                    (run-at-time
+                     0 nil
+                     (lambda ()
+                       (unless cancelled
+                         (condition-case err
+                             (funcall on-done
+                                      (e-openai--provider-compaction-decode
+                                       (funcall requester
+                                                :url url
+                                                :headers headers
+                                                :body body)))
+                           (error
+                            (when on-error
+                              (funcall on-error err))))))))
+              request)
+          (e-openai-codex--http-request-start
+           :url url
+           :headers headers
+           :body body
+           :on-complete
+           (lambda (response)
+             (condition-case err
+                 (funcall on-done
+                          (e-openai--provider-compaction-decode response))
+               (error
+                (when on-error (funcall on-error err)))))
+           :on-error on-error))
+      (e-openai--provider-compaction-decode
+       (funcall requester :url url :headers headers :body body)))))
+
 (cl-defun e-openai-backend-create
-    (&key provider auth-file base-url request-function name model)
+    (&key provider auth-file base-url request-function
+          compaction-request-function name model)
   "Create an OpenAI-like backend named NAME.
 PROVIDER selects a profile from `e-openai-model-providers'.  AUTH-FILE is used
 for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
 URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
 default when turn options do not include `:model'.  The provider profile's
 `:wire-api' chooses the Responses or Chat Completions request/stream mapping."
-  (let ((provider (or provider e-openai-default-provider))
-        (websocket-sessions (make-hash-table :test 'equal)))
+  (let* ((provider (or provider e-openai-default-provider))
+         (profile (e-openai-provider-profile provider))
+         (provider-compaction-supported
+          (e-openai--provider-compaction-eligible-p
+           provider profile base-url request-function
+           compaction-request-function))
+         (provider-compaction
+          (when provider-compaction-supported
+            (cl-function
+             (lambda (&key messages options on-done on-error)
+               (e-openai--provider-compaction
+                profile auth-file base-url model compaction-request-function
+                :messages messages
+                :options options
+                :on-done on-done
+                :on-error on-error)))))
+         (websocket-sessions (make-hash-table :test 'equal)))
     (cl-labels
         ((request-metadata (context transport cancellable)
            (append
@@ -3208,7 +3463,11 @@ default when turn options do not include `:model'.  The provider profile's
           options
           :provider provider
           :base-url base-url
-          :request-function request-function))
+          :request-function request-function
+          :provider-compaction-supported
+          (and provider-compaction-supported
+               (functionp provider-compaction))))
+       :provider-compaction provider-compaction
        :stream
        (cl-function
         (lambda (&key messages options on-item)
@@ -3353,7 +3612,8 @@ default when turn options do not include `:model'.  The provider profile's
                 request))))))))))
 
 (cl-defun e-openai-create-harness
-    (&key provider auth-file base-url request-function model sessions)
+    (&key provider auth-file base-url request-function
+          compaction-request-function model sessions)
   "Create a harness configured for an OpenAI-like provider.
 PROVIDER selects `e-openai-default-provider' when nil.  AUTH-FILE, BASE-URL,
 and REQUEST-FUNCTION configure the backend adapter.  MODEL is written into
@@ -3368,6 +3628,7 @@ turn paths.  SESSIONS supplies an existing session store."
                :auth-file auth-file
                :base-url base-url
                :request-function request-function
+               :compaction-request-function compaction-request-function
                :model model)
      :default-options (e-openai--harness-default-options profile model)
      :sessions sessions)))

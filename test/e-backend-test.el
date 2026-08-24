@@ -152,7 +152,10 @@
                     :observation-delivery 'request-local-replaceable
                     :prefix-cache 'explicit
                     :provider-compaction 'opaque
-                    :reasoning-state 'replayable)))))
+                    :reasoning-state 'replayable))
+            :provider-compaction
+            (lambda (&rest _args)
+              '(:output [] :usage nil)))))
       (let ((options '(:model "test" :session-id "s1")))
         (should
          (equal (e-backend-context-capabilities backend options)
@@ -162,6 +165,83 @@
                   :provider-compaction opaque
                   :reasoning-state replayable)))
         (should (eq seen options))))))
+
+(ert-deftest e-backend-test-opaque-compaction-requires-an-operation ()
+  "An opaque capability cannot be advertised without an adapter operation."
+  (let ((backend
+         (e-backend-create
+          :name "missing-compaction"
+          :context-capabilities '(:provider-compaction opaque))))
+    (should-error
+     (e-backend-context-capabilities backend nil)
+     :type 'e-backend-invalid-context-capabilities)))
+
+(ert-deftest e-backend-test-provider-compaction-result-is-detached-and-bounded ()
+  "The generic result boundary detaches opaque output and validates usage."
+  (let* ((output '((:opaque "provider-state"
+                    :nested [(:value "nested-provider-state")])))
+         (result (e-backend-provider-compaction-result
+                  (list :output output
+                        :usage '(:input-tokens 3 :total-tokens 4)))))
+    (should-not (eq output
+                    (e-backend-provider-compaction-result-output result)))
+    (should (equal (e-backend-provider-compaction-result-output result)
+                   output))
+    (setf (plist-get (car output) :opaque) "mutated")
+    (setf (plist-get (aref (plist-get (car output) :nested) 0) :value)
+          "mutated-nested")
+    (should (equal (plist-get
+                    (car (e-backend-provider-compaction-result-output result))
+                    :opaque)
+                   "provider-state"))
+    (should (equal
+             (plist-get
+              (aref
+               (plist-get
+                (car (e-backend-provider-compaction-result-output result))
+                :nested)
+               0)
+              :value)
+             "nested-provider-state"))
+    (dolist (bad
+             (list '(:output "not-an-array" :usage nil)
+                   '(:output [] :usage (:unknown 1))
+                   '(:output [] :usage (:input-tokens -1))))
+      (should-error
+       (e-backend-provider-compaction-result bad)
+       :type 'e-backend-invalid-provider-compaction-result))))
+
+(ert-deftest e-backend-test-provider-compaction-batch-rejects-async-handle ()
+  "The batch contract never treats an async request handle as a result."
+  (let ((backend
+         (e-backend-create
+          :name "async-compaction"
+          :provider-compaction
+          (lambda (&rest _args)
+            (e-backend-request-create :metadata '(:async t))))))
+    (should-error
+     (e-backend-provider-compaction-batch backend :messages nil :options nil)
+     :type 'e-backend-invalid-provider-compaction-result)))
+
+(ert-deftest e-backend-test-provider-compaction-start-settles-once ()
+  "The async contract validates one terminal result and ignores later callbacks."
+  (let ((done-count 0)
+        (error-count 0)
+        (backend
+         (e-backend-create
+          :name "async-compaction"
+          :provider-compaction
+          (lambda (&rest args)
+            (funcall (plist-get args :on-done)
+                     '(:output [] :usage nil))
+            (funcall (plist-get args :on-error) '(:late-error t))
+            (e-backend-request-create :metadata '(:async t))))))
+    (e-backend-provider-compaction-start
+     backend :messages nil :options nil
+     :on-done (lambda (_result) (setq done-count (1+ done-count)))
+     :on-error (lambda (_error) (setq error-count (1+ error-count))))
+    (should (= done-count 1))
+    (should (= error-count 0))))
 
 (ert-deftest e-backend-test-context-capabilities-nil-resolver-is-stateless ()
   "A resolver that declares no profile gets the conservative defaults."

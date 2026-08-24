@@ -20,6 +20,7 @@
 (require 'e-loop)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-openai)
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-work)
 
@@ -2134,6 +2135,296 @@
     (should-not (seq-find (lambda (message)
                             (eq (plist-get message :role) 'assistant))
                           messages))))
+
+(ert-deftest e-loop-test-provider-compaction-clears-before-tool-follow-up ()
+  "A compact request uses opaque output once, then sends ordinary tool input.
+
+Exercise the real loop-to-OpenAI request-body boundary for both transports:
+the opaque item belongs to the first request only.  A safe anchored
+follow-up carries only the result because the anchor already contains the
+call; stateless fallback carries the complete call/result pair."
+  (dolist (transport '(http websocket))
+    (dolist (with-anchor '(t nil))
+      (let* ((calls 0)
+           (requests nil)
+           (backend
+            (e-backend-create
+             :name "provider-compaction-tool-follow-up"
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (let ((body
+                       (e-openai-codex-request-body
+                        :messages messages :options options :tools nil)))
+                  (push (list :body body
+                              :options (copy-tree options)
+                              :messages (copy-tree messages))
+                        requests)
+                  (setq calls (1+ calls))
+                  (if (= calls 1)
+                      (progn
+                        (when with-anchor
+                          (funcall on-item
+                                   '(:type provider-anchor-candidate
+                                     :provider-id openai
+                                     :metadata (:response-id
+                                                "immediate-tool-anchor"))))
+                        (funcall on-item
+                                 '(:type tool-call
+                                   :id "compact-call"
+                                   :name "echo"
+                                   :arguments (:text "hello")))
+                        (funcall on-item '(:type done :reason tool-use)))
+                    (funcall on-item
+                             '(:type assistant-message :content "tool-seen"))
+                    (funcall on-item '(:type done :reason stop))))))))
+           (tools (e-tools-registry-create))
+           (options (list :model "gpt-5.6"
+                          :responses-transport transport
+                          :context-lifetime-enabled t
+                          :provider-continuation t
+                          :provider-anchor-provider-id 'openai
+                          :context-capabilities
+                          '(:continuation linear
+                            :observation-delivery request-local-replaceable)
+                          :observation-delivery 'request-local-replaceable
+                          :provider-compaction-output
+                          [(:type "encrypted" :marker "COMPACT-TOOL")]
+                          :provider-compaction-delta-messages nil
+                          :context-rendering-strategy
+                          'opaque-provider-compaction)))
+      (e-tools-test-register
+       tools
+       :name "echo"
+       :description "Echo text."
+       :handler
+       (lambda (arguments)
+         (e-tools-result-create
+          (plist-get (e-tools-current-context) :tool-call)
+          'ok
+          (plist-get arguments :text))))
+      (let ((result
+             (e-loop-run-turn-batch
+              :session-id "session-provider-compaction-tool"
+              :turn-id "turn-provider-compaction-tool"
+              :messages '((:role user :content "prompt"))
+              :backend backend
+              :tools tools
+              :options options
+              :on-event #'ignore
+              :append-message #'ignore)))
+        (should (equal (plist-get result :status) 'done)))
+      (let* ((ordered (nreverse requests))
+             (first (car ordered))
+             (second (cadr ordered))
+             (first-body (plist-get first :body))
+             (second-body (plist-get second :body))
+             (second-options (plist-get second :options))
+             (second-input (append (plist-get second-body :input) nil)))
+        (should (= calls 2))
+        (should-not (plist-member first-body :previous_response_id))
+        (should (equal (aref (plist-get first-body :input) 0)
+                       '(:type "encrypted" :marker "COMPACT-TOOL")))
+        (should-not (plist-member second-options
+                                  :provider-compaction-output))
+        (should-not (eq (plist-get second-options
+                                   :context-rendering-strategy)
+                        'opaque-provider-compaction))
+        (if with-anchor
+            (should (equal (plist-get second-body :previous_response_id)
+                           "immediate-tool-anchor"))
+          (should-not (plist-member second-body :previous_response_id)))
+        (should (equal (mapcar (lambda (item) (plist-get item :type))
+                               second-input)
+                       (if with-anchor
+                           '("function_call_output")
+                         '("message" "function_call"
+                           "function_call_output"))))
+        (should-not (string-match-p "COMPACT-TOOL"
+                                    (prin1-to-string second-input))))))))
+
+(ert-deftest e-loop-test-provider-compaction-clears-before-pending-steering ()
+  "A compact request does not replay opaque output into pending steering."
+  (dolist (transport '(http websocket))
+    (let* ((calls 0)
+           (drains 0)
+           (requests nil)
+           (backend
+            (e-backend-create
+             :name "provider-compaction-steering"
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (let ((body
+                       (e-openai-codex-request-body
+                        :messages messages :options options :tools nil)))
+                  (push (list :body body
+                              :options (copy-tree options)
+                              :messages (copy-tree messages))
+                        requests)
+                  (setq calls (1+ calls))
+                  (if (= calls 1)
+                      (progn
+                        (funcall on-item
+                                 '(:type provider-anchor-candidate
+                                   :provider-id openai
+                                   :metadata (:response-id
+                                              "steering-anchor")))
+                        (funcall on-item
+                                 '(:type assistant-message :content "first"))
+                        (funcall on-item '(:type done :reason stop)))
+                    (funcall on-item
+                             '(:type assistant-message :content "second"))
+                    (funcall on-item '(:type done :reason stop))))))))
+           (options (list :model "gpt-5.6"
+                          :responses-transport transport
+                          :context-lifetime-enabled t
+                          :provider-continuation t
+                          :provider-anchor-provider-id 'openai
+                          :context-capabilities
+                          '(:continuation linear
+                            :observation-delivery request-local-replaceable)
+                          :observation-delivery 'request-local-replaceable
+                          :provider-compaction-output
+                          [(:type "encrypted" :marker "COMPACT-STEER")]
+                          :provider-compaction-delta-messages nil
+                          :context-rendering-strategy
+                          'opaque-provider-compaction)))
+      (let (result)
+        (e-loop-start-turn
+         :session-id "session-provider-compaction-steering"
+         :turn-id "turn-provider-compaction-steering"
+         :messages '((:role user :content "prompt"))
+         :backend backend
+         :tools (e-tools-registry-create)
+         :options options
+         :drain-pending-input
+         (lambda ()
+           (setq drains (1+ drains))
+           (when (= drains 2)
+             '((:role user :content "steer-now"))))
+         :on-event #'ignore
+         :append-message #'ignore
+         :on-done (lambda (value) (setq result value))
+         :on-error (lambda (err) (setq result (list :status 'error
+                                                     :error err))))
+        (should (e-loop-test--wait-until (lambda () result)))
+        (should (equal (plist-get result :status) 'done)))
+      (let* ((ordered (nreverse requests))
+             (first-body (plist-get (car ordered) :body))
+             (second (cadr ordered))
+             (second-body (plist-get second :body))
+             (second-options (plist-get second :options))
+             (second-input (append (plist-get second-body :input) nil)))
+        (should (= calls 2))
+        (should (= drains 4))
+        (should-not (plist-member first-body :previous_response_id))
+        (should (equal (aref (plist-get first-body :input) 0)
+                       '(:type "encrypted" :marker "COMPACT-STEER")))
+        (should-not (plist-member second-options
+                                  :provider-compaction-output))
+        (should-not (eq (plist-get second-options
+                                   :context-rendering-strategy)
+                        'opaque-provider-compaction))
+        (should (equal (plist-get second-body :previous_response_id)
+                       "steering-anchor"))
+        (should (string-match-p "steer-now"
+                                (prin1-to-string second-input)))
+        (should-not (string-match-p "COMPACT-STEER"
+                                    (prin1-to-string second-input)))))))
+
+(ert-deftest e-loop-test-provider-compaction-clears-before-synchronous-start-follow-up ()
+  "A synchronous backend completion clears compact state before follow-up.
+
+The backend invokes the tool call and terminal callback before it returns and
+never publishes a request handle, exercising the completion path that cannot
+rely on `provider-request'."
+  (let* ((calls 0)
+         (requests nil)
+         (backend
+          (e-backend-create
+           :name "provider-compaction-sync-start"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done &allow-other-keys)
+              (let ((body
+                     (e-openai-codex-request-body
+                      :messages messages :options options :tools nil)))
+                (push (list :body body :options (copy-tree options))
+                      requests)
+                (setq calls (1+ calls))
+                (if (= calls 1)
+                    (progn
+                      (funcall on-item
+                               '(:type provider-anchor-candidate
+                                 :provider-id openai
+                                 :metadata (:response-id
+                                            "sync-immediate-anchor")))
+                      (funcall on-item
+                               '(:type tool-call
+                                 :id "sync-compact-call"
+                                 :name "echo"
+                                 :arguments (:text "hello")))
+                      (funcall on-item '(:type done :reason tool-use)))
+                  (funcall on-item
+                           '(:type assistant-message :content "tool-seen"))
+                  (funcall on-item '(:type done :reason stop)))
+                (funcall on-done '(:status done)))))))
+         (tools (e-tools-registry-create))
+         (options '(:model "gpt-5.6"
+                    :context-lifetime-enabled t
+                    :provider-continuation t
+                    :provider-anchor-provider-id openai
+                    :context-capabilities
+                    (:continuation linear
+                     :observation-delivery request-local-replaceable)
+                    :observation-delivery request-local-replaceable
+                    :provider-compaction-output
+                    [(:type "encrypted" :marker "COMPACT-SYNC")]
+                    :provider-compaction-delta-messages nil
+                    :context-rendering-strategy opaque-provider-compaction)))
+    (e-tools-test-register
+     tools
+     :name "echo"
+     :description "Echo text."
+     :handler
+     (lambda (arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        (plist-get arguments :text))))
+    (let ((result
+           (e-loop-run-turn-batch
+            :session-id "session-provider-compaction-sync"
+            :turn-id "turn-provider-compaction-sync"
+            :messages '((:role user :content "prompt"))
+            :backend backend
+            :tools tools
+            :options options
+            :on-event #'ignore
+            :append-message #'ignore)))
+      (should (equal (plist-get result :status) 'done)))
+    (let* ((ordered (nreverse requests))
+           (first-body (plist-get (car ordered) :body))
+           (second-body (plist-get (cadr ordered) :body))
+           (second-options (plist-get (cadr ordered) :options))
+           (second-input (append (plist-get second-body :input) nil)))
+      (should (= calls 2))
+      (should-not (plist-member first-body :previous_response_id))
+      (should (equal (aref (plist-get first-body :input) 0)
+                     '(:type "encrypted" :marker "COMPACT-SYNC")))
+      (should-not (plist-member second-options
+                                :provider-compaction-output))
+      (should-not (eq (plist-get second-options
+                                 :context-rendering-strategy)
+                      'opaque-provider-compaction))
+      (should (equal (plist-get second-body :previous_response_id)
+                     "sync-immediate-anchor"))
+      (should (equal (mapcar (lambda (item) (plist-get item :type))
+                             second-input)
+                     '("function_call_output")))
+      (should-not (string-match-p "COMPACT-SYNC"
+                                  (prin1-to-string second-input))))))
 
 (ert-deftest e-loop-test-disabled-lifetime-does-not-refresh-before-pending-steering ()
   "Callbacks do not opt a disabled turn into a lifetime projection turn."

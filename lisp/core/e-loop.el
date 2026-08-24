@@ -158,6 +158,27 @@ produced by the authoritative semantic projection."
     (plist-put accepted :provider-request-ordinal request-ordinal)
     accepted))
 
+(defun e-loop--clear-provider-compaction-request-state (options)
+  "Return OPTIONS without one-shot provider compaction request state.
+
+Provider compaction output is valid for the request that selected it only.
+After that request completes, ordinary tool-result or steering follow-ups must
+use the immediate response anchor/delta or normal stateless messages rather
+than replaying the opaque output.  The rendering marker is cleared only when
+it is the marker installed by the compaction projection."
+  (let ((options (copy-sequence options)))
+    (dolist (key '(:provider-compaction-output
+                   :provider-compaction-delta-messages
+                   :provider-compaction-source-entry-id
+                   :provider-compaction-generation-id
+                   :provider-compaction-fingerprint
+                   :provider-compaction-invalidation-reason))
+      (cl-remf options key))
+    (when (eq (plist-get options :context-rendering-strategy)
+              'opaque-provider-compaction)
+      (cl-remf options :context-rendering-strategy))
+    options))
+
 (defun e-loop--continuation-projection-compatible-p (request-identity options)
   "Return non-nil when OPTIONS still describes REQUEST-IDENTITY.
 
@@ -364,6 +385,25 @@ settlement are callback-driven."
               (setq active-lifetime-frame
                     (plist-get projection :lifetime-frame))))
          )
+         (clear-provider-compaction-request-state
+          ()
+          (when (or (plist-member turn-options :provider-compaction-output)
+                    (plist-member turn-options
+                                   :provider-compaction-delta-messages)
+                    (plist-member turn-options
+                                   :provider-compaction-source-entry-id)
+                    (plist-member turn-options
+                                   :provider-compaction-generation-id)
+                    (plist-member turn-options
+                                   :provider-compaction-fingerprint)
+                    (plist-member turn-options
+                                   :provider-compaction-invalidation-reason)
+                    (eq (plist-get turn-options
+                                   :context-rendering-strategy)
+                        'opaque-provider-compaction))
+            (setq turn-options
+                  (e-loop--clear-provider-compaction-request-state
+                   turn-options))))
          (start-request
           ()
           (unless (or settled (cancelled))
@@ -418,6 +458,7 @@ settlement are callback-driven."
                       provider-request-causes)))
                    (finish-provider-request
                     (status)
+                    (clear-provider-compaction-request-state)
                     (when (and provider-request
                                (not provider-request-finished))
                       (setq provider-request-finished t)

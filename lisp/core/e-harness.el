@@ -90,6 +90,7 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
    active-turns
    prompt-queues
    prompt-queue-counts
+   provider-compaction-candidates
    (queued-input-count 0)
    (unsettled-generation 0)
    unsettled-change-function
@@ -243,7 +244,9 @@ layer selection APIs change the enabled layer set."
                           (copy-sequence intrinsic-capabilities)
                           :active-turns (make-hash-table :test 'equal)
                           :prompt-queues (make-hash-table :test 'equal)
-                          :prompt-queue-counts (make-hash-table :test 'equal))))
+                          :prompt-queue-counts (make-hash-table :test 'equal)
+                          :provider-compaction-candidates
+                          (make-hash-table :test 'equal))))
     (when layer-change-function
       (e-harness-set-layer-change-function harness layer-change-function))
     harness))
@@ -2219,6 +2222,9 @@ turn context work."
                 harness
                 session-id
                 context))
+         (setq context
+               (e-harness--context-with-provider-compaction
+                harness session-id context context-purpose))
          (e-harness--context-with-continuation-projection-identity context))))))
 
 (defun e-harness-turn-context (harness session-id turn-id)
@@ -2237,6 +2243,114 @@ the live dynamic providers needed for the model-facing request."
   "Return non-nil when active turn ENTRY is still running."
   (and (listp entry)
        (eq (plist-get entry :status) 'running)))
+
+(defun e-harness--provider-compaction-context
+    (harness session-id generation)
+  "Return a stable optional CONTEXT for provider compaction at GENERATION."
+  (let ((context (e-harness-context harness session-id nil 'optional)))
+    (plist-put context :lifetime-generation generation)
+    (plist-put context
+               :options
+               (e-harness--strip-reserved-derived-context-options
+                (plist-get context :options)))
+    context))
+
+(defun e-harness--provider-compaction-messages
+    (harness session-id generation)
+  "Return portable messages covered by GENERATION for provider compaction."
+  (e-compaction-portable-context-messages
+   (e-harness-sessions harness)
+   session-id
+   (e-context-lifetime-generation-checkpoint generation)
+   (e-context-lifetime-generation-covered-session-boundary generation)))
+
+(defun e-harness--provider-compaction-input
+    (harness session-id generation)
+  "Capture provider compaction MESSAGES and their exact coverage identity."
+  (let* ((messages (e-harness--provider-compaction-messages
+                    harness session-id generation))
+         (projection (e-session-context-lifetime-projection
+                      (e-harness-sessions harness) session-id))
+         (frontier (mapcar #'e-context-lifetime-promotion-id
+                           (plist-get projection :promotions)))
+         (source-entry-id
+          (e-harness--provider-compaction-candidate-source-entry-id
+           harness session-id)))
+    (list :messages messages
+          :source-entry-id source-entry-id
+          :promotion-frontier frontier
+          :input-fingerprint
+          (secure-hash 'sha256
+                       (prin1-to-string
+                        (list messages source-entry-id frontier))))))
+
+(defun e-harness--provider-compaction-store-result
+    (harness session-id context generation result input)
+  "Store validated provider RESULT as a runtime candidate."
+  (e-harness--provider-compaction-store-candidate
+   harness session-id context generation
+   (e-backend-provider-compaction-result-output result)
+   (e-backend-provider-compaction-result-usage result)
+   (plist-get input :source-entry-id)
+   (plist-get input :promotion-frontier)
+   (plist-get input :input-fingerprint)))
+
+(defun e-harness--maybe-provider-compaction-batch
+    (harness session-id portable-generation)
+  "Best-effort synchronous provider compaction after PORTABLE-GENERATION.
+
+Canonical local compaction is already complete when this function runs.  Any
+provider failure only discards acceleration and never changes session state."
+  (when portable-generation
+    (condition-case _error
+        (let* ((generation
+                (e-context-lifetime-generation-from-record
+                 (e-session--context-record portable-generation)))
+               (context
+                (e-harness--provider-compaction-context
+                 harness session-id generation))
+               (options (plist-get context :options))
+               (capabilities (e-harness--context-capabilities harness options)))
+          (when (eq (plist-get capabilities :provider-compaction) 'opaque)
+            (let ((input (e-harness--provider-compaction-input
+                          harness session-id generation)))
+              (e-harness--provider-compaction-store-result
+               harness session-id context generation
+               (e-backend-provider-compaction-batch
+                (e-harness-backend harness)
+                :messages (plist-get input :messages)
+                :options (plist-put (copy-sequence options)
+                                    :provider-compaction-boundary t))
+               input))))
+      (error nil))))
+
+(defun e-harness--maybe-provider-compaction-start
+    (harness session-id portable-generation)
+  "Best-effort asynchronous provider compaction after PORTABLE-GENERATION."
+  (when portable-generation
+    (condition-case _error
+        (let* ((generation
+                (e-context-lifetime-generation-from-record
+                 (e-session--context-record portable-generation)))
+               (context
+                (e-harness--provider-compaction-context
+                 harness session-id generation))
+               (options (plist-get context :options))
+               (capabilities (e-harness--context-capabilities harness options)))
+          (when (eq (plist-get capabilities :provider-compaction) 'opaque)
+            (let ((input (e-harness--provider-compaction-input
+                          harness session-id generation)))
+              (e-backend-provider-compaction-start
+               (e-harness-backend harness)
+               :messages (plist-get input :messages)
+               :options (plist-put (copy-sequence options)
+                                   :provider-compaction-boundary t)
+               :on-done
+               (lambda (result)
+                 (e-harness--provider-compaction-store-result
+                  harness session-id context generation result input))
+               :on-error #'ignore))))
+      (error nil))))
 
 (cl-defun e-harness-compact-session-batch
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
@@ -2349,11 +2463,13 @@ the live dynamic providers needed for the model-facing request."
                    ;; model prefix with a portable generation only when the
                    ;; semantic lifetime feature is opted in.
                    (portable-generation
-                    (when portable-application
+                     (when portable-application
                       (e-compaction-apply-portable-boundary
                        (e-harness-sessions harness)
                        session-id
                        portable-application))))
+              (e-harness--maybe-provider-compaction-batch
+               harness session-id portable-generation)
               (e-harness--emit-turn-event
                harness session-id turn-id 'compaction-finished
                (list :compaction-id (plist-get record :id)
@@ -2482,6 +2598,8 @@ also emitting the normal compaction failure event."
                               (e-harness-sessions harness)
                               session-id
                               portable-application))))
+                     (e-harness--maybe-provider-compaction-start
+                      harness session-id portable-generation)
                      (setq settled t)
                      (e-harness--emit-turn-event
                       harness session-id turn-id 'compaction-finished
@@ -3091,7 +3209,13 @@ the next provider request is started."
     :context-promotion-frame-id
     :provider-anchor
     :provider-anchor-delta-messages
-    :provider-anchor-source-message-count)
+    :provider-anchor-source-message-count
+    :provider-compaction-output
+    :provider-compaction-delta-messages
+    :provider-compaction-source-entry-id
+    :provider-compaction-generation-id
+    :provider-compaction-fingerprint
+    :provider-compaction-invalidation-reason)
   "Context options owned by the harness rather than callers.
 
 These values are derived from the semantic projection at request construction.
@@ -3489,6 +3613,198 @@ inherited."
       'hold-inherited-observation)
      (t
       'advance-eligible))))
+
+(defun e-harness--provider-compaction-fingerprint (harness session-id context)
+  "Return the runtime identity for an opaque compaction candidate.
+
+The identity is derived from provider-neutral stable projection fields and the
+active generation.  Replaceable current-state values are excluded by the
+existing anchor fingerprint helper; opaque provider output is never hashed or
+otherwise interpreted here."
+  (let* ((options (plist-get context :options))
+         (generation (or (plist-get context :lifetime-generation)
+                         (e-session-context-lifetime-current-generation
+                          (e-harness-sessions harness) session-id)))
+         (identity
+          (list :provider-id (plist-get options :provider-anchor-provider-id)
+                :model (plist-get options :model)
+                :capabilities (copy-tree
+                               (plist-get options :context-capabilities))
+                :anchor-fingerprints
+                (e-harness--provider-anchor-fingerprints context)
+                :generation-id
+                (and generation
+                     (e-context-lifetime-generation-id generation)))))
+    (secure-hash 'sha256 (prin1-to-string identity))))
+
+(defun e-harness--provider-compaction-candidate-source-entry-id
+    (harness session-id)
+  "Return the exact journal head captured by a candidate.
+
+Entries after this identity are scanned separately when the candidate is
+consumed, and only their portable durable message projection may become the
+provider delta."
+  (when-let ((entry (car (last (e-session-current-path
+                               (e-harness-sessions harness) session-id)))))
+    (plist-get entry :id)))
+
+(defun e-harness--provider-compaction-delta-messages
+    (harness session-id source-entry-id)
+  "Return portable durable messages after SOURCE-ENTRY-ID.
+
+Provider-compaction deltas are intentionally separate from provider-anchor
+deltas.  Raw tool-call/tool/replay journal entries are not eligible, so an
+opaque candidate cannot create an orphaned provider tool bundle."
+  (let ((after nil)
+        (found nil)
+        result)
+    (dolist (entry (e-session-current-path
+                    (e-harness-sessions harness) session-id))
+      (if after
+          (when-let ((message
+                      (e-session-context-lifetime-durable-message entry)))
+            (push (e-context-lifetime-portable-message message) result))
+        (when (equal (plist-get entry :id) source-entry-id)
+          (setq after t
+                found t))))
+    (if found
+        (nreverse result)
+      nil)))
+
+(defun e-harness--provider-compaction-store-candidate
+    (harness session-id context generation output usage
+             source-entry-id promotion-frontier input-fingerprint)
+  "Install one runtime-only opaque provider candidate for SESSION-ID.
+
+No session record is touched.  The candidate is fenced by GENERATION, the
+  covered durable source entry, and the stable projection fingerprint; a later
+  context rebuild either selects it exactly or discards it."
+  (let* ((options (plist-get context :options))
+         (current-generation
+          (e-session-context-lifetime-current-generation
+           (e-harness-sessions harness) session-id))
+         (current-frontier
+          (mapcar #'e-context-lifetime-promotion-id
+                  (plist-get
+                   (e-session-context-lifetime-projection
+                    (e-harness-sessions harness) session-id)
+                   :promotions)))
+         (source-on-path
+          (seq-some (lambda (entry)
+                      (equal (plist-get entry :id) source-entry-id))
+                    (e-session-current-path
+                     (e-harness-sessions harness) session-id))))
+    ;; A promotion frontier changing while the provider request is in flight
+    ;; makes its opaque coverage ambiguous.  Keep portable context as the
+    ;; correctness path and discard acceleration without mutating the session.
+    (when (and source-entry-id generation current-generation
+               (equal (e-context-lifetime-generation-id generation)
+                      (e-context-lifetime-generation-id current-generation))
+               source-on-path
+               (equal promotion-frontier current-frontier)
+               (stringp input-fingerprint))
+      (puthash
+       session-id
+       (list :provider-id (plist-get options :provider-anchor-provider-id)
+             :model (plist-get options :model)
+             :generation-id (e-context-lifetime-generation-id generation)
+             :covered-session-boundary
+             (e-context-lifetime-generation-covered-session-boundary
+              generation)
+             :source-entry-id source-entry-id
+             :promotion-frontier (copy-sequence promotion-frontier)
+             :input-fingerprint input-fingerprint
+             :fingerprint
+             (e-harness--provider-compaction-fingerprint
+              harness session-id context)
+             :output output
+             :usage usage)
+       (e-harness-provider-compaction-candidates harness)))))
+
+(defun e-harness--provider-compaction-candidate-compatible-p
+    (harness session-id context candidate capabilities)
+  "Return non-nil when runtime CANDIDATE is exact for CONTEXT."
+  (let* ((options (plist-get context :options))
+         (generation (plist-get context :lifetime-generation))
+         (source-entry-id (plist-get candidate :source-entry-id))
+         (path (e-session-current-path (e-harness-sessions harness) session-id)))
+    (and (eq (plist-get capabilities :provider-compaction) 'opaque)
+         (equal (plist-get candidate :provider-id)
+                (plist-get options :provider-anchor-provider-id))
+         (equal (plist-get candidate :model) (plist-get options :model))
+         generation
+         (equal (plist-get candidate :generation-id)
+                (e-context-lifetime-generation-id generation))
+         (seq-some (lambda (entry)
+                     (equal (plist-get entry :id) source-entry-id))
+                   path)
+         (equal (plist-get candidate :promotion-frontier)
+                (mapcar #'e-context-lifetime-promotion-id
+                        (plist-get
+                         (e-session-context-lifetime-projection
+                          (e-harness-sessions harness) session-id)
+                         :promotions)))
+         ;; Opaque compaction contains only durable context.  It cannot safely
+         ;; replace an inherited observation frontier.
+         (or (not (plist-member options :lifetime-ephemerals-clean-p))
+             (plist-get options :lifetime-ephemerals-clean-p))
+         (equal (plist-get candidate :fingerprint)
+                (e-harness--provider-compaction-fingerprint
+                 harness session-id context)))))
+
+(defun e-harness--context-with-provider-compaction
+    (harness session-id context &optional context-purpose)
+  "Attach an exact runtime provider-compaction candidate to CONTEXT.
+
+Candidates are selected only for the same provider/model/generation and stable
+semantic fingerprint.  A mismatch is discarded and ordinary portable context
+continues unchanged."
+  (let* ((options (copy-sequence (plist-get context :options)))
+         (capabilities (plist-get options :context-capabilities)))
+    ;; Runtime provider state belongs to the correctness-critical request
+    ;; path.  Preview/status/optional contexts must neither consume nor fence
+    ;; the candidate that the next actual turn may use.
+    (when (eq context-purpose 'turn)
+      (let ((candidate
+             (gethash session-id
+                      (e-harness-provider-compaction-candidates harness))))
+        (if (and candidate
+                 (e-harness--provider-compaction-candidate-compatible-p
+                  harness session-id context candidate capabilities))
+            (let ((delta
+                   (e-harness--provider-compaction-delta-messages
+                    harness session-id
+                    (plist-get candidate :source-entry-id))))
+              (setq options
+                    (plist-put options :provider-compaction-output
+                               (plist-get candidate :output)))
+              (setq options
+                    (plist-put options :provider-compaction-delta-messages
+                               delta))
+              (setq options
+                    (plist-put options :provider-compaction-source-entry-id
+                               (plist-get candidate :source-entry-id)))
+              (setq options
+                    (plist-put options :provider-compaction-generation-id
+                               (plist-get candidate :generation-id)))
+              (setq options
+                    (plist-put options :provider-compaction-fingerprint
+                               (plist-get candidate :fingerprint)))
+              (setq options
+                    (plist-put options :context-rendering-strategy
+                               'opaque-provider-compaction))
+              ;; Opaque output is a one-shot runtime candidate.  A later
+              ;; request must use a normal compatible anchor or portable
+              ;; reconstruction, never replay the compact response.
+              (remhash session-id
+                       (e-harness-provider-compaction-candidates harness)))
+          (when candidate
+            (remhash session-id
+                     (e-harness-provider-compaction-candidates harness))
+            (setq options
+                  (plist-put options :provider-compaction-invalidation-reason
+                             'stale-or-incompatible-candidate))))))
+    (plist-put context :options options)))
 
 (defun e-harness--context-with-provider-anchor (harness session-id context)
   "Attach only a session-owned compatible provider anchor to CONTEXT.

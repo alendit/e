@@ -6031,6 +6031,530 @@ an empty summary\"."
          (e-session-provider-anchors
           (e-harness-sessions harness) "session-1"))))))
 
+(ert-deftest e-harness-test-provider-compaction-sync-installs-runtime-candidate ()
+  "A successful portable boundary may install only a runtime provider candidate."
+  (let* ((e-context-lifetime-shadow-projection-enabled t)
+         (provider-input nil)
+         (backend
+          (e-backend-create
+           :name 'provider-compaction-fake
+           :context-capabilities
+           '(:continuation none
+             :provider-compaction opaque)
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type assistant-message :content "portable C1"))))
+           :provider-compaction
+           (cl-function
+            (lambda (&key messages options &allow-other-keys)
+              (setq provider-input (list :messages (copy-tree messages)
+                                         :options (copy-tree options)))
+              '(:output ((:type "opaque" :marker "provider-state"))
+                :usage (:total-tokens 3))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :default-options '(:model "fake-model"
+                              :provider-anchor-provider-id fake
+                              :context-lifetime-enabled t))))
+    (e-harness-create-session harness :id "provider-session")
+    ;; Establish the opt-in v2 generation before the ordinary transcript.
+    (e-harness-turn-context harness "provider-session" "seed-turn")
+    (e-session-append-message
+     (e-harness-sessions harness) "provider-session"
+     '(:role user :content "durable intent"))
+    (e-session-append-message
+     (e-harness-sessions harness) "provider-session"
+     '(:role assistant :content "durable answer"))
+    (e-session-append-message
+     (e-harness-sessions harness) "provider-session"
+     '(:role user :content "keep this"))
+    (e-harness-compact-session-batch
+     harness "provider-session" :keep-recent-tokens 1)
+    (should provider-input)
+    (should (string-match-p "portable C1"
+                            (prin1-to-string (plist-get provider-input :messages))))
+    (should-not (string-match-p "provider-state"
+                                (prin1-to-string provider-input)))
+    (let* ((candidate
+            (gethash "provider-session"
+                     (e-harness-provider-compaction-candidates harness)))
+           (context (e-harness-turn-context
+                     harness "provider-session" "candidate-turn"))
+           (options (plist-get context :options)))
+      (should candidate)
+      (should-not (gethash "provider-session"
+                           (e-harness-provider-compaction-candidates harness)))
+      (should (equal (plist-get options :provider-compaction-output)
+                     '((:type "opaque" :marker "provider-state"))))
+      (should (eq (plist-get options :context-rendering-strategy)
+                  'opaque-provider-compaction))
+      ;; Provider state is a runtime candidate only, never a session record.
+      (should-not
+       (string-match-p
+        "provider-state"
+        (prin1-to-string
+         (list (e-session-messages (e-harness-sessions harness)
+                                   "provider-session")
+               (e-session-activity-events
+                (e-harness-sessions harness) "provider-session")
+               (e-session-context-generations
+               (e-harness-sessions harness) "provider-session"))))))))
+
+(ert-deftest e-harness-test-provider-compaction-none-skips-input-sync ()
+  "Synchronous portable compaction does no opaque-input work for NONE."
+  (let* ((input-calls 0)
+         (backend
+          (e-backend-create
+           :name 'provider-compaction-none-sync
+           :context-capabilities
+           '(:continuation none :provider-compaction none)
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type assistant-message :content "NONE-SYNC-C1"))))))
+         (harness (e-harness-create :backend backend
+                                    :default-options
+                                    '(:model "none-sync-model")))
+         (store nil))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id "none-sync-session")
+      (setq store (e-harness-sessions harness))
+      (e-harness-turn-context harness "none-sync-session" "seed")
+      (e-session-append-message store "none-sync-session"
+                                '(:role user :content "NONE-SYNC-INTENT"))
+      (e-session-append-message store "none-sync-session"
+                                '(:role assistant :content "NONE-SYNC-ANSWER"))
+      (cl-letf (((symbol-function 'e-harness--provider-compaction-input)
+                 (lambda (&rest _args)
+                   (setq input-calls (1+ input-calls))
+                   (error "provider compaction input must stay lazy"))))
+        (let ((record
+               (e-harness-compact-session-batch
+                harness "none-sync-session" :keep-recent-tokens 1)))
+          (should record)))
+      (should (= input-calls 0))
+      (should (= (length (e-session-compactions store "none-sync-session"))
+                 1))
+      (should (string-match-p
+               "NONE-SYNC-C1"
+               (prin1-to-string
+                (e-context-lifetime-generation-checkpoint
+                 (e-session-context-lifetime-current-generation
+                  store "none-sync-session"))))))))
+
+(ert-deftest e-harness-test-provider-compaction-none-skips-input-async ()
+  "Asynchronous portable compaction does no opaque-input work for NONE."
+  (let* ((input-calls 0)
+         (record nil)
+         (failure nil)
+         (backend
+          (e-backend-create
+           :name 'provider-compaction-none-async
+           :context-capabilities
+           '(:continuation none :provider-compaction none)
+           :start
+           (cl-function
+            (lambda (&key on-item on-done &allow-other-keys)
+              (run-at-time
+               0.01 nil
+               (lambda ()
+                 (funcall on-item
+                          '(:type assistant-message :content "NONE-ASYNC-C1"))
+                 (funcall on-done '(:status done))))
+              (e-backend-request-create)))))
+         (harness (e-harness-create :backend backend
+                                    :default-options
+                                    '(:model "none-async-model")))
+         (store nil))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id "none-async-session")
+      (setq store (e-harness-sessions harness))
+      (e-harness-turn-context harness "none-async-session" "seed")
+      (e-session-append-message store "none-async-session"
+                                '(:role user :content "NONE-ASYNC-INTENT"))
+      (e-session-append-message store "none-async-session"
+                                '(:role assistant :content "NONE-ASYNC-ANSWER"))
+      (cl-letf (((symbol-function 'e-harness--provider-compaction-input)
+                 (lambda (&rest _args)
+                   (setq input-calls (1+ input-calls))
+                   (error "provider compaction input must stay lazy"))))
+        (e-harness-compact-session-start
+         harness "none-async-session"
+         :keep-recent-tokens 1
+         :on-done (lambda (value) (setq record value))
+         :on-error (lambda (err) (setq failure err)))
+        (let ((deadline (+ (float-time) 1.0)))
+          (while (and (not (or record failure))
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.01))))
+      (should record)
+      (should-not failure)
+      (should (= input-calls 0))
+      (should (= (length (e-session-compactions store "none-async-session"))
+                 1))
+      (should (string-match-p
+               "NONE-ASYNC-C1"
+               (prin1-to-string
+                (e-context-lifetime-generation-checkpoint
+                 (e-session-context-lifetime-current-generation
+                  store "none-async-session"))))))))
+
+(ert-deftest e-harness-test-provider-compaction-candidate-fences-late-tail-and-promotion ()
+  "A candidate covers its captured boundary and rejects a changed promotion frontier."
+  (let* ((e-context-lifetime-shadow-projection-enabled t)
+         (backend
+          (e-backend-fake-create
+           :items nil
+           :context-capabilities
+           '(:continuation none :provider-compaction opaque)
+           :provider-compaction
+           (lambda (&rest _args)
+             '(:output ((:type "opaque")) :usage nil))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :default-options '(:model "candidate-model"
+                              :provider-anchor-provider-id fake)))
+         (session-id "candidate-fence"))
+    (e-harness-create-session harness :id session-id)
+    (let ((session (e-session-get (e-harness-sessions harness) session-id)))
+      (e-session-append-context-generation
+       (e-harness-sessions harness) session-id
+       (e-context-lifetime-generation-create
+        :id "generation:candidate-fence"
+        :checkpoint '((:role system :content "C0"))
+        :covered-session-boundary (plist-get session :root-event-id))))
+    (e-session-append-message
+     (e-harness-sessions harness) session-id
+     '(:role user :content "before compact"))
+    (let* ((before (e-harness-turn-context harness session-id "before"))
+           (generation (plist-get before :lifetime-generation))
+           (input (e-harness--provider-compaction-input
+                   harness session-id generation))
+           (source-entry-id (plist-get input :source-entry-id)))
+      (should source-entry-id)
+      (e-session-append-message
+       (e-harness-sessions harness) session-id
+       '(:role tool-call
+         :content (:id "late-call" :name "inspect"
+                   :arguments (:marker "LATE-RAW-CALL"))
+         :metadata (:provider-replay-items
+                    ((:id "LATE-RAW-REPLAY")))))
+      (e-session-append-message
+       (e-harness-sessions harness) session-id
+       '(:role tool
+         :content (:tool-call-id "late-call"
+                   :content "LATE-RAW-RESULT")))
+      (e-session-append-message
+       (e-harness-sessions harness) session-id
+       '(:role assistant :content "late durable tail"))
+      (e-harness--provider-compaction-store-candidate
+       harness session-id before generation
+       '((:type "opaque")) nil
+       source-entry-id
+       (plist-get input :promotion-frontier)
+       (plist-get input :input-fingerprint))
+      (let* ((after (e-harness-turn-context harness session-id "after"))
+             (options (plist-get after :options))
+             (delta (plist-get options :provider-compaction-delta-messages)))
+        (should (equal (plist-get options :provider-compaction-output)
+                       '((:type "opaque"))))
+        (should (= (cl-count "late durable tail" delta
+                             :key (lambda (message)
+                                    (plist-get message :content))
+                             :test #'equal)
+                   1))
+        (dolist (marker '("LATE-RAW-CALL" "LATE-RAW-REPLAY"
+                          "LATE-RAW-RESULT"))
+          (should-not (string-match-p marker (prin1-to-string delta)))))
+      ;; A promotion committed after the captured provider input makes the
+      ;; opaque result incomplete, so no candidate is installed.
+      (clrhash (e-harness-provider-compaction-candidates harness))
+      (let ((promotion-generation
+             (e-context-lifetime-generation-id generation)))
+        (e-harness-test--append-compaction-promotion
+         (e-harness-sessions harness) session-id promotion-generation "late"))
+      (let* ((latest-input (e-harness--provider-compaction-input
+                            harness session-id generation)))
+        (e-harness--provider-compaction-store-candidate
+         harness session-id before generation
+         '((:type "opaque")) nil
+         (plist-get latest-input :source-entry-id)
+         (plist-get input :promotion-frontier)
+         (plist-get input :input-fingerprint)))
+      (should-not (gethash session-id
+                           (e-harness-provider-compaction-candidates harness))))))
+
+(ert-deftest e-harness-test-provider-compaction-async-captures-fixed-boundary ()
+  "An async result uses its start-time boundary, leaving later durable input in delta."
+  (let* ((e-context-lifetime-shadow-projection-enabled t)
+         (done-callback nil)
+         (backend
+          (e-backend-fake-create
+           :items nil
+           :context-capabilities
+           '(:continuation none :provider-compaction opaque)
+           :provider-compaction
+           (cl-function
+            (lambda (&key on-done &allow-other-keys)
+              (setq done-callback on-done)
+              (e-backend-request-create :metadata '(:async t))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :default-options '(:model "async-candidate-model"
+                              :provider-anchor-provider-id fake)))
+         (session-id "async-candidate"))
+    (e-harness-create-session harness :id session-id)
+    (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+           (generation-entry
+           (e-session-append-context-generation
+             (e-harness-sessions harness) session-id
+             (e-context-lifetime-generation-create
+              :id "generation:async-candidate"
+              :checkpoint '((:role system :content "C0"))
+              :covered-session-boundary (plist-get session :root-event-id)))))
+      (e-session-append-message
+       (e-harness-sessions harness) session-id
+       '(:role user :content "async before"))
+      (e-harness--maybe-provider-compaction-start
+       harness session-id generation-entry)
+      (should done-callback)
+      (e-session-append-message
+       (e-harness-sessions harness) session-id
+       '(:role assistant :content "async late"))
+      (funcall done-callback '(:output ((:type "opaque")) :usage nil))
+      (let* ((context (e-harness-turn-context harness session-id "async-after"))
+             (options (plist-get context :options))
+             (delta (plist-get options :provider-compaction-delta-messages)))
+        (should (equal (plist-get options :provider-compaction-output)
+                       '((:type "opaque"))))
+        (should (= (cl-count "async late" delta
+                             :key (lambda (message)
+                                    (plist-get message :content))
+                             :test #'equal)
+                   1))))))
+
+(ert-deftest e-harness-test-provider-compaction-mismatch-and-reopen-fallback ()
+  "Model/layout/generation mismatches and a reopened harness use portable context."
+  (let* ((e-context-lifetime-shadow-projection-enabled t)
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create
+                   :items nil
+                   :context-capabilities
+                   '(:continuation none :provider-compaction opaque)
+                   :provider-compaction
+                   (lambda (&rest _args)
+                     '(:output ((:type "opaque")) :usage nil))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :sessions store
+           :default-options '(:model "candidate-model"
+                              :provider-anchor-provider-id fake)))
+         (session-id "candidate-mismatch"))
+    (e-harness-create-session harness :id session-id)
+    (let ((session (e-session-get store session-id)))
+      (e-session-append-context-generation
+       store session-id
+       (e-context-lifetime-generation-create
+        :id "generation:candidate-mismatch"
+        :checkpoint '((:role system :content "C0"))
+        :covered-session-boundary (plist-get session :root-event-id))))
+    (e-session-append-message store session-id
+                              '(:role user :content "portable source"))
+    (let* ((context (e-harness-turn-context harness session-id "original"))
+           (generation (plist-get context :lifetime-generation))
+           (input (e-harness--provider-compaction-input
+                   harness session-id generation))
+           (source (plist-get input :source-entry-id)))
+      (e-harness--provider-compaction-store-candidate
+       harness session-id context generation '((:type "opaque")) nil
+       source (plist-get input :promotion-frontier)
+       (plist-get input :input-fingerprint))
+      (let ((model-context (copy-tree context)))
+        (plist-put (plist-get model-context :options) :model "other-model")
+        (should-not
+         (e-harness--provider-compaction-candidate-compatible-p
+          harness session-id model-context
+          (gethash session-id
+                   (e-harness-provider-compaction-candidates harness))
+          (plist-get (plist-get model-context :options)
+                     :context-capabilities))))
+      (let ((layout-context (copy-tree context)))
+        (plist-put (plist-get layout-context :options)
+                   :instructions "changed layout")
+        (should-not
+         (e-harness--provider-compaction-candidate-compatible-p
+          harness session-id layout-context
+          (gethash session-id
+                   (e-harness-provider-compaction-candidates harness))
+          (plist-get (plist-get layout-context :options)
+                     :context-capabilities))))
+      (let ((generation-context (copy-tree context)))
+        (plist-put generation-context :lifetime-generation
+                   (e-context-lifetime-generation-create
+                    :id "generation:replacement"
+                    :checkpoint '((:role system :content "new"))
+                    :covered-session-boundary source))
+        (should-not
+         (e-harness--provider-compaction-candidate-compatible-p
+          harness session-id generation-context
+          (gethash session-id
+                   (e-harness-provider-compaction-candidates harness))
+          (plist-get (plist-get generation-context :options)
+                     :context-capabilities))))
+      (let* ((reopened
+              (e-harness-create
+               :backend backend :sessions store
+               :default-options '(:model "candidate-model"
+                                  :provider-anchor-provider-id fake)))
+             (reopened-context
+              (e-harness-turn-context reopened session-id "reopened"))
+             (reopened-options (plist-get reopened-context :options)))
+        (should-not (plist-get reopened-options :provider-compaction-output))
+        (should (string-match-p "portable source"
+                                (prin1-to-string
+                                 (plist-get reopened-context :messages))))))))
+
+(ert-deftest e-harness-test-provider-compaction-candidate-is-one-shot ()
+  "Preview does not consume opaque state; the actual turn consumes it once."
+  (let* ((e-context-lifetime-shadow-projection-enabled t)
+         (backend
+          (e-backend-fake-create
+           :items nil
+           :context-capabilities
+           '(:continuation linear :provider-compaction opaque)
+           :provider-compaction
+           (lambda (&rest _args)
+             '(:output ((:type "opaque" :marker "ONE-SHOT"))
+               :usage nil))))
+         (store (e-session-store-create))
+         (harness
+          (e-harness-create
+           :backend backend
+           :sessions store
+           :default-options '(:model "one-shot-model"
+                              :provider-anchor-provider-id fake
+                              :provider-continuation t
+                              :context-lifetime-enabled t)))
+         (session-id "provider-one-shot"))
+    (e-harness-create-session harness :id session-id)
+    (e-harness-turn-context harness session-id "seed")
+    (e-session-append-message store session-id
+                              '(:role user :content "one-shot durable"))
+    (let ((boundary (plist-get
+                     (car (last (e-session-current-path store session-id)))
+                     :id)))
+      (e-session-append-context-generation
+       store session-id
+       (e-context-lifetime-generation-create
+        :id "generation:one-shot"
+        :checkpoint '((:role system :content "C0-ONE-SHOT"))
+        :covered-session-boundary boundary)))
+    (let* ((context (e-harness-turn-context harness session-id "capture"))
+           (generation (plist-get context :lifetime-generation))
+           (input (e-harness--provider-compaction-input
+                   harness session-id generation)))
+      (e-harness--provider-compaction-store-candidate
+       harness session-id context generation
+       '((:type "opaque" :marker "ONE-SHOT")) nil
+       (plist-get input :source-entry-id)
+       (plist-get input :promotion-frontier)
+       (plist-get input :input-fingerprint)))
+    (let ((preview (e-harness-context harness session-id nil 'preview)))
+      (should-not (plist-get (plist-get preview :options)
+                             :provider-compaction-output))
+      (should (gethash session-id
+                       (e-harness-provider-compaction-candidates harness))))
+    (let* ((first (e-harness-turn-context harness session-id "first-turn"))
+           (first-options (plist-get first :options))
+           (head (plist-get
+                  (car (last (e-session-current-path store session-id)))
+                  :id)))
+      (should (equal (plist-get first-options :provider-compaction-output)
+                     '((:type "opaque" :marker "ONE-SHOT"))))
+      (should-not (gethash session-id
+                           (e-harness-provider-compaction-candidates harness)))
+      ;; A normal compatible response anchor is eligible on the next turn;
+      ;; the consumed opaque output is not replayed.
+      (e-session-append-provider-anchor
+       store session-id 'fake
+       :model "one-shot-model"
+       :covered-entry-id head
+       :fingerprints (e-harness--provider-anchor-fingerprints first)
+       :metadata '(:response-id "fresh-anchor"))
+      (let* ((second (e-harness-turn-context harness session-id "second-turn"))
+             (second-options (plist-get second :options)))
+        (should-not (plist-get second-options :provider-compaction-output))
+        (should (equal (plist-get
+                        (plist-get second-options :provider-anchor)
+                        :metadata)
+                       '(:response-id "fresh-anchor")))))))
+
+(ert-deftest e-harness-test-provider-compaction-async-generation-order-is-fenced ()
+  "An older async compact result cannot replace a newer generation candidate."
+  (let* ((callbacks nil)
+         (backend
+          (e-backend-fake-create
+           :items nil
+           :context-capabilities
+           '(:continuation none :provider-compaction opaque)
+           :provider-compaction
+           (cl-function
+            (lambda (&key on-done &allow-other-keys)
+              (push on-done callbacks)
+              (e-backend-request-create :metadata '(:async t))))))
+         (store (e-session-store-create))
+         (harness (e-harness-create :backend backend :sessions store
+                                    :default-options
+                                    '(:model "generation-order-model"
+                                      :provider-anchor-provider-id fake)))
+         (session-id "provider-generation-order"))
+    (e-harness-create-session harness :id session-id)
+    (let* ((session (e-session-get store session-id))
+           (root (plist-get session :root-event-id))
+           (generation-a
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id "generation:async-a"
+              :checkpoint '((:role system :content "C-A"))
+              :covered-session-boundary root))))
+      (e-harness--maybe-provider-compaction-start
+       harness session-id generation-a)
+      (let* ((head-a (plist-get
+                      (car (last (e-session-current-path store session-id)))
+                      :id))
+             (generation-b
+              (e-session-append-context-generation
+               store session-id
+               (e-context-lifetime-generation-create
+                :id "generation:async-b"
+                :checkpoint '((:role system :content "C-B"))
+                :covered-session-boundary head-a))))
+        (e-harness--maybe-provider-compaction-start
+         harness session-id generation-b)
+        (should (= (length callbacks) 2))
+        ;; PUSH stores B first.  A's callback arrives late and is fenced by
+        ;; the current session generation check before any puthash.
+        (funcall (car callbacks)
+                 '(:output ((:type "opaque" :marker "RESULT-B"))
+                   :usage nil))
+        (funcall (cadr callbacks)
+                 '(:output ((:type "opaque" :marker "RESULT-A"))
+                   :usage nil))
+        (should (equal
+                 (plist-get
+                  (gethash session-id
+                           (e-harness-provider-compaction-candidates harness))
+                  :output)
+                 '((:type "opaque" :marker "RESULT-B"))))))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

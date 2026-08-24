@@ -1060,6 +1060,8 @@
                      :provider-continuation used
                      :previous-response-id-present t
                      :provider-anchor-present t
+                     :provider-compaction-selected nil
+                     :provider-compaction-source-entry-id nil
                      :input-message-count 1
                      :tool-count 1
                      :responses-transport http)))))
@@ -4082,6 +4084,251 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                   (prin1-to-string durable-messages)))
       (should-not (string-match-p "promotion-call"
                                   (prin1-to-string durable-messages))))))
+
+(ert-deftest e-openai-test-provider-compaction-capability-follows-effective-profile ()
+  "Only the proven first-party compact endpoint advertises opaque compaction."
+  (let ((e-openai-model-providers
+         (append e-openai-model-providers
+                 `((custom-proven
+            :name "Proven custom"
+            :base-url ,e-openai-api-default-base-url
+            :wire-api responses
+            :responses-transport http
+            :continuation t
+            :provider-compaction opaque
+            :requires-openai-auth nil
+            :env-key "OPENAI_API_KEY")))))
+    (should (eq (plist-get
+                 (e-backend-context-capabilities
+                  (e-openai-backend-create :provider 'openai)
+                  nil)
+                 :provider-compaction)
+                'opaque))
+    (should (eq (plist-get
+                 (e-backend-context-capabilities
+                  (e-openai-backend-create :provider 'codex
+                                           :compaction-request-function #'ignore)
+                  nil)
+                 :provider-compaction)
+                'none))
+    (should (eq (plist-get
+                 (e-backend-context-capabilities
+                  (e-openai-backend-create
+                   :provider 'openai
+                   :base-url "https://gateway.example.test/v1"
+                   :compaction-request-function #'ignore)
+                  nil)
+                 :provider-compaction)
+                'none))
+    (should (eq (plist-get
+                 (e-backend-context-capabilities
+                  (e-openai-backend-create
+                   :provider 'openai
+                   :request-function #'ignore)
+                  nil)
+                 :provider-compaction)
+                'none))
+    (should (eq (plist-get
+                 (e-backend-context-capabilities
+                  (e-openai-backend-create
+                   :provider 'custom-proven
+                   :compaction-request-function #'ignore)
+                  nil)
+                 :provider-compaction)
+                'opaque))))
+
+(ert-deftest e-openai-test-provider-compaction-batch-uses-public-http-shape ()
+  "The compact adapter sends only model and portable input and detaches output."
+  (let* ((captured nil)
+         (process-environment
+          (cons "OPENAI_API_KEY=test-api-token" process-environment))
+         (backend
+          (e-openai-backend-create
+           :provider 'openai
+           :compaction-request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (setq captured (list :url url :headers headers :body body))
+              "{\"object\":\"response.compaction\",\"output\":[{\"type\":\"encrypted\",\"payload\":\"opaque\"}],\"usage\":{\"input_tokens\":2,\"total_tokens\":3}}"))))
+         (messages
+          '((:role user
+             :content "durable intent"
+             :metadata (:provider-anchor "ANCHOR" :provider-replay-items ("RAW-E")))
+            (:role assistant :content "durable answer")))
+         (result
+          (e-backend-provider-compaction-batch
+           backend
+           :messages messages
+           :options '(:model "gpt-5.6" :session-id "compact-session")))
+         (body
+          (json-parse-string
+           (plist-get captured :body)
+           :object-type 'plist
+           :array-type 'list
+           :null-object nil
+           :false-object :json-false)))
+    (should (equal (plist-get captured :url)
+                   "https://api.openai.com/v1/responses/compact"))
+    (should (equal (cdr (assoc "Authorization" (plist-get captured :headers)))
+                   "Bearer test-api-token"))
+    (should (equal (plist-get body :model) "gpt-5.6"))
+    (should (listp (plist-get body :input)))
+    (should-not (plist-member body :previous_response_id))
+    (should-not (string-match-p "RAW-E\|ANCHOR\|provider-replay"
+                                (plist-get captured :body)))
+    (should (equal (e-backend-provider-compaction-result-output result)
+                   '((:type "encrypted" :payload "opaque"))))
+    (should (equal (e-backend-provider-compaction-result-usage result)
+                   '(:input-tokens 2 :total-tokens 3)))))
+
+(ert-deftest e-openai-test-provider-compaction-rejects-malformed-output ()
+  "Malformed compact responses fail at the adapter boundary."
+  (dolist (response
+           '("{\"object\":\"response\",\"output\":[]}"
+             "{\"object\":\"response.compaction\",\"output\":null}"
+             "{\"object\":\"response.compaction\",\"output\":{}}"))
+    (should-error
+     (e-openai--provider-compaction-decode response)
+     :type 'e-openai-provider-invalid)))
+
+(ert-deftest e-openai-test-provider-compaction-output-starts-a-fresh-chain ()
+  "Opaque compact output is followed by only the post-coverage delta."
+  (let* ((output '((:type "encrypted" :payload "opaque")))
+         (delta '((:role user :content "after coverage")))
+         (options `(:model "gpt-5.6"
+                    :provider-continuation t
+                    :provider-anchor
+                    (:provider-id openai
+                     :metadata (:response-id "old-response"))
+                    :provider-compaction-output ,output
+                    :provider-compaction-delta-messages ,delta))
+         (http-body (e-openai-codex-request-body
+                     :messages '((:role user :content "full portable context"))
+                     :options options
+                     :tools nil))
+         (websocket-body
+          (e-openai-codex-request-body
+           :messages '((:role user :content "full portable context"))
+           :options (plist-put (copy-sequence options)
+                               :responses-transport 'websocket)
+           :tools nil))
+         (second-options
+          '(:model "gpt-5.6"
+            :provider-continuation t
+            :response-store t
+            :provider-anchor
+            (:provider-id openai
+             :metadata (:response-id "fresh-anchor"))))
+         (second-http-body
+          (e-openai-codex-request-body
+           :messages delta :options second-options :tools nil))
+         (second-websocket-body
+          (e-openai-codex-request-body
+           :messages delta
+           :options (plist-put (copy-sequence second-options)
+                               :responses-transport 'websocket)
+           :tools nil)))
+    (dolist (body (list http-body websocket-body))
+      (should-not (plist-member body :previous_response_id))
+      (should (equal (aref (plist-get body :input) 0)
+                     (car output)))
+      (should (equal (plist-get (aref (plist-get body :input) 1) :role)
+                     "user"))
+      (should (equal (plist-get
+                      (aref (plist-get body :input) 1)
+                     :content)
+                     [(:type "input_text" :text "after coverage")])))
+    (dolist (body (list second-http-body second-websocket-body))
+      (should (equal (plist-get body :previous_response_id)
+                     "fresh-anchor"))
+      (should-not (plist-member body :provider-compaction-output)))))
+
+(ert-deftest e-openai-test-provider-compaction-keeps-stable-prefix-by-layout ()
+  "Opaque history replacement keeps stable/current semantic context once.
+
+Flattened Responses layouts carry the trusted stable prefix in instructions;
+segmented layouts carry it as fresh developer input while current state stays
+in instructions.  Neither path copies the covered checkpoint outside opaque
+provider output."
+  (let* ((output '((:type "encrypted" :marker "C1-COVERED")))
+         (delta '((:role user :content "post-coverage")))
+         (messages '((:role system :content "STATIC-STABLE-POLICY")
+                     (:role system :content "STABLE-CONTEXT")
+                     (:role system :content "CURRENT-STATE")
+                     (:role system :content "C1-COVERED")))
+         (segments '((:kind static-prefix
+                      :messages ((:role system :content "STATIC-STABLE-POLICY")))
+                    (:kind stable-context
+                     :messages ((:role system :content "STABLE-CONTEXT")))
+                    (:kind current-state
+                     :messages ((:role system :content "CURRENT-STATE")))
+                    (:kind history
+                     :messages ((:role system :content "C1-COVERED")))))
+         (common `(:instructions "BASE-POLICY"
+                   :observation-delivery request-local-replaceable
+                   :context-capabilities
+                   (:observation-delivery request-local-replaceable)
+                   :replaceable-current-state
+                   ((:role system :content "CURRENT-STATE"))
+                   :context-segment-message-count 4
+                   :segments ,segments
+                   :provider-compaction-output ,output
+                   :provider-compaction-delta-messages ,delta))
+         (flattened
+          (e-openai-codex-request-body
+           :messages messages
+           :options (append '(:model "gpt-5.5") common)))
+         (segmented
+          (e-openai-codex-request-body
+           :messages messages
+           :options (append
+                     '(:model "gpt-5.6-sol"
+                       :prompt-cache-key "stable-key"
+                       :prompt-cache-breakpoint-mode explicit
+                       :responses-context-layout developer-input)
+                     common)))
+         (flattened-input (append (plist-get flattened :input) nil))
+         (segmented-input (append (plist-get segmented :input) nil)))
+    (should (equal (plist-get flattened :instructions)
+                   "BASE-POLICY\n\nSTATIC-STABLE-POLICY\n\nSTABLE-CONTEXT\n\nCURRENT-STATE"))
+    (should-not (string-match-p "C1-COVERED"
+                                (plist-get flattened :instructions)))
+    (should (equal (car flattened-input) (car output)))
+    (should (string-match-p "post-coverage"
+                            (prin1-to-string (cdr flattened-input))))
+    (should (equal (plist-get segmented :instructions)
+                   "BASE-POLICY\n\nCURRENT-STATE"))
+    (should-not (string-match-p "C1-COVERED"
+                                (plist-get segmented :instructions)))
+    (should (equal (car segmented-input) (car output)))
+    (should (string-match-p "STATIC-STABLE-POLICY"
+                            (prin1-to-string (car (cdr segmented-input)))))
+    (should (string-match-p "STABLE-CONTEXT"
+                            (prin1-to-string (car (cddr segmented-input)))))
+    (should (string-match-p "post-coverage"
+                            (prin1-to-string (cadddr segmented-input))))))
+
+(ert-deftest e-openai-test-provider-compaction-async-failure-is-optional ()
+  "An optional async compact failure reports once without a usable result."
+  (let ((process-environment
+         (cons "OPENAI_API_KEY=test-api-token" process-environment))
+        (done nil)
+        (errors nil)
+        (backend
+         (e-openai-backend-create
+          :provider 'openai
+          :compaction-request-function
+          (lambda (&rest _args)
+            "{\"object\":\"response.compaction\",\"output\":null}"))))
+    (e-backend-provider-compaction-start
+     backend
+     :messages '((:role user :content "portable"))
+     :options '(:model "gpt-5.6")
+     :on-done (lambda (result) (setq done result))
+     :on-error (lambda (error-value) (push error-value errors)))
+    (should (e-openai-test--wait-until (lambda () errors)))
+    (should-not done)
+    (should (= (length errors) 1))))
 
 (provide 'e-openai-test)
 

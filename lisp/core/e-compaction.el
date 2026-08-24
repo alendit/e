@@ -511,6 +511,45 @@ artifact or runtime observation is copied."
      (e-compaction--append-new-portable-facts messages input)
      t)))
 
+(defun e-compaction-portable-context-messages
+    (store session-id checkpoint covered-session-boundary)
+  "Return canonical provider-compaction input after a portable boundary.
+
+The returned messages are the new portable CHECKPOINT followed by the
+canonical durable session tail strictly after COVERED-SESSION-BOUNDARY and
+any active post-boundary promotion facts.  Runtime frames, tool bodies,
+provider replay items, anchors, diagnostics, and other non-message journal
+entries are never included.  This is the sole provider-neutral input builder
+for optional opaque backend compaction."
+  (let ((checkpoint (e-context-lifetime-portable-checkpoint checkpoint t))
+        (path (e-session-current-path store session-id))
+        (after-boundary nil)
+        (tail nil))
+    (unless (seq-some (lambda (entry)
+                        (equal (plist-get entry :id)
+                               covered-session-boundary))
+                      path)
+      (signal 'e-compaction-error
+              (list "Portable compaction boundary is not on the current path"
+                    covered-session-boundary)))
+    (dolist (entry path)
+      (when after-boundary
+        (when-let ((message (e-session-context-lifetime-durable-message entry)))
+          (push (e-context-lifetime-portable-message message) tail)))
+      (when (equal (plist-get entry :id) covered-session-boundary)
+        (setq after-boundary t)))
+    (let* ((projection (e-session-context-lifetime-projection store session-id))
+           (fact-messages
+            (e-context-lifetime-promotion-fact-messages
+             (plist-get projection :promotions)))
+           (messages (append checkpoint (nreverse tail))))
+      (dolist (fact fact-messages)
+        (unless (member fact messages)
+          (setq messages (append messages
+                                 (list (e-context-lifetime-portable-message
+                                        fact))))))
+      messages)))
+
 (defun e-compaction--portable-boundary-on-path-p
     (store session-id boundary-id)
   "Return non-nil when prepared BOUNDARY-ID remains on SESSION-ID's path."

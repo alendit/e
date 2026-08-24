@@ -19,12 +19,24 @@
   cancel
   metadata)
 
+(cl-defstruct (e-backend-provider-compaction-result
+               (:constructor e-backend-provider-compaction-result-create)
+               (:conc-name e-backend-provider-compaction-result-))
+  "Provider-owned opaque checkpoint output at a portable boundary.
+
+The core deliberately stores no provider state of this type.  The result is
+validated only at the adapter boundary so malformed provider responses fail
+before a runtime candidate can be installed."
+  output
+  usage)
+
 (cl-defstruct (e-backend
                (:constructor e-backend-create)
                (:conc-name e-backend--))
   name
   stream
   start
+  provider-compaction
   normalize-error-details
   context-capabilities)
 
@@ -55,6 +67,12 @@
 
 (define-error 'e-backend-invalid-context-capabilities
   "Invalid provider-neutral backend context capabilities")
+
+(define-error 'e-backend-invalid-provider-compaction-result
+  "Invalid opaque provider compaction result")
+
+(define-error 'e-backend-provider-compaction-unavailable
+  "Opaque provider compaction is unavailable")
 
 (defun e-backend--keyword-plist-p (value)
   "Return non-nil when VALUE is a proper keyword plist."
@@ -186,7 +204,158 @@ values and never provider wire field names."
                         (t declaration))))
     (setq capabilities (or capabilities
                            (e-backend-default-context-capabilities)))
-    (e-backend--validate-context-capabilities capabilities)))
+    (setq capabilities
+          (e-backend--validate-context-capabilities capabilities))
+    (when (and (eq (plist-get capabilities :provider-compaction) 'opaque)
+               (not (functionp (e-backend--provider-compaction backend))))
+      (signal 'e-backend-invalid-context-capabilities
+              (list :provider-compaction 'opaque :missing-operation)))
+    capabilities))
+
+(defconst e-backend--provider-compaction-usage-keys
+  '(:input-tokens :output-tokens :total-tokens)
+  "Bounded usage keys accepted in an opaque compaction result.")
+
+(defun e-backend--provider-compaction-usage (usage)
+  "Return normalized bounded USAGE or signal for malformed usage.
+
+Adapters may use provider-specific response fields internally, but the generic
+result contract exposes only these optional non-negative counters."
+  (when usage
+    (unless (e-backend--keyword-plist-p usage)
+      (signal 'e-backend-invalid-provider-compaction-result
+              (list :usage usage)))
+    (let ((rest usage)
+          (copy (copy-sequence usage)))
+      (while rest
+        (let ((key (pop rest))
+              (value (pop rest)))
+          (unless (memq key e-backend--provider-compaction-usage-keys)
+            (signal 'e-backend-invalid-provider-compaction-result
+                    (list :usage-key key)))
+          (unless (and (integerp value) (>= value 0))
+            (signal 'e-backend-invalid-provider-compaction-result
+                    (list :usage key value)))))
+      copy)))
+
+(defun e-backend--copy-provider-compaction-value (value)
+  "Deep-copy JSON-shaped opaque provider VALUE, preserving vectors.
+
+`copy-tree' does not detach plist elements nested inside vectors.  Provider
+compaction output remains opaque to core policy, but the generic boundary must
+still ensure that later adapter mutation cannot change the installed runtime
+candidate."
+  (cond
+   ((vectorp value)
+    (let ((copy (copy-sequence value)))
+      (cl-loop for index below (length copy) do
+        (aset copy index
+              (e-backend--copy-provider-compaction-value
+               (aref value index)))
+        finally return copy)))
+   ((consp value)
+    (cons (e-backend--copy-provider-compaction-value (car value))
+          (e-backend--copy-provider-compaction-value (cdr value))))
+   ((stringp value)
+    (copy-sequence value))
+   (t value)))
+
+(defun e-backend-provider-compaction-result (value)
+  "Validate and normalize opaque provider compaction VALUE.
+
+VALUE is either an `e-backend-provider-compaction-result' or the narrow
+adapter-facing plist `(:output OUTPUT :usage USAGE)'.  OUTPUT is intentionally
+opaque to core policy, but it must be a detached JSON-array-shaped sequence so
+the adapter cannot accidentally report a scalar/error object as usable state."
+  (let (output usage)
+    (cond
+     ((e-backend-provider-compaction-result-p value)
+      (setq output (e-backend-provider-compaction-result-output value)
+            usage (e-backend-provider-compaction-result-usage value)))
+     ((and (e-backend--keyword-plist-p value)
+           (= (length value) 4)
+           (plist-member value :output)
+           (plist-member value :usage))
+      (setq output (plist-get value :output)
+            usage (plist-get value :usage)))
+     (t
+      (signal 'e-backend-invalid-provider-compaction-result
+              (list :result value))))
+    (unless (or (listp output) (vectorp output))
+      (signal 'e-backend-invalid-provider-compaction-result
+              (list :output output)))
+    (e-backend-provider-compaction-result-create
+     :output (e-backend--copy-provider-compaction-value output)
+     :usage (e-backend--provider-compaction-usage usage))))
+
+(cl-defun e-backend-provider-compaction-batch
+    (backend &key messages options)
+  "Run BACKEND's optional opaque compaction operation synchronously.
+
+The operation receives provider-neutral portable MESSAGES and OPTIONS and
+returns the narrow result accepted by
+`e-backend-provider-compaction-result'.  This is an acceleration path: callers
+must already have committed the canonical portable generation boundary."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error 'e-backend-provider-compaction-batch))
+  (let ((operation (and (e-backend-p backend)
+                        (e-backend--provider-compaction backend))))
+    (unless (functionp operation)
+      (signal 'e-backend-provider-compaction-unavailable
+              (list (and (e-backend-p backend)
+                         (e-backend--name backend)))))
+    (let ((result (funcall operation :messages messages :options options)))
+      (when (e-backend-request-p result)
+        (signal 'e-backend-invalid-provider-compaction-result
+                (list :async-result-in-batch result)))
+      (e-backend-provider-compaction-result result))))
+
+(cl-defun e-backend-provider-compaction-start
+    (backend &key messages options on-done on-error)
+  "Start BACKEND's optional opaque compaction operation asynchronously.
+
+The adapter calls ON-DONE with its result or ON-ERROR with a condition.  A
+small synchronous adapter may return a result directly; this wrapper then
+settles ON-DONE, preserving one result-validation boundary for both forms."
+  (let ((operation (and (e-backend-p backend)
+                        (e-backend--provider-compaction backend))))
+    (unless (functionp operation)
+      (signal 'e-backend-provider-compaction-unavailable
+              (list (and (e-backend-p backend)
+                         (e-backend--name backend)))))
+    (let ((settled nil)
+          request)
+      (cl-labels
+          ((done (value)
+             (unless settled
+               (setq settled t)
+               (condition-case err
+                   (when on-done
+                     (funcall on-done
+                              (e-backend-provider-compaction-result value)))
+                 (error
+                  (if on-error
+                      (funcall on-error err)
+                    (signal (car err) (cdr err)))))))
+           (failed (err)
+             (unless settled
+               (setq settled t)
+               (if on-error
+                   (funcall on-error err)
+                 (signal (car err) (cdr err))))))
+        (condition-case err
+            (setq request
+                  (funcall operation
+                           :messages messages
+                           :options options
+                           :on-done #'done
+                           :on-error #'failed))
+          (error (failed err)))
+        (when (and request
+                   (not (e-backend-request-p request))
+                   (not settled))
+          (done request))
+        request))))
 
 (defvar e-backend--request-start-callback nil
   "Dynamically scoped callback for backend request handles.")
@@ -314,13 +483,15 @@ receives an Emacs condition list.  ON-REQUEST-START receives an optional
             (list 'functionp (e-backend--start backend))))))
 
 (cl-defun e-backend-fake-create
-    (&key name items cancel-function delay context-capabilities)
+    (&key name items cancel-function delay context-capabilities
+          provider-compaction)
   "Create fake backend NAME that streams ITEMS synchronously.
 CANCEL-FUNCTION is attached to the fake request handle when non-nil.
 DELAY controls async fake delivery in seconds.  CONTEXT-CAPABILITIES is an
 optional semantic declaration used by context/anchor tests."
   (e-backend-create
    :name (or name "fake")
+   :provider-compaction provider-compaction
    :context-capabilities context-capabilities
    :stream (cl-function
             (lambda (&key messages options on-item)
