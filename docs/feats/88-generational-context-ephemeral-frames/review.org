@@ -5,11 +5,10 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Tock 05 remediates the two P1 and
-one P2 Slice 2 findings from Implementation Tick 06.  The parent has accepted
-the uncommitted candidate for an exact-revision Tick; Slice 2 is not yet
-fixed-point accepted, Slice 3 remains gated, and this is not final feature
-acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Implementation Tick 07 found two
+additional P1 defects in Slice 2 at
+=a976cc4f8ba406b7a58f4c08107f2ae635714b21=.  Slice 2 is not accepted, Slice 3
+remains gated, and this is not final feature acceptance.
 
 * Tick 01 findings
 
@@ -485,3 +484,75 @@ Tick that clean revision before Slice 3 begins.
 F88.I2.1--F88.I2.3 are candidate-closed.  Slice 3 remains gated until the same
 unattended reviewer accepts the exact clean Tock commit with zero P0--P3
 findings and zero required unknown cells for Slice 2.
+
+* Tick 07 findings
+
+Reviewed exact clean commit
+=a976cc4f8ba406b7a58f4c08107f2ae635714b21= in unattended read-only mode.
+
+Decision: Slice 2 has not reached a fixed point.  There are two P1 findings and
+zero P0, P2, or P3 findings.
+
+** P1 F88.I2.4: refreshed candidates persist under stale projection ownership
+
+The loop correctly fences a response candidate after an incompatible stable
+refresh, but the harness separately collects every raw candidate.  Refresh
+changes only loop-local state; the active harness entry retains the original
+context.  At turn completion the latest raw candidate is therefore persisted
+with fingerprints from that original context.
+
+For =request A -> refresh B -> request B=, =resp-B= can be recorded with
+stable-A fingerprints.  If B emits no candidate, rejected =resp-A= can instead
+be recorded as covering the final B assistant entry.  A later return to A can
+then select provider state that actually inherited B.
+
+*** Owning correction
+
+Make accepted candidate ownership explicit.  Persist only candidates accepted
+after projection-identity comparison, carrying their producing/final projection
+identity or context.  Atomic refresh must also replace the active harness
+entry's authoritative context.  Add real harness persistence tests for stable,
+tool-schema, provider-option, and compaction changes, including later reversion
+to the old fingerprint.
+
+** P1 F88.I2.5: caller-controlled partition proofs bypass fail-closed validation
+
+=:replaceable-current-state-partitioned= bypasses all adapter validation, while
+=:context-segment-message-count= can authorize a partial segment description.
+Both keys flow from ordinary default/session options, and the harness does not
+remove a stale supplied count when exact coverage is absent.  Hostile probes
+therefore placed current state in both top-level instructions and explicit
+input, after which the response remained eligible as a clean anchor.
+
+*** Owning correction
+
+Remove the public partitioned escape; the continuation-delta branch already
+knows lexically when its source is clean.  Treat segment-boundary metadata as
+reserved derived state: strip caller values and recompute it only from exact
+harness context coverage.  Add hostile and stale-option tests for both keys.
+
+** Tick 07 cleared cells
+
+- Atomic refresh of messages, options, segments, frontier, fingerprint, and
+  request-time anchor decision.
+- Replaceable-only =STATE-A= to =STATE-B= continuation and request-time fencing
+  after a stable projection change.
+- Effective first-party endpoint/requester/transport downgrade and explicit
+  custom-profile proof rule.
+- Equal durable content in full and continuation input.
+- Legacy/no-capability and Anthropic regression behavior.
+
+** Tick 07 evidence and disposition
+
+- The reviewer reproduced =resp-B= being associated with stale-A ownership and
+  both hostile partition fields copying current state into explicit input.
+- Focused verification passed 475/475.  The full suite produced 2260 expected
+  results, two existing skips, and zero unexpected results out of 2262.
+- Credentialed OpenAI behavior remained unverified; no credentialed request was
+  attempted in this Tick.
+- HEAD remained exact and clean.  Review made no edits, commits, live Emacs
+  calls, escalation, or approval requests.
+
+Remediate F88.I2.4--F88.I2.5 with the persistent implementer, commit the Tock,
+and return that exact clean revision to the same unattended reviewer.  Slice 3
+remains gated.
