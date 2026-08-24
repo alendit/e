@@ -2374,7 +2374,10 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
              (e-harness-sessions harness)
              "session-1"
              '(:role assistant :content "old answer")))
-           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1"))
+           (anchor-identity
+            (plist-get (plist-get anchor-context :options)
+                       :continuation-projection-identity)))
       (e-session-append-provider-anchor
        (e-harness-sessions harness)
        "session-1"
@@ -2388,11 +2391,13 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
        (e-harness-sessions harness)
        "session-1"
        '(:role user :content "new prompt"))
-      (let ((options (plist-get
-                      (e-harness-context harness "session-1" "turn-2")
-                      :options)))
+      (let* ((context (e-harness-context harness "session-1" "turn-2"))
+             (options (plist-get context :options))
+             (identity (plist-get options
+                                 :continuation-projection-identity)))
         (should (eq (plist-get options :observation-delivery)
                     'request-local-replaceable))
+        (should (equal identity anchor-identity))
         (should (equal (mapcar (lambda (message)
                                  (plist-get message :content))
                                (plist-get options

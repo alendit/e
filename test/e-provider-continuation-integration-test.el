@@ -210,6 +210,106 @@
         (should (equal (alist-get 'output function-output)
                        "fresh state"))))))
 
+(ert-deftest e-provider-continuation-integration-test-refresh-tool-replaces-current-state-atomically ()
+  "A refresh-context tool changes continuation instructions without stale state."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+                process-environment))
+         (e-harness-auto-compaction-enabled nil)
+         (e-openai-model-providers
+          '((refresh-e2e
+             :name "Refresh E2E"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :response-store t
+             :continuation t
+             :observation-delivery request-local-replaceable
+             :responses-context-layout developer-input
+             :requires-openai-auth nil)))
+         (current-state "STATE-A")
+         (requests nil)
+         (call-count 0)
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'refresh-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (harness
+          (e-openai-create-harness
+           :provider 'refresh-e2e
+           :model "gpt-test"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (let ((parsed (json-read-from-string body)))
+                (push parsed requests)
+                (cl-incf call-count)
+                (if (= call-count 1)
+                    (e-provider-continuation-integration--sse
+                     '((type . "response.output_item.done")
+                       (item . ((type . "function_call")
+                                (call_id . "refresh-call")
+                                (name . "refresh-state")
+                                (arguments . "{}"))))
+                     '((type . "response.completed")
+                       (response . ((id . "resp-refresh")
+                                    (status . "completed")))))
+                  (e-provider-continuation-integration--sse
+                   '((type . "response.output_text.done")
+                     (text . "refreshed answer"))
+                   '((type . "response.completed")
+                     (response . ((id . "resp-final")
+                                  (status . "completed"))))))))))))
+    (e-harness-activate-capability
+     harness
+     (e-capability-create
+      :id 'refresh-current-state-capability
+      :instructions "stable policy"
+      :context-providers (list dynamic-provider)
+      :tools
+      (list
+       (lambda (registry)
+         (e-tools-register
+          registry
+          :name "refresh-state"
+          :description "Refresh current state."
+          :work
+          (e-tools-cheap-work
+           "e2e.provider-continuation.refresh-state"
+           (lambda (_arguments)
+             (setq current-state "STATE-B")
+             (e-tools-result-create
+              (plist-get (e-tools-current-context) :tool-call)
+              'ok
+              "state refreshed"
+              '(:refresh-context t)))))))))
+    (e-board-e2e-create-session harness :id "refresh-session")
+    (e-board-e2e-prompt-batch harness "refresh-session" "refresh now")
+    (let* ((ordered (nreverse requests))
+           (first (nth 0 ordered))
+           (second (nth 1 ordered))
+           (second-input (alist-get 'input second))
+           (function-output (aref second-input 0)))
+      (should (= call-count 2))
+      (should (equal (alist-get 'instructions first)
+                     "You are a helpful assistant.\n\nstable policy\n\nSTATE-A"))
+      (should (equal (alist-get 'instructions second)
+                     "You are a helpful assistant.\n\nstable policy\n\nSTATE-B"))
+      (should-not (string-match-p "STATE-A" (json-encode second)))
+      (should (equal (alist-get 'previous_response_id second)
+                     "resp-refresh"))
+      (should (= (length second-input) 1))
+      (should (equal (alist-get 'type function-output)
+                     "function_call_output"))
+      (should (equal (alist-get 'call_id function-output)
+                     "refresh-call"))
+      (should (equal (alist-get 'output function-output)
+                     "state refreshed")))))
+
 (ert-deftest e-provider-continuation-integration-test-fresh-turn-advances-each-tool-response ()
   "A fresh multi-tool turn chains each stored response without replay."
   (let* ((process-environment

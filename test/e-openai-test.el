@@ -421,6 +421,7 @@
                                    request-local-replaceable)
             :replaceable-current-state
             ((:role system :content "Current canvas."))
+            :context-segment-message-count 3
             :segments ,segments))
          (first-body
           (e-openai-codex-request-body
@@ -470,6 +471,93 @@
                     :text)
                    "Static policy."))))
 
+(ert-deftest e-openai-test-replaceable-frontier-does-not-delete-equal-durable-messages ()
+  "Semantic segments retain equal durable messages in full and anchored input."
+  (let* ((same-message '(:role system :content "same value"))
+         (segments `((:kind stable-context
+                      :messages ((:role system :content "stable")))
+                     (:kind history
+                      :messages (,same-message))
+                     (:kind current-state
+                      :messages (,same-message))))
+         (base-options `(:model "gpt-5.6-sol"
+                         :prompt-cache-key "equal-key"
+                         :prompt-cache-breakpoint-mode explicit
+                         :responses-context-layout developer-input
+                         :observation-delivery request-local-replaceable
+                         :context-capabilities
+                         (:observation-delivery request-local-replaceable)
+                         :replaceable-current-state (,same-message)
+                         :context-segment-message-count 3
+                         :segments ,segments))
+         (messages `((:role system :content "stable")
+                     ,same-message
+                     ,same-message
+                     (:role user :content "prompt")))
+         (full (e-openai-codex-request-body
+                :messages messages
+                :options base-options))
+         (anchored (e-openai-codex-request-body
+                    :messages messages
+                    :options
+                    (append base-options
+                            '(:provider-continuation t
+                              :provider-anchor
+                              (:provider-id openai
+                               :metadata (:response-id "resp-equal"
+                                          :prompt-layout-revision
+                                          "responses-explicit-cache-v1"))
+                              :provider-anchor-delta-messages
+                              ((:role system :content "same value"))
+                              :provider-anchor-source-message-count 4)))))
+    ;; The current-state occurrence is represented by the semantic segment;
+    ;; the equal history occurrence remains explicit input.
+    (should (= (cl-count "same value"
+                         (mapcar (lambda (item)
+                                   (plist-get (aref (plist-get item :content) 0)
+                                              :text))
+                                 (append (plist-get full :input) nil))
+                         :test #'equal)
+               1))
+    (should (equal (plist-get anchored :previous_response_id) "resp-equal"))
+    (should (= (cl-count "same value"
+                         (mapcar (lambda (item)
+                                   (plist-get (aref (plist-get item :content) 0)
+                                              :text))
+                                 (append (plist-get anchored :input) nil))
+                         :test #'equal)
+               1))
+    (should (equal (plist-get
+                    (aref (plist-get (aref (plist-get anchored :input) 0)
+                                     :content)
+                          0)
+                    :text)
+                   "same value"))))
+
+(ert-deftest e-openai-test-replaceable-frontier-rejects-ambiguous-partition ()
+  "A non-empty replaceable frontier cannot silently remain explicit input."
+  (dolist (options
+           (list
+            '(:model "gpt-5.6-sol"
+              :responses-context-layout developer-input
+              :observation-delivery request-local-replaceable
+              :replaceable-current-state
+              ((:role system :content "current")))
+            '(:model "gpt-5.6-sol"
+              :responses-context-layout developer-input
+              :observation-delivery request-local-replaceable
+              :replaceable-current-state
+              ((:role system :content "current"))
+              :segments
+              ((:kind stable-context
+                :messages ((:role system :content "stable")))))))
+    (should-error
+     (e-openai-codex-request-body
+      :messages '((:role system :content "stable")
+                  (:role system :content "current"))
+      :options options)
+     :type 'e-openai-context-projection-invalid)))
+
 (ert-deftest e-openai-test-profile-context-capabilities-are-conservative ()
   "Only an explicitly proven OpenAI profile gets replaceable delivery."
   (let ((replaceable
@@ -505,6 +593,83 @@
       :observation-delivery request-local-replacable)
     nil)
    :type 'e-openai-provider-invalid))
+
+(ert-deftest e-openai-test-first-party-capabilities-follow-effective-identity ()
+  "First-party replacement proof does not cross endpoint or transport overrides."
+  (let* ((profile (e-openai-provider-profile 'openai))
+         (canonical (e-openai--profile-context-capabilities
+                     profile nil
+                     :provider 'openai
+                     :request-function nil))
+         (endpoint-override (e-openai--profile-context-capabilities
+                             profile nil
+                             :provider 'openai
+                             :base-url "https://gateway.example.test/v1"))
+         (request-override (e-openai--profile-context-capabilities
+                             profile nil
+                             :provider 'openai
+                             :request-function #'ignore))
+         (transport-override (e-openai--profile-context-capabilities
+                              profile '(:responses-transport http)
+                              :provider 'openai))
+         (custom-profile
+          (plist-put (copy-sequence profile)
+                     :base-url "https://custom.example.test/v1"))
+         (custom-proof (e-openai--profile-context-capabilities
+                        custom-profile nil
+                        :provider 'custom-proven
+                        :request-function #'ignore))
+         (custom-endpoint-override
+          (e-openai--profile-context-capabilities
+           custom-profile nil
+           :provider 'custom-proven
+           :base-url "https://other.example.test/v1"
+           :request-function #'ignore)))
+    (should (eq (plist-get canonical :observation-delivery)
+                'request-local-replaceable))
+    (should (eq (plist-get canonical :continuation) 'linear))
+    (dolist (capabilities (list endpoint-override
+                                request-override
+                                transport-override
+                                custom-endpoint-override))
+      (should (eq (plist-get capabilities :observation-delivery) 'inherited))
+      (should (eq (plist-get capabilities :continuation) 'none)))
+    ;; A named custom profile carries its own endpoint proof and may use the
+    ;; injected requester used by its conformance test.
+    (should (eq (plist-get custom-proof :observation-delivery)
+                'request-local-replaceable))
+    (should (eq (plist-get custom-proof :continuation) 'linear))))
+
+(ert-deftest e-openai-test-first-party-endpoint-override-disables-harness-anchor ()
+  "An effective first-party endpoint override uses stateless harness context."
+  (let* ((process-environment
+          (cons "OPENAI_API_KEY=test-api-token" process-environment))
+         (harness
+          (e-openai-create-harness
+           :provider 'openai
+           :base-url "https://gateway.example.test/v1"
+           :request-function #'ignore))
+         (provider
+          (e-context-provider-create
+           :name 'override-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list '(:role system :content "override state"))))))
+    (e-harness-activate-capability
+     harness
+     (e-capability-create
+      :id 'override-state-capability
+      :context-providers (list provider)))
+    (e-harness-create-session harness :id "override-session")
+    (let* ((context (e-harness-turn-context
+                     harness "override-session" "override-turn"))
+           (options (plist-get context :options)))
+      (should (eq (plist-get options :observation-delivery) 'inherited))
+      (should (eq (plist-get (plist-get options :context-capabilities)
+                            :continuation)
+                  'none))
+      (should (eq (plist-get options :context-rendering-strategy)
+                  'stateless)))))
 
 (ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
   "The safe body for a failed continuation contains the stable marker."

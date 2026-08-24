@@ -5,10 +5,11 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Implementation Tick 06 found two
-P1 and one P2 defects in Slice 2 at
-=2087af0752ee1b8121d0cd32fa72858ce8591139=.  Slice 2 is not accepted, Slice 3
-remains gated, and this is not the final feature acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Tock 05 remediates the two P1 and
+one P2 Slice 2 findings from Implementation Tick 06.  The parent has accepted
+the uncommitted candidate for an exact-revision Tick; Slice 2 is not yet
+fixed-point accepted, Slice 3 remains gated, and this is not final feature
+acceptance.
 
 * Tick 01 findings
 
@@ -445,3 +446,42 @@ continuation paths.
 Remediate F88.I2.1--F88.I2.3 with the persistent implementer, commit the Tock,
 and return that exact clean revision to the same unattended reviewer.  Slice 3
 remains gated.
+
+* Tock 05 candidate disposition
+
+Parent acceptance completed on 2026-08-24.  The exact commit is supplied by the
+semantic commit containing this ledger entry; the same unattended reviewer must
+Tick that clean revision before Slice 3 begins.
+
+- F88.I2.1: the harness now returns one complete refreshed context.  The loop
+  atomically replaces messages and request-derived options before follow-up.
+  A provider-neutral stable projection identity allows same-turn candidate
+  advancement only when the refreshed projection is compatible.  A
+  replaceable-only =STATE-A= to =STATE-B= change advances safely; changes to
+  stable guidance, tools, provider options, or compaction identity preserve the
+  refreshed anchor/stateless decision instead.
+- F88.I2.2: capability resolution now includes effective endpoint and transport
+  identity.  First-party base-URL, requester, or Responses-transport overrides
+  advertise inherited/stateless behavior.  A named custom profile can carry an
+  explicit delivery claim for its own configured endpoint; changing that
+  endpoint still downgrades.
+- F88.I2.3: full request projection removes current state by segment origin and
+  an exact recorded segment boundary, never by structural equality.  An
+  already-partitioned continuation delta is not filtered again.  An ambiguous
+  nonempty frontier fails explicitly rather than contaminating a supposedly
+  clean anchor.
+- Integration coverage runs the real harness, a state-mutating
+  =:refresh-context= tool, loop candidate promotion, and OpenAI renderer.  The
+  second request uses =STATE-B= instructions, contains no =STATE-A=, and retains
+  the required function-call output.
+- Parent focused verification passed 381/381.  The full suite produced 2260
+  expected results, two existing skips, and zero unexpected results out of
+  2262.  The live E2E loader skipped all 16 credentialed tests without backend
+  configuration.  Compile with warnings as errors and diff checks passed.
+- No docs outside this ledger, live Emacs state, or unrelated files were
+  changed.  A full restart is required to activate the core/harness/adapter
+  changes.
+
+F88.I2.1--F88.I2.3 are candidate-closed.  Slice 3 remains gated until the same
+unattended reviewer accepts the exact clean Tock commit with zero P0--P3
+findings and zero required unknown cells for Slice 2.

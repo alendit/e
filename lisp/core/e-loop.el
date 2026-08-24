@@ -117,6 +117,18 @@ results, that the stored response does not contain."
                  :provider-anchor-source-message-count
                  source-message-count))))
 
+(defun e-loop--continuation-projection-compatible-p (request-identity options)
+  "Return non-nil when OPTIONS still describes REQUEST-IDENTITY.
+
+The harness supplies this provider-neutral identity from the semantic request
+projection.  A missing identity is intentionally incompatible after a refresh:
+the loop cannot prove that a response candidate remains valid for an unlabelled
+projection, so it keeps the freshly rebuilt anchor decision instead of
+advancing it with stale provider state."
+  (and request-identity
+       (equal request-identity
+              (plist-get options :continuation-projection-identity))))
+
 (defun e-loop--request-cause-fields (causes)
   "Return stable lifecycle fields for completed tool-call CAUSES."
   (when causes
@@ -187,18 +199,23 @@ CAUSES lists every completed tool call that induced a follow-up request."
 
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-            append-message refresh-messages on-request-start on-done on-error
+            append-message refresh-context refresh-messages on-request-start
+            on-done on-error
             cancelled-p drain-pending-input segments turn-work-handle
             board-enroll-work)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
-ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
-ON-ERROR, CANCELLED-P, and DRAIN-PENDING-INPUT receive turn progress, output,
-refreshed context, provider request handles, settlement, failures,
-cancellation state, and same-turn pending user input.  The provider request is
-started through `e-backend-start'.  Tool execution is started through
-TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
-tool I/O, and turn settlement are callback-driven."
+ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
+ON-DONE, ON-ERROR, CANCELLED-P, and DRAIN-PENDING-INPUT receive turn progress,
+output, refreshed context, provider request handles, settlement, failures,
+cancellation state, and same-turn pending user input.  REFRESH-CONTEXT, when
+supplied, must return one atomic context projection containing at least
+`:messages' and `:options'; its `:segments' and observation metadata must be
+consistent with those options.  REFRESH-MESSAGES is retained as a legacy
+messages-only callback.  The provider request is started through
+`e-backend-start'.  Tool execution is started through TOOL-LIFECYCLE when
+supplied, otherwise through `e-tools-start'.  Provider I/O, tool I/O, and turn
+settlement are callback-driven."
   (let ((turn-messages (copy-sequence messages))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
@@ -251,6 +268,40 @@ tool I/O, and turn settlement are callback-driven."
                 (setq turn-messages (append turn-messages (list message)))
                 (funcall append-message message))
               t)))
+         (apply-context-refresh
+          (projection)
+          ;; Build the replacement values before mutating the loop state.  A
+          ;; context refresh is a request projection, not a messages-only
+          ;; convenience: the next request must see the same options,
+          ;; segments, frontier, and anchor decision as the refreshed
+          ;; messages.
+          (unless (and (listp projection)
+                       (plist-member projection :messages)
+                       (plist-member projection :options))
+            (signal 'wrong-type-argument
+                    (list 'e-loop-context-projection projection)))
+          (let* ((new-messages (copy-tree (plist-get projection :messages)))
+                 (new-options (copy-sequence (plist-get projection :options)))
+                 (new-segments
+                  (if (plist-member projection :segments)
+                      (copy-tree (plist-get projection :segments))
+                    (plist-get new-options :segments)))
+                 (new-frontier
+                  (and (plist-member projection :observation-frontier)
+                       (copy-tree
+                        (plist-get projection :observation-frontier))))
+                 (new-options
+                  (plist-put new-options :session-id session-id)))
+            (when (or (plist-member projection :segments)
+                      (plist-member new-options :segments))
+              (setq new-options
+                    (plist-put new-options :segments new-segments)))
+            (when (plist-member projection :observation-frontier)
+              (setq new-options
+                    (plist-put new-options :observation-frontier
+                               new-frontier)))
+            (setq turn-messages new-messages
+                  turn-options new-options)))
          (start-request
           ()
           (unless (or settled (cancelled))
@@ -272,7 +323,11 @@ tool I/O, and turn settlement are callback-driven."
                   (provider-request-ordinal nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
-                  (provider-request-causes next-request-causes))
+                  (provider-request-causes next-request-causes)
+                  (provider-request-projection-identity
+                   (plist-get turn-options
+                              :continuation-projection-identity))
+                  (context-refreshed-p nil))
               (cl-labels
                   ((response-text ()
                      (or response-assistant-message
@@ -310,9 +365,13 @@ tool I/O, and turn settlement are callback-driven."
                         provider-request-ordinal
                         provider-request-started-at
                         provider-request-causes))))
-                   (promote-provider-anchor
-                    ()
-                    (when provider-anchor-candidate
+                  (promote-provider-anchor
+                   ()
+                    (when (and provider-anchor-candidate
+                               (or (not context-refreshed-p)
+                                   (e-loop--continuation-projection-compatible-p
+                                    provider-request-projection-identity
+                                    turn-options)))
                       (setq turn-options
                             (e-loop--promote-continuation-candidate
                              turn-options
@@ -377,10 +436,23 @@ tool I/O, and turn settlement are callback-driven."
                          :type 'tool-finished
                          :payload (list :tool-call tool-call
                                         :result result)))
-                      (when (and refresh-messages
-                                 (plist-get (plist-get result :metadata)
-                                            :refresh-context))
-                        (setq turn-messages (funcall refresh-messages)))
+                      (when (plist-get (plist-get result :metadata)
+                                       :refresh-context)
+                        (cond
+                         (refresh-context
+                          (apply-context-refresh (funcall refresh-context))
+                          (setq context-refreshed-p t))
+                         (refresh-messages
+                          ;; Compatibility for callers that have not yet
+                          ;; adopted the atomic projection contract.
+                          (apply-context-refresh
+                           (list :messages (funcall refresh-messages)
+                                 :options turn-options
+                                 :segments (plist-get turn-options :segments)
+                                 :observation-frontier
+                                 (plist-get turn-options
+                                            :observation-frontier)))
+                          (setq context-refreshed-p t))))
                       (setq next-request-causes
                             (append next-request-causes (list tool-call)))
                       (start-next-tool)
@@ -673,12 +745,15 @@ tool I/O, and turn settlement are callback-driven."
 
 (cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-            append-message refresh-messages on-request-start segments turn-work-handle
+            append-message refresh-context refresh-messages on-request-start
+            segments turn-work-handle
             board-enroll-work)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
-and REFRESH-MESSAGES define the turn context and output callbacks.
+REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context and output
+callbacks.  REFRESH-CONTEXT returns one atomic request projection; the
+messages-only callback remains for compatibility.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
 one."
   (when (e-request-hot-path-active-p)
@@ -699,6 +774,7 @@ one."
      :segments segments
      :on-event on-event
      :append-message append-message
+     :refresh-context refresh-context
      :refresh-messages refresh-messages
      :on-request-start on-request-start
      :on-done (lambda (value)

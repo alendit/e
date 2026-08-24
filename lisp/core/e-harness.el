@@ -2206,10 +2206,13 @@ turn context work."
          (e-harness--context-observation-frontier
           context
           context-capabilities)
-         (e-harness--context-with-provider-anchor
-          harness
-          session-id
-          context))))))
+         (e-harness--context-with-segment-message-boundary context)
+         (setq context
+               (e-harness--context-with-provider-anchor
+                harness
+                session-id
+                context))
+         (e-harness--context-with-continuation-projection-identity context))))))
 
 (defun e-harness-turn-context (harness session-id turn-id)
   "Return correctness-critical model context for TURN-ID.
@@ -2787,6 +2790,27 @@ remain ordinary input and make an anchor unsafe to advance."
     (plist-put context :observation-frontier frontier)
     context))
 
+(defun e-harness--context-with-segment-message-boundary (context)
+  "Attach the exact context-prefix length represented by CONTEXT segments.
+
+OpenAI's request-local frontier partition is allowed to leave later in-turn
+tool/result messages outside the original context prefix.  Recording that
+boundary lets the adapter distinguish those legitimate suffixes from a
+partial/ambiguous segment description and fail closed in the latter case."
+  (let* ((messages (plist-get context :messages))
+         (segments (plist-get context :segments))
+         (segment-message-count
+          (cl-loop for segment in segments
+                   sum (length (plist-get segment :messages)))))
+    (when (= segment-message-count (length messages))
+      (let ((options (copy-sequence (plist-get context :options))))
+        (plist-put context
+                   :options
+                   (plist-put options
+                              :context-segment-message-count
+                              segment-message-count))))
+    context))
+
 (defun e-harness--provider-anchor-fingerprints (context)
   "Return JSON-stable provider-relevant fingerprints from CONTEXT."
   (let* ((options (plist-get context :options))
@@ -2847,6 +2871,34 @@ remain ordinary input and make an anchor unsafe to advance."
                        :current-state-fingerprint
                        (plist-get options :current-state-fingerprint))))
     fingerprints))
+
+(defun e-harness--context-with-continuation-projection-identity (context)
+  "Attach the stable continuation identity for CONTEXT's request projection.
+
+The identity describes the semantic input that a provider continuation stores:
+stable segments, active tools/layers, provider options, compaction boundary, and
+capabilities.  A proven request-local current-state frontier is deliberately
+excluded by `e-harness--provider-anchor-fingerprints'.  The loop uses this
+opaque provider-neutral value to fence a response candidate when a same-turn
+refresh changes the projection that produced it."
+  (let* ((options (copy-sequence (plist-get context :options)))
+         (capabilities (plist-get options :context-capabilities))
+         (identity
+          (list
+           :provider-anchor-provider-id
+           (plist-get options :provider-anchor-provider-id)
+           :model (plist-get options :model)
+           :provider-continuation
+           (plist-get options :provider-continuation)
+           :context-capabilities
+           (copy-tree capabilities)
+           :provider-anchor-fingerprints
+           (e-harness--provider-anchor-fingerprints context))))
+    (plist-put context
+               :options
+               (plist-put options
+                          :continuation-projection-identity
+                          identity))))
 
 (defun e-harness--provider-anchor-compaction-boundary (harness session-id)
   "Return provider-anchor compatibility data for latest compaction boundary."
@@ -3155,10 +3207,12 @@ inherited."
         :cancelled-p cancelled-p
         :on-done on-done
         :on-error on-error
-        :refresh-messages
+        :refresh-context
         (lambda ()
-          (plist-get (e-harness-turn-context harness session-id turn-id)
-                     :messages))
+          ;; A context refresh is atomic at the loop boundary: messages and
+          ;; all request-derived options (segments, observation frontier, and
+          ;; anchor decision) come from one fresh harness projection.
+          (e-harness-turn-context harness session-id turn-id))
         :drain-pending-input
         (or drain-pending-input
             (lambda ()

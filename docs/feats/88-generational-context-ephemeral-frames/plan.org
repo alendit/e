@@ -660,11 +660,21 @@ required before Slice 3.
   persistence all require an advertised semantic continuation capability.
 - Bounded request diagnostics report delivery, rendering strategy, fingerprint,
   and anchor safety without retaining the observation frontier or its content.
-- Parent verification passed 468/468 focused backend, context, harness, loop,
-  session, OpenAI, Anthropic, and continuation-integration tests.  The full
-  suite produced 2253 expected results, the same two existing skips, and zero
-  unexpected results out of 2255.  The credential-gated live E2E file loaded
-  with all 16 tests skipped because no live backend was enabled.
+- Tick 06 remediation made same-turn context refresh atomic.  A stable
+  provider-neutral projection identity permits candidate advancement across a
+  replaceable-only state change but fences the old response when stable
+  segments, tools, provider options, or the compaction boundary changed.
+- Effective endpoint and transport identity now gates the first-party OpenAI
+  replacement claim.  Endpoint/requester overrides fall back conservatively;
+  a named custom profile may carry an explicit proof for its own endpoint.
+- OpenAI removes current state by semantic segment position, retains equal
+  durable messages and already-partitioned continuation deltas, and fails
+  explicitly when a nonempty frontier has no unambiguous origin partition.
+- Parent verification after Tock 05 passed 381/381 focused backend, context,
+  harness, loop, OpenAI, Anthropic, and continuation-integration tests.  The
+  full suite produced 2260 expected results, the same two existing skips, and
+  zero unexpected results out of 2262.  The credential-gated live E2E file
+  loaded with all 16 tests skipped because no live backend was enabled.
   =eldev compile --warnings-as-errors= and =git diff --check= passed.
 - The user's running Emacs was left unchanged.  The core/harness/session/adapter
   changes require a full restart before they can affect it.

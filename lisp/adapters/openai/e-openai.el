@@ -31,6 +31,8 @@
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
 (define-error 'e-openai-provider-invalid "OpenAI provider profile is invalid")
+(define-error 'e-openai-context-projection-invalid
+  "OpenAI context projection is ambiguous")
 (define-error 'e-openai-request-timeout "OpenAI/Codex request timed out")
 
 (defconst e-openai--retryable-error-patterns
@@ -714,16 +716,61 @@ fallback, because selecting replacement changes continuation safety."
                               delivery))))
       delivery)))
 
-(defun e-openai--profile-context-capabilities (profile options)
+(defun e-openai--context-base-url-equal-p (left right)
+  "Return non-nil when provider base URLs LEFT and RIGHT identify one endpoint."
+  (and (stringp left)
+       (stringp right)
+       (equal (string-remove-suffix "/" left)
+              (string-remove-suffix "/" right))))
+
+(cl-defun e-openai--profile-context-capabilities
+    (profile options &key provider base-url request-function)
   "Return provider-neutral context capabilities for PROFILE and OPTIONS.
 
 Only explicit profile evidence can select a request-local replaceable
 observation channel.  The adapter owns this profile/transport decision; the
-harness sees only the normalized semantic values."
+harness sees only the normalized semantic values.  BASE-URL and
+REQUEST-FUNCTION describe the effective backend identity.  A built-in
+first-party claim is not carried across an endpoint or transport override;
+named custom profiles may retain their own explicit proof while using an
+injected requester for conformance tests."
   (let* ((wire-api (e-openai--provider-wire-api profile))
          (declared-delivery (e-openai--profile-observation-delivery profile))
+         (profile-base-url (plist-get profile :base-url))
+         (profile-transport
+          (and (eq wire-api 'responses)
+               (e-openai--profile-responses-transport profile)))
+         (requested-transport
+          (and (plist-member options :responses-transport)
+               (plist-get options :responses-transport)))
+         (endpoint-compatible
+          (or (null base-url)
+              (e-openai--context-base-url-equal-p
+               base-url profile-base-url)))
+         (transport-compatible
+          (or (null requested-transport)
+              (eq requested-transport profile-transport)))
+         ;; The built-in OpenAI profile's proof is tied to the first-party
+         ;; Responses endpoint and its configured transport.  Its injectable
+         ;; requester is an effective transport override, whereas a named
+         ;; custom profile is allowed to use an injected requester in its own
+         ;; conformance tests.
+         (first-party-transport-compatible
+          (or (not (eq provider 'openai))
+              (and (not request-function)
+                   (eq profile-transport 'websocket))))
+         (first-party-profile-compatible
+          (or (not (eq provider 'openai))
+              (e-openai--context-base-url-equal-p
+               profile-base-url e-openai-api-default-base-url)))
+         (identity-compatible
+          (and endpoint-compatible
+               transport-compatible
+               first-party-transport-compatible
+               first-party-profile-compatible))
          (observation-delivery
-          (if (and (eq wire-api 'responses)
+          (if (and identity-compatible
+                   (eq wire-api 'responses)
                    (eq declared-delivery 'request-local-replaceable))
               'request-local-replaceable
             'inherited))
@@ -736,7 +783,8 @@ harness sees only the normalized semantic values."
            ((plist-get options :prompt-cache-key) 'implicit)
            (t 'none))))
     (list :continuation
-          (if (e-openai--profile-continuation-supported-p profile)
+          (if (and identity-compatible
+                   (e-openai--profile-continuation-supported-p profile))
               'linear
             'none)
           :observation-delivery observation-delivery
@@ -997,21 +1045,48 @@ replaceable channel from a raw system-message role."
     (messages options)
   "Return MESSAGES without the request-local current-state frontier.
 
-This removes one matching occurrence per frontier message, preserving any
-equal text that independently belongs to durable transcript history."
-  (let ((remaining
-         (copy-tree
-          (e-openai-codex--replaceable-current-state-messages options))))
-    (if (null remaining)
-        messages
-      (let (result)
-        (dolist (message messages (nreverse result))
-          (let ((match (seq-position remaining message #'equal)))
-            (if match
-                (setq remaining
-                      (append (seq-take remaining match)
-                              (seq-drop remaining (1+ match))))
-              (push message result))))))))
+The semantic segment layout, rather than structural message equality, identifies
+which positions belong to the frontier.  This is important when a durable
+history/delta message has the same role and content as the current observation.
+Callers without segments cannot prove the partition and therefore signal an
+explicit projection error instead of deleting an equal durable message by
+guesswork or copying the frontier into explicit input.  Callers that already
+removed the frontier may set `:replaceable-current-state-partitioned'."
+  (let* ((replaceable-p
+          (eq (e-openai-codex--observation-delivery options)
+              'request-local-replaceable))
+         (frontier-messages
+          (e-openai-codex--replaceable-current-state-messages options))
+         (segments (plist-get options :segments)))
+    (cond
+     ((not replaceable-p) messages)
+     ((null frontier-messages) messages)
+     ((plist-get options :replaceable-current-state-partitioned)
+      messages)
+     ((null segments)
+      (signal 'e-openai-context-projection-invalid
+              '("A non-empty replaceable frontier has no segment partition")))
+     (t
+      (let ((index 0)
+            (frontier-indices nil)
+            (segment-message-count
+             (plist-get options :context-segment-message-count)))
+        (dolist (segment segments)
+          (dolist (_message (plist-get segment :messages))
+            (when (memq (plist-get segment :kind)
+                        '(current-state dynamic-context))
+              (push index frontier-indices))
+            (setq index (1+ index))))
+        (unless (or (= index (length messages))
+                    (and (integerp segment-message-count)
+                         (= index segment-message-count)
+                         (<= segment-message-count (length messages))))
+          (signal 'e-openai-context-projection-invalid
+                  '("Replaceable frontier segments do not cover the request prefix")))
+        (cl-loop for message in messages
+                 for message-index from 0
+                 unless (memq message-index frontier-indices)
+                 collect message))))))
 
 (defun e-openai-codex--instructions (messages options)
   "Return top-level Codex instructions from MESSAGES and OPTIONS."
@@ -1020,6 +1095,12 @@ equal text that independently belongs to durable transcript history."
          (current
           (e-openai-codex--replaceable-current-state-content options))
          (layout (e-openai-codex--prompt-layout-revision options)))
+    ;; Validate the semantic partition even when the segmented instruction
+    ;; branch can otherwise derive stable system text without filtering input.
+    ;; This prevents an absent/partial segment list from silently duplicating a
+    ;; non-empty request-local frontier in explicit input.
+    (when current
+      (e-openai-codex--remove-replaceable-current-state messages options))
     (cond
      ;; In segmented GPT-5.6 layouts stable system guidance remains a
      ;; developer-input prefix.  The current value is the only changing
@@ -1094,8 +1175,13 @@ equal text that independently belongs to durable transcript history."
          (source (if (and response-id (listp delta-messages))
                      (append delta-messages in-turn-messages)
                    messages))
-         (source (e-openai-codex--remove-replaceable-current-state
-                  source options)))
+         ;; A harness-built continuation delta is already partitioned at the
+         ;; semantic boundary and contains no request-local replacement.  Do
+         ;; not structurally re-filter it: equal durable deltas must survive.
+         (source (if (and response-id (listp delta-messages))
+                     source
+                   (e-openai-codex--remove-replaceable-current-state
+                    source options))))
     (if (e-openai-codex--prompt-layout-revision options)
         source
       (seq-remove #'e-openai-codex--system-message-p source))))
@@ -2990,7 +3076,10 @@ default when turn options do not include `:model'.  The provider profile's
        (lambda (options)
          (e-openai--profile-context-capabilities
           (e-openai-provider-profile provider)
-          options))
+          options
+          :provider provider
+          :base-url base-url
+          :request-function request-function))
        :stream
        (cl-function
         (lambda (&key messages options on-item)

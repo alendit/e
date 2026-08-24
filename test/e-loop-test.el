@@ -750,6 +750,184 @@
     (should (= calls 2))
     (should (equal second-request-messages refreshed-messages))))
 
+(ert-deftest e-loop-test-context-refresh-applies-one-atomic-request-projection ()
+  "A context refresh updates messages and all request metadata together."
+  (let* ((calls 0)
+         second-request-messages
+         second-request-options
+         (initial-segments
+          '((:kind current-state
+             :messages ((:role system :content "STATE-A")))))
+         (refreshed-segments
+          '((:kind current-state
+             :messages ((:role system :content "STATE-B")))))
+         (backend (e-backend-create
+                   :name "fake-atomic-refresh"
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (setq calls (1+ calls))
+                      (if (= calls 1)
+                          (progn
+                            (funcall on-item
+                                     '(:type tool-call
+                                       :id "call-refresh"
+                                       :name "refreshing_tool"
+                                       :arguments nil))
+                            (funcall on-item '(:type done :reason tool-use)))
+                        (setq second-request-messages messages
+                              second-request-options options)
+                        (funcall on-item
+                                 '(:type assistant-message :content "done"))
+                        (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "refreshing_tool"
+     :description "Refresh context."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "refreshed"
+        '(:refresh-context t))))
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role system :content "STATE-A")
+                 (:role user :content "prompt"))
+     :backend backend
+     :tools tools
+     :options '(:state "A")
+     :segments initial-segments
+     :on-event #'ignore
+     :append-message #'ignore
+     :refresh-context
+     (lambda ()
+       (list :messages '((:role system :content "STATE-B")
+                         (:role user :content "prompt")
+                         (:role tool :content "refreshed"))
+             :options '(:state "B"
+                        :observation-delivery request-local-replaceable
+                        :current-state-fingerprint "fp-b")
+             :segments refreshed-segments
+             :observation-frontier
+             '(:delivery request-local-replaceable
+               :fingerprint "fp-b"))))
+    (should (= calls 2))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           second-request-messages)
+                   '("STATE-B" "prompt" "refreshed")))
+    (should (equal (plist-get second-request-options :state) "B"))
+    (should (equal (plist-get (car (plist-get second-request-options :segments))
+                             :messages)
+                   '((:role system :content "STATE-B"))))
+    (should (equal (plist-get second-request-options
+                              :current-state-fingerprint)
+                   "fp-b"))))
+
+(ert-deftest e-loop-test-refresh-fences-candidate-after-stable-projection-change ()
+  "A stale response candidate cannot overwrite a refreshed stable decision."
+  (let* ((calls 0)
+         second-request-messages
+         second-request-options
+         (backend (e-backend-create
+                   :name "fake-refresh-fence"
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (setq calls (1+ calls))
+                      (if (= calls 1)
+                          (progn
+                            (funcall on-item
+                                     '(:type provider-anchor-candidate
+                                       :provider-id openai
+                                       :metadata (:response-id "stale-candidate")))
+                            (funcall on-item
+                                     '(:type tool-call
+                                       :id "call-refresh-fence"
+                                       :name "refreshing_tool"
+                                       :arguments nil))
+                            (funcall on-item '(:type done :reason tool-use)))
+                        (setq second-request-messages messages
+                              second-request-options options)
+                        (funcall on-item
+                                 '(:type assistant-message :content "done"))
+                        (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "refreshing_tool"
+     :description "Refresh stable projection."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "refreshed"
+        '(:refresh-context t))))
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role system :content "STABLE-A")
+                 (:role system :content "STATE-A")
+                 (:role user :content "prompt"))
+     :backend backend
+     :tools tools
+     :options '(:provider-continuation t
+                :provider-anchor-provider-id openai
+                :context-capabilities
+                (:continuation linear
+                 :observation-delivery request-local-replaceable)
+                :observation-delivery request-local-replaceable
+                :provider-anchor
+                (:provider-id openai
+                 :metadata (:response-id "prior-anchor"))
+                :continuation-projection-identity (:stable-prefix "A"))
+     :segments '((:kind stable-context
+                  :messages ((:role system :content "STABLE-A")))
+                 (:kind current-state
+                  :messages ((:role system :content "STATE-A"))))
+     :on-event #'ignore
+     :append-message #'ignore
+     :refresh-context
+     (lambda ()
+       (list :messages '((:role system :content "STABLE-B")
+                         (:role system :content "STATE-B")
+                         (:role user :content "prompt")
+                         (:role tool :content "refreshed"))
+             :options '(:provider-continuation t
+                        :provider-anchor-provider-id openai
+                        :context-capabilities
+                        (:continuation linear
+                         :observation-delivery request-local-replaceable)
+                        :observation-delivery request-local-replaceable
+                        :provider-anchor
+                        (:provider-id openai
+                         :metadata (:response-id "fresh-anchor"))
+                        :context-rendering-strategy stateless
+                        :continuation-projection-identity
+                        (:stable-prefix "B"))
+             :segments '((:kind stable-context
+                          :messages ((:role system :content "STABLE-B")))
+                         (:kind current-state
+                          :messages ((:role system :content "STATE-B"))))
+             :observation-frontier
+             '(:delivery request-local-replaceable
+               :fingerprint "state-b"))))
+    (should (= calls 2))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           second-request-messages)
+                   '("STABLE-B" "STATE-B" "prompt" "refreshed")))
+    (should (equal (plist-get (plist-get second-request-options
+                                          :provider-anchor)
+                              :metadata)
+                   '(:response-id "fresh-anchor")))
+    (should (eq (plist-get second-request-options
+                           :context-rendering-strategy)
+                'stateless))))
+
 (ert-deftest e-loop-test-tool-lifecycle-prepares-call-before-append ()
   "The tool lifecycle can transform a call before the loop appends it."
   (let* ((calls 0)
