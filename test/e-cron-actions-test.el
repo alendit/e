@@ -20,7 +20,16 @@
          (e-board--registry (make-hash-table :test 'equal))
          (e-board--id-sequence 0)
          (e-board-registry--boards (make-hash-table :test 'equal))
+         (e-board-registry--board-index
+          (avl-tree-create
+           (lambda (left right) (string< (car left) (car right)))))
          (e-board-registry--id-sequence 0)
+         (e-board-registry--unsettled-pickup-count 0)
+         (e-board-registry--unsettled-effect-count 0)
+         (e-board-registry--unsettled-routing-count 0)
+         (e-board-registry--unsettled-generation 0)
+         (e-board-registry--unsettled-change-function nil)
+         (e-board-registry--unsettled-change-functions nil)
          (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
          (e-board-runtime--producer-epoch 0)
          (e-board-runtime--producer-head nil)
@@ -38,6 +47,40 @@
               (,binding (e-board-runtime-producer-bind
                          'cron-test ,board :tags '(scheduled))))
          ,@body))))
+
+(ert-deftest e-cron-actions-test-private-registry-does-not-reset-outer-routing ()
+  "A private cron fixture cannot reset an outer board's routing aggregate."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index
+         (avl-tree-create
+          (lambda (left right) (string< (car left) (car right)))))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-registry--unsettled-change-function nil)
+        (e-board-registry--unsettled-change-functions nil))
+    (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+      (let* ((outer (e-board-registry-create :id "outer-board"))
+             (source (e-board-registry-board-source-board outer)))
+        (e-board-post-output
+         source :id "outer-output" :author "outer" :tags '(main)
+         :content "pending" :source-output-key '(outer output 0))
+        (let ((before (e-board-registry-unsettled-state)))
+          (should (= (plist-get before :routing) 1))
+          (e-cron-actions-test--with-board (inner _binding)
+            (should (= (plist-get (e-board-registry-unsettled-state)
+                                  :routing)
+                       0)))
+          (should (equal (e-board-registry-unsettled-state) before))
+          (should (eq (e-board-registry-get "outer-board") outer))
+          (e-board-drain-input-classifications source)
+          (should (= (plist-get (e-board-registry-unsettled-state)
+                                :routing)
+                     0)))))))
 
 (ert-deftest e-cron-actions-test-register-requires-live-binding ()
   "Schedule registration fails visibly without a current board binding."

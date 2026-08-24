@@ -1,0 +1,46 @@
+#+title: Cron Test Registry Isolation
+
+* Status
+
+Done.
+
+* Change
+
+Keep the cron-action test fixture's private board table coherent with a private
+board index and private unsettled aggregate state.  Previously the fixture
+replaced only the table, so creating its first board reset process-wide counters
+that still belonged to an outer board.  Delayed outer routing decrements then
+made later, otherwise unrelated tests fail with negative board counts.
+
+Add a regression that leaves one outer route pending, enters and exits the cron
+fixture, proves the outer registry state is unchanged, then drains the route to
+zero.  No production behavior changes.
+
+This is tiny because the defect and correction are confined to one test fixture
+and one focused isolation test.
+
+* Validation
+
+- Cron actions: 5/5 passed.
+- Cron, Modernchat, and org-canvas order-sensitive run: 99/99 passed.
+- Full Eldev suite: 2,310 expected passes, zero unexpected results, two known
+  skips (2,312 tests total).
+- =git diff --check= passes.
+
+* Architecture self-check
+
+1. The package is independently useful because the full suite is deterministic.
+2. It moves toward explicit, owner-coherent process-local runtime state.
+3. No product decision or speculative extension point is introduced.
+4. The cron test fixture owns every part of the registry state it replaces.
+5. Test coupling is reduced; production interfaces are unchanged.
+6. No dependency direction changes.
+7. No production side effect moves or is added.
+8. Only dynamically scoped test state is added, with fixture lifetime.
+9. Runtime performance is unchanged.
+10. No abstraction or interface is added.
+11. No compatibility behavior changes.
+12. No production legacy path is created or retained.
+13. Expected test cleanup stays local; unexpected board-accounting errors surface.
+14. The focused regression proves the state boundary; the full suite proves the
+    former downstream failures remain green.
