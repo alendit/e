@@ -5,118 +5,189 @@
 
 In-progress.
 
+This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
+semantic context visibility, explicit promotion, and cache-safe continuation
+on normal successful turns.  It does not make external tool follow-up a
+durable transaction system.  The earlier design mixed model-visible lifetime
+with recovery of interrupted side effects; the latter belongs with the planned
+SQLite persistence and atomic-transition work.
+
 * Goal
 
-Make model context a provider-neutral state projection with three explicit
-model-visible lifetimes: an immutable checkpoint for one generation, an
-append-only durable tail, and one-transition ephemeral observation frames.
-Large addressable data remains outside model context behind existing resource
-and context-reference handles until explicitly retrieved; that delivery mode is
-not a fourth frame state.
-
-The result should preserve hot reusable prefixes on ordinary turns, prevent
-canvas snapshots and bulky tool observations from becoming permanent causal
-history, and pay the cold-cache cost only at deliberate generation boundaries.
-
-* Problem
-
-The current context model distinguishes stable and dynamic placement, but not
-durable and ephemeral lifetime.
-
-Today a request is approximately:
+Make model context a provider-neutral projection with three model-visible
+lifetime classes:
 
 #+begin_example
-[static][stable][current canvas][durable transcript]
+immutable checkpoint C
+  + append-only durable tail D
+  + one reasoning-frontier observation E
 #+end_example
 
-That ordering gives a provider a cache-friendly stable prefix.  It does not
-make =current canvas= replaceable in the provider's retained causal state.  If
-an adapter advances =previous_response_id= after a request containing canvas
-snapshot =E1=, a later request containing =E2= is effectively:
-
-#+begin_example
-A -> B -> E1 -> response-1 -> | provider anchor |
-                                  \
-                                   E2 -> response-2
-#+end_example
-
-The instruction that =E2= supersedes =E1= helps model behavior, but does not
-remove =E1= from the transformer's inherited context.  Tool results have the
-same problem more directly: their complete bodies are journaled as transcript
-messages and remain in later model projections until compaction.
-
-Existing compaction is useful but solves a different problem.  It occasionally
-replaces an old transcript prefix with a readable continuation summary.  It
-does not prevent high-volume observations from entering that prefix in the
-first place, and running it every turn would sacrifice cache reuse and add a
-summary call to the hot path.
-
-The missing protocol is therefore:
+The protocol is:
 
 #+begin_example
 observe -> consume -> promote selected information -> forget observation
 #+end_example
 
-rather than:
+Large addressable data remains outside context behind existing resource and
+context-reference handles until explicitly retrieved.  The feature preserves
+the existing tool and provider-follow-up lifecycle on successful turns while
+preventing a useful observation from becoming permanent causal history.
+Provider continuation accelerates this projection; local semantic state stays
+authoritative and can always rebuild a request.
+
+* Scope revision
+
+The former plan proposed journaled tool admission, dispatch, result, frame
+closure, and restart recovery.  That proposal is removed from Feature 88.  In
+particular, this feature does not add:
+
+- lifecycle durability or crash recovery for tool follow-ups;
+- admission, dispatch, result, or settlement journals;
+- recovery state machines;
+- exactly-once semantics for arbitrary external effects;
+- a transactional outbox;
+- acceptance that requires recovery after every append; or
+- an interim abstraction whose main purpose is making the append-only journal
+  transactional.
+
+Frame state may be in memory for the normal successful turn.  An existing
+session identity may be retained when it is already required for audit or
+projection, but the feature must not invent a restart guarantee for an
+in-flight tool.  SQLite persistence and atomic transitions may provide that
+guarantee in a later, separately owned design.
+
+Test disposition follows the boundary:
+
+- retain visibility, promotion, projection, anchor, and adapter-capability
+  tests;
+- strengthen successful-turn tests for observation disappearance and selected
+  fact retention;
+- replace transaction-oriented tests with normal successful-turn context
+  tests; and
+- remove tests whose acceptance depends on recovering a tool follow-up after a
+  crash or on per-append acknowledgement.
+
+* Problem
+
+The current context model distinguishes stable and dynamic placement, but not
+durable and ephemeral lifetime.  A request is approximately:
 
 #+begin_example
-observe -> append forever
+[static][stable][current canvas][durable transcript]
 #+end_example
+
+That can be cache-friendly while still making the canvas part of inherited
+provider state.  If an adapter advances an anchor after snapshot =E1=, a later
+snapshot =E2= leaves =E1= in the inherited causal history:
+
+#+begin_example
+A -> B -> E1 -> response-1 -> | anchor |
+                                  \
+                                   E2 -> response-2
+#+end_example
+
+Newer instructions can tell the model that =E2= supersedes =E1=, but cannot
+remove =E1= from transformer state.  Tool results have the same problem when
+their complete bodies are copied into durable transcript context.  Existing
+compaction solves occasional transcript replacement, not prevention of
+high-volume observations entering the reusable prefix.
 
 * Context lifetime model
 
-The names describe logical model-context lifetime.  They do not describe how
-long an audit record remains on disk, and =ephemeral= here is unrelated to a
-provider's prompt-cache =cache_control= vocabulary.
+These names describe logical model visibility, not storage retention, and
+=ephemeral= is unrelated to provider prompt-cache vocabulary.
 
 | Lifetime | Meaning | Examples |
 |----------+---------+----------|
 | =CHECKPOINT= | Immutable semantic baseline for one generation | compacted continuation, current goal, established decisions |
-| =DURABLE= | Append-only delta reused by later invocations in the same generation | user intent, assistant decisions, promoted facts |
-| =EPHEMERAL= | Observation available to one reasoning transition and then absent unless promoted | tool output, trace, canvas snapshot, large source excerpt |
-| =EXTERNAL HANDLE= | Existing resource/reference delivery mode, not a frame lifetime; resolving a handle creates a bounded ephemeral observation | full traces, source indexes, runtime objects |
+| =DURABLE= | Append-only semantic information reused later | user intent, assistant decisions, promoted facts |
+| =EPHEMERAL= | Observation visible at one reasoning frontier unless promoted | tool output, trace, canvas snapshot, large source excerpt |
+| =EXTERNAL HANDLE= | Existing reference delivery mode; resolving it creates a bounded observation | full traces, source indexes, runtime objects |
 
-The three lifetimes classify session-derived causal context.  They do not
-replace the accepted request-time =static-prefix= and =stable-context=
-segments.  The complete semantic request is:
+External handles are not a fourth frame state.  A semantic request is:
 
 #+begin_example
 active static-prefix + active stable-context
 + generation checkpoint + durable tail + open observation frame
 #+end_example
 
-=e-capabilities= continues to rebuild =static-prefix= and =stable-context= from
-the active capability set for each request.  They are not copied into generation
-records or promotions.  Their fingerprints participate in anchor compatibility:
-a changed capability instruction or stable provider segment appears on the next
-request and invalidates or rebuilds an incompatible anchor without requiring
-compaction or mutating the generation checkpoint.  Current-state segments move
-to the ephemeral observation frontier.
+=e-capabilities= rebuilds the static and stable segments per request.  They are
+not copied into promotions, but their fingerprints participate in anchor
+compatibility.  Current-state segments belong to the observation frontier.
 
-=e-session= remains the canonical audit history.  A consumed ephemeral record
-may remain in the journal for replay, diagnosis, or export while being absent
-from future model context.  Storage durability and model-context durability
-must not be represented by one overloaded flag.
+Every frontier item has a semantic kind, stable observation identity, source
+fingerprint, and an effective delivery mode.  Delivery is therefore a
+kind-scoped query, not one scalar property of the whole request:
 
-Within generation =G17=, logical state is:
+| Kind | Typical item | Effective delivery must be proven per profile |
+|------+--------------+-----------------------------------------------|
+| =current-state= | canvas/current value | =request-local-replaceable= only when the adapter proves it |
+| =dynamic-context= | refreshed subscription/context value | =request-local-replaceable= only when the adapter proves it |
+| =tool-result= | ordinary tool output | =inherited= unless separately conformed |
+| =trace= | diagnostic or execution trace | =inherited= unless separately conformed |
+| =retrieved-excerpt= | bounded source excerpt | =inherited= unless separately conformed |
+
+The core query returns this mapping and each item's effective mode.  It never
+infers that replacing a canvas also replaces a tool result, trace, or excerpt.
+
+=e-session= is the canonical session transcript and current-branch path.  It is
+the only durable body source.  An observation may remain there for
+diagnosis/export while being absent from later model context; runtime frame
+state never becomes a second durable body store.  Durable tails are derived
+from eligible session entries and promotion provenance, not copied into a
+generation record.
+
+=e-harness-turn-context= is the real projection consumer: it reconstructs
+eligible durable session entries and promotions for the current branch and
+passes them through the core lifetime projector for later requests.  The
+existing session export/audit surface may expose those same session records,
+but it is not a second body store.
+
+** Runtime frame schema
+
+Frame state is runtime-only normal-turn state and has this consumer-shaped
+schema:
+
+#+begin_example
+(:frame-id FRAME-ID
+ :generation-id GENERATION-ID
+ :consumer-request-id CONSUMER-REQUEST-ID
+ :observations
+ ((:observation-id OBS-ID
+   :kind current-state|dynamic-context|tool-result|trace|retrieved-excerpt
+   :source-entry-ref ENTRY-ID-OR-EXTERNAL-REF
+   :source-fingerprint FINGERPRINT
+   :effective-delivery inherited|request-local-replaceable
+   :body RUNTIME-ONLY))
+ :consuming-response-entry-id RESPONSE-ENTRY-ID-OR-NIL
+ :promotion-ids (PROMOTION-ID ...))
+#+end_example
+
+No durable frame record is emitted.  A frame may be reused only for the same
+not-yet-consumed =consumer-request-id= and matching source fingerprints.  Every
+later invocation receives a new consumer-bound frame, even when the source
+fingerprint is unchanged.  The consuming response identity and selected
+promotion IDs bind provenance to the current frame and session path; they do
+not make the runtime body durable.
+
+Tool call identity/arguments, locally identified provider-required replay
+items, and the corresponding tool result form one ephemeral follow-up
+observation bundle.  The whole paired bundle is visible to its consuming
+invocation and absent from later model projections unless selected information
+is promoted.  Session audit may retain the bundle, but stateless, clean-branch,
+and current-state-replaceable projections must not emit an orphan call, result,
+or replay item after consumption.
+
+Within =G17=:
 
 #+begin_example
 G17
   checkpoint: C17
   durable tail: D81 D82 D83
-  open frame: E20                 ; at most the observations for one transition
-  resource handles: trace:t19 value:v72 test-run:r14
+  open frame: E20
+  external handles: trace:t19 value:v72 test-run:r14
 #+end_example
-
-Normal evolution is monotonic:
-
-#+begin_example
-request 1: [C17][D81]
-request 2: [C17][D81][D82]
-request 3: [C17][D81][D82][D83]
-#+end_example
-
-An observation is attached only at the frontier:
 
 #+begin_example
 [C17][D81 D82 D83][E20]
@@ -127,36 +198,34 @@ An observation is attached only at the frontier:
 [C17][D81 D82 D83][Delta84]
 #+end_example
 
-=E20= is not part of the second request.  If no selected information is
-promoted, forgetting it is intentional.
+If no selected information is promoted, forgetting =E20= is intentional.
 
 * Required invariants
 
-1. Local session and resource state remain authoritative.  Provider state is a
-   disposable acceleration and can always be rebuilt from the local semantic
-   projection.
-2. A generation's checkpoint never changes.  Durable state in that generation
-   is append-only.
-3. An ephemeral frame is visible only while open and to the single reasoning
-   transition that consumes it.  Closing the frame removes its observations
-   from ordinary future projections.
-4. Promotion is explicit and small.  A promotion records facts or decisions,
-   not an unreviewed copy of the observation.
-5. The audit journal may retain the original observation, frame lifecycle, and
-   promotion provenance without making those records model-visible forever.
-6. A provider anchor is reusable only when its inherited provider state is
-   semantically clean: it contains checkpoint and durable material, but no
-   observation that the next request is supposed to forget.
-7. Missing provider capabilities reduce optimization, not correctness.  The
-   universal fallback is stateless reconstruction from local state.
-8. Compaction creates a new generation and is deliberately rare.  It is not
-   the mechanism for closing ordinary observation frames.
+1. Local semantic state is authoritative; provider state is disposable.
+2. A generation checkpoint never changes; its durable tail is append-only.
+3. An ephemeral frame is visible only to its consuming reasoning transition;
+   closing the normal turn removes its observations from later projections.
+4. Promotion is explicit and small, and never an unreviewed copy of the
+   source observation.
+5. Audit history may retain provenance without making the observation body
+   model-visible forever.
+6. A provider anchor is reusable only when every ephemeral observation in the
+   request is proven non-inherited for its own semantic kind.  A replaceable
+   canvas alongside an inherited tool result contaminates the whole advancing
+   response; the harness must hold the prior clean anchor or use stateless
+   reconstruction.
+7. Missing capabilities reduce optimization, not correctness; stateless
+   reconstruction is universal fallback.
+8. Compaction is a deliberate generation boundary, not ordinary frame cleanup.
+9. Disabling the feature preserves existing request, tool, and follow-up
+   behavior exactly.
 
-* Anchor rule
+* Anchor and cache rule
 
-** Provider without a replaceable context channel
+** No replaceable context channel
 
-Let =H= be the latest clean provider anchor:
+Let =H= be the latest clean anchor:
 
 #+begin_example
 C -> D1 -> D2 -> H -> | we are here |
@@ -164,210 +233,140 @@ C -> D1 -> D2 -> H -> | we are here |
                         E1 -> R1
 #+end_example
 
-The observation-bearing response =R1= must not replace =H= as the clean anchor.
-The harness consumes =E1=, persists selected durable delta =Delta3= locally,
-and builds the next invocation from =H=:
-
-#+begin_example
-C -> D1 -> D2 -> H -> | clean anchor stays here |
-                       \
-                        Delta3 -> E2 -> R2
-#+end_example
-
-=E1= is absent.  If the provider cannot branch from =H=, the adapter sends a
-stateless replay instead:
+=R1= must not replace =H=.  The harness consumes =E1=, appends selected
+=Delta3= locally, and uses =H= only if the provider can safely branch from it;
+otherwise it sends a stateless replay:
 
 #+begin_example
 [C][D1 D2 Delta3][E2]
 #+end_example
 
-This is what “the anchor must not advance across the observation-bearing
-invocation” means.  Advancing would make =E1= an inherited ancestor that the
-harness can no longer remove.
+Advancing across =E1= would make it an inherited ancestor that cannot be
+removed.
 
-** Provider with a proven replaceable context channel
+** Proven replaceable channel
 
-A provider may advertise a channel whose prior value is not inherited by
-continuation.  Then observation delivery does not contaminate the anchor:
+When a provider proves a kind-specific observation channel is not inherited:
 
 #+begin_example
 H -- replaceable=E1 --> R1 -> | safe new anchor |
 R1 -- replaceable=E2 --> R2
 #+end_example
 
-This exception is capability-driven and covered by an adapter conformance
-test.  Merely appending a newer system/developer message does not qualify as
-replacement.
+Appending a newer system/developer message is not replacement.  The eligible
+OpenAI Responses profile uses request-local top-level =instructions= for the
+complete =current-state= and =dynamic-context= values while stable policy and
+durable history remain in the reusable response chain.  This proves nothing
+about =tool-result=, =trace=, or =retrieved-excerpt=; those remain inherited
+unless a separate conformance claim covers that kind.  For example:
 
-For OpenAI Responses, the public API documents that top-level =instructions=
-from the prior response are not carried forward with =previous_response_id=.
-An eligible OpenAI adapter can therefore render current canvas state in the
-request-local =instructions= channel while keeping stable developer input and
-durable history in the reusable response chain.  Profiles that do not prove
-this wire behavior use the clean-anchor or stateless path.
+#+begin_example
+H -- replaceable current-state=Ecanvas + inherited tool-result=Etool --> R1
+R1 is contaminated: hold H for a clean branch or use stateless replay.
+#+end_example
+
+Cleanliness covers ephemeral items introduced by both the request and the
+response.  A response that emits a tool-call/replay bundle produces a generic
+=immediate-followup-only= candidate: it may be used only to deliver the
+matching result in the current in-memory follow-up and is never persisted.
+Any descendant with that bundle ancestry remains contaminated unless a
+separately conformed capability replaces the entire paired bundle.  Otherwise
+the harness retains the prior clean anchor or uses stateless reconstruction.
+Adapters contribute only opaque provider IDs and wire encoding; they do not
+decide that a partial bundle is clean.
 
 * Promotion contract
 
-The core protocol needs a provider-neutral durable delta, not a provider-owned
-summary format.
+The durable result is a provider-neutral delta, not a provider summary format.
+Core owns the normalized reserved-effect schema and validation.  An adapter
+only decodes its provider wire item into this shape and encodes the shape when
+needed; syntax on the wire is not a second semantic contract.
 
-- User messages and normal assistant messages keep their existing durable
-  semantics.
+#+begin_example
+(:type context-promote
+ :schema-version 1
+ :frame-id FRAME-ID
+ :source-observation-ids (OBS-ID ...)
+ :facts ((:id FACT-ID :value SEMANTIC-VALUE) ...))
+#+end_example
+
+The normalized value is a canonical JSON-like semantic value.  IDs are
+non-empty, provider-neutral, deterministic within the response, and unique;
+lists preserve declared order; unknown adapter/model-supplied provenance keys
+such as =:source-refs= or =:fingerprint= are rejected as unknown controls.  The
+core limits one effect per complete response, requires 1--16 facts, and limits
+the normalized UTF-8 payload to 8 KiB.  Every source observation must belong to
+the consumed frame.  Core resolves each submitted observation ID against that
+runtime frame and derives the durable v2 source ref/fingerprint: an existing
+session-backed transcript entry ID, or an existing external/context-source
+handle paired with its fingerprint.  The core never manufactures a transcript
+entry; an unresolvable source fails the existing response-error path.  These
+checks run before semantic mutation and are usable both by the normal response
+path and by pure projection tests.
+
+- User and ordinary assistant messages retain existing durable semantics.
 - Raw tool results, traces, large retrieved excerpts, and replace-current-state
-  snapshots are ephemeral by default for new records.
-- Tool intent and arguments remain in the audit journal.  Their future context
-  projection is governed by frame state rather than by the fact that they were
-  journaled.
-- A reserved core =context-promote= effect accepts facts/decisions plus source
-  frame ids.  Its model-facing syntax may use a tool-call-shaped response item,
-  but it is not processed as an ordinary observation-producing tool.
-- The effect validates that every source belongs to the currently consumed open
-  frame and that the payload satisfies explicit limits.  The initial limits are
-  one promotion effect per consuming response, at most 16 facts, and at most
-  8 KiB of normalized UTF-8 content; rejection occurs before session mutation.
-- Promotion records are committed as part of frame settlement.  Any subsequent
-  provider request is projected from checkpoint plus durable tail plus its new
-  frame: it includes the promotion and a bounded acknowledgement, but excludes
+  snapshots are ephemeral by default in new projections.
+- The reserved effect is removed from the ordinary model-facing tool queue; it
+  is never dispatched through the ordinary tool registry.
+- Ordinary tool calls keep the existing streaming dispatch lifecycle.  Response
+  handling accumulates and validates reserved promotion controls in memory;
+  when the provider signals done, valid promotions are committed before the
+  next follow-up projection.  A valid promotion mutates semantic state at most
+  once within that in-memory response handling.  This is not a cross-restart
+  exactly-once guarantee.
+- An invalid reserved effect takes the existing provider-response failure path.
+  Calls already streamed are not rolled back, and no additional calls from the
+  invalid response are dispatched after the invalid control is detected.
+- A promotion stores only the explicitly submitted bounded fact and provenance;
+  the protocol never implicitly inserts source-observation or frame-payload
+  fields.  Explicitly selected verbatim content is durable by choice when it
+  fits the same size limit.  At the session boundary, source observation IDs
+  resolve to an existing transcript-entry reference or an existing
+  external/context-source handle plus fingerprint, together with the
+  consumer-request and generation identities; the durable promotion record
+  contains the explicitly submitted
+  bounded fact value, canonical source refs/fingerprints, frame/generation/
+  consumer/response identities, and no runtime observation body or
+  settlement/retry state.  The next request includes the promotion and omits
   the consumed observation.
-- If the same consuming response also emits ordinary tool calls, those calls and
-  required provider replay items become durable transition records; their tool
-  results open the next frame.  The adapter must reconstruct required call/result
-  linkage without continuing from an anchor contaminated by the prior frame.
-- Provider adapters render this effect but never select or validate promoted
-  facts.
+- No journal, barrier, outbox, recovery state machine, or automatic summarizer
+  is introduced.  A missing promotion intentionally forgets the observation.
 
-The loop buffers reserved effects and ordinary tool calls until the provider
-response is complete.  It validates the complete promotion and tool-call set
-before dispatching any tool.  It then persists and receives acknowledgement for
-the consuming response, accepted promotions, and =frame-settled=.  Only after
-that acknowledgement may ordinary tools execute.  Validation or durable-write
-failure dispatches no tool, records the failed attempt, and leaves the frame
-retryable.  Completed tool results are persisted with the next =frame-opened=
-before any follow-up provider request.
+The core-generated reserved schema revision/content fingerprint participates in
+the tool-schema and anchor compatibility fingerprints.  A schema change
+therefore fences an old anchor rather than silently changing the meaning of a
+cached request.
 
-The initial implementation should keep the protocol strict and observable.
-Do not add an automatic per-observation summarizer as a fallback: that would
-restore cost and latency on the hot path and blur whether a fact was selected.
+* Successful-turn frame protocol
 
-** Frame state and durable settlement
+Frames are the minimum semantic boundary needed to answer which observation is
+visible to which invocation.  The enabled normal path is:
 
-Frame state is derived from append-only session records, not from one mutable
-status flag.  One frame records its generation id, observation entry ids,
-consumption-attempt ids, consuming response entry ids, promotion entry ids, and
-terminal settlement.
+1. capture a provider-neutral observation identity and source fingerprint;
+2. expose it only at the current request frontier;
+3. accumulate and validate any reserved promotion control while the ordinary
+   response streams, then commit valid promotions when the provider signals
+   done;
+4. append selected promotions to the durable semantic tail; and
+5. build the next request without the consumed observation.
 
-Every admitted observation has a restart-stable provider-neutral reference.  A
-journal-backed observation references the durable entry containing its exact
-payload.  A request-time current-state observation instead records its owning
-provider, durable source reference, source version or content fingerprint,
-render-layout revision, and rendered fingerprint; mutable buffer objects are
-not durable references.  Before retry, replay rebuilds the current-state
-observation and compares fingerprints.  A match retries the same frame.  A
-mismatch or unavailable source appends an explicit =frame-aborted= record and
-opens a new frame from newly captured state; it never silently substitutes new
-bytes into the old frame or marks the old observation consumed.
+The =e-harness-turn-context= projection receives core-derived canonical source
+provenance for the source frame and promotion: an existing transcript entry or
+an existing external/context-source handle plus fingerprint.  Its in-memory
+state is not a promise that an interrupted tool can be resumed.  A context-only
+rebuild may reuse a frame only when its source fingerprint matches; otherwise
+it discards that frontier and captures a fresh observation.  This is a
+projection consistency check, not tool retry or tool-lifecycle recovery, and it
+never silently swaps bytes under an old identity.
 
-- Persist =frame-opened= with its observations before those observations are
-  eligible for a provider request.
-- Persist =frame-consumption-started= with a unique attempt id before dispatch.
-  Provider failure or cancellation before a consuming response is durably
-  accepted records a failed attempt and leaves the frame eligible for explicit
-  retry.  Consumption is at-least-once across ambiguous provider failures, not
-  falsely exactly-once.
-- Settle in this order: consuming assistant/tool-call records, validated
-  promotions, then one =frame-settled= record referencing them.  The session
-  persistence boundary must acknowledge that ordered prefix before the loop
-  excludes the frame, starts another provider request, or advances a clean
-  anchor.  This acknowledgement remains asynchronous; it must not add blocking
-  filesystem I/O to the hot path.
-- Replay derives closure from =frame-settled=.  A started attempt with no durable
-  consuming response becomes retryable.  A durable consuming response and
-  promotions with a missing settlement record are completed idempotently without
-  presenting the observation again.
-- The Feature 78 checkpoint manifest retains the active generation, every
-  unsettled frame, its referenced observations, and the settlement records
-  needed to make that derivation without scanning pre-checkpoint history.
-
-** Tool execution state and recovery
-
-Each accepted ordinary tool call has a stable execution id and durable execution
-state separate from frame settlement.  =admitted= and =dispatch-started= are
-nonterminal states; =outcome-unknown= is a blocked, nonterminal recovery state;
-=finished=, =failed=, and =resolved= are outcome kinds, not independently
-terminal records.  Only a final =execution-settled= record makes an execution
-terminal.  The resume checkpoint retains every execution lacking that marker,
-the normalized call and provider linkage, and every partial result record needed
-to finish or resolve it without scanning pre-checkpoint history.  It also
-retains settled result identities and any partial aggregate-frame record until
-the transition's aggregate result frame is durably acknowledged.
-
-The loop durably acknowledges =dispatch-started= before invocation.  On
-recovery, an admitted call with no =dispatch-started= record may dispatch.  A
-=dispatch-started= call with neither a durable normalized result nor
-=execution-settled= first appends and acknowledges =outcome-unknown=.  It neither
-redispatches nor permits provider follow-up until it is explicitly resolved.
-Feature 88 never automatically redispatches an execution after
-=dispatch-started=.
-
-A live =finished= or =failed= outcome uses one ordered per-execution transaction:
-first persist the normalized provider-linked tool result, then append one
-=execution-settled= commit marker that names the outcome kind and references the
-result identity.  The loop must durably acknowledge that complete prefix before
-clearing the active execution or starting the next tool.  Per-execution
-settlement does not open an observation frame.  Failed or withheld
-acknowledgement starts nothing.
-
-Replay derives terminality only from =execution-settled=.  If a durable result
-exists but its marker is missing, recreate the marker with the same identity and
-acknowledge the completed prefix idempotently; a known durable result never
-degrades to ambiguity.  Only =dispatch-started= without a durable normalized
-result becomes =outcome-unknown=.  A retry after failed acknowledgement
-resubmits the same record identities.
-
-After every admitted execution has an acknowledged =execution-settled= marker,
-append exactly one deterministic aggregate =frame-opened= record for the
-transition.  It references every normalized result identity once in
-admitted-call order.  Acknowledge that frame before provider follow-up.  Replay
-opens the same frame exactly once when all executions are settled, or resubmits
-the same record identity when persistence succeeded but acknowledgement was
-lost.  It opens no result frame while any execution remains nonterminal.
-
-Add the consumer-shaped core operation =e-harness-resolve-tool-execution=.  It
-accepts a session id, execution id, and one bounded resolution: a normalized
-finished result or normalized failed result.  It uses the same per-execution
-result and =execution-settled= transaction as live completion.  If this settles
-the last outstanding execution, the recovery service creates and acknowledges
-the one aggregate frame before releasing follow-up.  Repeating the same
-resolution is a no-op; a conflicting resolution is an explicit error.
-Presentation may expose this operation but does not own its policy.
-
-*** Pending-transition recovery service
-
-=e-session= derives and checkpoints a provider-neutral pending-transition
-descriptor containing the transition and turn identities, consuming response,
-ordered execution ids and settled result ids, deterministic aggregate frame
-identity, provider replay linkage, and next durable action.  It contains no
-process-local callbacks, promises, or tool objects.
-
-=e-harness-resume-pending-transition= is the sole application service that
-turns this durable descriptor back into live work.  Session resume calls it
-after replay and before accepting a new prompt.  It claims the descriptor in the
-active-turn registry, is idempotent on repeated calls, dispatches only calls
-proven not to have reached =dispatch-started=, exposes =outcome-unknown= as a
-blocked state, and reconstructs exactly one provider follow-up after every
-ordered execution-settlement prefix and the aggregate result frame are
-acknowledged.  A reconstruction mismatch fails visibly and leaves the
-descriptor recoverable.
-
-=e-harness-resolve-tool-execution= persists the bounded resolution, then
-delegates release to that service.  Feature 88 adds no generic idempotency-key
-hook and no automatic retry after =dispatch-started=.  A later feature may add a
-versioned resume contract for a concrete tool adapter that actually transmits a
-stable key to a deduplicating external operation.
+Ordinary tools still use the established lifecycle, callback, error,
+cancellation, timeout, and follow-up behavior.  The feature changes the
+visibility of their returned observations, not the side-effect protocol.
 
 * Generational compaction
 
-Eventually the durable tail contains superseded or retracted facts:
+The durable tail can contain superseded facts:
 
 #+begin_example
 C0 + D0
@@ -379,632 +378,708 @@ C1
 C1 + D1 + D2 + ...
 #+end_example
 
-The existing readable compaction summary becomes the portable checkpoint for
-the next generation.  Compaction input contains the old checkpoint and durable
-tail, not consumed ephemeral frames.  Promoted facts are included because they
-are durable.
-
-The compaction record should identify:
-
-- prior and new generation ids;
-- the covered durable boundary;
-- the readable portable checkpoint;
-- the first retained durable entry;
-- source and resulting token estimates;
-- provider projections associated with the same boundary;
-- fingerprints needed to reject stale provider state.
-
-The original journal remains append-only audit history.  A generation switch
-changes the model projection and resume checkpoint; it does not rewrite or
-delete the journal.
+Portable compaction consumes the checkpoint and durable tail only.  It excludes
+consumed observations and external payload bodies.  The readable existing
+summary becomes the portable checkpoint for the next generation; the journal
+remains append-only audit history.  The generation record contains only the
+generation identity, portable checkpoint, and covered session boundary.  The
+durable tail is derived from eligible entries and promotion provenance on the
+canonical session path; it is not copied into the generation record.  Token
+estimates, anchor fingerprints, and provider artifacts remain runtime or
+adapter-owned diagnostics.
 
 * Provider capability contract
 
-Core policy must reason in semantic terms and ask the adapter to render a
-logical transition.  It must not branch directly on
-=previous_response_id=, OpenAI item types, Anthropic cache controls, or another
-provider's field names.
-
-The core backend contract exposes a pure query:
+Core asks the adapter for semantic capabilities and never branches on provider
+fields:
 
 #+begin_src elisp
 (e-backend-context-capabilities backend options)
 ;; =>
 (:continuation branchable
- :observation-delivery request-local-replaceable
+ :observation-delivery
+ ((:kind current-state :mode request-local-replaceable)
+  (:kind dynamic-context :mode request-local-replaceable)
+  (:kind tool-result :mode inherited)
+  (:kind trace :mode inherited)
+  (:kind retrieved-excerpt :mode inherited))
  :prefix-cache explicit
  :provider-compaction opaque
- :reasoning-state replayable)
+ :reasoning-state replayable
+ :reserved-effect-carrier context-promote-wire)
 #+end_src
 
-The selected adapter resolves this contract from its profile, transport, model,
-and effective options when the backend is created or queried.  Core recognizes
-only these semantic values:
-
 | Capability | Values | Core consequence |
-|------------+--------+------------------|
-| =continuation= | =none=, =linear=, =branchable= | whether only the latest anchor or an older clean anchor can be reused |
-| =observation-delivery= | =inherited=, =request-local-replaceable= | whether an advancing response inherits the observation |
-| =prefix-cache= | =none=, =implicit=, =explicit= | acceleration only; never lifetime semantics |
+|------------+---------+------------------|
+| =continuation= | =none=, =linear=, =branchable= | whether a clean anchor can be reused |
+| =observation-delivery= | kind-scoped mapping to =inherited= or =request-local-replaceable= | whether each frontier item is inherited |
+| =prefix-cache= | =none=, =implicit=, =explicit= | acceleration only |
 | =provider-compaction= | =none=, =opaque= | optional provider checkpoint projection |
-| =reasoning-state= | =none=, =replayable=, =provider-managed= | required durable replay treatment |
+| =reasoning-state= | =none=, =replayable= | ordinary replay treatment |
+| =reserved-effect-carrier= | =none= or =context-promote-wire= | adapter carrier support for the core schema |
 
 Missing capabilities select stateless reconstruction.  Unknown values are
-configuration errors, not silent downgrade.  OpenAI alone maps
-=request-local-replaceable= to top-level =instructions=; no core module branches
-on that field name.  Avoid a shared interface whose implementations throw
-“unsupported operation.”
+configuration errors.  OpenAI alone maps proven replacement for
+=current-state= and =dynamic-context= to =instructions=; no core module names
+that wire field.  An adapter must not claim a capability it cannot implement
+for its effective endpoint and transport.  No provider-owned reasoning-state
+capability is supported: only =none= and =replayable= are allowed.  If a
+provider requires an ordinary follow-up replay item, the semantic model gives
+it a local provider-neutral identity and the adapter owns only its wire
+encoding.  Core constructs the normalized =context-promote= schema, limits,
+and revision/content fingerprint.  If an ordinary normalized tool schema can
+carry that effect, the carrier entry is omitted; otherwise
+=context-promote-wire= only advertises that the adapter can encode/decode the
+exact core schema.  It never advertises =max-facts=, =max-bytes=, or alternate
+limits, so there is one semantic authority.
 
 * Ownership and dependency direction
 
-** =e-context= / new context-lifetime policy module
+** Core context policy
 
-- Own the logical =CHECKPOINT + DURABLE + EPHEMERAL= projection.
-- Open, consume, close, and project frames with pure helpers where possible.
-- Exclude consumed observations without deleting audit records.
-- Produce provider-neutral fingerprints and generation identity.
-
-If the lifecycle is large enough to deserve a module, use a core name such as
-=e-context-lifetime.el=.  Do not put provider request fields in it.
+Own =CHECKPOINT + DURABLE + EPHEMERAL= projection, frame visibility,
+promotion limits, and semantic fingerprints.  Never import provider request
+fields or tool transport objects.
 
 ** =e-session=
 
-- Persist generation, frame lifecycle, promotion, and provider-anchor records.
-- Keep the journal authoritative and append-only.
-- Restore the active generation and any recoverable open frame through the
-  Feature 78 resume-checkpoint manifest.
-- Derive and checkpoint the provider-neutral pending-transition descriptor used
-  to resume tool work without retaining process-local callbacks.
-- Treat pre-feature session messages conservatively as durable unless an
-  explicit migrated lifetime record proves otherwise.
+Own transcript/audit storage and existing branch semantics.  Preserve old
+messages and anchors conservatively.  Retain semantic provenance only where it
+is needed for audit or projection; do not claim tool-follow-up restart
+recovery.
 
-** =e-harness= / =e-loop=
+** =e-harness= and =e-loop=
 
-- Orchestrate one transactional observation transition.
-- Commit consumer output and promotions before closing its frame.
-- Ask the adapter for a rendering strategy from semantic context plus declared
-  capabilities.
-- Advance, retain, or discard provider anchors according to the returned anchor
-  safety decision.
-- Own =e-harness-resume-pending-transition= as the single idempotent bridge from
-  a durable pending-transition descriptor to claimed live work.
-- Emit bounded lifecycle and cache diagnostics without observation bodies.
+Own normal-turn orchestration, streaming response handling, reserved-effect validation,
+promotion application, and anchor choice.  Keep ordinary tool lifecycle and
+follow-up behavior intact.  =e-harness-turn-context= is the projection consumer
+that rebuilds eligible session entries/promotions through core projection.
 
-** Tool and resource boundaries
+** =e-compaction=
 
-- Tool execution produces an ephemeral observation record by default.
-- External resources return stable handles when full content need not enter the
-  next invocation.
-- Tools with a real durable-result contract may opt in explicitly; “all tool
-  results are durable” is not a compatibility fallback.
+Own the deliberate generation-transition application service.  It calls pure
+core checkpoint logic, persists the resulting durable generation through the
+existing session append surface, and may delegate an optional opaque provider
+projection to the adapter.  It never closes frames, settles observations, or
+owns tool lifecycle.
 
 ** Backend adapters
 
-- Map semantic segments and frames to provider wire shapes.
-- Advertise only capabilities proven for that profile and transport.
-- Own provider ids, opaque items, cache controls, retries, and rejection
-  fallback.
-- Return normalized diagnostics and anchor candidates; do not decide which
-  facts become durable.
+Render semantic segments/frontier into provider wire shapes, advertise proven
+capabilities, own provider ids/opaque items/cache controls/retries, and return
+bounded diagnostics and candidates.  They decode/encode the core-owned
+=context-promote= schema but do not define its limits or select promoted facts.
 
 ** Presentation
 
-Presentation may show generation/frame status and manual compaction progress.
-It does not own frame lifetime, promotion policy, or provider fallback.
+May show bounded generation/frame/cache diagnostics, but does not own lifetime
+or promotion policy.
 
 * Expected file surface
 
-- Add =lisp/core/e-context-lifetime.el= if the frame/generation state machine is
-  cohesive enough to stand alone; otherwise keep its pure projection helpers in
-  =lisp/core/e-context.el= until that boundary is proven.
-- Modify =lisp/core/e-backend.el=, =e-context.el=, =e-session.el=,
-  =e-harness.el=, =e-loop.el=, and =e-compaction.el= for the
-  semantic capability query, projection, persistence, transaction orchestration,
-  pending-transition recovery service, and generation boundaries.
-- Modify =lisp/adapters/openai/e-openai.el= for replaceable instructions,
-  capability declaration, clean-anchor decisions, and optional opaque
-  compaction.
-- Add focused tests beside the owning modules, extend
-  =test/e-provider-continuation-integration-test.el=, add
-  =e2e/e-context-lifetime-e2e-test.el=, and extend the profile-gated cases in
-  =e2e/e-live-e2e-test.el=.
-- Update =docs/references/runtime_concepts.org=, =docs/core.md=, and
-  =e2e/README.org= once the implemented names and commands are final.
+- Keep capability and projection helpers in the existing core modules; retain
+  =e-context-lifetime.el= only for the cohesive semantic boundary.
+- Modify =e-backend.el=, =e-context.el=, =e-session.el=, =e-harness.el=,
+  =e-loop.el=, and =e-compaction.el= only where semantic projection,
+  promotion, generation boundaries, or diagnostics require it.
+- Keep =e-harness-turn-context= as the sole later-request projection consumer;
+  session export/audit may expose the same records but is not another body
+  source.
+- Keep OpenAI replacement mapping in
+  =lisp/adapters/openai/e-openai.el=.
+- Add focused tests beside owning modules and extend the credential-free
+  provider-continuation integration test with the real harness path.
+- Keep the credentialed live E2E profile-gated and explicitly skippable.
 
-* OpenAI projection
+* OpenAI projection and optional provider compaction
 
-For eligible Responses profiles:
-
-- Keep stable instructions/policy in stable developer input before the cache
-  breakpoint.
-- Render current-state canvas and similar replaceable observations into
-  top-level request-local =instructions= and resend the complete current value
-  on every request.
-- Continue durable history with =previous_response_id= only when the selected
-  anchor is clean and all stable/generation fingerprints match.
-- Preserve stateless encrypted reasoning replay for =store=false= and fallback
-  paths.
-- Keep =prompt_cache_key= and explicit breakpoint behavior independent of
-  logical lifetime.
+For an eligible Responses profile, stable policy remains in stable developer
+input, current state is sent through request-local =instructions= on every
+request, and durable history continues with =previous_response_id= only for a
+clean compatible anchor.  Stateless replay is always the correctness fallback.
 
 The adapter must not assume every OpenAI-shaped endpoint behaves like the
-public API.  ChatGPT subscription profiles, gateways, HTTP, and WebSocket
-transports advertise and prove their own capabilities.
+public API.  Profiles, gateways, HTTP, and WebSocket transports advertise and
+prove their own capabilities.
 
-OpenAI =POST /responses/compact= is an optional accelerator at a generation
-boundary, not the canonical compaction implementation.  From the same durable
-boundary, produce two projections:
+OpenAI =POST /responses/compact= is optional acceleration at a generation
+boundary.  The portable checkpoint is canonical and sufficient for every
+backend.  Opaque provider state is disposable, keyed by provider/model/
+boundary/layout/fingerprint, and never parsed by core.  A compaction request is
+constructed statelessly from portable checkpoint + durable tail, or from an
+anchor proven clean for every observation kind.  It must never reuse a
+contaminated continuation id merely because the new delta omits an observation.
+Consumed snapshots, tool output, and diagnostics are excluded from portable and
+provider checkpoint input.  Optional conformance/E2E evidence records the
+literal compaction input and effective model context and asserts consumed
+markers are absent from both; provider wire behavior remains externally gated.
 
-#+begin_example
-portable:  S1 = readable e checkpoint
-provider:  K1 = opaque OpenAI compaction output
-#+end_example
+Recheck these contracts before adapter work:
 
-=S1= is stored in the normal compaction/generation record and is sufficient for
-every backend.  =K1= is stored as disposable provider state keyed by provider,
-model, boundary, prompt-layout revision, and fingerprints.  The adapter passes
-it back unchanged, never parses it, and discards it on rejection or mismatch.
-
-Consumed canvas snapshots, tool output, and diagnostics must not enter the
-input used to create =K1=.  Otherwise provider compaction would preserve exactly
-the obsolete material this feature is intended to forget.
-
-Use the endpoint only when the selected profile explicitly advertises support.
-If a ChatGPT subscription endpoint or gateway has not been proven to implement
-it, keep using =S1= and do not probe speculatively during an ordinary turn.
-
-Implementation should recheck these official API contracts rather than treating
-this plan as a frozen provider specification:
-
-- [[https://developers.openai.com/api/reference/resources/responses/methods/create][Create a model response]] for =instructions= and
-  =previous_response_id= semantics;
-- [[https://developers.openai.com/api/reference/resources/responses/methods/compact][Compact a response]] for the opaque provider projection;
-- [[https://developers.openai.com/api/docs/guides/context-management][Context management]] for the supported stateless continuation shape.
+- [[https://developers.openai.com/api/reference/resources/responses/methods/create][Create a model response]] for =instructions= and =previous_response_id=;
+- [[https://developers.openai.com/api/reference/resources/responses/methods/compact][Compact a response]] for the optional provider projection; and
+- [[https://developers.openai.com/api/docs/guides/context-management][Context management]] for stateless continuation.
 
 * Observability
 
-Add bounded events/diagnostics sufficient to explain context behavior:
+Add bounded diagnostics for generation/checkpoint boundary, normal frame
+visibility and promotion, observation/promoted size estimates, anchor held or
+advanced with reason, request/response observation classification, immediate-
+followup-only candidate status, rendering strategy, portable/provider
+compaction outcome, and provider cache counters when exposed.  Diagnostics
+never implicitly copy
+source-observation or frame-payload fields; any explicitly submitted fact is
+bounded by the promotion schema and existing diagnostic policy.
 
-- generation id and checkpoint boundary;
-- frame opened, consumed, promoted, closed, failed, or recovered;
-- tool execution admitted, dispatch-started, execution-settled,
-  settlement-prefix-acknowledged, outcome-unknown, recovery-claimed, or
-  explicitly resolved, keyed by bounded execution id;
-- aggregate result frame opened or acknowledged, keyed by bounded transition and
-  frame ids plus result count, never result bodies;
-- observation and promoted token/character estimates, never full content;
-- provider anchor held, advanced, rebuilt, or discarded, with reason;
-- rendering strategy: stateless, clean-anchor branch, or replaceable channel;
-- portable and provider compaction success/fallback;
-- cached, uncached, and cache-write token counters when a provider reports them.
-
-Diagnostics must make the central safety property auditable: for every request,
-one can tell whether an observation was placed in inherited or replaceable
-provider state and why the chosen anchor is safe.
+Every request must make it possible to tell whether the observation was
+inherited or replaceable and why the selected anchor is safe.
 
 * Implementation slices
 
-1. *Lifetime model and shadow projection.* Add the semantic backend capability
-   query, generation/frame/promotion record shapes, pure projector tests,
-   resume-checkpoint retention, asynchronous settlement acknowledgement, and
-   diagnostics.  Keep request behavior unchanged behind an opt-in so recorded
-   comparisons can prove what would be retained or forgotten.
-2. *Replaceable current-state delivery.* Move canvas/current-state rendering to
-   the semantic observation frontier.  Implement the OpenAI =instructions=
-   projection for profiles that prove it, and the clean-anchor/stateless path
-   for profiles that do not.  Replace the existing E2E assertion that appends
-   changed dynamic developer input to a chain containing the old snapshot.
-3. *Ephemeral tool frames, promotion, and tool recovery.* Make new raw tool
-   results ephemeral by default, add the reserved core promotion effect,
-   transactional ordered frame settlement, durable tool execution states and
-   recovery, and deterministic multi-tool tests.  Preserve old sessions
-   conservatively.
-4. *Generational portable compaction.* Extend existing compaction records and
-   context reconstruction with generation identity; summarize only checkpoint
-   plus durable tail; update auto-compaction to cross one explicit generation
-   boundary without changing its threshold policy.
-5. *Optional provider compaction.* Add a provider-neutral opaque-checkpoint
-   slot and implement capability-gated OpenAI =/responses/compact=.  Rejection,
-   expiry, profile change, or model change falls back to the portable checkpoint.
-6. *Presentation and operator controls.* Show bounded generation/frame state in
-   existing context diagnostics and make manual compaction report portable and
-   provider projection outcomes without exposing opaque contents.
-7. *E2E, performance evidence, cleanup, and review.* Run the mandatory tests
-   below, compare cached/uncached frontier size, remove the superseded dynamic
-   continuation path, and complete the architecture review.
+1. *Semantic lifetime foundation.* Keep the capability query, generation/frame/
+   promotion shapes, pure projection, bounded diagnostics, and opt-in behavior
+   comparison.  Remove obsolete lifecycle-settlement machinery from the
+   implementation rather than expanding it.
+2. *Replaceable current-state delivery.* Keep the accepted OpenAI
+   =instructions= projection, inherited/stateless fallback, and clean-anchor
+   rules.
+3. *Normal successful-turn promotion.* Accumulate and validate the reserved
+   effect during the existing streamed response, apply valid facts at
+   provider-done, and project the next request without raw tool observations.
+   Preserve ordinary tools/follow-ups and do not add a completed-response
+   buffering boundary.
+4. *Generational portable compaction.* Start a new generation from durable
+   context only and exclude ephemeral observations/provider artifacts.
+5. *Optional provider compaction.* Add capability-gated disposable opaque state
+   at a portable boundary and preserve local semantics when it is discarded.
+6. *Presentation and evidence.* Show bounded diagnostics, add the real
+   credential-free E2E, and complete performance/compatibility review.
 
-Each slice is a semantic commit with focused tests and ledger updates.  Core
-record-shape, harness, loop, session, and adapter changes require a full Emacs
-restart; do not add live-reload compatibility shims for them.
+Each slice is a semantic commit with focused tests and ledger updates.  Core,
+session, harness, loop, and adapter changes require a full Emacs restart before
+they affect a running instance; no live-reload shim is added.
 
-** Slice 1 implementation evidence
+* Accepted Slice 1/2 baseline
 
-Accepted parent-side on 2026-08-24.
+The accepted prior work remains part of the baseline only where consistent
+with this narrowed scope:
 
-- Added a provider-neutral backend capability query with conservative stateless
-  defaults and strict semantic validation.
-- Added generation, observation-frame, promotion, and settlement record shapes;
-  pure shadow projection; strict frame transitions; bounded diagnostics; and an
-  opt-in asynchronous acknowledgement boundary.  Ordinary request behavior
-  remains unchanged.
-- Session replay and Feature 78 checkpoint manifests retain the active
-  generation plus exactly the latest records needed for each unsettled frame.
-  Frame closure derives from the final settlement marker, duplicate snapshots
-  reduce by logical identity, and stale promotions/settlement attempts remain in
-  the audit journal rather than the bounded resume state.
-- Parent verification after Tock 04: 22/22 lifetime tests and 38/38 persistence
-  tests passed.  The full 2245-test suite produced 2243
-  expected results, the same two existing skips, and zero unexpected results.
-  =eldev compile= and =git diff --check= passed.
-- The user's running Emacs was left unchanged.  The new core/session record
-  shapes require a full restart before later slices can activate them.
+- semantic backend capability resolution has conservative stateless defaults
+  and rejects unknown values;
+- generation/frame/promotion projection helpers and bounded diagnostics remain
+  useful for visibility and audit comparison, with ordinary requests unchanged
+  unless explicitly enabled;
+- current-state and dynamic-context segments form an observation frontier;
+  eligible OpenAI Responses requests render the complete current value through
+  top-level =instructions=;
+- inherited observations hold/discard anchors conservatively, while proven
+  replacement can advance a clean anchor;
+- stable prefix, tool schema, provider options, compaction boundary, endpoint,
+  and transport identity remain anchor compatibility inputs; and
+- forged anchor/partition metadata is ignored or rejected at the harness
+  boundary.
 
-** Slice 2 implementation evidence
+The old lifecycle-settlement implementation is not an acceptance dependency.
+It is to be removed or reduced to semantic audit/projection support in the next
+code slice; this plan does not authorize extending it.
 
-Fixed-point accepted on 2026-08-24 at
-=3f7129db6a3d12d15960e18e192e061c0cc4a8f5= after Implementation Tick 09.
+* Cleanup ledger
 
-- Current-state and dynamic-context segments now form an explicit semantic
-  observation frontier.  Backends declare inherited or request-local
-  replaceable delivery independently from provider wire names.
-- The eligible first-party OpenAI Responses profile sends the complete current
-  state through top-level =instructions=.  Stable developer input and durable
-  transcript deltas retain their existing layout, and changed state is absent
-  from explicit continuation input.
-- Conservative OpenAI profiles retain inherited delivery.  Linear continuation
-  reconstructs statelessly around inherited state; branchable continuation may
-  repeatedly use an older clean anchor but never persists an
-  observation-bearing response as its successor.
-- Anchor compatibility excludes replaceable current-state identities while
-  retaining delivery semantics.  Candidate selection, in-turn promotion, and
-  persistence all require an advertised semantic continuation capability.  Only
-  a loop-accepted candidate owned by the final successful provider request and
-  authoritative refreshed projection can enter durable anchor state.
-- Bounded request diagnostics report delivery, rendering strategy, fingerprint,
-  and anchor safety without retaining the observation frontier or its content.
-- Tick 06 remediation made same-turn context refresh atomic.  A stable
-  provider-neutral projection identity permits candidate advancement across a
-  replaceable-only state change but fences the old response when stable
-  segments, tools, provider options, or the compaction boundary changed.
-- Effective endpoint and transport identity now gates the first-party OpenAI
-  replacement claim.  Endpoint/requester overrides fall back conservatively;
-  a named custom profile may carry an explicit proof for its own endpoint.
-- OpenAI removes current state by semantic segment origin, retains equal durable
-  messages and clean continuation deltas, and fails explicitly when a nonempty
-  frontier has no exact message-prefix partition.  Caller/default/session
-  partition markers are stripped and cannot bypass that validation.
-- Tock 06 makes accepted candidate ownership explicit and updates the active
-  harness entry's context on atomic refresh.  Real harness tests cover stable,
-  tool-schema, provider-option, compaction, and replaceable-only refreshes,
-  including no-final-candidate and later-fingerprint-reversion cases.
-- Tock 07 reserves the complete anchor/delta/source-count triplet as
-  harness-derived state.  Every rebuild clears caller/default/session values
-  before selecting only a compatible session-owned anchor; a real
-  harness-to-OpenAI regression proves forged continuation state cannot bypass
-  frontier filtering or contaminate a persisted anchor.
-- Parent verification after Tock 07 passed 308/308 focused harness, loop,
-  OpenAI, and continuation-integration tests.  The full suite produced 2264
-  expected results, the same two existing skips, and zero unexpected results
-  out of 2266.
-  With =E_E2E=1= and no backend configuration, the credential-gated live E2E
-  file loaded and explicitly skipped all 16 tests.  =eldev compile
-  --warnings-as-errors= and =git diff --check= passed.
-- The user's running Emacs was left unchanged.  The core/harness/session/adapter
-  changes require a full restart before they can affect it.
-- Independent Tick 09 review passed 479/479 focused cross-provider tests and the
-  full 2266-test suite with 2264 expected results, the same two existing skips,
-  zero unexpected results, zero P0--P3 findings, and zero required unknown
-  cells.  Slice 3 is open.
+The current implementation inventory is intentionally explicit.  The next
+code slice removes the Slice 1 settlement/barrier machinery rather than
+building more consumers around it.  The retained durable boundary is the
+generation identity/checkpoint/covered session boundary plus promotion
+provenance for =e-harness-turn-context=.  Frames remain runtime-only; the plan
+does not promise open-frame recovery, settlement, retry, or resume.  The
+existing session export/audit surface may inspect the same records but is not a
+second projection consumer or body store.
+
+** Retain and strengthen
+
+- Retain =e-context-lifetime-test-project-rejects-cross-generation-frame= as a
+  semantic ownership guard.
+- Retain =e-context-lifetime-test-shadow-boundary-is-opt-in= as the default
+  behavior guard.
+- Strengthen =e-context-lifetime-test-shadow-projection-forgets-consumed-frame=
+  to prove consumed observation bytes disappear from the next semantic
+  projection without implying restart recovery.
+- Replace =e-context-lifetime-test-promotion-never-copies-observation= with
+  =e-context-lifetime-test-promotion-preserves-submitted-fact-without-implicit-source-fields=.
+  It proves that only the explicitly submitted bounded fact and provenance are
+  durable, that source-observation/frame payload fields are not inserted by
+  protocol, and that an explicitly submitted verbatim fact is allowed within
+  the core size limit.
+
+Add normal-turn tests at the same boundary: a consumer-bound frame test must
+show that unchanged current state across two successful invocations creates two
+frames and rejects promotion through the consumed first frame; a promotion
+provenance test must show only canonical existing transcript-entry refs or
+external/context-source handles plus fingerprints, frame/consumer/response/
+generation IDs, and the submitted bounded fact cross the durable boundary; and
+a paired-tool-observation test must show call identity/arguments, local replay
+item, and result appear together once and then disappear without an orphan.
+Add a forged-provenance case proving model/adapter-supplied =:source-refs= and
+=:fingerprint= controls are rejected before mutation, plus an external-source
+case proving the handle/fingerprint is derived by core.  These are
+successful-turn visibility tests, not restart or settlement tests.
+
+Retain and strengthen =e-session-test-queued-record-criticality-covers-durable-record-types=:
+the narrowed writable set keeps =context-generation= and =context-promotion=
+critical, while =context-frame= and =context-frame-settlement= are removed
+from the new writable-type expectation.  Add a legacy-v1 fixture proving that
+an ordinary transcript still reads, but legacy generation/frame/promotion/
+settlement records do not restore a runtime frame or any recovery state.
+
+** Replace with durable-only equivalents
+
+Replace these tests with narrowly scoped semantic or
+=e-harness-turn-context= checks:
+
+- Rename =e-context-lifetime-test-canonical-projection-survives-reopen= to
+=e-context-lifetime-test-generation-boundary-and-promotion-projection-survives-reopen=;
+  it becomes a canonical JSON projection/fingerprint check before and after
+  reopening the durable session store, covering only narrowed
+  generation-boundary and promotion-record data.  Runtime frame state has no
+  restart/recovery promise.
+- =e-context-lifetime-test-context-record-validation-is-strict= becomes a
+  pre-mutation core schema/promotion validation check.
+- =e-context-lifetime-test-persistent-replay-rejects-corruption= becomes a
+  durable generation-boundary/promotion-record shape check for
+  =e-harness-turn-context=, not a recovery protocol.
+- =e-context-lifetime-test-frame-transitions-reject-backward-and-terminal-moves=
+  becomes a runtime-only monotonic normal-turn visibility projection check; no
+  settlement or retry transition is introduced.
+- Rename =e-context-lifetime-test-records-round-trip-through-session-checkpoint=
+  to =e-context-lifetime-test-generation-and-promotion-records-round-trip=;
+  it covers a generation-boundary and promotion-record round trip for
+  =e-harness-turn-context=; runtime frames remain in memory.
+- =e-context-lifetime-test-explicit-abort-closes-frame= becomes a context-only
+  runtime source replacement policy check, with no serialized abort/settlement
+  state machine.
+
+** Delete obsolete lifecycle tests and machinery
+
+Delete these twelve remaining Slice 1 tests: =e-context-lifetime-test-latest-frame-snapshot-is-retained-once=,
+=e-context-lifetime-test-retains-only-referenced-latest-promotions-and-settlement=,
+=e-context-lifetime-test-bounded-retry-retention-replays-persistently=,
+=e-context-lifetime-test-settled-snapshot-without-marker-remains=,
+=e-context-lifetime-test-final-acknowledged-marker-removes-frame=,
+=e-context-lifetime-test-persistent-replay-matches-in-memory-reducer=,
+=e-context-lifetime-test-settled-frame-leaves-only-generation-in-resume-state=,
+=e-context-lifetime-test-settlement-status-survives-persistent-replay=,
+=e-context-lifetime-test-settlement-ack-is-disabled-by-default=,
+=e-context-lifetime-test-enabled-in-memory-settlement-ack-is-immediate=,
+=e-context-lifetime-test-enabled-persistent-ack-requires-controller=, and
+=e-context-lifetime-test-enabled-persistent-ack-uses-named-prefix=.
+
+Delete the obsolete test helpers =e-context-lifetime-test--append-lifecycle=
+and =e-context-lifetime-test--append-bounded-retries= together with their
+settlement, retry, and resume-state consumers.  Neither helper is repurposed
+as a persistence wrapper.
+
+Remove =e-context-lifetime-acknowledge-settlement=,
+=e-context-lifetime-settlement-acknowledgement-enabled=,
+=e-context-lifetime-settlement-unavailable=,
+=e-context-lifetime-settlement-statuses=,
+=e-session-context-lifetime-durability-barrier=,
+=e-session--validate-context-lifetime-prefix=,
+=e-session--context-frame-unsettled-p=,
+=e-session-append-context-frame-settlement=,
+=e-session-context-frame-settlements=,
+=e-session--context-settlement-statuses=, the session
+=:context-frame-settlements= field/replay path, and the
+=context-frame-settlement= critical-record branch.  Reduce
+=e-session--checkpoint-context-lifetime-state=, =e-session--context-lifetime-marker-p=,
+=e-session--context-lifetime-frame-state-p=, and
+=e-session--context-record-sequence= to durable generation/promotion
+provenance support, or remove them when they have no such consumer.
+Remove the logical-record barrier machinery with the same boundary.  Generic
+session persistence remains for unrelated existing features.
+
+Prefer runtime-only frame state: remove the persistent frame record,
+accessor, append, replay, and checkpoint paths, including
+=e-context-lifetime-frame-record=, =e-context-lifetime-frame-from-record=,
+=e-session-context-frames=, =e-session--context-frame-entry=,
+=e-session-append-context-frame=, the =:context-frames= session/tail fields,
+and their context-frame normalization/ownership/critical-record branches.
+Retain only the promotion provenance needed by =e-harness-turn-context=:
+explicitly submitted bounded fact value, core-derived existing transcript-entry
+refs or external/context-source handles, generation/frame/consumer/response
+identities, and fingerprints.  Never store runtime frame bodies or
+retry/settlement fields there.  Keep the runtime constructors/projector only if
+that normal-turn consumer still uses them.
+
+Adjust =e-context-lifetime-generation-record= and its inverse, plus the
+session generation append/checkpoint path, so a durable generation record has
+only generation identity, portable checkpoint, and covered session boundary.
+Remove its copied durable-tail field; reconstruct that tail from eligible
+canonical session entries and promotion provenance.  Promotion persistence may
+retain only the explicitly submitted bounded fact, an existing transcript-entry
+ref or existing external/context-source handle, consumer-request/generation/
+frame/response IDs, and fingerprints.
+
+Also remove the Feature 88 persistence controller state that was introduced
+for the discarded barrier design: =e-session-persistence-acknowledged-state-limit=;
+controller slots/fields =record-command-ids=, =record-command-keys=,
+=record-states=, =record-watchers=, and
+=acknowledged-record-state-order=.
+
+The exact record-state/fencing/watcher functions to remove are
+=e-session-persistence--record-key=,
+=e-session-persistence--remember-record-command=,
+=e-session-persistence--forget-record-command=,
+=e-session-persistence--forget-acknowledged-record-state=,
+=e-session-persistence--trim-acknowledged-record-states=,
+=e-session-persistence--set-record-state=,
+=e-session-persistence--record-state=,
+=e-session-persistence--fence-record-attempt=,
+=e-session-persistence--register-record-watcher=,
+=e-session-persistence--unregister-record-watcher=,
+=e-session-persistence--rebind-record-watchers=, and
+=e-session-persistence--fail-record-watchers=.
+
+Remove the corresponding Feature 88 branches in
+=e-session-persistence--handle-response= (record-key lookup, authoritative
+acknowledged/terminal-failed state updates, and record-command index cleanup),
+and in =e-session-persistence-submit-record= (record-key derivation, fencing,
+pending/submitted/preflight state, queued rebind, and watcher failure).  The
+current =e-session-persistence-status= has no record-state fields; retain only
+its generic =:writer-live=, =:outbox-count=, =:retry-pending=, and
+=:last-error= report.  Delete the complete
+=e-session-persistence-await-record-prefix= function and its logical-state
+branches.  Reduce =e-session-persistence-submit-record= to the generic
+pre-Feature88 append contract and leave unrelated persistence features intact.
+
+Delete =e-session-persistence--add-callback= and
+=e-session-persistence--remove-callback= together with the callback-list
+response dispatch added for multiple logical watchers.  Restore one callback
+pair per generic persistence command.  Remove the =on-queued= and
+=on-preflight-error= hooks from =e-session-persistence--submit= and its callers
+after their sole barrier consumer is gone.  Remove the public
+=e-session-context-lifetime-resume-state= accessor.  Update the local
+=cl-letf= submit wrapper in
+=e-session-persistence-test-checkpoints-dirty-sessions-before-one-reindex=
+(around its current 1185--1191 lines) to call the restored generic submit
+signature and retain only the generic checkpoint/reindex assertions.  The
+deleted context-lifetime helpers are not persistence wrappers.
+
+Replace =e-context-lifetime--transition-frame=,
+=e-context-lifetime-frame-start-consuming=,
+=e-context-lifetime-frame-consume=,
+=e-context-lifetime-frame-settle=, and
+=e-context-lifetime-frame-abort= with the minimum consumer-bound runtime
+operation, =e-context-lifetime-frame-complete-for-consumer=.  It validates the
+current consumer/response/promotion binding and returns the next in-memory
+projection; it retains no settle, abort, retry, or restart state.
+
+If no other consumer remains, also remove the old state vocabulary and accessors:
+=e-context-lifetime-frame-states=,
+=e-context-lifetime--normalize-state=,
+the frame =:state= and =:terminal-settlement= slots with their generated
+=e-context-lifetime-frame-state= and
+=e-context-lifetime-frame-terminal-settlement= accessors,
+=e-context-lifetime-frame-visible-p=, and
+=e-context-lifetime-invalid-transition=.  The replacement operation has no
+settle/abort/retry state slot.
+
+Delete these fifteen Feature 88 prefix-barrier tests from
+=test/e-session-persistence-test.el=:
+
+#+begin_example
+e-session-persistence-test-prefix-barrier-is-session-scoped
+e-session-persistence-test-prefix-barrier-validates-entry-lifecycle
+e-session-persistence-test-prefix-barrier-preflight-failure-is-not-durable
+e-session-persistence-test-prefix-barrier-preflight-replacement-fences-success-predecessor
+e-session-persistence-test-prefix-barrier-preflight-replacement-fences-failure-predecessor
+e-session-persistence-test-prefix-barrier-waits-for-submitted-ack
+e-session-persistence-test-prefix-barrier-accepts-replayed-durable-entry
+e-session-persistence-test-prefix-barrier-retains-many-terminal-failures
+e-session-persistence-test-prefix-barrier-stale-success-rebinds-replacement
+e-session-persistence-test-prefix-barrier-stale-failure-rebinds-replacement
+e-session-persistence-test-prefix-barrier-replacement-success-before-old-response
+e-session-persistence-test-prefix-barrier-replacement-failure-before-old-response
+e-session-persistence-test-prefix-barrier-multiple-watchers-share-replacement
+e-session-persistence-test-prefix-barrier-repeated-supersession-is-bounded
+e-session-persistence-test-prefix-barrier-does-not-watch-unrelated-key
+#+end_example
+
+No production path may retain =context-frame-settlement= as a critical record
+or use a barrier to make a successful turn transactional.  SQLite persistence
+and atomic transitions are the future owner of that concern.
 
 * Acceptance criteria
 
 ** Core behavior
 
-- Session-history reconstruction is exactly
-  =checkpoint + durable tail + open frame=.  A complete request prepends the
-  active request-time =static-prefix= and =stable-context= segments without
-  copying them into the generation.
-- A unique sentinel present only in a consumed observation is absent from the
-  next model request; a promoted fact derived from it is present.
-- The audit journal still contains the observation, its source/frame identity,
-  and the promotion link.
-- Cancellation and restart cannot silently close an unconsumed frame or include
-  a consumed frame forever.
-- A retry of request-time current state either reproduces the admitted rendered
-  fingerprint or explicitly aborts that frame before capturing replacement
-  state.
-- An invalid one-over promotion emitted beside an ordinary tool call dispatches
-  zero tools and leaves the frame retryable.  Withheld or failed settlement
-  acknowledgement also dispatches zero tools; successful acknowledgement
-  dispatches each admitted tool once per live execution attempt and opens one
-  next frame containing its results.
-- After restart, a durably admitted but provably undispatched call may resume.
-  A =dispatch-started= call without a durable normalized result becomes
-  blocked =outcome-unknown= and remains checkpoint-retained.  It is not
-  automatically redispatched.  A durable result with a partial settlement
-  prefix is completed idempotently with the same identities.  No provider
-  follow-up occurs until every admitted call has an acknowledged
-  =execution-settled= marker and their one aggregate result frame is
-  acknowledged.
-- =e-harness-resolve-tool-execution= appends and acknowledges exactly one linked
-  result/settlement transaction.  If it settles the last outstanding execution,
-  the recovery service opens and acknowledges the same one aggregate frame
-  before releasing follow-up.  Repeating an identical resolution is a no-op and
-  a conflicting resolution fails explicitly.
-- =e-harness-resume-pending-transition= is invoked through the real
-  session-resume path before a new prompt is accepted, claims recovered work at
-  most once, blocks on ambiguity, and reconstructs exactly one follow-up from
-  durable records after all execution-settlement prefixes and the aggregate
-  result frame are acknowledged.
-- A changed canvas replaces the prior snapshot.  It does not become another
-  durable transcript item and does not force stable-prefix invalidation.
-- A provider anchor never advances across inherited ephemeral input.  It may
-  advance across a proven replaceable channel.
-- Providers with no lifetime capabilities produce the same semantic context by
-  stateless replay.
-- Compaction starts a new generation from durable state only.  Portable
-  checkpoint reconstruction works without any provider artifact.
-- OpenAI opaque compaction, when enabled, is disposable and produces identical
-  local semantics when removed before the next turn.
+- The next projection is exactly portable checkpoint + durable tail derived from
+  eligible canonical session entries/promotions + one runtime open frame, with
+  active static/stable context added at request time; the frame body is never a
+  second durable source.
+- A marker present only in a consumed observation is present in exactly the
+  consuming invocation and absent from the next request.
+- A selected promoted fact remains in the next durable projection; an
+  unselected fact does not.
+- =e-harness-turn-context= can identify source observation, frame identity, and
+  promotion provenance from the canonical session path without implicitly
+  adding source-observation or frame-payload fields to the durable projection.
+  An explicitly submitted verbatim fact is durable by choice within the
+  bounded promotion limit.
+- Promotion source selection resolves to an existing canonical transcript-entry
+  ID when session-backed, or an existing external/context-source handle plus
+  fingerprint otherwise.  Missing refs fail the response path; no transcript
+  entry is manufactured solely to support a promotion.
+- Model/adapter-supplied provenance controls such as =:source-refs= and
+  =:fingerprint= are rejected before semantic mutation; external provenance is
+  derived by core from the consumed runtime frame and existing source handle.
+- A frame carries =frame-id=, =generation-id=, and =consumer-request-id=;
+  reuse is allowed only for that same not-yet-consumed consumer and matching
+  source fingerprint.  Two successful invocations with unchanged current
+  state therefore have two consumer-bound frames, and a consumed older frame
+  cannot accept a later promotion.
+- A provider-neutral tool call identity/arguments, any locally identified
+  replay item, and its result remain one paired ephemeral bundle.  The bundle
+  is visible to exactly its consuming invocation and later projections contain
+  no orphan call, result, or replay item unless a selected fact was promoted.
+- A changed canvas replaces the prior snapshot, does not create another durable
+  transcript item, and does not invalidate an otherwise compatible stable
+  prefix.
+- A context-only rebuild reuses an observation identity only when its source
+  fingerprint matches; otherwise it visibly starts a fresh frame and never
+  swaps bytes under an old identity.  This is not a tool retry guarantee.
+- Anchors never advance across inherited observations, may advance across a
+  proven replaceable channel, and fall back statelessly with equivalent
+  semantics when capabilities are absent.  Cleanliness covers ephemeral items
+  introduced by both request and response; a tool-call/replay response yields
+  only an in-memory =immediate-followup-only= candidate, and neither it nor a
+  contaminated descendant may replace the clean durable anchor.
+- Existing normal tool success, error, cancellation, timeout, and provider
+  follow-up behavior remains unchanged outside observation visibility.
+- Promotion controls are accumulated in the existing in-memory response stream
+  and valid facts commit at provider-done before the next follow-up projection;
+  an invalid control follows the existing response error path, does not roll
+  back already-streamed calls, and dispatches no later calls from that invalid
+  response.
+- Portable compaction starts a new generation from durable context only and
+  remains correct when provider artifacts are discarded.
 
-** Mandatory end-to-end expectation
+** Mandatory credential-free E2E
 
-Unit and request-body tests are necessary but insufficient.  Add a
-credential-free E2E using a stateful instrumented transport.  The transport
-stores the effective inherited context for every synthetic response id,
-implements =none=, =linear=, =branchable=, and
-=request-local-replaceable= capability profiles, and records separately:
+Add a real E2E with a stateful instrumented transport recording literal request,
+inherited continuation context, request-local replacement, and effective model
+context.  It crosses the real harness, loop, session, ordinary tool dispatch,
+context assembly, and adapter projection; it does not mock the projector or
+capability resolver.
 
-1. the literal provider-bound request;
-2. inherited context selected by its continuation id;
-3. request-local replaceable context; and
-4. the resulting effective model context.
+The scenario covers normal successful turns only.  Crash/restart during a tool
+follow-up is explicitly out of scope and must not be required.  It must:
 
-The scenario must cross the real harness, loop, session persistence, tool
-dispatch, context assembly, and adapter projection.  Assertions about forgotten
-sentinels are made against both the literal request and the emulator's effective
-context.  The restart step creates a new harness and store from the persisted
-test-owned session.  Do not mock the context projector, frame state machine, or
-session replay.
+1. start with stable prefix =C=, durable intent =D1=, and =CANVAS-ONE=;
+2. run an ordinary tool returning unique =OBSERVATION-ONE=;
+3. let the next invocation consume it and promote only
+   =first-divergence=normalize-price=;
+4. prove the consuming invocation sees the observation exactly once, the next
+   request omits it, and the promoted fact remains;
+5. replace the canvas with =CANVAS-TWO= and prove the old marker is absent;
+6. run =none=, =linear=, =branchable=, and a profile with proven
+   per-kind replacement for =current-state= and =dynamic-context=, then
+   compare effective semantics;
+7. prove clean-anchor advancement/reuse only for proven replacement and prove
+   stable-input changes fence the anchor; and
+8. exercise an ordinary successful multi-tool follow-up without changing its
+   existing lifecycle behavior.  Record the opaque immediate tool-response ID
+   and prove it is used only to deliver the matching result in the current
+   in-memory follow-up; its =immediate-followup-only= candidate is not persisted;
+   and
+9. run a mixed frontier containing replaceable =CANVAS-TWO= plus inherited
+   =TOOL-RESULT-ONE=.  Prove that the response is contaminated as a whole:
+   the prior clean anchor is held or the request uses stateless replay, and no
+   claim about canvas replacement is allowed to drop the inherited tool result.
+   A descendant carrying the tool-call/replay bundle ancestry remains
+   contaminated unless an entire-bundle conformance claim exists; and
+10. prove a valid paired tool bundle (call identity/arguments, any local
+    replay item, and result) is visible together to its consuming invocation,
+    then absent without orphan items for stateless, clean-branch, and proven
+    current-state-replaceable profiles.  Neither the immediate tool-response
+    candidate nor a contaminated final descendant may replace the clean
+    durable anchor.
 
-A companion credential-free contract scenario changes one static instruction
-and one =stable-context= provider value mid-generation.  It proves the new
-values replace the old values on the next effective request, an incompatible
-anchor is not reused, and generation/checkpoint identity remains unchanged.
-Fingerprint helper and exact segment-layout tests are mechanism evidence.
+Feature 88 adds only successful single- and multi-tool follow-up scenarios.
+Existing error, cancellation, and timeout suites remain unchanged regression
+gates, rather than becoming new Feature 88 protocol scenarios.  Add graphical
+E2E only if a presentation change makes graphical redisplay part of the
+behavior under test.
 
-Before this feature can move to =Done=, that E2E runs this scenario:
-
-1. Start a session with stable prefix =C=, durable fact =D1=, and canvas marker
-   =CANVAS-ONE=.
-2. Run a tool whose large result contains unique marker =OBSERVATION-ONE=.
-3. Let the next model transition consume it and promote only
-   =first-divergence=normalize-price=.
-4. Change the canvas marker to =CANVAS-TWO= and run another turn.
-5. Inspect the actual provider-bound requests and assert:
-   - =CANVAS-TWO= is present;
-   - =CANVAS-ONE= and =OBSERVATION-ONE= are absent from inherited and explicit
-     input;
-   - the promoted fact and prior durable user intent are present;
-   - the stable prefix/clean anchor is reused when capabilities allow it;
-   - a no-capability backend takes stateless fallback with the same semantics.
-6. Interrupt a separate open canvas frame before settlement, mutate or remove
-   its durable source, restart, and prove that the old frame is explicitly
-   aborted and a newly captured frame opens without a stale inherited marker.
-7. Force a compaction boundary, restart the test-owned session, and prove the
-   new generation resumes from its portable checkpoint without either old
-   marker.
-
-The same E2E file includes a restart scenario with a controlled side-effecting
-tool:
-
-- crash after settlement acknowledgement but before dispatch resumes one
-  previously undispatched call;
-- crash after the controlled side effect but before durable result produces
-  =outcome-unknown= and zero automatic redispatch for an ordinary tool;
-- with at least two admitted tools, crash after each durable result, after each
-  =execution-settled= marker but before acknowledgement, after all executions
-  settle but before aggregate =frame-opened=, after that frame but before its
-  acknowledgement, and after acknowledgement; each strict prefix completes
-  exactly once after restart and a known result never degrades to ambiguity;
-- =outcome-unknown= survives checkpoint/restart and blocks provider follow-up;
-- the public resolver appends one linked terminal result, waits for durable
-  acknowledgement, and only then permits follow-up;
-- an identical repeated resolution is a no-op and a conflicting one fails;
-- the scenario crosses the real session-resume service, repeated resume claims
-  are idempotent, and new prompts remain blocked until the pending transition is
-  settled;
-- no generic idempotency key is persisted and no execution at or beyond
-  =dispatch-started= is automatically redispatched;
-- completed multi-tool results remain terminal, ambiguous calls do not rerun,
-  and only provably undispatched calls may start;
-- exactly one result frame contains every settled result once in admitted-call
-  order, including a manually resolved result among ordinary live results;
-- provider follow-up waits until every admitted call has an acknowledged
-  =execution-settled= marker and the aggregate frame is acknowledged, and it is
-  reconstructed exactly once after restart; and
-- the same crash cuts through =e-harness-resolve-tool-execution= obey the same
-  per-execution transaction and aggregate-frame gate.
-
-Place this coverage under =e2e/= and give it one documented command that runs
-without credentials.  The planned direct command is:
+Run it with:
 
 #+begin_src sh
 eldev test -f e2e/e-context-lifetime-e2e-test.el
 #+end_src
 
-It must fail on the current append-forever behavior.
-
-Also extend the credentialed OpenAI live E2E when an eligible profile is
-configured:
-
-- continue with =previous_response_id= while replacing a first canvas sentinel
-  with a second through top-level =instructions=;
-- verify request diagnostics classify that channel as replaceable and advance
-  only a clean anchor;
-- verify reported cache counters show the stable prefix remains reusable where
-  the profile exposes them;
-- exercise =/responses/compact= only for a profile explicitly configured with
-  opaque provider compaction, then continue from the returned item;
-- close/discard provider state and prove portable full replay still completes.
-
-Use the existing credentialed runner shape:
-
-#+begin_src sh
-E_E2E=1 \
-E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
-eldev test -f e2e/e-live-e2e-test.el
-#+end_src
-
-Claims about a specific provider path require its credentialed E2E to pass.
-When credentials or endpoint support are unavailable, the generic feature may
-pass its deterministic acceptance gate, but that provider optimization remains
-unclaimed and the corresponding test must skip with an explicit reason.  A
-request-shape mock alone cannot prove cache hits, inherited-state replacement,
-or acceptance of opaque compacted items.
-
-Run the complete batch suite and =bash e2e/run-graphical-tests.sh= as regression
-gates.  No new graphical test is required unless presentation changes become
-visible; if they do, add screenshot-backed coverage for the new status.  Leave
-the user's running Emacs untouched during all acceptance runs.
+It must fail against append-forever context placement and pass without
+credentials.  Extend the credentialed OpenAI E2E for =instructions=,
+=previous_response_id=, cache diagnostics, and optional =/responses/compact=;
+when compaction is exercised, record its literal input and effective context
+and assert consumed markers are absent from both.  Skip explicitly when
+credentials or endpoint capability proof is unavailable.
+Run the complete batch suite and =bash e2e/run-graphical-tests.sh= as
+regression gates when the existing graphical suite applies; otherwise run the
+batch suite and leave graphical behavior to its existing gate.  Leave the
+user's running Emacs untouched.
 
 * Performance contract
 
-- Ordinary turns append only small durable deltas and reuse the generation's
-  stable prefix.
-- Consumed observation bytes are not retransmitted on later requests.
-- Updating a canvas changes only the request-local/ephemeral frontier, not the
-  stable prefix fingerprint.
-- The harness does not run a summary model call for every observation.
-- Cold prefill is expected at a deliberate generation boundary and on safe
-  fallback after provider state loss.
-- Context projection must not add an unbounded full-journal scan to each turn;
-  resume checkpoints retain the active generation and bounded open-frame state.
+- Ordinary turns append only small durable semantic deltas and reuse stable
+  prefixes when safe.
+- Consumed observation bytes are not retransmitted later.
+- Canvas updates change only the request-local frontier, not stable-prefix
+  fingerprints.
+- No summary model call runs for every observation.
+- Cold prefill occurs only at deliberate generation boundaries or safe fallback.
+- Projection does not add an unbounded journal scan to every turn.
+- Promotion validation is bounded by the returned effect, not history size.
 
-Review evidence must report exact first-turn, warm-turn, observation-turn, and
-post-compaction input/cached token counts for at least one capable profile.  A
-cache regression needs a first-principles justification; existing code layout
-is not sufficient justification.
-
-For an observation-bearing and a multi-tool transition, evidence also reports
-frame-settlement and tool-terminal-prefix record count and bytes, their separate
-acknowledgement waits, and end-to-end time from provider completion to first tool
-dispatch and from each tool completion to the next tool dispatch.  Report the
-aggregate result-frame record count/bytes, acknowledgement wait, and
-last-tool-to-provider-follow-up time separately.  The acknowledgement paths
-perform work proportional to their prefixes, never scan the full journal, and
-perform no synchronous filesystem I/O on the Emacs main thread.  Any material
-latency regression requires first-principles justification.  A controlled-writer
-acknowledgement gate is contract evidence; queue/outbox microtests are mechanism
-evidence.
+Report first-turn, warm-turn, observation-turn, and post-compaction input/cache
+counts for one capable profile.  Explain any material cache or latency
+regression from first principles.  Do not measure per-append acknowledgement
+latency: that mechanism is outside this feature.
 
 * Compatibility and migration
 
-- Existing journals load without rewriting.  Messages lacking lifetime
-  metadata remain durable, preserving pre-feature behavior.
-- Legacy tool calls without execution records keep the existing replay behavior;
-  they are not retroactively classified as safely undispatched or retried.
-- New lifetime behavior starts at a recorded generation boundary or explicit
-  session migration point; do not reinterpret old tool results silently.
-- Existing provider anchors without the new layout/generation revision are
-  incompatible and fall back to full replay once.
-- Backends that ignore new capabilities remain correct through flat stateless
+- Existing journals load without rewriting; messages without lifetime metadata
+  remain durable.
+- The narrowed generation/promotion record schema is version 2, distinct from
+  the =context-promote= wire schema version.  Legacy v1 Slice 1
+  =context-generation=, =context-frame=, =context-promotion=, and
+  =context-frame-settlement= entries remain readable for ordinary transcript
+  and audit loading, but are ignored by the narrowed semantic projection unless
+  a deliberate migration boundary explicitly converts them.  Reading them
+  never recreates a runtime frame, recovery state, or resume-state projection.
+- Existing ordinary tool calls/follow-ups keep current behavior and are not
+  silently reclassified.
+- New semantic visibility is explicit opt-in only.  An already opted-in session
+  activates a changed classification at its next deliberate generation
+  boundary; that boundary alone never enables the feature or reclassifies old
+  results.
+- Old/incompatible provider anchors fall back to full replay once.
+- Backends ignoring new capabilities remain correct through flat stateless
   messages.
-- Prompt-cache placement, provider continuation, and logical lifetime remain
-  independently configurable.
-- Branches inherit the selected generation checkpoint and durable path, not
-  consumed frames from another branch.
-- Export and audit views continue to show full historical tool evidence even
-  though model context does not.
+- Prompt-cache placement, continuation, and logical lifetime remain separate.
+- Branches inherit checkpoint and durable path, not another branch's consumed
+  frame.
+- Export/audit views may show historical tool evidence while model context does
+  not.
 
 * Non-goals
 
 - Do not delete or rewrite the append-only audit journal.
-- Do not make OpenAI =previous_response_id=, =instructions=, or opaque compaction
-  items part of the core state model.
-- Do not parse or display the contents of provider opaque compaction items.
-- Do not claim that a provider forgot data merely because e omitted it from a
-  later request; the claim requires a documented replaceable channel or a
-  stateless/clean-anchor path.
-- Do not automatically promote every observation or summarize every tool result.
-- Do not make the canvas itself durable conversation history.
-- Do not require every backend to implement branching, replacement, cache
-  controls, or provider compaction.
-- Do not use compaction as a substitute for bounded tool/resource output.
-- Do not add a second external-resource registry or persist external payloads in
-  generation/frame state.  This feature only classifies the bounded observation
-  produced when an existing handle is resolved.
-- Do not promise exactly-once external side effects for arbitrary tools or add a
-  speculative generic idempotency interface.  Feature 88 never automatically
-  retries after =dispatch-started= without a terminal result.
+- Do not make provider fields such as =previous_response_id=,
+  =instructions=, or opaque compaction items part of the core state model.
+- Do not parse/display opaque provider compaction contents.
+- Do not claim a provider forgot data merely because =e= omitted it; require a
+  documented replaceable or stateless/clean-anchor path.
+- Do not automatically promote every observation or summarize every result.
+- Do not make the canvas durable conversation history.
+- Do not require every backend to branch, replace, cache, or compact.
+- Do not use compaction as bounded tool/resource output.
+- Do not add another external-resource registry or persist external payloads in
+  generation state.
+- Do not promise exactly-once external side effects.
+- Do not add in-flight tool crash recovery here; SQLite persistence and atomic
+  transitions own that future concern.
 
-* Risks and explicit mitigations
+* Risks and mitigations
 
-- *The model fails to promote a needed fact.* Make the lifetime contract visible
-  in instructions, expose an explicit promotion operation, keep audit evidence
-  retrievable, and test multi-tool transitions.  Do not silently retain all
-  observations as insurance.
-- *A provider claims replacement but retains prior values.* Gate the capability
-  per profile/transport, require conformance and live E2E evidence, and fall back
-  to clean-anchor/stateless reconstruction.
-- *Reasoning state is lost when an observation branch is abandoned.* Normalize
-  replayable reasoning items and include them in the durable delta when the
-  provider contract requires it; otherwise retain the last clean anchor.
-- *Dual compactions drift.* The portable checkpoint is canonical.  Provider
-  opaque state is accepted only at the same boundary/fingerprint and can always
-  be discarded.
-- *Crash recovery duplicates or forgets a frame.* Journal frame open, consume,
-  promotion, and close transitions idempotently; resume from the last committed
-  state.
-- *Crash recovery duplicates an external tool side effect.* Persist execution
-  admission and dispatch-started separately; commit terminality only with a last
-  =execution-settled= marker; idempotently finish known partial results; never
-  automatically rerun an ambiguous tool; and require an explicit durable
-  resolution before resuming the transition.
-- *Cache optimization leaks into semantic policy.* Keep provider capabilities
-  and rendering in adapters, and prove core projection with a backend-free test.
-- *Journal size still grows.* This feature bounds model context, not audit
-  storage.  Retention/export policy is separate work.
+- *A needed fact is not promoted.* Make the contract visible, expose the
+  explicit operation, retain audit provenance, and test selected versus
+  unselected facts.  Do not retain every observation as insurance.
+- *A provider falsely claims replacement.* Gate the claim per profile/transport,
+  require conformance evidence, and fall back to a clean anchor/stateless
+  replay.
+- *Mixed observation kinds contaminate a continuation.* Evaluate the effective
+  delivery of every frontier item independently; if any ephemeral item is
+  inherited, hold the clean prior anchor or use stateless replay even when
+  current-state/dynamic-context replacement is proven.
+- *A response bundle contaminates a previously clean anchor.* Treat the
+  immediate-followup-only candidate as in-memory delivery for the matching
+  result only; descendants inherit contamination unless an entire-bundle
+  replacement capability is proven.
+- *Promotion provenance cannot resolve its source.* Require an existing
+  transcript-entry ID or external/context-source handle plus fingerprint and
+  fail the promotion path rather than manufacturing a transcript entry.
+- *A reserved promotion effect drifts between adapter and core.* Construct the
+  normalized schema, source identity, limits, and revision/content fingerprint
+  once in core; the optional adapter carrier only encodes/decodes it and never
+  supplies alternate limits.  The fingerprint fences incompatible tool-schema/
+  anchor identities.
+- *A provider requires an unsupported reasoning mode.* Use only =none= or
+  =replayable=; represent any ordinary replay item with a local semantic ID and
+  let the adapter encode it, rather than adding provider-owned state.
+- *Portable/provider compaction drifts.* Portable context is canonical; opaque
+  state is accepted only at the same boundary/fingerprint and is disposable.
+- *A successful turn retains source fields accidentally.* Assert that the
+  protocol does not implicitly add source-observation or frame-payload fields;
+  an explicitly submitted bounded fact, including verbatim content, is allowed
+  to become durable by choice.
+- *Provider compaction reuses contaminated state.* Build its input statelessly
+  or from an anchor clean for every observation kind, and compare literal input
+  with effective context while keeping provider wire proof externally gated.
+- *Cache optimization leaks into policy.* Keep capability resolution/rendering
+  in adapters and prove core projection with backend-free tests.
+- *Audit storage grows.* This feature bounds model context, not audit storage;
+  retention/export is separate work.
 
 * Architecture self-check
 
-1. *If work stopped here, is the project better off?* Yes.  The first behavioral
-   slice fixes stale canvas inheritance with a safe stateless fallback; later
-   slices independently remove raw tool observations and add generational
-   compaction.
-2. *Final direction?* A harness-owned logical state machine whose provider
-   adapters accelerate, but do not define, context semantics.
-3. *Stable and uncertain decisions?* The three model-visible lifetimes, the
-   existing external-handle delivery mode, the clean-anchor invariant, and the
-   portable checkpoint are stable.  Provider wire capabilities and the exact
-   promotion UI are likely to change and remain local to adapters or one narrow
-   core operation.
-4. *Owner?* Core context policy owns lifetime; session owns durable audit;
-   harness/loop own transactions; adapters own wire realization; presentation
-   only renders status.
-5. *Coupling?* Reduced: core no longer relies on OpenAI continuation semantics,
-   and adapters consume a narrow semantic projection rather than session internals.
-6. *Dependency direction?* Unstable provider code depends on the stable logical
-   context contract.  Core never imports an OpenAI request shape.
-7. *Side effects outward?* Provider calls, journal writes, and external resource
-   retrieval stay at adapter/session/tool boundaries; projection is pure where
-   practical.
-8. *State lifetime?* Generations and promotions are durable; open frames are the
-   smallest restart-safe state; provider anchors and opaque checkpoints are
-   disposable; presentation/cache state remains runtime-local.
-9. *Performance?* The design removes repeated observation bytes and preserves
-   monotonic prefixes, with an explicit cold cost only at compaction or fallback.
-10. *Real abstractions?* Every capability corresponds to a distinct request
-    strategy.  Missing capabilities select a valid fallback instead of weakened
-    behavior or unsupported-operation errors.
-11. *Compatibility?* Old records remain durable, old anchors invalidate once,
-    and no legacy rewrite path is added.
-12. *Legacy removable now?* Remove the path that treats refreshed dynamic
-    developer input as sufficient replacement while continuing through an
-    anchor that contains the prior snapshot.
-13. *Errors?* Expected anchor rejection and opaque-state expiry fall back through
-    the adapter.  Journal corruption, invalid frame transitions, and mismatched
-    boundaries surface as explicit errors.
-14. *Independent tests?* Pure projector/state-machine tests prove lifetime;
-    adapter tests prove wire mapping; the mandatory E2E proves their integration
-    through the real harness/session/tool path.
+1. *If work stopped here, is the project better off?* Yes.  The visibility and
+   anchor rules prevent stale canvas inheritance, and normal-turn promotion is
+   bounded without taking ownership of external side-effect recovery.
+2. *Final direction?* A harness-owned semantic projection accelerated by
+   provider adapters.
+3. *Stable/uncertain?* Durable versus ephemeral visibility, the kind-scoped
+   delivery map, request/response anchor cleanliness, stateless fallback, and
+   portable checkpoints are stable.  Promotion wire realization and
+   entire-bundle provider conformance remain local and reversible, while
+   normalized schema, limits, and canonical source resolution are core-owned.
+4. *Owner?* Core owns visibility/limits, normalized promotion, and source-ref
+   validation; session owns the canonical transcript/audit; =e-harness-turn-context=
+   owns later-request projection; harness/loop own successful-turn orchestration;
+   =e-compaction= owns deliberate generation transitions; adapters own opaque
+   wire shape; presentation renders bounded status.
+5. *Coupling?* Reduced: core depends on semantic capabilities, while normal
+   tool lifecycle stays outside context policy.
+6. *Dependency direction?* Provider code depends on the stable logical
+   contract; core never imports an OpenAI request shape.
+7. *Side effects outward?* Provider calls, session writes, tools, and resource
+   retrieval stay at existing boundaries; projection is pure where practical.
+8. *State lifetime?* Checkpoints and selected fact/provenance records are
+   generation/session state; frames and immediate-followup candidates are
+   normal-turn memory; anchors/provider checkpoints are disposable;
+   presentation/cache state is runtime-local.
+9. *Performance?* Repeated observation bytes disappear while monotonic prefixes
+   remain reusable; cold work is limited to compaction/fallback.
+10. *Real abstractions?* Each capability corresponds to a request strategy;
+    missing capabilities select valid stateless behavior.  The only reasoning
+    modes are =none= and =replayable=.  Core is the sole authority for the
+    reserved promotion schema, limits, and revision/content fingerprint; an
+    optional carrier is only an adapter wire concern.
+11. *Compatibility?* Opt-in is explicit; an opted-in session changes
+    classification only at a deliberate generation boundary, never merely
+    because a boundary exists or by reclassifying old results.
+12. *Legacy removable now?* Remove the path treating refreshed dynamic input as
+    sufficient replacement while retaining an anchor containing the old value.
+13. *Errors?* Invalid promotions, capability mismatches, anchor rejection, and
+    provider artifact expiry surface or use documented semantic fallback.
+14. *Independent tests?* Pure projection/promotion/source-ref tests prove
+    lifetime; adapter tests prove opaque wire mapping; the mandatory E2E proves
+    paired bundle delivery, anchor contamination, and real successful-turn
+    integration.
+
+* Residual ambiguities
+
+- The wire spelling of =context-promote= remains adapter-owned; its normalized
+  semantic payload, source identity, limits, and schema revision are fixed in
+  core.  A provider still needs separate conformance evidence before any
+  observation kind may be marked replaceable.
+- Existing session audit may retain more provenance than model projection
+  needs.  SQLite retention can define that later without changing semantics.
+- Cache counters are evidence when exposed, not a correctness dependency.
