@@ -2612,6 +2612,67 @@ Return request options, persisted anchors, and the final context."
                                   :provider-anchor-source-message-count)
                        (length (plist-get context :messages))))))))
 
+(ert-deftest e-harness-test-provider-anchor-delta-lifetime-filter-is-opt-in ()
+  "Lifetime anchor deltas drop tool bundles without changing legacy deltas."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (store (e-harness-sessions harness))
+         (session-id "anchor-delta-lifetime-filter"))
+    (e-harness-create-session harness :id session-id)
+    (e-session-append-message store session-id
+                              '(:role user :content "before-anchor"))
+    (let* ((anchor-message
+            (e-session-append-message store session-id
+                                      '(:role assistant
+                                        :content "anchor-response")))
+           (tool-call
+            (e-session-append-message
+             store session-id
+             '(:role tool-call
+               :content (:id "anchor-call" :name "inspect"
+                         :arguments (:target "one"))
+               :metadata (:provider-replay-items
+                          ((:id "anchor-replay"))))))
+           (tool-result
+            (e-session-append-message
+             store session-id
+             '(:role tool
+               :content (:tool-call-id "anchor-call"
+                         :content "anchor-result"))))
+           (_tail
+            (e-session-append-message store session-id
+                                      '(:role user :content "after-anchor")))
+           (anchor (list :covered-entry-id
+                         (plist-get anchor-message :id)))
+           (legacy
+            (e-harness--provider-anchor-delta-messages
+             harness session-id anchor nil))
+           (lifetime
+            (e-harness--provider-anchor-delta-messages
+             harness session-id anchor
+             '(:context-lifetime-enabled t))))
+      (should (seq-some
+               (lambda (message)
+                 (equal (plist-get (plist-get message :content) :id)
+                        (plist-get (plist-get tool-call :content) :id)))
+               legacy))
+      (should (seq-some
+               (lambda (message)
+                 (equal (plist-get (plist-get message :content)
+                                   :tool-call-id)
+                        (plist-get (plist-get tool-result :content)
+                                   :tool-call-id)))
+               legacy))
+      (should-not
+       (seq-some
+        (lambda (message)
+          (member (plist-get message :role) '(tool-call tool)))
+        lifetime))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             lifetime)
+                     '("after-anchor"))))))
+
 (ert-deftest e-harness-test-context-uses-provider-anchor-after-dynamic-state-change ()
   "Replaceable current-state changes preserve the stable provider anchor."
   (let* ((current-state "dynamic context")

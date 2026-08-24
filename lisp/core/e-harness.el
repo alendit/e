@@ -3522,11 +3522,18 @@ refresh changes the projection that produced it."
                        (plist-get anchor :covered-entry-id)))))
     (append
      dynamic-messages
-     (mapcar #'e-context--backend-message
-             (cl-remove-if-not
-             (lambda (entry)
-               (eq (plist-get entry :type) 'message))
-              entries)))))
+    (if (plist-get context :context-lifetime-enabled)
+        (delq nil
+              (mapcar #'e-session-context-lifetime-durable-message
+                      (cl-remove-if-not
+                       (lambda (entry)
+                         (eq (plist-get entry :type) 'message))
+                       entries)))
+      (mapcar #'e-context--backend-message
+              (cl-remove-if-not
+               (lambda (entry)
+                 (eq (plist-get entry :type) 'message))
+               entries))))))
 
 (defun e-harness--provider-anchor-selection-allowed-p (options)
   "Return non-nil when OPTIONS can safely select a provider anchor.

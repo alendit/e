@@ -702,6 +702,17 @@ TTL is the default, so the legacy retention option must not reach the wire."
   (and (eq (e-openai--provider-wire-api profile) 'responses)
        (plist-get profile :continuation)))
 
+(defun e-openai--profile-continuation-mode (profile)
+  "Return the proven continuation mode declared by PROFILE.
+
+Boolean continuation declarations retain the historical linear mode.  A
+named profile may explicitly declare `branchable' when it has independently
+proved that inherited observations can branch from a clean anchor."
+  (when (e-openai--profile-continuation-supported-p profile)
+    (if (eq (plist-get profile :continuation) 'branchable)
+        'branchable
+      'linear)))
+
 (defun e-openai--profile-observation-delivery (profile)
   "Return the validated semantic observation delivery for PROFILE.
 An absent profile field is the conservative inherited default.  An explicitly
@@ -784,9 +795,8 @@ injected requester for conformance tests."
            ((plist-get options :prompt-cache-key) 'implicit)
            (t 'none))))
     (list :continuation
-          (if (and identity-compatible
-                   (e-openai--profile-continuation-supported-p profile))
-              'linear
+          (if identity-compatible
+              (or (e-openai--profile-continuation-mode profile) 'none)
             'none)
           :observation-delivery observation-delivery
           :prefix-cache prefix-cache

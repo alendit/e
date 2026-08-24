@@ -63,6 +63,9 @@
 ;; test/ and remain part of every normal run.  Opt into the live suite with
 ;; E_E2E=1 outside CI, for example:
 ;;   E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
+(setf eldev-test-fileset
+      (list :or eldev-test-fileset
+            "./e2e/e-context-lifetime-e2e-test.el"))
 (when (and (getenv "E_E2E")
            (not (getenv "CI")))
   (setf eldev-test-fileset
