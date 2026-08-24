@@ -1096,3 +1096,69 @@ and promotion-record serialization.  Runtime frames have no restart promise.
 
 Remediate F88.P3, F88.P9, F88.P13, and F88.P14 with the same persistent Luna
 implementer, then reuse the same unattended Sol reviewer for Tick 14.
+
+* Tick 14 narrowed-plan trust-boundary review
+
+Reviewed exact HEAD =83f35c20031fff4bcaf54c532dfac0bc10e6ea5e= plus
+the sole WIP =plan.org=.  Decision: not ready for implementation; one P1 and
+one P2 finding remain.  F88.P9 and F88.P14 are closed.  F88.P3 remains open
+only for omitted recovery-only APIs, and F88.P13 remains open for the promotion
+trust boundary.
+
+** P1 F88.P13: model-facing promotion input owns trusted provenance
+
+The normalized reserved-effect schema accepts =:source-refs= and fingerprints
+from the adapter/model even though core must resolve submitted observation IDs
+against the consumed frame.  That either trusts forged provenance or moves
+core-owned source resolution into an adapter.  Two later statements also still
+limit retained provenance to session entries and omit valid external/context
+sources.
+
+Owning correction: the model-facing effect contains only type, wire schema
+version, frame ID, source observation IDs, and bounded facts.  Reject supplied
+source-ref/fingerprint keys.  Core resolves every observation ID against the
+consumed runtime frame and derives the durable version-2 transcript-entry or
+external/context-source reference plus fingerprint.  Add tests for forged
+provenance rejection and core-derived external provenance, and correct the two
+stale session-only statements.
+
+** P2 F88.P3: cleanup inventory omits recovery-only APIs
+
+The corrected controller fields, main state/watcher inventory, version-2
+records, legacy-v1 read/ignore policy, and compatibility fixture are now
+explicit.  The intentionally exact cleanup list still omits multiple-callback
+helpers and dispatch, submit hooks introduced for shared prefix watchers, the
+public resume-state accessor, the old frame transition/settle/abort state
+machine, and an affected checkpoint-test wrapper signature.
+
+Owning correction: remove the multiple-callback helpers and restore one generic
+callback pair per persistence command; remove =on-queued= and
+=on-preflight-error= after their sole barrier consumer; remove
+=e-session-context-lifetime-resume-state=; replace old frame transition,
+start-consuming, consume, settle, and abort APIs with the minimum
+consumer-bound runtime completion operation; and restore the generic submit
+signature in the checkpoint-test wrapper.  Keep legacy-v1 handling as a narrow
+read/ignore boundary, never a resume-state projection.
+
+** Tick 14 evidence and disposition
+
+- The same unattended reviewer checked the complete plan against current
+  context-source, loop continuation, lifetime, session, persistence-controller,
+  and persistence-test source.
+- F88.P9 is closed: request/response contamination,
+  =immediate-followup-only= scope, generic ownership, and descendant taint are
+  explicit and accepted.
+- F88.P14 is closed: reopen evidence covers only narrowed durable generation
+  and promotion data.
+- Mandatory credential-free E2E is sufficiently explicit about effective
+  context, paired bundles, lifecycle preservation, immediate-only continuation,
+  contaminated descendants, and orphan prevention.
+- Org parsing and =git diff --check= passed; only =plan.org= was dirty before
+  this review artifact was recorded.
+- Provider conformance, credentialed E2E, live cache counters, and provider
+  compaction wire behavior remain externally gated unknowns.
+- The reviewer made zero prompts, approval requests, escalations, edits, git
+  writes, network calls, or live-Emacs calls.
+
+Remediate F88.P3 and F88.P13 with the same persistent Luna implementer, then
+reuse the same unattended Sol reviewer for Tick 15.
