@@ -5,10 +5,10 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  The parent has accepted the
-uncommitted Slice 2 candidate for independent review after its exact semantic
-commit.  Slice 2 is not yet fixed-point accepted, and this is not the final
-feature acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Implementation Tick 06 found two
+P1 and one P2 defects in Slice 2 at
+=2087af0752ee1b8121d0cd32fa72858ce8591139=.  Slice 2 is not accepted, Slice 3
+remains gated, and this is not the final feature acceptance.
 
 * Tick 01 findings
 
@@ -359,3 +359,89 @@ unattended reviewer must review that clean revision before Slice 3 begins.
   passed.
 - The running Emacs was not read, reloaded, or changed.  A full restart is
   required to use this core/session/harness/adapter slice.
+
+* Tick 06 findings
+
+Reviewed exact clean commit
+=2087af0752ee1b8121d0cd32fa72858ce8591139= in unattended read-only mode.
+
+Decision: Slice 2 has not reached a fixed point.  There are two P1 findings and
+one P2 finding.
+
+** P1 F88.I2.1: same-turn context refresh keeps stale replaceable state
+
+The harness's refresh callback rebuilds context but returns only messages, and
+the loop replaces only its message list.  Segments, observation frontier,
+fingerprint, semantic capabilities, anchor decision, and OpenAI
+=replaceable-current-state= remain from the original request.  A tool that
+changes current state and requests context refresh can therefore send
+=STATE-A= in follow-up instructions even though refreshed messages contain
+=STATE-B=.
+
+*** Owning correction
+
+Make refresh replace one atomic request projection: messages, segments,
+observation frontier, fingerprint, semantic capabilities, and anchor decision.
+Update loop options before candidate promotion and follow-up rendering.  Add a
+real harness to tool-refresh to OpenAI-continuation integration test proving
+=STATE-B= replaces =STATE-A=.
+
+** P1 F88.I2.2: endpoint overrides inherit the first-party capability claim
+
+=e-openai-backend-create= accepts a base-URL override, but its capability
+resolver closes only over the named provider profile.  An arbitrary gateway
+therefore inherits the first-party OpenAI =request-local-replaceable= claim even
+though only its routing target changed.  An injected request transport has the
+same unproven identity problem.
+
+*** Owning correction
+
+Resolve capabilities from effective endpoint and transport identity.  Downgrade
+base-URL and transport/request-function overrides to inherited/stateless unless
+the endpoint has its own explicitly proven profile.  Add capability and
+effective-context tests for overrides.
+
+** P2 F88.I2.3: equality filtering can delete a durable delta
+
+The OpenAI renderer removes replaceable current-state messages by structural
+equality, including after the harness has already built an observation-free
+anchor delta.  A durable system delta equal in role and content to current state
+is therefore deleted from provider input.
+
+*** Owning correction
+
+Partition by semantic segment/source identity instead of value equality.  Do
+not filter a continuation delta already constructed without the observation
+frontier.  Add equal-role/equal-content collision tests for stateless and
+continuation paths.
+
+** Tick 06 cleared cells
+
+- Provider-neutral capability vocabulary, strict validation, and conservative
+  generic defaults.
+- Inherited linear stateless reconstruction and branchable reuse of only an
+  older clean anchor without candidate advancement.
+- Ordinary cross-turn replaceable delivery through top-level =instructions=
+  with stable developer input and anchor identity preserved.
+- Bounded semantic diagnostics and absence of frontier content from the durable
+  activity journal.
+- Existing no-capability, legacy-profile, and Anthropic regression suites.
+
+** Tick 06 evidence and disposition
+
+- The reviewer independently reproduced stale =STATE-A= instructions after a
+  message-only refresh, an arbitrary endpoint override still advertising
+  replaceable delivery, and a singleton durable message deleted by equality.
+- Focused verification passed 468/468.  The full suite produced 2253 expected
+  results, two existing skips, and zero unexpected results out of 2255.
+- All 16 credentialed live E2E tests skipped without backend configuration.
+  Credentialed behavior, the mandatory credential-free stateful lifetime E2E,
+  and cache accounting remain later-slice acceptance gates.
+- The graphical runner exited before producing a report; no Slice 2 graphical
+  behavior was claimed from that run.
+- HEAD remained exact and clean.  Review made no edits, commits, live Emacs
+  calls, escalation, or approval requests.
+
+Remediate F88.I2.1--F88.I2.3 with the persistent implementer, commit the Tock,
+and return that exact clean revision to the same unattended reviewer.  Slice 3
+remains gated.
