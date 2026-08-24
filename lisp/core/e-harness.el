@@ -2764,7 +2764,10 @@ profile names."
 
 (defconst e-harness--reserved-derived-context-option-keys
   '(:context-segment-message-count
-    :replaceable-current-state-partitioned)
+    :replaceable-current-state-partitioned
+    :provider-anchor
+    :provider-anchor-delta-messages
+    :provider-anchor-source-message-count)
   "Context options owned by the harness rather than callers.
 
 These values are derived from the semantic projection at request construction.
@@ -2775,6 +2778,18 @@ caller because such values could forge or stale the frontier partition.")
   "Return OPTIONS without harness-derived context partition markers."
   (let ((clean (copy-sequence options)))
     (dolist (key e-harness--reserved-derived-context-option-keys clean)
+      (cl-remf clean key))))
+
+(defconst e-harness--provider-anchor-derived-context-option-keys
+  '(:provider-anchor
+    :provider-anchor-delta-messages
+    :provider-anchor-source-message-count)
+  "Provider-anchor fields derived from the session-owned anchor.")
+
+(defun e-harness--strip-provider-anchor-derived-context-options (options)
+  "Return OPTIONS without provider-anchor-derived correctness state."
+  (let ((clean (copy-sequence options)))
+    (dolist (key e-harness--provider-anchor-derived-context-option-keys clean)
       (cl-remf clean key))))
 
 (defun e-harness--context-observation-frontier (context capabilities)
@@ -3057,11 +3072,22 @@ inherited."
       'advance-eligible))))
 
 (defun e-harness--context-with-provider-anchor (harness session-id context)
-  "Attach a compatible provider anchor to CONTEXT options when available."
-  (let* ((options (plist-get context :options))
+  "Attach only a session-owned compatible provider anchor to CONTEXT.
+
+Provider-anchor fields are harness-derived correctness state.  Clear all stale
+or caller-supplied values before looking up the session-owned anchor so a
+missing or incompatible anchor cannot accidentally preserve forged continuation
+state across a context rebuild."
+  (let* ((options
+          (e-harness--strip-provider-anchor-derived-context-options
+           (plist-get context :options)))
          (provider-id (plist-get options :provider-anchor-provider-id))
          (lookup-fingerprints
           (e-harness--provider-anchor-lookup-fingerprints context)))
+    ;; Keep the cleaned options authoritative even when no provider anchor can
+    ;; be selected.  The branches below may add only a session-owned anchor or
+    ;; a diagnostic explaining why one was not selected.
+    (plist-put context :options options)
     (when (and provider-id
                (e-harness--provider-anchor-selection-allowed-p options))
       (let ((anchor

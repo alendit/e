@@ -5,10 +5,11 @@
 * Current decision
 
 Slice 1 is accepted after Implementation Tick 05 at
-=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Implementation Tick 08 closes
-F88.I2.4 but finds one remaining P1 continuation-forgery path in F88.I2.5 at
-=b8cdf17a157942a5ad0d11f2dbab98341f83ee83=.  Slice 2 is not accepted, Slice 3
-remains gated, and this is not final feature acceptance.
+=b8f36628f9dbc9e3444c48d4db004508d7cb288f=.  Tock 07 remediates the remaining
+P1 continuation-forgery path from Implementation Tick 08.  The parent has
+accepted the uncommitted candidate for an exact-revision Tick; Slice 2 is not
+yet fixed-point accepted, Slice 3 remains gated, and this is not final feature
+acceptance.
 
 * Tick 01 findings
 
@@ -650,3 +651,35 @@ anchors, equal durable deltas, and legitimate in-turn suffixes.
 Remediate the remaining F88.I2.5 path with the persistent implementer, commit
 the Tock, and return that exact clean revision to the same unattended reviewer.
 Slice 3 remains gated.
+
+* Tock 07 candidate disposition
+
+Parent acceptance completed on 2026-08-24.  The exact commit is supplied by the
+semantic commit containing this ledger entry; the same unattended reviewer must
+Tick that clean revision before Slice 3 begins.
+
+- The harness now reserves and strips =:provider-anchor=,
+  =:provider-anchor-delta-messages=, and
+  =:provider-anchor-source-message-count= with the other correctness-critical
+  derived fields.
+- Provider-anchor attachment clears all anchor-derived values before lookup and
+  re-adds them only from a compatible session-owned anchor.  Missing or
+  incompatible lookup diagnostics cannot preserve caller/default/session
+  continuation state across a context rebuild.
+- A real harness-to-OpenAI integration test supplies forged defaults and hostile
+  restored session values with no stored anchor.  The request has no
+  =previous_response_id=, current state appears only in =instructions=, forged
+  deltas/source counts are absent, and only the real full-response candidate is
+  persisted.  Positive session-owned continuation coverage remains explicit.
+- Parent focused verification passed 308/308.  The full suite produced 2264
+  expected results, the same two existing skips, and zero unexpected results
+  out of 2266.  =eldev compile --warnings-as-errors= and =git diff --check=
+  passed.
+- With =E_E2E=1= and no =E_E2E_CONFIG=, the live E2E file loaded and explicitly
+  skipped all 16 credentialed tests; no provider-runtime claim is made.
+- The user's running Emacs was left unchanged.  The core/harness changes require
+  a full restart before they can affect it.
+
+The remaining F88.I2.5 path is candidate-closed.  Slice 3 remains gated until
+the same unattended reviewer accepts the exact clean Tock commit with zero
+P0--P3 findings and zero required unknown cells for Slice 2.

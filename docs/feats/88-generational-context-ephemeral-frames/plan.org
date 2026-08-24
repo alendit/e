@@ -641,7 +641,7 @@ Accepted parent-side on 2026-08-24.
 
 ** Slice 2 implementation evidence
 
-Parent-accepted Tock 06 candidate on 2026-08-24; independent fixed-point review
+Parent-accepted Tock 07 candidate on 2026-08-24; independent fixed-point review
 remains required before Slice 3.
 
 - Current-state and dynamic-context segments now form an explicit semantic
@@ -677,10 +677,15 @@ remains required before Slice 3.
   harness entry's context on atomic refresh.  Real harness tests cover stable,
   tool-schema, provider-option, compaction, and replaceable-only refreshes,
   including no-final-candidate and later-fingerprint-reversion cases.
-- Parent verification after Tock 06 passed 307/307 focused harness, loop,
-  OpenAI, and continuation-integration tests.  The full suite produced 2263
+- Tock 07 reserves the complete anchor/delta/source-count triplet as
+  harness-derived state.  Every rebuild clears caller/default/session values
+  before selecting only a compatible session-owned anchor; a real
+  harness-to-OpenAI regression proves forged continuation state cannot bypass
+  frontier filtering or contaminate a persisted anchor.
+- Parent verification after Tock 07 passed 308/308 focused harness, loop,
+  OpenAI, and continuation-integration tests.  The full suite produced 2264
   expected results, the same two existing skips, and zero unexpected results
-  out of 2265.  The focused OpenAI suite passed 126/126 after compile cleanup.
+  out of 2266.
   With =E_E2E=1= and no backend configuration, the credential-gated live E2E
   file loaded and explicitly skipped all 16 tests.  =eldev compile
   --warnings-as-errors= and =git diff --check= passed.
