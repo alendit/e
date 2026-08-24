@@ -1355,3 +1355,167 @@ zero-finding pre-commit fixed point with no P0, P1, or P2 findings.
   git writes, network calls, or live-Emacs calls.
 
 Slice 1 has reached the required independent pre-commit fixed point.
+
+* Tick 19 Slice 3 closed-loop implementation review
+
+Reviewed exact HEAD =25f62db8686fe8cd4c902fd8e14ae0a17433db25= plus
+the twelve-file Slice 3 WIP.  Decision: not ready; one P1 and one P2 finding
+remained.  The new-cross-module-P1 count was one, so the requested conceptual
+split threshold was not reached.
+
+** P1 F88.I3.1: late OpenAI promotion acknowledgement was dropped
+
+For the valid stream order ordinary tool call, reserved promotion call, then
+provider done, the adapter decoded the reserved call to its matching
+=function_call_output= but the loop retained that acknowledgement only in a
+request-local pending list.  Since an ordinary tool had already been called,
+the response went directly to its matching follow-up without attaching the
+late acknowledgement.
+
+The correction copies remaining opaque replay items into the in-memory
+tool-result follow-up before candidate promotion.  It does not mutate the
+message already handed to the durable session append callback.  A real OpenAI
+parser-to-loop-to-request regression proves both the ordinary result and
+reserved acknowledgement are emitted as matching =function_call_output=
+items, the reserved carrier is not dispatched, and the acknowledgement is not
+durable semantic context.
+
+** P2 F88.I3.2: B did not positively assert the whole bundle
+
+The credential-free integration proved that the raw result was present in B
+and that call/replay/result markers were absent later, but did not positively
+assert the call and replay marker in B.  The test now positively checks the
+call identity, replay marker, and raw result together before checking their
+later disappearance.
+
+* Tick 20 Slice 3 one-shot-boundary review
+
+The reused reviewer confirmed F88.I3.1 and F88.I3.2 closed, then found two new
+cross-module P1 findings.  The count was exactly two, not more than two, so the
+requested conceptual split was not triggered.
+
+** P1 F88.I3.3: immediate continuation survived into same-turn request C
+
+The tool-producing response A installed its anchor and delta in mutable loop
+state for B, but that state was not cleared when B consumed it.  Pending
+steering after B could therefore start C with A and the raw bundle again.
+
+The correction rebuilds from the fresh harness projection after B commits its
+promotion and before pending steering is appended.  The async harness test
+holds B in flight, queues steering, completes B, and proves C contains the
+promoted fact and steering but no raw result, call, replay marker, A/B response
+identity, or persisted contaminated anchor.
+
+** P1 F88.I3.4: incompatible refresh dropped the stateless fallback bundle
+
+An ordinary tool-requested context refresh could replace messages with the
+durable projection, which correctly excludes raw tool roles.  If the refresh
+also invalidated A, B then had neither continuation nor a stateless copy of
+its matching bundle.
+
+The correction retains the request-local provider follow-up bundle across the
+refresh and merges it into only the immediate stateless request.  A focused
+test proves B sees refreshed state plus call/replay/result, while following C
+sees refreshed state and steering with none of that bundle or A/B markers.
+
+* Tick 21 Slice 3 opt-in review
+
+The reused reviewer confirmed F88.I3.1 through F88.I3.4 closed and found one
+new P1.  The new-cross-module-P1 count was one, so no conceptual split was
+required.
+
+** P1 F88.I3.5: one-shot behavior leaked across the opt-in boundary
+
+Fresh-before-pending and refresh-bundle merge were initially gated by lifetime
+callback presence.  The harness installs those callbacks even for disabled
+turns, where they later no-op, so disabled turns could receive changed steering
+and refresh behavior.
+
+The correction derives the gate solely from the current request projection's
+=:context-lifetime-enabled= option, including refreshed options.  Disabled-path
+tests install the callbacks and prove that pending steering does not trigger
+the new rebuild and that refreshed messages remain authoritative without a
+runtime-bundle merge.  Enabled one-shot tests remain unchanged.
+
+* Tick 22 Slice 3 implementation fixed-point review
+
+Reviewed exact HEAD =25f62db8686fe8cd4c902fd8e14ae0a17433db25= plus
+the final twelve-file Slice 3 WIP.  Decision: ready; zero-finding pre-commit
+fixed point with no P0, P1, or P2 findings.  The new-cross-module-P1 count was
+zero.
+
+** Acceptance disposition
+
+1. Both provider-done/tool-completion callback orders preserve the descendant
+   tool-result frame and paired bundle.
+2. The matching follow-up positively sees call, replay item, and result on the
+   ordinary and incompatible-refresh stateless paths.
+3. Promotion occurs only in B after it observes E and cites B's tool-result
+   observation.
+4. Promotion is committed before admission of a later request, including a
+   queued same-turn C.
+5. Later context contains the selected fact and no raw call, replay item, or
+   result marker.
+6. A's tool-producing response continuation is consumed by only its immediate
+   matching follow-up.
+7. Neither A nor contaminated B is persisted as a durable anchor; unsafe
+   profiles use the clean seed or stateless reconstruction.
+8. OpenAI emits matching =function_call_output= acknowledgement without
+   ordinary reserved-tool dispatch or durable semantic retention.
+9. Invalid promotion preserves an already-dispatched call, dispatches no later
+   calls after detection, mutates no promotion state, and uses the existing
+   domain error path.
+
+** Verification
+
+- Focused affected files: 436/436 expected, zero unexpected.
+- Full Eldev suite: 2,268 total; 2,266 expected passes, zero unexpected, and
+  two pre-existing skips.
+- Warnings-as-errors compilation of the changed core/provider surface passed.
+- =git diff --check= passed.
+- The worktree remained limited to the assigned twelve Slice 3 source/test
+  files plus this review ledger.
+- Credentialed provider/network behavior remains unknown by constraint; the
+  mandatory credential-free closed loop is covered.
+- The running Emacs was untouched.  These core, harness, session, loop, and
+  provider-adapter changes require a restart to use.
+
+** Architecture self-check
+
+1. This stopping point is independently useful: it delivers the complete
+   successful observe/promote/forget loop without depending on later slices.
+2. It moves toward generational append-only context with ephemeral frontier
+   frames while deliberately stopping before compaction or lifecycle
+   durability.
+3. Provider wire variation remains local to adapters; stable promotion and
+   visibility semantics are direct core contracts.  No speculative extension
+   layer was added.
+4. Core owns frame/promotion semantics, session owns durable bodies, loop and
+   harness own request orchestration, and OpenAI owns its acknowledgement wire
+   shape.
+5. Coupling is reduced by provider-neutral capability and effect contracts;
+   consumers receive only the fields needed for visibility, promotion, and
+   continuation safety.
+6. Stable policy does not depend on OpenAI request fields; the adapter depends
+   on the generic contracts.
+7. Provider-specific encoding and acknowledgement remain at the adapter edge;
+   session mutation occurs only after core validation.
+8. Frames, replay acknowledgements, and immediate candidates are runtime-only;
+   selected facts and provenance use the existing session durability boundary.
+9. Normal turns add bounded projection work and small list copies.  Raw tool
+   observations disappear after one consumer, avoiding unbounded repeated
+   model-context cost; no unjustified cache regression was introduced.
+10. Kind-scoped delivery, reserved carrier, frame, and promotion contracts are
+    semantically real and have substitutable stateless fallbacks.
+11. Explicit opt-in preserves legacy behavior.  The legacy scalar delivery
+    value remains supported conservatively for current-state only.
+12. Obsolete recovery/settlement machinery was removed in Slice 1; Slice 3
+    adds no new legacy path that can now be deleted.
+13. Expected malformed promotion controls use the existing domain error path;
+    unexpected provider, loop, and session errors continue to surface.
+14. Core codecs and unit tests prove local policy, while harness, loop, and
+    credential-free integration tests prove the cross-module closed loop with
+    narrow change locality.
+
+Slice 3 has reached the required independent pre-commit fixed point.  Slices 4
+through 6 remain unstarted.
