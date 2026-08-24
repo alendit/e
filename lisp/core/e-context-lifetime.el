@@ -1,16 +1,13 @@
 ;;; e-context-lifetime.el --- Generational context lifetime model -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
-
-;; Author: Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; Provider-neutral records and pure projections for Feature 88.  This module
-;; deliberately does not know about provider request fields.  It can therefore
-;; be used to compare the proposed lifetime projection with the existing
-;; request projection while the feature remains opt-in.
+;; Provider-neutral semantic context values.  A generation and a promotion
+;; have a narrow durable representation; an observation frame is deliberately
+;; runtime-only and bound to one consumer request.
 
 ;;; Code:
 
@@ -18,18 +15,9 @@
 (require 'seq)
 (require 'subr-x)
 
-(declare-function e-session-context-lifetime-durability-barrier
-                  "e-session")
-
 (define-error 'e-context-lifetime-error "Context lifetime error")
 (define-error 'e-context-lifetime-invalid-record
   "Invalid context lifetime record"
-  'e-context-lifetime-error)
-(define-error 'e-context-lifetime-settlement-unavailable
-  "Context lifetime settlement acknowledgement is unavailable"
-  'e-context-lifetime-error)
-(define-error 'e-context-lifetime-invalid-transition
-  "Invalid context lifetime transition"
   'e-context-lifetime-error)
 
 (defgroup e-context-lifetime nil
@@ -40,29 +28,31 @@
   "When non-nil, callers may opt into the Feature 88 shadow projection.
 
 The default is nil so existing request construction and provider behavior do
-not change while the lifetime records are being introduced and compared."
+not change while semantic lifetime values are compared with the legacy
+projection."
   :type 'boolean
   :group 'e-context-lifetime)
 
-(defcustom e-context-lifetime-settlement-acknowledgement-enabled nil
-  "When non-nil, settlement helpers wait for asynchronous persistence acks.
+(defconst e-context-lifetime-record-version 2
+  "Version of the narrowed durable generation and promotion records.")
 
-The normal runtime remains unchanged until the feature is enabled by a caller.
-Persistent stores without an asynchronous controller fail visibly instead of
-falling back to synchronous filesystem work."
-  :type 'boolean
-  :group 'e-context-lifetime)
+(defconst e-context-lifetime-promotion-schema-version 1
+  "Version of the model-facing context promotion effect.")
 
-(defconst e-context-lifetime-record-version 1
-  "Version of provider-neutral context lifetime records.")
+(defconst e-context-lifetime-promotion-max-facts 16
+  "Maximum facts accepted in one normalized promotion effect.")
 
-(defconst e-context-lifetime-frame-states
-  '(open consuming consumed settled aborted)
-  "Supported observation frame states.")
+(defconst e-context-lifetime-promotion-max-bytes 8192
+  "Maximum normalized UTF-8 bytes accepted in one promotion effect.")
 
-(defconst e-context-lifetime-settlement-statuses
-  '(acknowledged settled failed aborted)
-  "Supported durable settlement marker statuses.")
+(defconst e-context-lifetime-observation-kinds
+  '("current-state" "dynamic-context" "tool-result" "trace"
+    "retrieved-excerpt")
+  "Semantic kinds accepted for runtime observation-frame items.")
+
+(defconst e-context-lifetime-observation-delivery-modes
+  '("inherited" "request-local-replaceable")
+  "Effective delivery modes accepted for runtime observation-frame items.")
 
 (defconst e-context-lifetime-diagnostic-character-limit 1000000
   "Maximum characters visited while estimating diagnostic payload size.")
@@ -79,26 +69,31 @@ bodies are never passed to this hook.")
 (cl-defstruct (e-context-lifetime-generation
                (:constructor e-context-lifetime-generation--create)
                (:conc-name e-context-lifetime-generation-))
-  "Immutable semantic baseline and durable tail for one generation."
-  id checkpoint durable-tail)
+  "Portable checkpoint boundary for one semantic generation.
+
+The durable record intentionally contains no copied durable tail.  The later
+projection consumer reconstructs that tail from canonical session entries and
+promotion provenance."
+  id checkpoint covered-session-boundary)
 
 (cl-defstruct (e-context-lifetime-frame
                (:constructor e-context-lifetime-frame--create)
                (:conc-name e-context-lifetime-frame-))
-  "One bounded observation frontier for one reasoning transition."
-  id generation-id observations state source-fingerprints observation-ids
-  consumption-attempt-ids consuming-response-ids promotion-ids
-  terminal-settlement)
+  "Runtime-only observation frame owned by one consumer request.
+
+A non-nil CONSUMING-RESPONSE-ENTRY-ID means that the frame has been consumed.
+The completion operation removes its observation body and records only the
+consumer binding needed by the in-memory projection."
+  id generation-id consumer-request-id observations observation-ids
+  source-entry-refs source-fingerprints consuming-response-entry-id
+  promotion-ids)
 
 (cl-defstruct (e-context-lifetime-promotion
                (:constructor e-context-lifetime-promotion--create)
                (:conc-name e-context-lifetime-promotion-))
-  "Small durable facts selected from one consumed observation frame."
-  id frame-id facts source-observation-ids)
-
-(defun e-context-lifetime--copy (value)
-  "Return a detached copy of VALUE suitable for a semantic record."
-  (copy-tree value))
+  "Narrow durable fact selection with core-derived source provenance."
+  id frame-id generation-id consumer-request-id response-entry-id facts
+  source-observation-ids source-refs source-fingerprints)
 
 (defun e-context-lifetime--keyword-plist-p (value)
   "Return non-nil when VALUE is a proper plist with keyword keys."
@@ -116,20 +111,12 @@ bodies are never passed to this hook.")
 (defun e-context-lifetime-canonicalize (value)
   "Return provider-neutral canonical VALUE.
 
-Semantic values use keyword plists and sequences.  Plist keys remain keywords
-so consumers can use ordinary `plist-get'; symbol values become their stable
-wire spelling; vectors and lists become one canonical list representation; and
-plist keys are sorted by spelling.  This is the representation used both for
-projection and for persisted lifetime payloads, so a JSON round trip cannot
-change its equality or fingerprint merely by turning symbols into strings."
+Keyword plist keys remain keywords for Lisp consumers.  Symbol values become
+their stable spelling, vectors become lists, and JSON's :json-false sentinel
+remains a boolean false rather than becoming the string \":json-false\"."
   (cond
    ((null value) nil)
-   ;; Preserve JSON's boolean true rather than confusing it with a symbolic
-   ;; semantic value.  `nil' was handled above.
    ((eq value t) t)
-   ;; `json-parse-string' uses this sentinel for a JSON false.  It is a
-   ;; semantic boolean, not a symbol that should become the string
-   ;; ":json-false" during canonicalization.
    ((eq value :json-false) :json-false)
    ((or (stringp value) (numberp value)) value)
    ((symbolp value) (symbol-name value))
@@ -157,13 +144,8 @@ change its equality or fingerprint merely by turning symbols into strings."
     (signal 'e-context-lifetime-invalid-record
             (list 'unsupported-semantic-value value)))))
 
-(defun e-context-lifetime--canonical-id (id kind)
-  "Return canonical ID after validating it for KIND."
-  (let ((id (e-context-lifetime--require-id id kind)))
-    (if (symbolp id) (symbol-name id) id)))
-
 (defun e-context-lifetime--require-id (id kind)
-  "Validate and return ID for record KIND."
+  "Validate and return canonical ID for KIND."
   (unless (and id
                (or (and (stringp id) (not (string-empty-p id)))
                    (and (symbolp id)
@@ -171,60 +153,296 @@ change its equality or fingerprint merely by turning symbols into strings."
                    (numberp id)))
     (signal 'e-context-lifetime-invalid-record
             (list kind :id id)))
-  id)
+  (if (symbolp id) (symbol-name id) id))
 
-(defun e-context-lifetime--normalize-state (state)
-  "Return STATE as a supported frame state, defaulting to `open'."
-  (setq state (or state 'open))
-  (unless (memq state e-context-lifetime-frame-states)
+(defun e-context-lifetime--id-list (value kind)
+  "Return canonical unique ID list VALUE for KIND."
+  (let ((items (cond
+                ((null value) nil)
+                ((vectorp value) (append value nil))
+                ((proper-list-p value) value)
+                (t (signal 'e-context-lifetime-invalid-record
+                           (list kind value)))))
+        result)
+    (dolist (item items (nreverse result))
+      (let ((id (e-context-lifetime--require-id item kind)))
+        (when (member id result)
+          (signal 'e-context-lifetime-invalid-record
+                  (list kind :duplicate id)))
+        (push id result)))))
+
+(defun e-context-lifetime--reference-list (value kind)
+  "Return canonical scalar references VALUE for KIND.
+
+References may repeat: two observations can legitimately resolve to the same
+external handle.  Unlike logical ID lists, this helper therefore validates
+each item without applying a uniqueness constraint."
+  (let ((items (cond
+                ((null value) nil)
+                ((vectorp value) (append value nil))
+                ((and (proper-list-p value)
+                      (not (e-context-lifetime--keyword-plist-p value)))
+                 value)
+                (t (signal 'e-context-lifetime-invalid-record
+                           (list kind value)))))
+        result)
+    (dolist (item items (nreverse result))
+      (push (e-context-lifetime--require-id item kind) result))))
+
+(defun e-context-lifetime--bytes (value)
+  "Return normalized UTF-8 byte size for semantic VALUE."
+  (string-bytes
+   (encode-coding-string
+    (prin1-to-string (e-context-lifetime-canonicalize value))
+    'utf-8 t)))
+
+(defun e-context-lifetime--validate-exact-plist
+    (value allowed kind)
+  "Validate that VALUE is exactly the keyword plist shape ALLOWED.
+Signal the provider-neutral invalid-record condition for every shape error."
+  (unless (e-context-lifetime--keyword-plist-p value)
     (signal 'e-context-lifetime-invalid-record
-            (list 'frame :state state)))
-  state)
+            (list kind :not-keyword-plist value)))
+  (let ((keys nil)
+        (tail value))
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (setq keys (nreverse keys))
+    (unless (and (= (length keys) (length allowed))
+                 (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key) (memq key allowed)) keys)
+                 (cl-every (lambda (key) (plist-member value key)) allowed))
+      (signal 'e-context-lifetime-invalid-record
+              (list kind :keys keys :allowed allowed)))
+    value))
+
+(defun e-context-lifetime--validate-fact (fact)
+  "Return one canonical exactly-shaped promotion FACT."
+  (e-context-lifetime--validate-exact-plist fact '(:id :value) 'fact)
+  (list :id (e-context-lifetime--require-id (plist-get fact :id) 'fact-id)
+        :value (e-context-lifetime-canonicalize (plist-get fact :value))))
+
+(defun e-context-lifetime--validate-facts (facts)
+  "Return canonical bounded FACTS or signal a semantic-record error.
+
+Each fact is exactly `(:id FACT-ID :value SEMANTIC-VALUE)'.  Fact IDs are
+unique within one response and declared order is retained."
+  (let ((items (cond
+                ((vectorp facts) (append facts nil))
+                ((and (listp facts)
+                      (not (e-context-lifetime--keyword-plist-p facts)))
+                 facts)
+                (t (signal 'e-context-lifetime-invalid-record
+                           (list 'promotion :facts-shape facts)))))
+        result
+        ids)
+    (unless (and (not (null items))
+                 (<= (length items) e-context-lifetime-promotion-max-facts))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :facts-count (length items))))
+    (dolist (fact items (nreverse result))
+      (let* ((normalized (e-context-lifetime--validate-fact fact))
+             (id (plist-get normalized :id)))
+        (when (member id ids)
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'fact :duplicate-id id)))
+        (push id ids)
+        (push normalized result)))))
+
+(defun e-context-lifetime--canonical-observation-kind (kind)
+  "Return canonical observation KIND or signal a shape error."
+  (let ((kind (cond
+               ((symbolp kind) (symbol-name kind))
+               ((stringp kind) kind))))
+    (unless (member kind e-context-lifetime-observation-kinds)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'observation :kind kind)))
+    kind))
+
+(defun e-context-lifetime--canonical-delivery-mode (mode)
+  "Return canonical observation delivery MODE or signal a shape error."
+  (let ((mode (cond
+               ((symbolp mode) (symbol-name mode))
+               ((stringp mode) mode))))
+    (unless (member mode e-context-lifetime-observation-delivery-modes)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'observation :effective-delivery mode)))
+    mode))
+
+(defun e-context-lifetime--validate-observation (observation)
+  "Return one canonical runtime observation from OBSERVATION."
+  (e-context-lifetime--validate-exact-plist
+   observation
+   '(:observation-id :kind :source-entry-ref :source-fingerprint
+     :effective-delivery :body)
+   'observation)
+  (list :observation-id
+        (e-context-lifetime--require-id
+         (plist-get observation :observation-id) 'observation-id)
+        :kind (e-context-lifetime--canonical-observation-kind
+               (plist-get observation :kind))
+        :source-entry-ref
+        (e-context-lifetime--require-id
+         (plist-get observation :source-entry-ref) 'source-entry-ref)
+        :source-fingerprint
+        (e-context-lifetime--require-id
+         (plist-get observation :source-fingerprint) 'source-fingerprint)
+        :effective-delivery
+        (e-context-lifetime--canonical-delivery-mode
+         (plist-get observation :effective-delivery))
+        ;; Frame bodies are runtime-only.  Preserve them as detached values;
+        ;; the projection boundary canonicalizes them when they become model
+        ;; input, and no frame codec persists them.
+        :body (e-context-lifetime--copy (plist-get observation :body))))
+
+(defun e-context-lifetime--observation-items (observations)
+  "Return OBSERVATIONS as a proper sequence or signal a shape error."
+  (cond
+   ((null observations) nil)
+   ((vectorp observations) (append observations nil))
+   ((and (proper-list-p observations)
+         (not (e-context-lifetime--keyword-plist-p observations)))
+    observations)
+   (t (signal 'e-context-lifetime-invalid-record
+              (list 'frame :observations observations)))))
+
+(defun e-context-lifetime--copy (value)
+  "Return a detached semantic copy of VALUE."
+  (copy-tree value))
 
 (cl-defun e-context-lifetime-generation-create
-    (&key id checkpoint durable-tail)
-  "Create a detached generation record with ID, CHECKPOINT and DURABLE-TAIL.
-
-CHECKPOINT and DURABLE-TAIL are provider-neutral semantic values.  Their
-wire-level rendering is owned by a backend adapter in a later slice."
+    (&key id checkpoint covered-session-boundary)
+  "Create a detached generation boundary."
+  (unless covered-session-boundary
+    (signal 'e-context-lifetime-invalid-record
+            (list 'generation :covered-session-boundary
+                  covered-session-boundary)))
   (e-context-lifetime-generation--create
-   :id (e-context-lifetime--canonical-id id 'generation)
+   :id (e-context-lifetime--require-id id 'generation)
    :checkpoint (e-context-lifetime-canonicalize checkpoint)
-   :durable-tail (e-context-lifetime-canonicalize durable-tail)))
+   :covered-session-boundary
+   (e-context-lifetime--require-id
+    covered-session-boundary 'covered-session-boundary)))
 
 (cl-defun e-context-lifetime-frame-create
-    (&key id generation-id observations state source-fingerprints observation-ids
-          consumption-attempt-ids consuming-response-ids promotion-ids
-          terminal-settlement)
-  "Create a detached observation FRAME for GENERATION-ID.
-OBSERVATIONS are visible only while the frame is open or being consumed."
-  (e-context-lifetime-frame--create
-   :id (e-context-lifetime--canonical-id id 'frame)
-   :generation-id (e-context-lifetime--canonical-id generation-id 'frame)
-   :observations (e-context-lifetime-canonicalize observations)
-   :state (e-context-lifetime--normalize-state state)
-   :source-fingerprints
-   (e-context-lifetime-canonicalize source-fingerprints)
-   :observation-ids (e-context-lifetime-canonicalize observation-ids)
-   :consumption-attempt-ids
-   (e-context-lifetime-canonicalize consumption-attempt-ids)
-   :consuming-response-ids
-   (e-context-lifetime-canonicalize consuming-response-ids)
-   :promotion-ids (e-context-lifetime-canonicalize promotion-ids)
-   :terminal-settlement
-   (e-context-lifetime-canonicalize terminal-settlement)))
+    (&key id generation-id consumer-request-id observations)
+  "Create a runtime-only observation frame for one consumer request."
+  (let* ((generation-id (e-context-lifetime--require-id
+                         generation-id 'frame-generation))
+         (consumer-request-id
+          (e-context-lifetime--require-id
+           consumer-request-id 'consumer-request))
+         (raw-observations (e-context-lifetime--observation-items observations))
+         (observations (mapcar #'e-context-lifetime--validate-observation
+                               raw-observations))
+         (derived-ids
+          (e-context-lifetime--id-list
+           (mapcar (lambda (observation)
+                     (plist-get observation :observation-id))
+                   observations)
+           'observation))
+         (derived-refs (mapcar (lambda (observation)
+                                 (plist-get observation :source-entry-ref))
+                               observations))
+         (derived-fingerprints
+          (mapcar (lambda (observation)
+                    (plist-get observation :source-fingerprint))
+                observations)))
+    (e-context-lifetime-frame--create
+     :id (e-context-lifetime--require-id id 'frame)
+     :generation-id generation-id
+     :consumer-request-id
+     consumer-request-id
+     :observations observations
+     :observation-ids derived-ids
+     :source-entry-refs derived-refs
+     :source-fingerprints derived-fingerprints
+     :consuming-response-entry-id nil
+     :promotion-ids nil)))
+
+(defun e-context-lifetime--frame-retain-provenance
+    (frame response-entry-id promotion-ids)
+  "Copy trusted retained provenance from FRAME after its body is consumed.
+
+This private path is intentionally separate from the public frame constructor:
+the parallel source arrays are accepted only after they came from an already
+validated FRAME, never as caller-supplied positional provenance."
+  (let* ((observation-ids
+          (e-context-lifetime--id-list
+           (e-context-lifetime-frame-observation-ids frame) 'observation))
+         (source-entry-refs
+          (e-context-lifetime--reference-list
+           (e-context-lifetime-frame-source-entry-refs frame)
+           'source-entry-ref))
+         (source-fingerprints
+          (e-context-lifetime--reference-list
+           (e-context-lifetime-frame-source-fingerprints frame)
+           'source-fingerprint)))
+    (unless (and (= (length observation-ids) (length source-entry-refs))
+                 (= (length observation-ids) (length source-fingerprints)))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'frame :retained-provenance-lengths
+                    observation-ids source-entry-refs source-fingerprints)))
+    (e-context-lifetime-frame--create
+     :id (e-context-lifetime--require-id
+          (e-context-lifetime-frame-id frame) 'frame)
+     :generation-id (e-context-lifetime--require-id
+                     (e-context-lifetime-frame-generation-id frame)
+                     'frame-generation)
+     :consumer-request-id
+     (e-context-lifetime--require-id
+      (e-context-lifetime-frame-consumer-request-id frame)
+      'consumer-request)
+     :observations nil
+     :observation-ids observation-ids
+     :source-entry-refs source-entry-refs
+     :source-fingerprints source-fingerprints
+     :consuming-response-entry-id
+     (and response-entry-id
+          (e-context-lifetime--require-id
+           response-entry-id 'response-entry))
+     :promotion-ids (e-context-lifetime--id-list
+                     promotion-ids 'promotion))))
 
 (cl-defun e-context-lifetime-promotion-create
-    (&key id frame-id facts source-observation-ids)
-  "Create a detached durable PROMOTION from FRAME-ID.
-FACTS are intentionally caller-selected; this constructor never copies a
-frame's observations into the durable tail."
-  (e-context-lifetime-promotion--create
-   :id (e-context-lifetime--canonical-id id 'promotion)
-   :frame-id (e-context-lifetime--canonical-id frame-id 'promotion)
-   :facts (e-context-lifetime-canonicalize facts)
-   :source-observation-ids
-   (e-context-lifetime-canonicalize source-observation-ids)))
+    (&key id frame-id generation-id consumer-request-id response-entry-id facts
+          source-observation-ids source-refs source-fingerprints)
+  "Create a durable promotion from core-resolved provenance."
+  (let* ((source-observation-ids
+          (e-context-lifetime--id-list source-observation-ids
+                                       'source-observation))
+         (source-refs (e-context-lifetime--reference-list
+                       source-refs 'source-ref))
+         (source-fingerprints
+          (e-context-lifetime--reference-list
+           source-fingerprints 'source-fingerprint)))
+    (unless source-observation-ids
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-observation-ids
+                    source-observation-ids)))
+    (unless (= (length source-observation-ids) (length source-refs))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-refs source-observation-ids source-refs)))
+    (unless (= (length source-observation-ids)
+               (length source-fingerprints))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-fingerprints
+                    source-observation-ids source-fingerprints)))
+    (e-context-lifetime-promotion--create
+     :id (e-context-lifetime--require-id id 'promotion)
+     :frame-id (e-context-lifetime--require-id frame-id 'promotion)
+     :generation-id (e-context-lifetime--require-id
+                     generation-id 'promotion-generation)
+     :consumer-request-id
+     (e-context-lifetime--require-id
+      consumer-request-id 'promotion-consumer-request)
+     :response-entry-id
+     (e-context-lifetime--require-id response-entry-id 'response-entry)
+     :facts (e-context-lifetime--validate-facts facts)
+     :source-observation-ids source-observation-ids
+     :source-refs source-refs
+     :source-fingerprints source-fingerprints)))
 
 (defun e-context-lifetime-generation-copy (generation)
   "Return a detached copy of GENERATION."
@@ -234,28 +452,24 @@ frame's observations into the durable tail."
   (e-context-lifetime-generation-create
    :id (e-context-lifetime-generation-id generation)
    :checkpoint (e-context-lifetime-generation-checkpoint generation)
-   :durable-tail (e-context-lifetime-generation-durable-tail generation)))
+   :covered-session-boundary
+   (e-context-lifetime-generation-covered-session-boundary generation)))
 
 (defun e-context-lifetime-frame-copy (frame)
-  "Return a detached copy of FRAME."
+  "Return a detached copy of runtime-only FRAME."
   (unless (e-context-lifetime-frame-p frame)
     (signal 'wrong-type-argument
             (list 'e-context-lifetime-frame-p frame)))
-  (e-context-lifetime-frame-create
-   :id (e-context-lifetime-frame-id frame)
-   :generation-id (e-context-lifetime-frame-generation-id frame)
-   :observations (e-context-lifetime-frame-observations frame)
-   :state (e-context-lifetime-frame-state frame)
-   :source-fingerprints
-   (e-context-lifetime-frame-source-fingerprints frame)
-   :observation-ids (e-context-lifetime-frame-observation-ids frame)
-   :consumption-attempt-ids
-   (e-context-lifetime-frame-consumption-attempt-ids frame)
-   :consuming-response-ids
-   (e-context-lifetime-frame-consuming-response-ids frame)
-   :promotion-ids (e-context-lifetime-frame-promotion-ids frame)
-   :terminal-settlement
-   (e-context-lifetime-frame-terminal-settlement frame)))
+  (if (e-context-lifetime-frame-consumed-p frame)
+      (e-context-lifetime--frame-retain-provenance
+       frame (e-context-lifetime-frame-consuming-response-entry-id frame)
+       (e-context-lifetime-frame-promotion-ids frame))
+    (e-context-lifetime-frame-create
+     :id (e-context-lifetime-frame-id frame)
+     :generation-id (e-context-lifetime-frame-generation-id frame)
+     :consumer-request-id
+     (e-context-lifetime-frame-consumer-request-id frame)
+     :observations (e-context-lifetime-frame-observations frame))))
 
 (defun e-context-lifetime-promotion-copy (promotion)
   "Return a detached copy of PROMOTION."
@@ -265,162 +479,262 @@ frame's observations into the durable tail."
   (e-context-lifetime-promotion-create
    :id (e-context-lifetime-promotion-id promotion)
    :frame-id (e-context-lifetime-promotion-frame-id promotion)
+   :generation-id (e-context-lifetime-promotion-generation-id promotion)
+   :consumer-request-id
+   (e-context-lifetime-promotion-consumer-request-id promotion)
+   :response-entry-id
+   (e-context-lifetime-promotion-response-entry-id promotion)
    :facts (e-context-lifetime-promotion-facts promotion)
    :source-observation-ids
-   (e-context-lifetime-promotion-source-observation-ids promotion)))
+   (e-context-lifetime-promotion-source-observation-ids promotion)
+   :source-refs (e-context-lifetime-promotion-source-refs promotion)
+   :source-fingerprints
+   (e-context-lifetime-promotion-source-fingerprints promotion)))
 
 (defun e-context-lifetime-generation-record (generation)
-  "Return JSON-friendly durable RECORD for GENERATION."
+  "Return the narrowed JSON-friendly durable GENERATION record."
   (let ((generation (e-context-lifetime-generation-copy generation)))
     (list :record-version e-context-lifetime-record-version
           :type 'context-generation
           :id (e-context-lifetime-generation-id generation)
           :checkpoint (e-context-lifetime-generation-checkpoint generation)
-          :durable-tail
-          (e-context-lifetime-generation-durable-tail generation))))
-
-(defun e-context-lifetime-frame-record (frame)
-  "Return JSON-friendly durable RECORD for FRAME."
-  (let ((frame (e-context-lifetime-frame-copy frame)))
-    (list :record-version e-context-lifetime-record-version
-          :type 'context-frame
-          :id (e-context-lifetime-frame-id frame)
-          :generation-id (e-context-lifetime-frame-generation-id frame)
-          :observations (e-context-lifetime-frame-observations frame)
-          :state (e-context-lifetime-frame-state frame)
-          :source-fingerprints
-          (e-context-lifetime-frame-source-fingerprints frame)
-          :observation-ids
-          (e-context-lifetime-frame-observation-ids frame)
-          :consumption-attempt-ids
-          (e-context-lifetime-frame-consumption-attempt-ids frame)
-          :consuming-response-ids
-          (e-context-lifetime-frame-consuming-response-ids frame)
-          :promotion-ids (e-context-lifetime-frame-promotion-ids frame)
-          :terminal-settlement
-          (e-context-lifetime-frame-terminal-settlement frame))))
-
-(defun e-context-lifetime-promotion-record (promotion)
-  "Return JSON-friendly durable RECORD for PROMOTION."
-  (let ((promotion (e-context-lifetime-promotion-copy promotion)))
-    (list :record-version e-context-lifetime-record-version
-          :type 'context-promotion
-          :id (e-context-lifetime-promotion-id promotion)
-          :frame-id (e-context-lifetime-promotion-frame-id promotion)
-          :facts (e-context-lifetime-promotion-facts promotion)
-          :source-observation-ids
-          (e-context-lifetime-promotion-source-observation-ids promotion))))
+          :covered-session-boundary
+          (e-context-lifetime-generation-covered-session-boundary generation))))
 
 (defun e-context-lifetime-generation-from-record (record)
-  "Decode provider-neutral GENERATION RECORD into a detached value."
-  (unless (and (listp record)
+  "Decode a version-2 durable GENERATION record."
+  (e-context-lifetime--validate-exact-plist
+   record
+   '(:record-version :type :id :checkpoint :covered-session-boundary)
+   'generation)
+  (unless (and (equal (plist-get record :record-version)
+                      e-context-lifetime-record-version)
                (eq (plist-get record :type) 'context-generation))
     (signal 'e-context-lifetime-invalid-record (list 'generation record)))
   (e-context-lifetime-generation-create
    :id (plist-get record :id)
    :checkpoint (plist-get record :checkpoint)
-   :durable-tail (plist-get record :durable-tail)))
+   :covered-session-boundary
+   (plist-get record :covered-session-boundary)))
 
-(defun e-context-lifetime-frame-from-record (record)
-  "Decode provider-neutral FRAME RECORD into a detached value."
-  (unless (and (listp record)
-               (eq (plist-get record :type) 'context-frame))
-    (signal 'e-context-lifetime-invalid-record (list 'frame record)))
-  (e-context-lifetime-frame-create
-   :id (plist-get record :id)
-   :generation-id (plist-get record :generation-id)
-   :observations (plist-get record :observations)
-   :state (plist-get record :state)
-   :source-fingerprints (plist-get record :source-fingerprints)
-   :observation-ids (plist-get record :observation-ids)
-   :consumption-attempt-ids (plist-get record :consumption-attempt-ids)
-   :consuming-response-ids (plist-get record :consuming-response-ids)
-   :promotion-ids (plist-get record :promotion-ids)
-   :terminal-settlement (plist-get record :terminal-settlement)))
+(defun e-context-lifetime-promotion-record (promotion)
+  "Return the narrowed JSON-friendly durable PROMOTION record."
+  (let ((promotion (e-context-lifetime-promotion-copy promotion)))
+    (list :record-version e-context-lifetime-record-version
+          :type 'context-promotion
+          :id (e-context-lifetime-promotion-id promotion)
+          :frame-id (e-context-lifetime-promotion-frame-id promotion)
+          :generation-id
+          (e-context-lifetime-promotion-generation-id promotion)
+          :consumer-request-id
+          (e-context-lifetime-promotion-consumer-request-id promotion)
+          :response-entry-id
+          (e-context-lifetime-promotion-response-entry-id promotion)
+          :facts (e-context-lifetime-promotion-facts promotion)
+          :source-observation-ids
+          (e-context-lifetime-promotion-source-observation-ids promotion)
+          :source-refs (e-context-lifetime-promotion-source-refs promotion)
+          :source-fingerprints
+          (e-context-lifetime-promotion-source-fingerprints promotion))))
 
 (defun e-context-lifetime-promotion-from-record (record)
-  "Decode provider-neutral PROMOTION RECORD into a detached value."
-  (unless (and (listp record)
+  "Decode a version-2 durable PROMOTION record."
+  (e-context-lifetime--validate-exact-plist
+   record
+   '(:record-version :type :id :frame-id :generation-id
+     :consumer-request-id :response-entry-id :facts
+     :source-observation-ids :source-refs :source-fingerprints)
+   'promotion)
+  (unless (and (equal (plist-get record :record-version)
+                      e-context-lifetime-record-version)
                (eq (plist-get record :type) 'context-promotion))
     (signal 'e-context-lifetime-invalid-record (list 'promotion record)))
   (e-context-lifetime-promotion-create
    :id (plist-get record :id)
    :frame-id (plist-get record :frame-id)
+   :generation-id (plist-get record :generation-id)
+   :consumer-request-id (plist-get record :consumer-request-id)
+   :response-entry-id (plist-get record :response-entry-id)
    :facts (plist-get record :facts)
-   :source-observation-ids (plist-get record :source-observation-ids)))
+   :source-observation-ids (plist-get record :source-observation-ids)
+   :source-refs (plist-get record :source-refs)
+   :source-fingerprints (plist-get record :source-fingerprints)))
 
-(defun e-context-lifetime-frame-visible-p (frame)
-  "Return non-nil when FRAME observations belong in the next projection."
+(defun e-context-lifetime-frame-consumed-p (frame)
+  "Return non-nil when runtime FRAME has a consuming response binding."
   (and (e-context-lifetime-frame-p frame)
-       (memq (e-context-lifetime-frame-state frame) '(open consuming))))
+       (e-context-lifetime-frame-consuming-response-entry-id frame)))
 
-(defun e-context-lifetime--transition-frame (frame target allowed)
-  "Return FRAME transitioned to TARGET when its state is in ALLOWED.
+(defun e-context-lifetime-frame-complete-for-consumer
+    (frame consumer-request-id response-entry-id &optional promotion-ids)
+  "Consume FRAME for CONSUMER-REQUEST-ID and RESPONSE-ENTRY-ID.
 
-The frame value is immutable from a caller's perspective: this helper copies
-the record before changing its state.  Durable replay may construct any valid
-snapshot directly, but semantic transitions cannot move a terminal frame or
-move it backwards in the lifecycle."
+This is the only frame completion operation retained by Feature 88.  It
+requires an unconsumed frame owned by CONSUMER-REQUEST-ID, preserves the
+consumer binding, drops the observation body, and records the exact promotion
+IDs selected by the response handling path."
   (unless (e-context-lifetime-frame-p frame)
     (signal 'e-context-lifetime-invalid-record
-            (list 'frame-transition frame target)))
-  (let ((state (e-context-lifetime-frame-state frame)))
-    (unless (memq state allowed)
-      (signal 'e-context-lifetime-invalid-transition
-              (list (e-context-lifetime-frame-id frame) state target)))
-    (let ((copy (e-context-lifetime-frame-copy frame)))
-      (setf (e-context-lifetime-frame-state copy) target)
-      copy)))
+            (list 'frame-complete frame)))
+  (when (e-context-lifetime-frame-consumed-p frame)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'frame-complete :already-consumed
+                  (e-context-lifetime-frame-id frame))))
+  (let ((consumer-request-id
+         (e-context-lifetime--require-id
+          consumer-request-id 'consumer-request)))
+    (unless (equal consumer-request-id
+                   (e-context-lifetime-frame-consumer-request-id frame))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'frame-complete :consumer-mismatch
+                    (e-context-lifetime-frame-consumer-request-id frame)
+                    consumer-request-id)))
+    (e-context-lifetime--frame-retain-provenance
+     frame (e-context-lifetime--require-id response-entry-id
+                                           'response-entry)
+     promotion-ids)))
 
-(defun e-context-lifetime-frame-start-consuming (frame)
-  "Return FRAME transitioned from open to consuming.
+(defun e-context-lifetime-normalize-promotion-effect (effect)
+  "Validate and canonicalize the model-facing context-promote EFFECT.
 
-This is the durable-attempt boundary: callers should record the resulting
-snapshot before dispatching the provider request."
-  (e-context-lifetime--transition-frame frame 'consuming '(open)))
+Only the effect type, wire schema, frame identity, source observation IDs, and
+selected facts are accepted.  Adapter/model supplied source references or
+fingerprints are unknown controls and are rejected."
+  (e-context-lifetime--validate-exact-plist
+   effect '(:type :schema-version :frame-id :source-observation-ids :facts)
+   'promotion-effect)
+  (unless (eq (plist-get effect :type) 'context-promote)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'promotion-effect :type (plist-get effect :type))))
+  (unless (equal (plist-get effect :schema-version)
+                 e-context-lifetime-promotion-schema-version)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'promotion-effect :schema-version
+                  (plist-get effect :schema-version))))
+  (let* ((source-observation-ids
+          (e-context-lifetime--id-list
+           (plist-get effect :source-observation-ids) 'source-observation))
+         (normalized (list :type 'context-promote
+                           :schema-version
+                           e-context-lifetime-promotion-schema-version
+                           :frame-id
+                           (e-context-lifetime--require-id
+                            (plist-get effect :frame-id) 'promotion-frame)
+                           :source-observation-ids source-observation-ids
+                           :facts (e-context-lifetime--validate-facts
+                                   (plist-get effect :facts)))))
+    (unless source-observation-ids
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion-effect :source-observation-ids
+                    source-observation-ids)))
+    (when (> (e-context-lifetime--bytes normalized)
+             e-context-lifetime-promotion-max-bytes)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion-effect :bytes
+                    (e-context-lifetime--bytes normalized))))
+    normalized))
 
-(defun e-context-lifetime-frame-consume (frame)
-  "Return FRAME transitioned to consumed from open or consuming.
+(defun e-context-lifetime--observation-provenance (frame observation-id)
+  "Return core-derived provenance for OBSERVATION-ID in FRAME."
+  (let* ((observation
+          (seq-find
+           (lambda (item)
+             (and (e-context-lifetime--keyword-plist-p item)
+                  (equal (plist-get item :observation-id) observation-id)))
+           (e-context-lifetime-frame-observations frame)))
+         (position
+          (cl-position observation-id
+                       (e-context-lifetime-frame-observation-ids frame)
+                       :test #'equal))
+         (ref (or (and observation
+                        (or (plist-get observation :source-entry-ref)
+                            (plist-get observation :source-ref)))
+                  (and position
+                       (nth position
+                            (e-context-lifetime-frame-source-entry-refs
+                             frame)))))
+         (fingerprint
+          (or (and observation
+                   (plist-get observation :source-fingerprint))
+              (and position
+                   (nth position
+                        (e-context-lifetime-frame-source-fingerprints
+                         frame))))))
+    (unless (or observation position)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :unknown-observation observation-id)))
+    (unless (and ref fingerprint)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :missing-source-provenance observation-id)))
+    (list :ref (e-context-lifetime-canonicalize ref)
+          :fingerprint (e-context-lifetime-canonicalize fingerprint))))
 
-The open-to-consumed form is an intentional shorthand for a caller that has
-already durably represented the attempt elsewhere."
-  (e-context-lifetime--transition-frame frame 'consumed '(open consuming)))
+(defun e-context-lifetime-promotion-id-for (frame effect)
+  "Return a deterministic durable promotion ID for FRAME and EFFECT."
+  (format "promotion:%s"
+          (substring
+           (secure-hash
+            'sha256
+            (prin1-to-string
+             (list (e-context-lifetime-frame-id frame)
+                   (e-context-lifetime-frame-generation-id frame)
+                   (e-context-lifetime-frame-consumer-request-id frame)
+                   (e-context-lifetime-frame-consuming-response-entry-id frame)
+                   (e-context-lifetime-normalize-promotion-effect effect))))
+           0 32)))
 
-(defun e-context-lifetime-frame-settle (frame)
-  "Return FRAME transitioned from consumed to settled."
-  (e-context-lifetime--transition-frame frame 'settled '(consumed)))
+(defun e-context-lifetime-promotion-from-effect (frame effect)
+  "Resolve EFFECT against consumed FRAME using core-derived provenance."
+  (let* ((effect (e-context-lifetime-normalize-promotion-effect effect))
+         (source-ids (plist-get effect :source-observation-ids)))
+    (unless (e-context-lifetime-frame-consumed-p frame)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :frame-not-consumed
+                    (e-context-lifetime-frame-id frame))))
+    (unless (equal (plist-get effect :frame-id)
+                   (e-context-lifetime-frame-id frame))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :frame-mismatch
+                    (e-context-lifetime-frame-id frame)
+                    (plist-get effect :frame-id))))
+    (let (refs fingerprints)
+      (dolist (observation-id source-ids)
+        (let ((provenance
+               (e-context-lifetime--observation-provenance
+                frame observation-id)))
+          (push (plist-get provenance :ref) refs)
+          (push (plist-get provenance :fingerprint) fingerprints)))
+      (e-context-lifetime-promotion-create
+       :id (e-context-lifetime-promotion-id-for frame effect)
+       :frame-id (e-context-lifetime-frame-id frame)
+       :generation-id (e-context-lifetime-frame-generation-id frame)
+       :consumer-request-id
+       (e-context-lifetime-frame-consumer-request-id frame)
+       :response-entry-id
+       (e-context-lifetime-frame-consuming-response-entry-id frame)
+       :facts (plist-get effect :facts)
+       :source-observation-ids source-ids
+       :source-refs (nreverse refs)
+       :source-fingerprints (nreverse fingerprints)))))
 
-(defun e-context-lifetime-frame-abort (frame)
-  "Return FRAME transitioned to aborted from open or consuming.
+(defun e-context-lifetime-apply-promotion (durable-tail promotion)
+  "Return DURABLE-TAIL with selected PROMOTION facts appended.
 
-An abort is an explicit terminal decision for an observation that could not
-be consumed or retried safely; a consumed frame instead requires settlement."
-  (e-context-lifetime--transition-frame frame 'aborted '(open consuming)))
-
-(defun e-context-lifetime-generation-append-durable
-    (generation durable-value)
-  "Return GENERATION with DURABLE-VALUE appended to its durable tail."
-  (let ((copy (e-context-lifetime-generation-copy generation)))
-    (setf (e-context-lifetime-generation-durable-tail copy)
-          (append (e-context-lifetime-generation-durable-tail copy)
-                  (list (e-context-lifetime--copy durable-value))))
-    copy))
-
-(defun e-context-lifetime-apply-promotion (generation promotion)
-  "Return GENERATION with selected PROMOTION facts appended durably.
-The promotion's source observations are provenance only and are never copied."
-  (let ((result (e-context-lifetime-generation-copy generation)))
-    (dolist (fact (e-context-lifetime-promotion-facts promotion))
-      (setq result
-            (e-context-lifetime-generation-append-durable result fact)))
-    result))
+The helper operates on a caller-owned reconstructed tail; it never stores that
+tail on the generation record and never copies source observation bodies."
+  (unless (e-context-lifetime-promotion-p promotion)
+    (signal 'wrong-type-argument
+            (list 'e-context-lifetime-promotion-p promotion)))
+  (append (e-context-lifetime-canonicalize durable-tail)
+          (e-context-lifetime--copy
+           (e-context-lifetime-promotion-facts promotion))))
 
 (defun e-context-lifetime--items (value)
   "Return VALUE as a detached sequence of semantic context items."
   (cond
    ((null value) nil)
-   ((vectorp value) (mapcar #'e-context-lifetime-canonicalize (append value nil)))
-   ;; A message plist is one item, not a sequence of alternating plist cells.
+   ((vectorp value)
+    (mapcar #'e-context-lifetime-canonicalize (append value nil)))
    ((e-context-lifetime--keyword-plist-p value)
     (list (e-context-lifetime-canonicalize value)))
    ((listp value) (mapcar #'e-context-lifetime-canonicalize value))
@@ -428,22 +742,21 @@ The promotion's source observations are provenance only and are never copied."
 
 (defun e-context-lifetime--segment (kind id messages)
   "Return a detached semantic segment for KIND, ID and MESSAGES."
-  (list :kind kind
-        :id id
-        :messages (e-context-lifetime--items messages)
-        :fingerprint
-        (secure-hash 'sha256
-                     (prin1-to-string
-                      (e-context-lifetime--items messages)))))
+  (let ((messages (e-context-lifetime--items messages)))
+    (list :kind kind
+          :id id
+          :messages messages
+          :fingerprint
+          (secure-hash 'sha256 (prin1-to-string messages)))))
 
 (cl-defun e-context-lifetime-project
-    (generation &optional frame &key static-prefix stable-context)
-  "Purely project GENERATION and optional FRAME into model context.
+    (generation &optional frame
+               &key static-prefix stable-context durable-tail)
+  "Purely project GENERATION and optional runtime FRAME into model context.
 
-STATIC-PREFIX and STABLE-CONTEXT are request-time values.  They are included in
-the returned request projection but never copied into GENERATION.  FRAME
-observations are included only while FRAME is open or consuming; settled and
-consumed observations therefore disappear from the next shadow projection."
+DURABLE-TAIL is reconstructed by the owning session/projection consumer and is
+not part of the durable generation record.  A completed frame contributes no
+observation bytes."
   (unless (e-context-lifetime-generation-p generation)
     (signal 'wrong-type-argument
             (list 'e-context-lifetime-generation-p generation)))
@@ -458,10 +771,11 @@ consumed observations therefore disappear from the next shadow projection."
                   (e-context-lifetime-frame-generation-id frame)
                   (e-context-lifetime-generation-id generation))))
   (let* ((checkpoint (e-context-lifetime-generation-checkpoint generation))
-         (durable-tail (e-context-lifetime-generation-durable-tail generation))
-         (observations (when (and frame
-                                  (e-context-lifetime-frame-visible-p frame))
-                        (e-context-lifetime-frame-observations frame)))
+         (durable-tail (e-context-lifetime-canonicalize durable-tail))
+         (observations
+          (and frame
+               (not (e-context-lifetime-frame-consumed-p frame))
+               (e-context-lifetime-frame-observations frame)))
          (segments
           (delq nil
                 (list
@@ -493,8 +807,11 @@ consumed observations therefore disappear from the next shadow projection."
     (list :projection 'generational-context
           :generation-id (e-context-lifetime-generation-id generation)
           :frame-id (and frame (e-context-lifetime-frame-id frame))
+          :consumer-request-id
+          (and frame
+               (e-context-lifetime-frame-consumer-request-id frame))
           :checkpoint (e-context-lifetime-canonicalize checkpoint)
-          :durable-tail (e-context-lifetime-canonicalize durable-tail)
+          :durable-tail durable-tail
           :ephemeral (e-context-lifetime-canonicalize observations)
           :segments segments
           :messages messages
@@ -503,23 +820,23 @@ consumed observations therefore disappear from the next shadow projection."
 (defalias 'e-context-lifetime-shadow-project #'e-context-lifetime-project)
 
 (defun e-context-lifetime-shadow-enabled-p ()
-  "Return non-nil when shadow projection is enabled for callers."
+  "Return non-nil when callers opted into the semantic shadow projection."
   e-context-lifetime-shadow-projection-enabled)
 
 (cl-defun e-context-lifetime-shadow-context
-    (legacy-context generation &optional frame &key static-prefix stable-context)
-  "Return shadow context when enabled, otherwise unchanged LEGACY-CONTEXT.
-
-This explicit boundary keeps Slice 1 observational: no existing request path is
-altered until a caller opts in by binding or setting the feature flag."
+    (legacy-context generation &optional frame
+                     &key static-prefix stable-context durable-tail)
+  "Return semantic context when enabled, otherwise unchanged LEGACY-CONTEXT."
   (if (e-context-lifetime-shadow-enabled-p)
       (e-context-lifetime-project
-       generation frame :static-prefix static-prefix
-       :stable-context stable-context)
+       generation frame
+       :static-prefix static-prefix
+       :stable-context stable-context
+       :durable-tail durable-tail)
     legacy-context))
 
 (defun e-context-lifetime--character-estimate (value)
-  "Return a bounded character estimate for VALUE without serializing its body."
+  "Return a bounded character estimate for VALUE without retaining its body."
   (let ((remaining e-context-lifetime-diagnostic-character-limit)
         (seen (make-hash-table :test 'eq)))
     (cl-labels
@@ -582,77 +899,6 @@ altered until a caller opts in by binding or setting the feature flag."
           :ephemeral-character-count
           (e-context-lifetime--character-estimate ephemeral)
           :fingerprint (plist-get projection :fingerprint))))
-
-(defun e-context-lifetime--emit-diagnostic (event payload)
-  "Emit bounded diagnostic EVENT with PAYLOAD when hooks are installed."
-  (run-hook-with-args 'e-context-lifetime-diagnostics-hook event payload)
-  payload)
-
-(cl-defun e-context-lifetime-acknowledge-settlement
-    (store session-id &key frame-id record-count record-bytes prefix-entry-ids
-           enabled on-done on-error)
-  "Asynchronously acknowledge STORE's current settlement boundary.
-
-When ENABLED is nil and
-`e-context-lifetime-settlement-acknowledgement-enabled' is nil, the helper
-reports a disabled status and performs no persistence work.  For an in-memory
-store the boundary is already local and is acknowledged immediately.
-For a persistent store, only its asynchronous persistence controller is used;
-the helper never introduces synchronous filesystem I/O into the request path.
-ON-DONE receives a bounded status plist, and ON-ERROR receives an Emacs
-condition list."
-  (let* ((enabled (or enabled
-                      e-context-lifetime-settlement-acknowledgement-enabled))
-         (base (list :frame-id frame-id
-                     :prefix-entry-ids (copy-sequence prefix-entry-ids)
-                     :record-count (or record-count 0)
-                     :record-bytes (or record-bytes 0)
-                     :started-at (float-time))))
-    (if (not enabled)
-        (let ((result (append base (list :status 'disabled))))
-          (e-context-lifetime--emit-diagnostic
-           'settlement-acknowledgement-skipped
-           (e-context-lifetime--copy
-            (cl-loop for (key value) on result by #'cddr
-                     when (memq key '(:frame-id :prefix-entry-ids :record-count
-                                           :record-bytes :status))
-                     append (list key value))))
-          (when on-done (funcall on-done result))
-          result)
-      (cl-labels
-          ((done (status &optional error)
-             (let ((result (append base
-                                   (list :status status
-                                         :elapsed-seconds
-                                         (max 0.0 (- (float-time)
-                                                     (plist-get base
-                                                                :started-at)))))))
-               (when error
-                 (setq result (append result (list :error error))))
-               (e-context-lifetime--emit-diagnostic
-                (if (eq status 'acknowledged)
-                    'settlement-prefix-acknowledged
-                  'settlement-prefix-acknowledgement-failed)
-                (e-context-lifetime--copy
-                 (cl-loop for (key value) on result by #'cddr
-                          when (memq key '(:frame-id :prefix-entry-ids :record-count
-                                           :record-bytes :status :elapsed-seconds))
-                          append (list key value))))
-               (if (eq status 'acknowledged)
-                   (when on-done (funcall on-done result))
-                 (when on-error (funcall on-error error)))
-               result)))
-        (condition-case error
-            (e-session-context-lifetime-durability-barrier
-             store session-id prefix-entry-ids
-             (lambda (_value) (done 'acknowledged))
-             (lambda (failure) (done 'failed failure)))
-          (e-context-lifetime-settlement-unavailable
-           (done 'unavailable error))
-          (e-session-persistence-unavailable
-           (done 'unavailable
-                 (list 'e-context-lifetime-settlement-unavailable
-                       session-id))))))))
 
 (provide 'e-context-lifetime)
 

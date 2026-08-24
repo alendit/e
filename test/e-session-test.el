@@ -16,6 +16,7 @@
 (require 'e)
 (require 'e-dev-profile)
 (require 'e-session)
+(require 'e-context-lifetime)
 (require 'e-board)
 
 (ert-deftest e-session-test-create-and-read ()
@@ -24,6 +25,274 @@
     (e-session-create store :id "session-1" :metadata '(:model "fake"))
     (should (equal (plist-get (e-session-get store "session-1") :id) "session-1"))
     (should (equal (e-session-messages store "session-1") nil))))
+
+(ert-deftest e-session-test-context-v2-records-round-trip-through-reopen ()
+  "Generation boundaries and selected facts retain exact semantic values."
+  (let* ((directory (make-temp-file "e-session-context-v2-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-v2")
+         generation promotion)
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (generation-id
+                  (plist-get session :root-event-id)))
+            (setq generation
+                  (e-context-lifetime-generation-create
+                   :id "generation-v2"
+                   :checkpoint
+                   '((:role system
+                      :content "policy"
+                      :nested (:enabled :json-false)))
+                   :covered-session-boundary generation-id))
+            (e-session-append-context-generation
+             store session-id generation)
+            (e-session-append-message
+             store session-id
+             '(:id "response-entry"
+               :role assistant
+               :content "selected response"))
+            (let* ((frame
+                    (e-context-lifetime-frame-create
+                     :id "frame-v2"
+                     :generation-id "generation-v2"
+                     :consumer-request-id "consumer-v2"
+                     :observations
+                     '((:observation-id "observation-v2"
+                        :kind "current-state"
+                        :source-entry-ref "external:canvas:v2"
+                        :source-fingerprint "canvas-v2"
+                        :effective-delivery "request-local-replaceable"
+                        :body (:content "ephemeral")))))
+                   (consumed
+                    (e-context-lifetime-frame-complete-for-consumer
+                     frame "consumer-v2" "response-entry")))
+              (setq promotion
+                    (e-context-lifetime-promotion-from-effect
+                     consumed
+                     '(:type context-promote
+                       :schema-version 1
+                       :frame-id "frame-v2"
+                       :source-observation-ids ("observation-v2")
+                       :facts ((:id "fact-v2"
+                                :value "promoted fact"))))))
+              (e-session-append-context-promotion
+               store session-id promotion)))
+          (e-session-flush-write-queue store)
+          (let* ((before (e-session-persistent-store-create directory))
+                 (before-generations
+                  (mapcar #'e-session--context-record
+                          (e-session-context-generations
+                           before session-id)))
+                 (before-promotions
+                  (mapcar #'e-session--context-record
+                          (e-session-context-promotions
+                           before session-id)))
+                 (before-manifest
+                  (plist-get (e-session-checkpoint-manifest
+                              before session-id)
+                             :context-lifetime))
+                 (reopened (e-session-persistent-store-create directory))
+                 (after-manifest
+                  (plist-get (e-session-checkpoint-manifest
+                              reopened session-id)
+                             :context-lifetime)))
+            (should (equal before-generations
+                           (list (e-context-lifetime-generation-record
+                                  generation))))
+            (should (equal before-promotions
+                           (list (e-context-lifetime-promotion-record
+                                  promotion))))
+            (should (equal before-manifest after-manifest))
+            (should-not
+             (plist-member (car before-generations) :durable-tail))
+            (should-not
+             (plist-member (car before-promotions) :body))))
+      (delete-directory directory t)))
+
+(ert-deftest e-session-test-context-codecs-own-malformed-append-and-replay ()
+  "Both context record kinds reject malformed versions at the session boundary."
+  (cl-labels
+      ((without-key
+        (record key)
+        (let (result)
+          (while record
+            (let ((current-key (pop record))
+                  (value (pop record)))
+              (unless (eq current-key key)
+                (setq result (append result (list current-key value))))))
+          result))
+       (with-key
+        (record key value)
+        (let ((copy (copy-tree record)))
+          (plist-put copy key value)))
+       (duplicate-version
+        (record)
+        (append (list :record-version 2 :record-version 2)
+                (cddr record)))
+       (variants
+        (record)
+        (list (without-key record :record-version)
+              (duplicate-version record)
+              (with-key record :extra "unknown")
+              (with-key record :record-version "2")
+              (with-key record :record-version nil)
+              (with-key record :record-version '(2))))
+       (replay-fails
+        (type context-record)
+        (let ((directory (make-temp-file "e-session-context-corrupt-" t)))
+          (unwind-protect
+              (let* ((store (e-session-persistent-store-create directory))
+                     (session-id (format "corrupt-%s"
+                                         (substring (symbol-name type)
+                                                    9)))
+                     (session (e-session-create store :id session-id))
+                     (parent-id (plist-get session :root-event-id)))
+                (when (eq type 'context-promotion)
+                  (setq parent-id
+                        (plist-get
+                         (e-session-append-context-generation
+                          store session-id
+                          (e-context-lifetime-generation-create
+                           :id "replay-generation"
+                           :checkpoint '((:role system :content "policy"))
+                           :covered-session-boundary parent-id))
+                         :id)))
+                (with-temp-buffer
+                  (insert
+                   (json-encode
+                    (list :type (symbol-name type)
+                          :session-id session-id
+                          :id (format "corrupt-entry-%s"
+                                      (substring (symbol-name type) 9))
+                          :parent-id parent-id
+                          :timestamp "2026-08-24T00:00:01Z"
+                          :context-record
+                          (e-session--context-record-for-json
+                           context-record)))
+                   "\n")
+                  (write-region (point-min) (point-max)
+                                (e-session--session-file store session-id)
+                                t 'silent))
+                (should-error
+                 (e-session-persistent-store-create directory)
+                 :type 'e-session-error))
+            (delete-directory directory t)))))
+    (let* ((generation
+            (e-context-lifetime-generation-create
+             :id "append-generation"
+             :checkpoint '((:role system :content "policy"))
+             :covered-session-boundary "entry-0"))
+           (generation-record
+            (e-context-lifetime-generation-record generation))
+           (promotion-record
+            '(:record-version 2
+              :type context-promotion
+              :id "append-promotion"
+              :frame-id "frame-1"
+              :generation-id "append-generation"
+              :consumer-request-id "consumer-1"
+              :response-entry-id "response-1"
+              :facts ((:id "fact-1" :value "selected"))
+              :source-observation-ids ("observation-1")
+              :source-refs ("external:source")
+              :source-fingerprints ("source-fingerprint"))))
+      (let ((store (e-session-store-create)))
+        (e-session-create store :id "append-context")
+        (dolist (bad (variants generation-record))
+          (should-error
+           (e-session-append-context-generation
+            store "append-context" bad)
+           :type 'e-session-error))
+        (e-session-append-context-generation
+         store "append-context" generation-record)
+        (dolist (bad (variants promotion-record))
+          (should-error
+           (e-session-append-context-promotion
+            store "append-context" bad)
+           :type 'e-session-error))
+        (should (= (length (e-session-context-generations
+                            store "append-context"))
+                   1))
+        (should-not (e-session-context-promotions store "append-context")))
+      (dolist (bad (variants generation-record))
+        (replay-fails 'context-generation bad))
+      (dolist (bad (variants promotion-record))
+        (replay-fails 'context-promotion bad)))))
+
+(ert-deftest e-session-test-legacy-context-records-do-not-restore-runtime-frames ()
+  "Legacy context lifetime journal lines preserve ordinary transcript only."
+  (let* ((directory (make-temp-file "e-session-context-legacy-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "legacy-context"))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (let ((message
+                 (e-session-append-message
+                  store session-id
+                  '(:id "ordinary-entry" :role user :content "retain me"))))
+            (with-temp-buffer
+              (dolist (record
+                       (list
+                        (list :type "context-generation"
+                              :session-id session-id
+                              :id "legacy-generation"
+                              :parent-id (plist-get message :id)
+                              :timestamp "2026-08-24T00:00:00Z"
+                              :context-record
+                              '(:record-version 1
+                                :type "context-generation"
+                                :id "legacy-generation"
+                                :checkpoint nil))
+                        (list :type "context-frame"
+                              :session-id session-id
+                              :id "legacy-frame"
+                              :parent-id "legacy-generation"
+                              :timestamp "2026-08-24T00:00:01Z"
+                              :context-record
+                              '(:record-version 1
+                                :type "context-frame"
+                                :id "legacy-frame"
+                                :generation-id "legacy-generation"
+                                :state "open"))
+                        (list :type "context-promotion"
+                              :session-id session-id
+                              :id "legacy-promotion"
+                              :parent-id "legacy-frame"
+                              :timestamp "2026-08-24T00:00:02Z"
+                              :context-record
+                              '(:record-version 1
+                                :type "context-promotion"
+                                :id "legacy-promotion"
+                                :frame-id "legacy-frame"))
+                        (list :type "context-frame-settlement"
+                              :session-id session-id
+                              :id "legacy-settlement"
+                              :parent-id "legacy-frame"
+                              :timestamp "2026-08-24T00:00:03Z"
+                              :context-record
+                              '(:record-version 1
+                                :type "context-frame-settlement"
+                                :frame-id "legacy-frame"
+                                :status "acknowledged"))))
+                (insert (json-encode record) "\n"))
+              (write-region (point-min) (point-max)
+                            (e-session--session-file store session-id)
+                            t 'silent)))
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (equal (mapcar (lambda (message)
+                                     (plist-get message :content))
+                                   (e-session-messages reopened session-id))
+                           '("retain me")))
+            (should-not (e-session-context-generations reopened session-id))
+            (should-not (e-session-context-promotions reopened session-id))
+            (should-not
+             (plist-member
+              (plist-get (e-session-checkpoint-manifest reopened session-id)
+                         :context-lifetime)
+              :frames))))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-test-board-log-deduplicates-and-clear-survives-replay ()
   "Board log identity and reset boundaries remain durable across reopen."
@@ -723,9 +992,7 @@
                   "provider-anchor"
                   "process-report"
                   "context-generation"
-                  "context-frame"
                   "context-promotion"
-                  "context-frame-settlement"
                   "current-branch"
                   "messages-cleared"))
     (should (eq (e-session--queued-record-criticality
