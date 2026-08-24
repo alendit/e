@@ -9,9 +9,9 @@ Slice 1 is accepted after Implementation Tick 05 at
 Implementation Tick 09 at
 =3f7129db6a3d12d15960e18e192e061c0cc4a8f5=.  The user materially narrowed
 Feature 88 after Tick 10: tool-lifecycle durability and crash recovery are no
-longer in scope and belong with future SQLite atomic persistence.  Tick 11
-found the revised context-protocol plan not ready for implementation.  This is
-not final feature acceptance.
+longer in scope and belong with future SQLite atomic persistence.  Tick 11 and
+Tick 12 found the revised context-protocol plan not ready for implementation.
+This is not final feature acceptance.
 
 * Tick 01 findings
 
@@ -904,3 +904,118 @@ provider-neutral identity plus adapter-owned wire encoding.
 
 Remediate F88.P1--F88.P7 in =plan.org= with the same persistent implementer,
 then reuse the same unattended reviewer for the next plan Tick.
+
+* Tick 12 narrowed-plan remediation review
+
+Reviewed exact HEAD =4a58e31402f688539883d90671b674ad09a81595= plus
+the sole WIP =plan.org= after Tick 11 remediation.  Decision: not ready for
+implementation; four P1 and three P2 findings remain.
+
+Tick 11 disposition: F88.P1, F88.P4, F88.P5, F88.P6, and F88.P7 are closed.
+F88.P2 and F88.P3 remain open.
+
+** P1 F88.P2: response buffering would change the existing tool lifecycle
+
+The plan calls full-response buffering an existing boundary and says malformed
+promotion prevents every ordinary call from dispatching.  Current =e-loop=
+instead dispatches each streamed tool call immediately, before provider
+completion.  Literal implementation would alter dispatch latency,
+cancellation, concurrency, and behavior despite the narrowed requirement to
+preserve the existing lifecycle.
+
+Owning correction: accumulate promotion controls in the current in-memory
+response handling and commit valid promotions at provider completion before
+the next provider follow-up projection.  Ordinary calls keep streaming
+dispatch.  An invalid promotion follows the existing response error path but
+does not promise rollback of calls already dispatched.  Mutation is at most
+once within that in-memory handling, with no cross-restart guarantee.
+
+** P1 F88.P3: persistent frames duplicate observations without a consumer
+
+The cleanup ledger retains persistence for an unnamed audit/projection
+consumer.  Current frame records copy raw observations plus attempt, response,
+promotion, and terminal-settlement fields even though the canonical transcript
+already stores tool output.
+
+Owning correction: the session path remains the canonical durable source.  A
+generation stores only identity, portable checkpoint, and covered boundary;
+durable context derives from eligible session entries and promotions.  Retain
+persistent frame provenance only for a named current public consumer and then
+store ids/references/fingerprints/consumer/promotion ids, never raw bodies or
+retry/settlement fields.  Otherwise keep frame state runtime-only and remove
+persistent frame APIs.  Expand the ledger to name the Feature 88 record-state,
+fencing, watcher, prefix-wait, controller-slot, and submit-path additions in
+=e-session-persistence=.
+
+** P1 F88.P8: minimum frame-to-consumer identity is unspecified
+
+The plan names stable frame/observation identity but does not bind a frame to
+the provider invocation that consumes it.  Matching source fingerprints alone
+could reopen a consumed frame for another request.
+
+Owning correction: a runtime frame has frame, generation, and
+consumer-request ids.  Each observation has id, kind, source reference,
+fingerprint, delivery, and runtime body.  Reuse is limited to the same
+not-yet-consumed consumer request with matching sources; every later invocation
+gets a new identity.  Promotion names that frame/consumer provenance.  Test
+unchanged state across two successful invocations and prohibit re-promotion of
+the prior frame.
+
+** P1 F88.P9: tool call/result linkage lacks a visibility lifetime
+
+The plan makes raw results ephemeral but omits the paired tool-call record and
+provider replay items.  Keeping the call alone creates orphan provider input;
+keeping both forever fails to forget the observation.
+
+Owning correction: classify provider-neutral call identity/arguments, locally
+identified replay items, and result as one follow-up observation bundle.  The
+complete bundle is visible to its consuming invocation and absent from later
+semantic projections unless selected information is promoted.  Historical
+transcript storage remains independent.  E2E proves pairing while visible and
+absence of orphan call/result items afterwards for all fallback strategies.
+
+** P2 F88.P10: provider compaction must prove clean ancestry
+
+Excluding observations from a new compaction delta is insufficient when the
+selected provider anchor already inherits them.
+
+Owning correction: build provider compaction statelessly from portable durable
+context or from an anchor clean for every observation kind.  Never compact
+through a contaminated continuation id.  Conformance inspects literal and
+effective compaction input for absent consumed markers.
+
+** P2 F88.P11: core promotion limits are duplicated as capabilities
+
+The plan says core owns limits but also lets adapters return max-facts and
+max-bytes, creating a second semantic authority.
+
+Owning correction: core constructs the effective reserved schema and includes
+its content/revision in compatibility fingerprints.  Adapters may advertise
+only carrier encoding/decoding support, not redefine semantic limits; remove
+the capability entirely if ordinary normalized tool schema suffices.
+
+** P2 F88.P12: explicit promotion cannot guarantee textual non-overlap
+
+The normalized value permits bounded JSON-like content, so a model may
+deliberately promote verbatim text.  The protocol can prohibit implicit source
+copying, not all byte overlap.
+
+Owning correction: store only the explicitly submitted bounded fact and
+provenance; never implicitly add observation/frame payload fields.  Explicitly
+selected verbatim content is durable by choice and subject to the same limit.
+
+** Tick 12 evidence and disposition
+
+- Current loop source proves streamed tool calls dispatch before provider-done.
+- Current frame serialization duplicates raw observations and discarded
+  lifecycle fields; local search found no production consumer outside the
+  lifetime/session owners.
+- Current OpenAI projection requires paired function-call and output items and
+  may attach replay items to the call.
+- Org parsing and =git diff --check= passed.  Only =plan.org= was dirty.
+- Provider documentation and credentialed behavior remain deferred.
+- The reused reviewer made zero prompts, permission requests, escalations,
+  edits, git writes, network calls, live-Emacs calls, or provider tests.
+
+Remediate F88.P2, F88.P3, and F88.P8--F88.P12 with the same persistent Luna
+implementer, then reuse the same unattended Sol reviewer for Tick 13.
