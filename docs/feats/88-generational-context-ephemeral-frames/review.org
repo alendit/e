@@ -1313,3 +1313,45 @@ kinds.
 
 Remediate F88.I1.1 and F88.I1.2 with the same persistent Luna implementer, then
 reuse the same unattended Sol reviewer for Tick 18.
+
+* Tick 18 Slice 1 implementation fixed-point review
+
+Reviewed exact HEAD =6537265be2c9234532d5f815c16acc5780fca1c7= plus
+the remediated six-file Semantic Lifetime Foundation WIP.  Decision: ready;
+zero-finding pre-commit fixed point with no P0, P1, or P2 findings.
+
+** Prior finding dispositions
+
+- F88.I1.1 is closed.  The public frame constructor exposes only open-frame
+  inputs and hardcodes completion fields to nil.  Completion/provenance
+  keywords are rejected.  Only the private completion path produces a
+  body-free consumed frame, and tests cover open/consumed copy semantics.
+- F88.I1.2 is closed.  Session append/replay delegates both v2 durable record
+  kinds to the strict core codecs and wraps codec conditions as
+  =e-session-error=.  Append/replay tests cover missing, duplicate, extra, and
+  string/nil/list version values for both record kinds.
+- The session duplicate-version check is accepted as transport routing needed
+  to stop a duplicate version from masquerading as ignored legacy v1.  It does
+  not define the v2 field schema; the core codecs remain sole schema owners.
+- Valid legacy-v1 generation/frame/promotion/settlement records remain readable
+  and ignored without reconstructing frames or recovery state.
+
+** Tick 18 evidence and fixed-point disposition
+
+- Exact observation and fact schemas, whole-effect 8 KiB limit, consumer
+  checks, core-derived promotion provenance, forged-provenance rejection,
+  sole durable body source, recovery-machinery cleanup, generic persistence,
+  existing tool/follow-up behavior, and explicit opt-in were reconfirmed.
+- Focused tests passed 135/135.  The full Eldev suite passed 2,245 expected
+  tests with two expected skips and zero unexpected results out of 2,247.
+  =git diff --check= passed.
+- Read-only reproductions confirmed public completion/provenance keywords are
+  rejected, new frames are open, and malformed session records surface the
+  session domain condition.
+- The cleanup search found no obsolete Feature 88 production APIs.
+- Credential-free Feature 88 E2E, provider-gated checks, and graphical evidence
+  remain assigned to later slices.
+- The same reviewer made zero prompts, approval requests, escalations, edits,
+  git writes, network calls, or live-Emacs calls.
+
+Slice 1 has reached the required independent pre-commit fixed point.
