@@ -1686,3 +1686,155 @@ fixed point with no P0, P1, P2, or P3 findings.
 
 Slice 4 has reached the required independent pre-commit fixed point.  Slices 5
 and 6 remain unstarted.
+
+* Tick 29 Slice 5 initial optional-provider-compaction review
+
+The same unattended Sol High reviewer performed a fresh read-only review of
+the initial seven-file Slice 5 WIP.  Decision: not ready; two P1 and two P2
+findings.
+
+- =F88.I5.1= found that reusing the provider-anchor delta projector could
+  resurrect raw call/replay/result entries after the provider compaction
+  boundary.
+- =F88.I5.2= found that flattened OpenAI instructions could duplicate C1
+  outside the opaque compact output.
+- =F88.I5.3= found that a selected compact candidate was not one-shot and
+  permanently suppressed later clean anchors.
+- =F88.I5.4= found that an older asynchronous result could overwrite a newer
+  generation's runtime candidate.
+
+The reviewer counted one new cross-module P1, below the plan's split threshold.
+The same Luna Max implementer captured the exact input boundary and promotion
+frontier, introduced a dedicated durable-only delta, kept opaque output first,
+made selection turn-only and one-shot, and fenced result installation by the
+current generation.
+
+* Tick 30 Slice 5 first remediation review
+
+The same reviewer closed =I5.1= through =I5.4= and reported one P1 and one P2.
+
+- =F88.I5.5= found that compact request fields remained in loop options after
+  the first request, so tool or steering follow-ups could replay stale opaque
+  state and omit their new input.
+- =F88.I5.6= found that vector-shaped opaque output was detached only
+  shallowly, leaving nested provider objects shared.
+
+The same implementer added a narrow loop frontier that clears one-shot compact
+request state and recursively detached opaque output.  Real loop-to-OpenAI
+tests covered tool and steering follow-ups for HTTP and WebSocket request
+construction.
+
+* Tick 31 Slice 5 synchronous and anchored-follow-up review
+
+The same reviewer closed =I5.6= but found two P1 paths within =I5.5=.
+
+- =F88.I5.7= found that synchronous backend completion before request-handle
+  publication bypassed compact-state clearing.
+- =F88.I5.8= found that an anchored follow-up incorrectly repeated the
+  function call already owned by =previous_response_id= instead of sending
+  result-only input.
+
+The new cross-module P1 count was exactly two, not more than two, so the plan's
+conceptual split condition did not fire.  The same implementer moved clearing
+outside the request-publication guard, restored result-only anchored deltas,
+and proved full call/result replay only for stateless fallback.
+
+* Tick 32 Slice 5 disabled-path performance review
+
+The same reviewer closed =I5.1= through =I5.8= and reported one P3:
+=F88.I5.9=.  Capability-none backends still built, printed, and hashed the full
+portable provider input before the capability check.  The same implementer
+moved input construction inside the =opaque= gate and added sync/async
+production-boundary tests proving zero input-builder calls when disabled.
+
+* Tick 33 Slice 5 implementation fixed-point review
+
+The same unattended Sol High reviewer performed a fresh whole-slice review of
+the final nine-file WIP.  Decision: ready; zero P0, P1, P2, or P3 findings.
+All prior findings remained closed.  The reviewer ran 370 credential-free
+focused tests with zero unexpected results and =git diff --check= passed.  It
+made no prompts, approval requests, escalations, edits, git writes, network
+calls, or live-Emacs calls.
+
+* Slice 5 accepted implementation
+
+** Accepted behavior
+
+1. =provider-compaction= is a narrow backend capability: =none= or =opaque=.
+   Unsupported providers perform no provider-input projection work.
+2. OpenAI compaction is limited to a proven public Responses profile and uses
+   =POST /v1/responses/compact= with only model and stateless portable input.
+3. The compaction input is C1 plus its canonical durable tail and active facts;
+   raw tool observations, replay metadata, anchors, continuation ids, current
+   state, and diagnostics are excluded.
+4. Provider output is treated as an opaque, deeply detached runtime value.
+   Core never interprets its semantics and session remains the sole durable
+   body source.
+5. A candidate is keyed by provider, model, generation, exact journal head,
+   promotion frontier, layout/fingerprint, and portable input identity.
+   Mismatch, late promotion, stale generation, failure, or reopen discards the
+   optimization and uses the canonical portable/stateless projection.
+6. The first matching turn request starts a fresh Responses chain with opaque
+   output as item zero, trusted stable/current context exactly once, and only
+   a durable post-coverage delta.  It never sends =previous_response_id=.
+7. Candidate selection is turn-only and one-shot.  Preview, status, and
+   optional contexts cannot consume it, and the compact fields are cleared
+   after the selected provider request even when completion precedes request
+   publication.
+8. A safe immediate follow-up anchor sends result-only tool input; stateless
+   fallback sends the full call/result pair.  Tool and steering follow-ups do
+   not replay opaque compact state.
+9. Provider state is not persisted, exported, or reconstructed after reopen.
+   No recovery, transaction, journal, exactly-once, presentation, or generalized
+   lifecycle machinery was added.
+
+** Verification
+
+- Independent focused review passed 370/370 credential-free tests with zero
+  unexpected results.
+- Parent focused validation passed the same 370 tests, including local-loopback
+  OpenAI transport tests.
+- The full Eldev suite passed 2,304 expected tests out of 2,306 with zero
+  unexpected results and the same two pre-existing skips:
+  =e-chat-surface-integration-test-evil-escape-routes-transcript-commands= and
+  =e-chat-test-assistant-markdown-renders-with-text-properties=.
+- =eldev compile --warnings-as-errors= and =git diff --check= passed.
+- The same Luna Max implementer and unattended Sol High reviewer were reused
+  for every remediation/review tick.  The running Emacs was untouched; these
+  core, loop, backend, harness, and adapter changes require a restart to use.
+
+** Architecture self-check
+
+1. This is an independently useful stopping point: portable compaction remains
+   sufficient while eligible providers may accelerate exactly one fresh chain.
+2. It advances generational append-only context without making opaque provider
+   state part of the semantic or durable model.
+3. Portable semantics are stable; endpoint support, wire codec, and opaque
+   output remain local and reversible adapter decisions.
+4. Compaction owns portable input, harness owns runtime candidate selection,
+   loop owns one-request consumption, backend owns the narrow operation, and
+   OpenAI owns wire conformance.
+5. The generic contract is limited to capability, opaque output, and bounded
+   usage.  Providers without the capability incur no projection work.
+6. Core policy does not depend on OpenAI fields; the adapter depends on the
+   provider-neutral portable and one-shot contracts.
+7. HTTP/provider side effects remain in the adapter; session mutation remains
+   outside optional provider acceleration.
+8. The only new state is a rebuildable harness-runtime candidate.  Its lifetime
+   is one matching request or the first mismatch/reopen.
+9. Candidate preparation is one boundary scan for capable providers; ordinary
+   turns and capability-none compaction add no provider-input scan.
+10. Unsupported adapters satisfy the contract with =none=, while =opaque=
+    implementations return the same narrow result without weakened behavior.
+11. Existing compaction, tool follow-up, steering, continuation, and disabled
+    paths remain compatible; no legacy provider-compaction path existed.
+12. Reused anchor-delta and repeated opaque-state paths were removed during the
+    fixed point.
+13. Provider failure is optional and falls back locally; malformed adapter
+    output surfaces at the adapter/backend boundary; unexpected core errors are
+    not swallowed outside the explicit best-effort acceleration call.
+14. Unit tests prove codec/capability/detachment policy; production sync/async,
+    loop, HTTP/WebSocket, race, mismatch, and reopen tests prove integration.
+
+Slice 5 has reached the required independent pre-commit fixed point.  Slice 6
+remains unstarted.
