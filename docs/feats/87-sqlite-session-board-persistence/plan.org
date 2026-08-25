@@ -41,9 +41,11 @@ It removes the need to encode semantic correctness into checkpoint tails or to r
   The board validates and freezes the publication, submits its typed mutation through the storage port, waits for the SQLite worker to commit it, then accepts the canonical row read back from the committed position.
   Only then does the board route the record to participants.
   The original submitted object is never delivered directly.
-- =e-chat-service= only adapts chat sessions and shells to board participant endpoints.
-  It does not act as a message hub, route board data around =e-board=, or own board persistence.
-  Multiple session participants may attach to one board.
+- =e-chat= and each session are separate board participants.
+  =e-chat= publishes input and receives output only through =e-board=; it does not communicate with =e-session= or use session persistence as a transport.
+  =e-chat-service= is only the board-facing adapter for the chat presentation endpoint.
+  It does not attach or proxy the session participant, route board data around =e-board=, or own persistence.
+  Multiple session participants and presentation participants may attach to one board.
 - =e-board-storage= owns durable board commits and board replay.
   =e-session-storage= separately owns each session's private durable state and resume projections.
   Neither port routes the other domain's writes.
@@ -101,23 +103,30 @@ The current code does not yet have either semantic storage port.
 Ordinary messages are appended to the in-memory board before the message callback runs, while processing records use a separate pre-append callback path.
 See [[file:../../../lisp/core/e-board.el::(defun e-board--append-processing-record][=e-board--append-processing-record=]] and [[file:../../../lisp/core/e-board.el::(defun e-board--make-message][=e-board--make-message=]].
 
-=e-chat-service= currently elects the first live chat binding as =e-chat-service--board-log-owners=, installs both callbacks, and persists board envelopes by calling =e-session-append-board-message= on that binding's session.
-On restart it reads those session-owned envelopes and imports them into a new process-local board.
-See [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--persist-board-message][=e-chat-service--persist-board-message=]], [[file:../../../lisp/core/e-chat-service.el::(cl-defun e-chat-service--install-participant-binding][=e-chat-service--install-participant-binding=]], and [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--bind-session][=e-chat-service--bind-session=]].
+=e-chat= already submits prompts and receives presentation events through board-backed service operations.
+See [[file:../../../lisp/shells/chat/e-chat.el::(defun e-chat-submit][=e-chat-submit=]], [[file:../../../lisp/shells/chat/e-chat.el::(defun e-chat--subscribe][=e-chat--subscribe=]], and [[file:../../../lisp/core/e-chat-service.el::(cl-defun e-chat-service--post][=e-chat-service--post=]].
+
+The current =e-chat-service= binding still combines two peers that the target architecture keeps separate: an =e-chat= board client/observer and an =e-board-runtime= attachment for one harness session.
+It also elects the first combined binding as =e-chat-service--board-log-owners=, persists board envelopes by calling =e-session-append-board-message= on that binding's session, and reconstructs the board from that session on restart.
+See [[file:../../../lisp/core/e-chat-service.el::(cl-defstruct (e-chat-service-binding][=e-chat-service-binding=]], [[file:../../../lisp/core/e-chat-service.el::(cl-defun e-chat-service--install-participant-binding][=e-chat-service--install-participant-binding=]], [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--persist-board-message][=e-chat-service--persist-board-message=]], and [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--bind-session][=e-chat-service--bind-session=]].
+This coupling is current implementation debt, not the target ownership model.
+The target gives =e-chat= its own board-facing binding and leaves harness-session attachment and restoration with the session participant runtime.
+Neither peer uses the other as its communication or persistence path.
 
 Session mutations already have an independent path.
 =e-session--append-record= sends a session record to its persistence controller without board publication.
 See [[file:../../../lisp/core/e-session.el::(defun e-session--append-record][=e-session--append-record=]].
 
-The target removes the board-log-owner proxy from =e-chat-service=.
-It replaces the board notification callbacks with the =e-board-storage= commit boundary and keeps the =e-session-storage= path independent for each session's private state.
+The target removes both the board-log-owner proxy and the combined chat/session binding from =e-chat-service=.
+It replaces the board notification callbacks with the =e-board-storage= commit boundary, keeps =e-chat= on board publication and observation APIs, and keeps the =e-session-storage= path private to each session participant.
 
 ** Proposed architecture
 
 =e-board= is the central interaction plane for shared application data.
 Sessions, =e-chat=, hooks, reducers, and deterministic scripts are peer participants around it.
 They publish and receive shared data only through board operations.
-=e-chat-service= adapts chat endpoints to that protocol and has no routing or persistence role of its own.
+=e-chat-service= adapts the =e-chat= presentation endpoint to board publication and observation APIs.
+It does not adapt, attach, or persist a session participant.
 
 The two durable lanes are separate.
 Board publications pass from =e-board= to =e-board-storage= and return as canonical committed rows before routing.
@@ -230,13 +239,13 @@ It does not acquire a database connection or expose SQL to participants.
 
 ** =e-chat-service=
 
-Adapts chat sessions and shells to board participant endpoints.
-It attaches and detaches live endpoints using association state read from the participant's session.
-Multiple chat session participants may share one board.
+Provides =e-chat='s board-facing adapter.
+It gives the presentation endpoint board publication and observation operations.
+=e-chat= sends input to =e-board= and receives output from =e-board= like every other participant.
+It does not address, attach, or call a session participant as part of that exchange.
 
-It does not elect a session as board-log owner, persist board records through =e-session=, route participant data directly, or own a cross-domain commit.
-A chat transition publishes shared data through =e-board= like any other participant transition.
-Its private session updates use =e-session= independently.
+The session participant has a separate board attachment owned by the participant runtime and a separate private-state path through =e-session= and =e-session-storage=.
+=e-chat-service= does not read or write that private state, elect a session as board-log owner, persist board records through =e-session=, route participant data directly, or own a cross-domain commit.
 
 ** =e-board-storage=
 
@@ -564,10 +573,12 @@ The SQLite backend remains opt-in until the migration and cutover gates pass.
 
 6. *Board commit boundary and participant independence*
    - Replace the =e-chat-service= board-log-owner callbacks with the =e-board-storage= publication path.
+   - Split the current combined chat/session binding so =e-chat= and the harness session remain independent peers attached to =e-board=.
+   - Keep =e-chat= input, output, and observation on board APIs; do not resolve communication through =e-session=.
    - Deliver live board communication by returning committed SQLite rows to =e-board= through the same indexed reader used for restoration.
    - Keep participant-owned transcript, configuration, metadata, association, and recovery state on =e-session-storage=.
    - Record committed board positions as causal references where a session projection needs restart-safe deduplication.
-   - Gate: board routing never precedes the board commit, no board record is persisted through a session log owner, and session writes do not pass through =e-board= or =e-board-storage=.
+   - Gate: board routing never precedes the board commit, no board record is persisted through a session log owner, =e-chat= exchanges no shared data through =e-session=, and session writes do not pass through =e-board= or =e-board-storage=.
 
 7. *Offline importer and verification*
    - Add dry-run, import, semantic manifest comparison, integrity checks, deterministic reports, and atomic installation.
@@ -706,9 +717,9 @@ Keep the legacy decoder only under the offline migration entrypoint until a sepa
 3. *Stable versus uncertain*: Session/board identity, ancestry, immutable facts, and exact value shape are stable.
    Page sizes, WAL maintenance thresholds, and worker sharing are tunable adapter policy.
    Reducer-specific projections are deferred until a real schema exists.
-4. *Ownership*: Session semantics and participant-owned state stay in =e-session= behind =e-session-storage=; shared interaction stays in =e-board= behind =e-board-storage=; endpoint adaptation stays in =e-chat-service=; shared SQL mechanics stay in =e-storage-sqlite=.
+4. *Ownership*: Session semantics and participant-owned state stay in =e-session= behind =e-session-storage=; shared interaction stays in =e-board= behind =e-board-storage=; =e-chat-service= adapts only the chat presentation participant to board APIs; shared SQL mechanics stay in =e-storage-sqlite=.
 5. *Coupling*: SQL is behind two narrow semantic ports that share one physical adapter.
-   The design removes the current =e-chat-service= to =e-session= board-log proxy and does not add a second ephemeral storage implementation.
+   The design separates the current combined chat/session binding, removes the =e-chat-service= to =e-session= board-log proxy, and does not add a second ephemeral storage implementation.
 6. *Dependency direction*: The SQLite adapter depends on domain mutation/read contracts.
    Stable domain policy does not depend on SQL, the worker, presentation, or provider adapters.
 7. *Side effects*: Writable connections, migrations, backups, WAL maintenance, and filesystem changes live in the worker/adapter boundary.
