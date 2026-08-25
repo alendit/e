@@ -1,0 +1,96 @@
+#+title: Investigation: Grimoire New Daily Refuses Its Own Scaffold
+#+startup: overview
+
+* Summary
+
+The new-Daily entry points conflict with the controller's clean-baseline guard.
+The Daily capability creates an untracked scaffold, while
+=grimoire-daily-run-start= rejects every note without =E_DAILY_RUN= whose
+path has any Git status.  No entry point establishes a clean baseline between
+those operations.  The guard therefore rejects the file that the same command
+just created.
+
+This is a Grimoire orchestration regression, not user-authored dirty content and
+not an =e= presentation failure.
+
+The running Emacs and the Grimoire worktree were inspected read-only.  Neither
+was repaired, reloaded, committed, or otherwise mutated.
+
+* Live and repository evidence
+
+The reported path is untracked:
+
+#+begin_example
+?? daily/2026-08-25.org
+#+end_example
+
+The file contains only the generated 29-line Daily scaffold plus this property:
+
+#+begin_example
+:E_SESSION: 20260825T091746-7aec6ce8325c
+#+end_example
+
+It has no =E_DAILY_RUN= property.  Other Grimoire worktree changes do not cause
+this particular refusal: =grimoire-daily-run--git-status= queries only the
+Daily path passed to it, and that query returns the untracked status above.
+
+The bounded =scripts/e-live-probe chat= call found the selected Daily document
+but no chat harness on that selected Org buffer.  A bounded symbol probe found
+the live =grimoire-daily-run-start= definition loaded from:
+
+#+begin_example
+/Users/dvorona/projects/org/grimoire/.e/layers/topic/daily-run.elc
+#+end_example
+
+That bytecode is newer than its source, so this is the current guarded
+implementation rather than stale bytecode.
+
+* Deterministic call sequence
+
+=grimoire-daily= performs these synchronous operations:
+
+1. =grimoire-topic-daily= writes =daily/2026-08-25.org= and returns
+   =:created t=.  Writing a new file makes it untracked.
+2. =grimoire-topic--start-agentic-session= creates the interactive board
+   session.  Because it is new, =grimoire-topic--store-doc-session-id= saves
+   =E_SESSION= into the file.
+3. =grimoire-daily-run-start= reads no =E_DAILY_RUN= and asks Git for the
+   status of that path.
+4. The untracked status is non-empty, so the clean-new-note guard signals the
+   reported error before it creates the update participant, persists the run
+   identity, publishes the manifest, or dispatches workers.
+
+=grimoire-daily-tick= has the same failure for a missing note even though it
+does not create an interactive session: its freshly written scaffold is still
+untracked when it calls the same controller guard.  This contradicts both
+entry-point docstrings, which promise to create and populate a missing Daily.
+
+* Why the guard exists
+
+The guard was introduced by Grimoire commit =0338244= to prevent a new run from
+binding itself over ambiguous saved changes in a pre-existing note.  Its focused
+test constructs a dirty note with no run identity and correctly proves that the
+controller refuses it before binding a coordinator.
+
+The test does not cover the application entry point that creates a new scaffold
+and immediately starts the controller.  At that boundary, an untracked path is
+expected state rather than ambiguous prior user content.
+
+The 2026-08-24 Daily only progressed after a separate commit established its
+scaffold as a clean Git baseline (=8ddbfca=, =Create daily 2026-08-24 scaffold=).
+No corresponding checkpoint exists for 2026-08-25.
+
+* Conclusion and next step
+
+The controller is intentionally stopped; no Daily workers are running for this
+new note.  Retrying the command without changing the repository state will hit
+the same guard.
+
+The fix belongs at the Grimoire Daily application boundary.  It must distinguish
+a scaffold created by the current synchronous operation from a dirty
+pre-existing note, while retaining the guard for ambiguous user changes.  The
+new behavior needs entry-point tests for both =grimoire-daily= and the headless
+=grimoire-daily-tick=, plus the existing refusal test for pre-existing dirty
+notes.  The implementation should establish or explicitly authorize the exact
+generated scaffold before controller binding; it should not broadly ignore
+dirty Git state.

@@ -1,0 +1,22 @@
+#+title: Grimoire New Daily Refuses Its Own Scaffold
+#+startup: overview
+
+* Report
+
+Opening the new Grimoire Daily for 2026-08-25 created and displayed the
+document, but its board-driven population run did not start.  Emacs reported:
+
+#+begin_example
+Daily run refuses dirty daily note daily/2026-08-25.org
+#+end_example
+
+* Expected
+
+Creating a missing Daily should establish its generated scaffold and start the
+=populate= run described by =grimoire-daily= and =grimoire-daily-tick=.
+
+* Actual
+
+The generated Daily remains an untracked scaffold with an interactive
+=E_SESSION= property but no =E_DAILY_RUN=.  The controller rejects it as dirty
+before publishing or dispatching a run.
