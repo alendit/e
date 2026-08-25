@@ -16,6 +16,13 @@ The completed feature replaces the JSONL journals, per-session resume
 checkpoints, and derived =index.json=.  It does not place live harness, routing,
 subscription, focus, window, or rendering state in SQLite.
 
+The cutover must also preserve and complete chat-visible durable run handoff.
+A coordinator turn may dispatch a durable board run, end, and leave the chat
+ready for more user input while the run continues.
+The chat must still show that work is active, each later model turn must receive
+a bounded run projection in context, and terminal completion must become one
+durable queued session input delivered at a quiescent point.
+
 * Why now
 
 The current format has accumulated three representations of related state:
@@ -55,6 +62,97 @@ catalog by scanning files.
   conflicts must surface.  Persistence must not guess or silently fall back.
 - Existing in-memory store behavior remains available for unit tests and
   explicitly ephemeral harnesses.
+
+* Critical use case: chat-visible durable run handoff
+
+In this contract, a run is the durable board orchestration group defined by
+[[file:../82-board-native-subagent-supervision/plan.org][feature 82]]: its manifest, selected task attempts, reports, terminal group
+projection, and continuation claim.
+It may represent a full work graph assembled by a capability, but storage and
+chat depend only on this bounded run contract.
+It is not the initiating turn, one process-local =e-work= handle, or a
+shell-owned progress object.
+
+The required flow is:
+
+1. A main session commits a run manifest with its owning board, completion
+   destination, stable publication key, and stable run/task/attempt identities.
+   The durable task-queue bridge records the same identities on selected queue
+   tasks.
+   Because the board and task queue have separate authorities, restart
+   reconciliation must idempotently enqueue a selected task missing its queue
+   record and reconcile a restored =running= record before retrying it or
+   classifying it missing.
+2. The initiating turn may finish immediately after dispatch.
+   The chat becomes ready for user input even though the run remains nonterminal.
+3. One bounded session-scoped projection drives both a persistent chat indicator
+   and a dynamic model-context block.
+   It includes every nonterminal run, every terminal run whose continuation input
+   is not consumed, and every run with optional tasks still active.
+   Runs are ordered deterministically by actionable state, latest durable board
+   event, and run id.
+   Record and byte budgets cap the detailed entries; an omitted count and the
+   bounded run-query action preserve discoverability when more runs exist.
+   Each entry includes the run id and bounded label, required and optional task
+   totals by state, latest durable event time, conflicts or deadline evidence,
+   and continuation delivery state.
+   It does not copy worker transcripts, tool results, or reasoning into the main
+   session.
+4. A later user turn receives this projection from board state even when no run
+   event appears in the visible transcript.
+   The main agent therefore knows that it has outstanding work and can inspect,
+   steer, or continue unrelated conversation without guessing.
+5. Group completion follows the manifest's required/optional policy.
+   The group becomes terminal when all required tasks settle; unfinished optional
+   tasks remain visible in the projection and in the completion payload.
+   The first terminal transition advances one continuation under the stable
+   publication key.
+6. Continuation state distinguishes =waiting=, =pending=, =published=, =failed=,
+   and =consumed=.
+   A pending claim is recorded before queue publication.
+   The queued continuation input uses the stable source-input key, and a
+   published claim is recorded only after the board accepts that input.
+   A matching board =input-consumed= receipt advances the combined run projection
+   to consumed.
+   A crash between any two steps retries with the same keys and cannot append a
+   second continuation input.
+   This contract guarantees one durable completion input; it does not claim that
+   a provider turn triggered by that input must produce a successful output.
+7. Completion never interrupts an active model turn.
+   =e-board-runtime= owns the participant FIFO and accepts the queued input while
+   the attachment is busy, but does not start its pickup until the attachment is
+   idle after =turn-finished= or another explicit quiescent boundary.
+   If a user turn wins that boundary first, the run projection continues to show
+   terminal-but-unconsumed completion until ordinary board delivery starts and
+   consumes the continuation input.
+8. Board restore replays run facts, queued inputs, and delivery receipts before
+   the chat binding is reported ready or a run is classified missing.
+   Task-queue restore reconciles durable assignments before retrying a task or
+   classifying it missing.
+   During either reconstruction, the run projection may report =restoring= or
+   =dispatching=, but the shell and context may not report no active work from
+   incomplete evidence.
+
+Ownership remains split along existing boundaries:
+
+- =e-board-orchestration= owns manifests, run reduction, required/optional
+  terminal policy, conflicts, continuation intent, and continuation claims.
+- The dispatching capability owns the run-specific task policy, completion
+  destination, and bounded reconciliation prompt recorded in the manifest.
+- The task-queue bridge owns durable run/task/attempt assignment and idempotent
+  dispatch reconciliation.
+- =e-chat-service= owns the session/board association and provides the generic
+  keyed-publication adapter that turns a manifest-declared pending continuation
+  into one queued session input.
+- =e-board-runtime= owns participant FIFO delivery, busy-session deferral, and
+  the consumption receipt.
+- A session-scoped context provider emits the bounded active-run block for model
+  input.
+- The chat shell derives its indicator from the same projection and subscribes
+  to changes instead of polling storage or child sessions.
+- =e-session-storage= persists each typed board fact, queued input, and delivery
+  receipt through the board transaction contract but does not own run policy,
+  context wording, or rendering.
 
 * Direction
 
@@ -353,6 +451,13 @@ chat buffer or one checkpoint object.  The binding remains =restoring= until
 the semantic stream is complete; callers must distinguish that state from a
 definitively missing run or child.
 
+Durable orchestration manifests, task attempts, reports, terminal facts,
+continuation claims, publication receipts, and consumption receipts use the
+same semantic stream.  Replay rebuilds the bounded active-run projection before
+the chat binding becomes ready.  The context provider and chat indicator read
+that in-memory projection and receive projection-change notifications; they do
+not issue SQL or replay board history on each turn or redisplay.
+
 Selectors use stable board columns and normalized tags.  Attribute-specific
 interpretation remains in the owning reducer after decoding.  A later feature
 may persist reducer-owned projections once a specific projection contract is
@@ -485,7 +590,34 @@ SQLite backend remains opt-in until the migration and cutover gates pass.
    - Gate: fault-injection tests cannot produce a committed transcript mirror
      without its source board record, or the reverse, for grouped transitions.
 
-7. *Offline importer and verification*
+7. *Chat-visible durable run handoff*
+   - Preserve the feature-82 run manifest, report, required/optional terminal
+     policy, keyed continuation, and task-queue bridge on the SQLite board path.
+   - Add a bounded run label and durable event timestamps to the manifest and
+     reducer projection so chat can identify and order active work without
+     exposing prompts or worker transcripts.
+   - Add a bounded session-scoped run projection to dynamic model context and to
+     the chat shell's persistent status area.  Define multiple-run membership,
+     deterministic order, record and byte budgets, omitted counts, and
+     =restoring= behavior.  Both surfaces subscribe to reducer changes.
+   - Let the initiating turn finish and the composer accept more input while a
+     run remains active.  Do not tie run lifetime to the turn that dispatched it.
+   - Reconcile the board manifest with durable task-queue records by stable
+     run/task/attempt identity.  Cover a crash between manifest commit and queue
+     persistence plus restored =running= task reconciliation.
+   - Drive continuation state from the pending/published/failed claim facts, the
+     keyed queued input, and its matching consumption receipt.  The dispatching
+     capability supplies continuation policy in the manifest; =e-chat-service=
+     performs generic keyed publication; =e-board-runtime= defers pickup while
+     the destination attachment is busy.
+   - Gate: focused orchestration, task-queue, board-runtime, chat-service,
+     context, and shell tests prove an active indicator after dispatch,
+     active-run context on a later unrelated user turn, required/optional
+     completion, no mid-turn interruption, idempotent input publication,
+     quiescent consumption, and restart at each dispatch, publication, and
+     consumption boundary.
+
+8. *Offline importer and verification*
    - Add dry-run, import, semantic manifest comparison, integrity checks,
      deterministic reports, and atomic installation.
    - Exercise clean, malformed, legacy-shape, missing-root, board-clear, and
@@ -494,7 +626,7 @@ SQLite backend remains opt-in until the migration and cutover gates pass.
    - Gate: repeat import produces the same manifest and any unexplained
      mismatch prevents installation.
 
-8. *Cutover and legacy removal*
+9. *Cutover and legacy removal*
    - Make SQLite the only persistent backend, add the migration-required startup
      error, raise the declared Emacs minimum, and update architecture and E2E
      documentation.
@@ -506,7 +638,7 @@ SQLite backend remains opt-in until the migration and cutover gates pass.
    - Gate: source search finds no production JSONL/checkpoint/index path and no
      implicit compatibility fallback.
 
-9. *System, current-config, and performance proof*
+10. *System, current-config, and performance proof*
    - Run focused storage, session, board, chat-service, orchestration, resource,
      and restart suites; then the complete batch suite.
    - Run graphical E2E in isolated mode and
@@ -527,6 +659,9 @@ SQLite backend remains opt-in until the migration and cutover gates pass.
   auxiliary projections, not total audit history.
 - Board semantic restore may read every required fact, but does so in bounded
   pages and does not retain unrelated activity merely to preserve facts.
+- Active-run context and chat status use one bounded in-memory reducer projection
+  with change notifications; they do not poll SQLite, task sessions, or worker
+  transcripts.
 - Session list ordering uses an index over catalog timestamps and stable tie
   breakers.
 - Board restore/query indexes cover generation plus durable position, kind,
@@ -569,6 +704,20 @@ One load scenario must keep an interactive timer responsive while paging a
 large session and board.  The existing graphical/current-config matrix must use
 temporary state and must never open or migrate the user's live database.
 
+One durable-run scenario must dispatch required and optional tasks from a main
+chat turn, let that turn end, and prove that the composer is ready while the chat
+indicator and the next model-context assembly still show the active run.
+It must crash once between manifest commit and task-queue persistence, then
+reconcile the stable task identities without duplicate dispatch.
+It must settle the required tasks while an optional task and another main-session
+turn remain active, prove that no continuation input interrupts that turn, and
+show the unfinished optional task in the terminal payload and run projection.
+It must then prove that one keyed continuation input is consumed after
+quiescence.
+The same scenario must restart with a restored =running= task, before input
+publication, after publication but before consumption, and after consumption
+without losing or duplicating the queued input.
+
 * Acceptance criteria
 
 - =store.sqlite3= is the only ordinary persistent authority for sessions and
@@ -584,6 +733,19 @@ temporary state and must never open or migrate the user's live database.
   aggregate revisions fail visibly.
 - Writes remain asynchronous and interactive loads remain bounded and
   cooperative.
+- A chat becomes ready for input after dispatch while its durable run continues,
+  and the chat shows a persistent active-run indicator derived from board state.
+- Every later model turn receives a bounded run projection while the run is
+  nonterminal, optional tasks remain active, or its continuation input is not
+  consumed.
+- Required/optional terminal policy is explicit, and unfinished optional work
+  remains visible when required work triggers continuation.
+- Terminal run completion appends one bounded queued input under a stable source
+  key, never interrupts an active turn, and survives restart at the publication
+  and consumption boundaries without loss or duplicate append.
+- A manifest/queue crash and a restored =running= task reconcile by stable
+  run/task/attempt identity without duplicate dispatch or a permanently phantom
+  active run.
 - Legacy migration is explicit, verified, atomic at cutover, and preserves the
   source files.
 - Persistent mode fails clearly when SQLite support, the expected schema, or a
@@ -593,9 +755,13 @@ temporary state and must never open or migrate the user's live database.
 
 * Non-goals
 
-- Do not persist active turns, tool requests, timers, work handles,
-  subscriptions, observers, pickups, focus, windows, overlays, render caches,
-  or other process/presentation state.
+- Do not persist active turns, tool requests, timers, process-local work
+  handles, subscriptions, observers, pickups, focus, windows, overlays, render
+  caches, or other process/presentation state.
+- This exclusion does not apply to durable run manifests, task attempts,
+  terminal reports, continuation claims, keyed queued inputs, or consumption
+  receipts.  Those board facts rebuild the bounded run projection required for
+  restart-safe handoff.
 - Do not make SQLite a model-facing tool or capability action.
 - Do not expose generic SQL to agents, shells, capabilities, or resources.
 - Do not add full-text search, cloud sync, shared network storage, or a generic
