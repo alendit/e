@@ -7922,9 +7922,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             candidates)))))))
 
 (ert-deftest e-chat-test-session-candidates-include-only-board-root-sessions ()
-  "Worker and pre-board sessions never appear among chat session candidates.
-Subagents and task-queue sessions are available through their own surfaces; the
-switch, resume, active-sessions, and overview surfaces list only root chats."
+  "Worker, participant, and pre-board sessions stay out of chat candidates.
+Private execution sessions are available through their owning board or worker
+surface; switch, resume, active-sessions, and overview list only root chats."
   (let* ((store (e-session-store-create))
          (harness (e-chat-test--activate-chat-session
                    (e-harness-create
@@ -7936,6 +7936,10 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
          :chat-alpha "Alpha Target" harness t)
         (e-chat-test--create-session store :id "top-level"
                           :metadata '(:name "Top Level"))
+        (e-session-create store :id "private-participant"
+                          :metadata '(:name "Private Participant"))
+        (e-session-declare-board-state
+         store "private-participant" "chat:top-level" "test-board:top-level")
         (e-chat-test--create-session store :id "child-by-parent"
                           :metadata '(:name "Child"
                                       :parent-session-id "top-level"))
@@ -7953,13 +7957,14 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
                              (plist-get candidate :session-id))
                            (e-chat--session-candidates))))
           (should (member "top-level" ids))
+          (should-not (member "private-participant" ids))
           (should-not (member "child-by-parent" ids))
           (should-not (member "child-by-role" ids))
           (should-not (member "queued-task" ids))
           (should-not (member "pre-board" ids)))))))
 
 (ert-deftest e-chat-test-session-candidates-exclude-indexed-worker-sessions ()
-  "Resume candidates classify unloaded sessions from persisted metadata."
+  "Resume candidates classify indexed workers and private participants."
   (let* ((directory (make-temp-file "e-chat-index-candidates-" t))
          (writer (e-session-persistent-store-create directory)))
     (unwind-protect
@@ -7971,6 +7976,10 @@ switch, resume, active-sessions, and overview surfaces list only root chats."
            :metadata '(:parent-session-id "top-level"
                        :subagent-role "tool-user"
                        :subagent-label "nested work"))
+          (e-session-create writer :id "private-participant"
+                            :metadata '(:name "Private Participant"))
+          (e-session-declare-board-state
+           writer "private-participant" "chat:top-level" "test-board:top-level")
           (let* ((store (e-session-persistent-index-store-create directory))
                  (harness
                   (e-chat-test--activate-chat-session

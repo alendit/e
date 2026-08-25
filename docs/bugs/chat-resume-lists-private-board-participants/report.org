@@ -1,0 +1,19 @@
+#+title: Chat Resume Lists Private Board Participants as Daily Sessions
+#+startup: overview
+
+* Report
+
+After restarting Emacs, the general chat resume picker showed two rows for the
+same Grimoire Daily note.  For 2026-08-25 they were:
+
+#+begin_example
+Grimoire: Daily 2026-08-25  [20260825T091746-7aec6ce8325c]
+Org Canvas: 2026-08-25.org [20260825T105317-9f85f5b57406]
+#+end_example
+
+The same pair appeared for several earlier Daily notes.
+
+Expected behavior: the resume, switch, active-session, and overview surfaces
+list the user-facing Daily chat once.  Its private background update participant
+remains durable and directly usable by its board owner, but is not advertised
+as an independent top-level conversation.

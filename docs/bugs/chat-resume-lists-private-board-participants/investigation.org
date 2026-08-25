@@ -1,0 +1,124 @@
+#+title: Chat Resume Private Board Participant Investigation
+#+startup: overview
+
+* Summary
+
+The two rows are distinct durable sessions on one board, not duplicate picker
+rendering.  The first is the user-facing Daily session that owns the board.  The
+second is the private update participant that receives the board's sole
+reconciliation continuation.
+
+Generic root classification excluded sessions carrying subagent or task-queue
+lineage, but the Daily update participant intentionally carries neither.  The
+chat shell consumed that generic root catalog directly, so the private
+participant appeared as another resumable chat after restart.
+
+* Live and persisted evidence
+
+After restart, =scripts/e-live-probe selected= completed successfully against
+the running Emacs.  It reported a live composed chat surface, confirming the
+new process was responsive.  No arbitrary live evaluation was used.
+
+The persisted index records for the reported rows share:
+
+- board id =brd_01M0W3C8FKXRQ8XQT162FYEBAY=;
+- principal =chat:20260825T091746-7aec6ce8325c=;
+- the Org Canvas reference to =daily/2026-08-25.org=.
+
+The Daily root's own id is =20260825T091746-7aec6ce8325c=, so it owns the
+=chat:<session-id>= principal created with its board.  The update session's id
+is =20260825T105317-9f85f5b57406=, so that same principal identifies it as a
+participant on another chat's board.  Its first user prompt begins
+=Reconcile Grimoire daily run= and states that it is the sole board
+continuation.
+
+The note itself records the same ownership explicitly:
+
+#+begin_example
+:E_SESSION:        20260825T091746-7aec6ce8325c
+:E_UPDATE_SESSION: 20260825T105317-9f85f5b57406
+#+end_example
+
+Catalog inspection found 233 board sessions whose principal belongs to another
+chat session.  Existing subagent/task metadata already hid 226.  All seven
+remaining unmarked sessions were Grimoire Daily update participants from
+2026-08-18 through 2026-08-25.  Conversely, all 35 current user-facing board
+roots own =chat:<their-own-id>=.
+
+* Source cause
+
+=e-session-root-p= owns generic session lineage.  It excludes durable
+subagents and task-queue workers using their metadata and deliberately knows
+nothing about the chat service's principal format.
+
+=e-chat-service-root-session-list= previously delegated to that generic root
+catalog without applying chat-board ownership.  The chat shell then bypassed
+even that service seam and called =e-harness-root-session-list= directly in its
+resume candidates, latest-session selection, and overview rendering.
+
+=e-chat-service-create-participant= accurately describes the created session
+as private execution context and persists the board id and principal.  No new
+durable marker or Grimoire-specific file scan is necessary: chat board
+ownership is already present in every affected old index entry.
+
+* Fix
+
+The chat service now narrows generic roots to user-facing chat roots.  A
+board-native root must own the principal created for its own id; a session that
+carries another chat's principal remains a private board participant.  Generic
+non-board roots remain unchanged so the existing catalog layering is preserved.
+
+The chat shell now consumes =e-chat-service-root-session-list= consistently for
+resume/switch candidates, latest-session selection, active-session views, and
+the overview.  It no longer duplicates chat ownership policy in presentation.
+
+This is a derived catalog decision.  Existing journals and =index.json= remain
+unchanged.  An offline read of the real index with current source retained all
+35 owned board roots, retained the 2026-08-25 Daily root, and excluded the
+reported update participant plus the earlier legacy update participants.
+
+* Validation
+
+- A failing in-memory regression first reproduced the private participant in
+  =e-chat--session-candidates=; it passes with the service filter.
+- The indexed-store regression persists both a root and private participant and
+  proves that only the root is advertised after reopening the index.
+- The full chat suite passed: 343 tests, 342 expected passes, one conditional
+  skip, and zero unexpected results.
+- The modern-chat/service suite passed: 22 tests, 22 expected passes, and zero
+  unexpected results.
+- Byte compilation of =e-chat-service.el= and =e-chat.el= completed without
+  warnings.
+- =git diff --check= passed.
+- The offline read of the real index with current source reported 35 board
+  roots, kept the 2026-08-25 Daily root, excluded its update participant, and
+  found no legacy update participant still visible.
+
+* Architecture self-check
+
+1. This slice removes existing private participants from every general chat
+   navigation surface without a data rewrite, so it is independently useful.
+2. It moves toward the board model's intended separation between public board
+   interaction contexts and private participant execution sessions.
+3. Generic lineage and chat-board ownership are stable facts.  No speculative
+   role hierarchy or new durable field is introduced.
+4. Core session owns generic lineage; chat service owns its principal and root
+   semantics; chat presentation consumes the service catalog.
+5. Coupling is reduced because the shell stops depending directly on the
+   harness's generic root catalog.
+6. Dependency direction remains shell to chat application service to generic
+   harness/session contracts.
+7. The fix is a pure catalog filter and introduces no side effect.
+8. No state is added or mutated.  Existing board id, principal, and session id
+   provide the derived classification.
+9. Filtering is linear in the already-bounded catalog result and performs only
+   constant-time field comparisons per session.
+10. The service boundary is real: its create-board and create-participant
+    operations already establish the ownership distinction it now reports.
+11. Existing persisted participants need no migration.  Legacy board sessions
+    with the same durable ownership shape receive the same classification.
+12. Direct shell reads of the generic root catalog are removed.
+13. Malformed board identity remains absent from board-only picker results;
+    no error is swallowed and no fallback invents ownership.
+14. In-memory and indexed picker regressions prove the service/shell boundary;
+    the real-index replay proves compatibility with the reported state.

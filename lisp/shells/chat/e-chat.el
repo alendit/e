@@ -9170,7 +9170,7 @@ timestamp."
           (dolist (instance instances)
             (let ((harness (e-chat--harness-for-instance instance))
                   (instance-id (e-harness-instance-id instance)))
-              (dolist (session (e-harness-root-session-list harness))
+              (dolist (session (e-chat-service-root-session-list harness))
                 (when (and (e-chat--board-session-p session)
                            (e-chat--session-belongs-to-instance-p
                             harness
@@ -9198,7 +9198,7 @@ timestamp."
                               :session session
                               :session-id (plist-get session :id)))
                       (seq-filter #'e-chat--board-session-p
-                                  (e-harness-root-session-list harness))))))
+                                  (e-chat-service-root-session-list harness))))))
     candidates))
 
 (defun e-chat--board-session-p (session)
@@ -9279,7 +9279,7 @@ timestamp."
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
   (or (plist-get (seq-find #'e-chat--board-session-p
-                           (e-harness-root-session-list harness)) :id)
+                           (e-chat-service-root-session-list harness)) :id)
       (plist-get (e-chat--create-session harness) :id)))
 
 (defun e-chat--context-session-target ()
@@ -10004,7 +10004,7 @@ face properties so the preview still reflects chat rendering."
                                        (e-chat--default-harness))))
                        (setq harness target)
                        (seq-filter #'e-chat--board-session-p
-                                   (e-harness-root-session-list target)))))
+                                   (e-chat-service-root-session-list target)))))
          (inhibit-read-only t))
     (setq-local e-chat-overview--harness harness)
     (erase-buffer)

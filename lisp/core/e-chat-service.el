@@ -1057,9 +1057,26 @@ values delivered by `e-chat-service-subscribe'."
   "Return HARNESS's private session catalog for bounded shell navigation."
   (e-harness-session-list harness))
 
+(defun e-chat-service--root-session-p (session)
+  "Return non-nil when SESSION is a user-facing chat root.
+Generic session lineage excludes explicit workers first.  For board-native
+sessions, the chat that created the board owns the `chat:<session-id>'
+principal; another session carrying that principal is a private participant on
+the root's board and belongs on the board or worker surface instead."
+  (let* ((state (plist-get session :board-session-state))
+         (board-id (or (plist-get state :board-id)
+                       (plist-get session :board-id)))
+         (principal (or (plist-get state :principal)
+                        (plist-get session :principal)))
+         (session-id (plist-get session :id)))
+    (or (null board-id)
+        (and (stringp session-id)
+             (equal principal (format "chat:%s" session-id))))))
+
 (defun e-chat-service-root-session-list (harness)
-  "Return HARNESS's private root-session catalog for shell navigation."
-  (e-harness-root-session-list harness))
+  "Return HARNESS's user-facing chat roots for shell navigation."
+  (cl-remove-if-not #'e-chat-service--root-session-p
+                    (e-harness-root-session-list harness)))
 
 (defun e-chat-service-messages (harness session-id)
   "Return SESSION-ID's bounded board-derived message projection."
