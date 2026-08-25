@@ -113,6 +113,11 @@ bounded, side-effect-free read.
 - Focused latest-session and direct-harness overview tests proved observable
   root selection and rendering while excluding the private participant: 2 tests
   passed.
+- The first exact-revision package gate exposed two adjacent whole-plist
+  assertions in fresh-chat integration and persisted-board restart coverage.
+  Both are strengthened to assert board id, principal, and owner role as
+  independent durable contracts; their focused rerun passed, while the package
+  gate still awaits its second run.
 - All focused commands used checkout source mode.  Warning-as-error compilation
   passed for =e-session.el=, =e-session-persistence.el=, =e-chat-service.el=,
   and =e-canvas.el=.  Only the package-level exact-revision gate and fresh Tick

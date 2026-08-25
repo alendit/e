@@ -59,9 +59,10 @@
                                      :board-session-state))
                    (messages (e-harness-messages harness session-id)))
               (should (equal (e-board-registry-board-id board) board-id))
-              (should (equal state
-                             (list :board-id board-id
-                                   :principal (format "chat:%s" session-id))))
+              (should (equal (plist-get state :board-id) board-id))
+              (should (equal (plist-get state :principal)
+                             (format "chat:%s" session-id)))
+              (should (equal (plist-get state :association-role) "owner"))
               (should (equal (mapcar (lambda (message)
                                        (plist-get message :role))
                                      messages)

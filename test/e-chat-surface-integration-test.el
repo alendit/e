@@ -220,10 +220,10 @@
                    (state (plist-get session :board-session-state)))
               (should (equal e-chat-harness harness))
               (should (eq (e-board-registry-board-state board) 'active))
-              (should (equal state
-                             (list :board-id e-chat-board-id
-                                   :principal
-                                   (e-board-registry-board-principal board)))))))
+              (should (equal (plist-get state :board-id) e-chat-board-id))
+              (should (equal (plist-get state :principal)
+                             (e-board-registry-board-principal board)))
+              (should (equal (plist-get state :association-role) "owner")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

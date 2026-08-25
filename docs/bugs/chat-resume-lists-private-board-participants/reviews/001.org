@@ -16,6 +16,11 @@ exact-revision gate plus a fresh independent Tick:
 - F003: production constructors now drive candidate, indexed replay, Canvas,
   latest-session, direct-overview, cross-store, and malformed-state evidence.
 
+The first exact-revision gate exposed two adjacent integration/restart tests
+whose whole-plist assertions encoded the old two-field mechanism.  They now
+assert board id, principal, and the durable owner role independently; the gate
+has not yet been rerun.
+
 This disposition records remediation only.  Review 001 remains the historical
 finding authority and does not establish fixed point.
 
