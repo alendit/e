@@ -22,6 +22,9 @@ ready for more user input while the run continues.
 The chat must still show that work is active, each later model turn must receive
 a bounded run projection in context, and terminal completion must become one
 durable queued session input delivered at a quiescent point.
+Foreground and background work share the chat session's existing board.
+Background dispatch must not create an update session, private coordinator
+session, or shadow board.
 
 * Why now
 
@@ -73,10 +76,23 @@ chat depend only on this bounded run contract.
 It is not the initiating turn, one process-local =e-work= handle, or a
 shell-owned progress object.
 
+One chat has one canonical session/board association.
+"Foreground" and "background" describe whether execution outlives the current
+turn; they do not name different owners.
+An interactive dispatch and a later headless trigger both publish work to that
+same board and queue completion for the same session participant.
+A headless trigger with no existing association may create the sole canonical
+owner once, but it must never create a parallel update session.
+The daily integration's =E_UPDATE_SESSION= property and update-session routing
+are legacy state to remove, not identities to migrate into SQLite.
+Worker tasks may use their normal execution isolation, but they do not become a
+second coordinator session or own a second board for the run.
+
 The required flow is:
 
-1. A main session commits a run manifest with its owning board, completion
-   destination, stable publication key, and stable run/task/attempt identities.
+1. A main session commits a run manifest to its existing board with the same
+   session participant as the completion destination, plus a stable publication
+   key and stable run/task/attempt identities.
    The durable task-queue bridge records the same identities on selected queue
    tasks.
    Because the board and task queue have separate authorities, restart
@@ -707,6 +723,9 @@ temporary state and must never open or migrate the user's live database.
 One durable-run scenario must dispatch required and optional tasks from a main
 chat turn, let that turn end, and prove that the composer is ready while the chat
 indicator and the next model-context assembly still show the active run.
+It must prove that interactive dispatch and a later headless trigger reuse the
+same session participant and board without creating another session row, an
+update-session identity, or a shadow board.
 It must crash once between manifest commit and task-queue persistence, then
 reconcile the stable task identities without duplicate dispatch.
 It must settle the required tasks while an optional task and another main-session
@@ -735,6 +754,9 @@ without losing or duplicating the queued input.
   cooperative.
 - A chat becomes ready for input after dispatch while its durable run continues,
   and the chat shows a persistent active-run indicator derived from board state.
+- Foreground dispatch and headless background triggers use the chat's one
+  canonical session participant and board; no update session, private
+  coordinator session, or shadow board is created.
 - Every later model turn receives a bounded run projection while the run is
   nonterminal, optional tasks remain active, or its continuation input is not
   consumed.
@@ -818,7 +840,10 @@ After verified cutover, remove from production:
   checkpoint retention limits;
 - direct and queued filesystem write modes;
 - local JSON array/plist repair paths that the shared exact codec supersedes;
-- catalog =:file= fields that imply one session equals one backing file.
+- catalog =:file= fields that imply one session equals one backing file;
+- downstream =E_UPDATE_SESSION= metadata, update-session creation helpers, and
+  routing that sends background work to a session other than the canonical chat
+  session on the same board.
 
 Keep the legacy decoder only under the offline migration entrypoint until a
 separate deprecation removes it.
