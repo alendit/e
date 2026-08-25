@@ -1,6 +1,22 @@
 #+title: Review 003 — Chat Resume Private Board Participants
 #+startup: overview
 
+* Current disposition
+
+F005 is remediated in the working tree and is ready for the parent exact-revision
+gate and a fresh independent Tick.  Index parsing now preserves physical JSON
+null until entry normalization: the historical triple-null projection becomes
+no association, while an empty nested object with the same null mirrors becomes
+the bounded invalid marker.  The compatibility exception requires all three
+historically projected keys; nested null with omitted flat mirror keys is also
+invalid.  The index-local null sentinel is removed from all ordinary entry
+values before sessions are constructed.  The strengthened real =index.json=
+regression proves these physical shapes, malformed isolation, root
+classification, sentinel non-leakage, and byte-for-byte non-mutation;
+nine focused owner/compatibility/checkpoint tests and warning-as-error
+compilation of =e-session.el= pass.  This disposition does not rewrite the
+historical review body or claim fixed point before the fresh Tick.
+
 * Decision
 
 Not at fixed point.

@@ -1742,10 +1742,12 @@ identity mirrors reconstruct only the canonical legacy shape in its absence."
       (let ((state (plist-get projection :board-state))
             (board-id (plist-get projection :board-id))
             (principal (plist-get projection :principal)))
-        ;; Historical indexes projected all three fields as JSON null for an
+        ;; Historical indexes projected all three keys as JSON null for an
         ;; ordinary non-board session.  Preserve only that exact absence shape;
-        ;; a null nested value beside either non-null mirror is malformed.
-        (if (and (null state) (null board-id) (null principal))
+        ;; omitted or non-null flat mirrors make a null nested value malformed.
+        (if (and (plist-member projection :board-id)
+                 (plist-member projection :principal)
+                 (null state) (null board-id) (null principal))
             nil
           (e-session--normalize-board-association state)))
     (let ((board-id (plist-get projection :board-id))
@@ -2423,6 +2425,55 @@ This explicit operation is the only checkpoint-less full-journal replay path."
                          :null-object nil
                          :false-object :json-false))))
 
+(defconst e-session--index-json-null
+  (make-symbol "e-session-index-json-null")
+  "Index-parser sentinel used to preserve physical JSON null values.")
+
+(defun e-session--json-read-index-file (file)
+  "Parse index JSON FILE while preserving physical JSON null values."
+  (let ((coding-system-for-read 'utf-8))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (json-parse-string (buffer-string)
+                         :object-type 'plist
+                         :array-type 'list
+                         :null-object e-session--index-json-null
+                         :false-object :json-false))))
+
+(defun e-session--normalize-index-json-value (value)
+  "Return index JSON VALUE with parser null sentinels mapped to nil."
+  (cond
+   ((eq value e-session--index-json-null) nil)
+   ((vectorp value)
+    (vconcat (mapcar #'e-session--normalize-index-json-value value)))
+   ((e-session--keyword-plist-shape-p value)
+    (let (result)
+      (while value
+        (push (pop value) result)
+        (push (e-session--normalize-index-json-value (pop value)) result))
+      (nreverse result)))
+   ((proper-list-p value)
+    (mapcar #'e-session--normalize-index-json-value value))
+   (t value)))
+
+(defun e-session--normalize-index-json-entry (entry)
+  "Return parsed index ENTRY with physical board-state shape preserved.
+JSON nulls become ordinary nil values.  An empty top-level board-state object
+becomes the bounded invalid association marker before its empty plist shape can
+alias the historical triple-null projection."
+  (let ((tail entry)
+        result)
+    (while tail
+      (let ((key (pop tail))
+            (value (pop tail)))
+        (push key result)
+        (push (if (and (eq key :board-state)
+                       (null value))
+                  (copy-tree e-session--invalid-board-association)
+                (e-session--normalize-index-json-value value))
+              result)))
+    (nreverse result)))
+
 (defun e-session--index-key-id (key)
   "Return a session id string for object-shaped index KEY."
   (cond
@@ -2433,7 +2484,7 @@ This explicit operation is the only checkpoint-less full-journal replay path."
 (defun e-session--normalize-index-entry (entry &optional fallback-id)
   "Return normalized index ENTRY, using FALLBACK-ID when needed."
   (when (listp entry)
-    (let ((entry (copy-sequence entry)))
+    (let ((entry (e-session--normalize-index-json-entry entry)))
       (unless (plist-get entry :id)
         (when fallback-id
           (plist-put entry :id fallback-id)))
@@ -2467,7 +2518,7 @@ This explicit operation is the only checkpoint-less full-journal replay path."
   (when (and (e-session--persistent-p store)
              (file-readable-p (e-session-store-index-file store)))
     (let ((value (condition-case nil
-                     (e-session--json-read-file
+                     (e-session--json-read-index-file
                       (e-session-store-index-file store))
                    (file-error nil)
                    (json-parse-error nil))))

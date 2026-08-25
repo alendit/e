@@ -227,10 +227,15 @@ ingress, `e-session` treats nested association-key presence as authoritative,
 normalizes the complete bounded shape, and maps malformed presence to a
 non-root internal marker without rewriting durable input; flat identity mirrors
 reconstruct legacy state only when the nested key is absent. The exact
-historical triple-null nested/id/principal projection remains no association;
-null nested state with a non-null mirror is malformed. Presentation
-surfaces that select chats consume the chat-service root catalog rather than
-reconstructing ownership.
+historical three-key triple-null nested/id/principal projection remains no
+association; null nested state with a non-null or omitted mirror is malformed.
+The index adapter
+preserves physical JSON null only until entry normalization so an empty nested
+object cannot alias the triple-null compatibility case; its parser sentinel is
+removed from all ordinary entry values before session construction.  JSONL and
+checkpoint parsing retain their ordinary semantics. Presentation surfaces that
+select chats consume the chat-service root catalog rather than reconstructing
+ownership.
 
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a

@@ -475,13 +475,16 @@ messages so the transcript reads as one clean answer."
            "{\"id\":\"legacy-root\",\"board-id\":\"legacy-board\","
            "\"principal\":\"chat:legacy-root\"},"
            "{\"id\":\"nonboard\",\"board-state\":null,"
-           "\"board-id\":null,\"principal\":null},"
+           "\"board-id\":null,\"principal\":null,"
+           "\"metadata\":{\"nullable\":null}},"
            "{\"id\":\"flat-incomplete\",\"board-id\":\"flat-board\","
            "\"principal\":null},"
            "{\"id\":\"present-null\",\"board-state\":null,"
            "\"board-id\":\"null-board\",\"principal\":\"chat:present-null\"},"
+           "{\"id\":\"present-null-missing-mirrors\","
+           "\"board-state\":null},"
            "{\"id\":\"present-empty\",\"board-state\":{},"
-           "\"board-id\":\"empty-board\",\"principal\":\"chat:present-empty\"},"
+           "\"board-id\":null,\"principal\":null},"
            "{\"id\":\"present-partial\",\"board-state\":{"
            "\"board-id\":\"partial-board\",\"association-role\":\"owner\"},"
            "\"principal\":\"chat:present-partial\"},"
@@ -510,12 +513,46 @@ messages so the transcript reads as one clean answer."
                            (insert-file-contents index-file)
                            (buffer-string)))
                  (sessions (e-chat-service-session-list harness))
+                 (nonboard
+                  (seq-find (lambda (session)
+                              (equal (plist-get session :id) "nonboard"))
+                            sessions))
+                 (present-empty
+                  (seq-find (lambda (session)
+                              (equal (plist-get session :id) "present-empty"))
+                            sessions))
+                 (stored-nonboard
+                  (e-session--peek-session store "nonboard"))
+                 (stored-present-empty
+                  (e-session--peek-session store "present-empty"))
                  (listed (sort (e-chat-service-test--session-ids harness)
                                #'string<)))
             (should (equal listed
                            '("explicit-owner" "legacy-root" "nonboard")))
-            (should (= (length sessions) 12))
-            (dolist (id '("flat-incomplete" "present-null" "present-empty"
+            (should (= (length sessions) 13))
+            (should-not (plist-member nonboard :board-session-state))
+            (should-not (e-session-board-association nonboard))
+            (should-not
+             (plist-member stored-nonboard :board-session-state))
+            (should-not (plist-get (plist-get nonboard :metadata) :nullable))
+            (should-not
+             (plist-get (plist-get stored-nonboard :metadata) :nullable))
+            (should-not (memq e-session--index-json-null nonboard))
+            (should-not
+             (memq e-session--index-json-null
+                   (plist-get nonboard :metadata)))
+            (should-not (memq e-session--index-json-null stored-nonboard))
+            (should-not
+             (memq e-session--index-json-null
+                   (plist-get stored-nonboard :metadata)))
+            (should
+             (e-session-board-association-invalid-p
+              (e-session-board-association present-empty)))
+            (should
+             (e-session-board-association-invalid-p
+              (plist-get stored-present-empty :board-session-state)))
+            (dolist (id '("flat-incomplete" "present-null"
+                          "present-null-missing-mirrors" "present-empty"
                           "present-partial" "present-scalar" "present-list"
                           "unknown-role" "extra-key"))
               (should

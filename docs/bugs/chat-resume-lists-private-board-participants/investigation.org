@@ -6,8 +6,10 @@
 [[file:reviews/001.org][Review 001]] found three actionable defects.  Their first remediation passed
 the exact-revision gate.  [[file:reviews/002.org][Review 002]] closed the visible selectors and
 cross-store collision but found malformed nested state still conflated with
-absent legacy state.  F004 is now remediated in the working tree; the bug
-remains open pending an exact-revision gate and fresh zero-finding Tick.
+absent legacy state.  [[file:reviews/003.org][Review 003]] confirmed that most F004 partitions were
+closed but found physical JSON null still aliased an empty object at index
+ingress.  F005 is now remediated in the working tree; the bug remains open
+pending an exact-revision gate and fresh zero-finding Tick.
 
 * Summary
 
@@ -99,6 +101,14 @@ Existing records are not rewritten.  New writes carry the role; old records
 continue through the role-absent compatibility branch.  The catalog remains a
 bounded, side-effect-free read.
 
+The index adapter now preserves physical JSON null until entry normalization.
+Only the exact historical three-key nested-null/id-null/principal-null
+projection becomes no association.  A present empty nested object with the same
+flat mirrors, or nested null with omitted mirror keys, is normalized to the
+bounded invalid marker.  The adapter converts its private null sentinel out of
+metadata and all other entry fields before constructing a session; ordinary
+JSONL and checkpoint parsing are unchanged.
+
 * Validation
 
 - Production service constructors prove same-store root/participant separation,
@@ -133,10 +143,19 @@ bounded, side-effect-free read.
   legacy compatibility, and invalid-write admission partitions remain green: 4
   focused service tests.  Three focused generic index-store tests and the Node
   association checkpoint test also passed.
-- All focused commands used checkout source mode.  Warning-as-error compilation
-  passed for the F004 owners =e-session.el= and =e-chat-service.el=.  The new
-  package-level exact-revision gate and fresh Tick remain after parent
-  acceptance.
+- F005 strengthens the same real persisted-index fixture so an exact nested
+  JSON null and an empty nested object carry identical null flat mirrors.  The
+  former remains an association-absent generic root; the latter is the bounded
+  invalid marker and stays unlisted.  The fixture also proves ordinary metadata
+  null becomes nil, nested null with omitted flat mirror keys is invalid, the
+  parser sentinel does not reach session or metadata fields, malformed rows do
+  not hide valid rows, and =index.json= remains byte-for-byte unchanged.
+- Nine focused tests passed in checkout source mode: the strengthened persisted
+  catalog, production role construction, cross-store same-id, indexed
+  role/legacy replay, invalid write admission, three generic/object-shaped index
+  regressions, and the Node association checkpoint.  Warning-as-error
+  compilation passed for the changed owner =e-session.el=.  The package-level
+  exact-revision gate and fresh Tick remain after parent acceptance.
 
 * Architecture self-check
 
@@ -144,30 +163,33 @@ bounded, side-effect-free read.
    surface without rewriting existing data, so it is independently useful.
 2. It moves toward the board model's intended separation between public board
    interaction contexts and private participant execution sessions.
-3. Generic lineage and board association role are stable facts.  The only new
-   variation is the exact owner/participant distinction required by supported
-   cross-store construction; legacy inference stays local and removable.
-4. Core session owns generic lineage and the bounded persistence shape; chat
-   service owns construction and root semantics; presentation consumes the
-   service catalog.
+3. Generic lineage and board association role are stable facts.  Physical JSON
+   null versus object shape varies only at index ingress, where the distinction
+   is local and removed after normalization; legacy inference stays removable.
+4. Core session owns generic lineage, index parsing, and the bounded persistence
+   shape; chat service owns construction and root semantics; presentation
+   consumes the service catalog.
 5. Coupling is reduced because the shell stops depending directly on the
    harness's generic root catalog.
 6. Dependency direction remains shell to chat application service to generic
    harness/session contracts.
 7. Role persistence occurs only at board association construction.  Catalog and
    presentation reads remain side-effect free.
-8. The durable role has the session/board association lifetime, changes only at
-   construction, and cannot be rebuilt unambiguously across stores.  It is the
-   smallest correct durable state.
-9. Filtering is linear in the already-bounded catalog result and performs only
-   constant-time field comparisons per session.
+8. The durable role has the session/board association lifetime.  The index null
+   sentinel lasts only through entry normalization and cannot enter session
+   state; no new durable state is added by F005.
+9. Index normalization adds one linear traversal of each bounded index entry;
+   catalog filtering remains linear with constant-bounded association checks.
 10. The service boundary is real: every new constructor establishes one of the
     two substitutable association roles before the session is advertised.
-11. Existing persisted participants need no migration.  Only a genuinely absent
-    nested association permits canonical flat legacy reconstruction; present
-    malformed state is normalized to a non-root marker and never promoted.
+11. Existing persisted participants need no migration.  Genuine nested absence
+    permits canonical flat reconstruction, the exact historical three-key
+    triple-null projection means no association, and missing mirror keys or any
+    present malformed object are non-root.
 12. Direct shell reads of the generic root catalog are removed.
-13. Invalid role writes fail at admission.  Malformed persisted identities stay
-    absent from root catalogs without error swallowing or mutation.
-14. Owner-level constructor/index tests and composed candidate, Canvas,
-    latest-session, and overview tests change narrowly with their real owners.
+13. Invalid role writes fail at admission.  Malformed persisted identities,
+    including an empty object, stay absent from root catalogs without error
+    swallowing or mutation.
+14. The real index fixture distinguishes exact null from empty object and checks
+    isolation/non-mutation; owner, generic index, checkpoint, and presentation
+    tests remain coupled to their real contracts.
