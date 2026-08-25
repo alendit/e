@@ -1,0 +1,303 @@
+#+title: Board Run Visibility and Completion Handoff
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Make asynchronous board runs visible and understandable from the chat that owns them.
+The initiating turn may finish while the run continues, and the composer must become ready for more input.
+The chat must still show that work is active.
+Every later model turn must receive a bounded projection of that work in context.
+When the run finishes, the same session must receive one durable completion input at a safe idle point.
+
+Foreground and background describe whether work outlives the current turn.
+They do not name different sessions, boards, or coordinators.
+One chat has one canonical session participant and one board.
+Interactive dispatch and later headless triggers publish to that same board.
+The daily integration's =E_UPDATE_SESSION= property and update-session routing are legacy state to remove.
+
+* User story
+
+A user asks the main chat to start work that expands into a board run.
+The main session publishes the run and ends its turn without waiting for the full graph.
+The composer becomes ready at once.
+A persistent status area shows that the run is active and provides a bounded summary.
+If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
+When the required work settles, the board queues one completion input for the same session.
+That input waits while a model turn is active and starts only after the session reaches an idle boundary.
+The status remains visible until the completion input is consumed, including across restart.
+
+* Existing work to preserve
+
+This plan extracts the board-run visibility and completion design that was added to [[file:../87-sqlite-session-board-persistence/plan.org][feature 87]] in commits =d77ecda9= and =7a0a9d74=.
+Feature 87 remains responsible only for durable session and board storage.
+
+The runtime already provides most of the underlying pieces:
+
+- [[file:../66-work-bus-interaction-model/plan.org][Feature 66]] defines the board, participant delivery, input queues, and idle delivery boundary.
+- [[file:../82-board-native-subagent-supervision/plan.org][Feature 82]] defines durable run manifests, task attempts, reports, required and optional work, terminal reduction, continuation claims, and a bounded run projection.
+- [[file:../47-agent-task-queue/plan.org][Feature 47]] provides durable queued task execution.
+- [[file:../58-ui-work-substrate/plan.org][Feature 58]] provides the asynchronous presentation path used by the chat shell.
+- [[file:../87-sqlite-session-board-persistence/plan.org][Feature 87]] will make the board facts and delivery receipts restart-safe in one SQLite store.
+
+Feature 82 already describes a dedicated run shell and direct-child supervision context.
+This plan adds the owner chat's persistent status, model context, and completion handoff.
+It does not replace the detailed run shell or the subagent shell.
+
+* Terms
+
+- Run :: The durable board orchestration group defined by feature 82.
+  It includes the manifest, selected task attempts, reports, terminal projection, and continuation claim.
+- Owner chat :: The canonical session participant and board association that accepted or created the run.
+- Active run :: A run with required work still pending, optional work still active, or a completion input not yet consumed.
+- Run projection :: A bounded reducer output used by both chat presentation and model context.
+- Completion input :: The one keyed board input that asks the owner session to consume the terminal run result.
+- Idle boundary :: A point after an active turn finishes where the participant FIFO may start the next queued input.
+
+A run may represent a full work graph assembled by a capability.
+The chat depends only on the bounded run contract.
+A run is not the initiating turn, one process-local =e-work= handle, a worker session, or a shell-owned progress object.
+
+* Required behavior
+
+** One owner board
+
+One chat has one canonical session and board association.
+The run manifest is published to that existing board.
+The completion destination is the same session participant.
+Worker tasks may use normal execution isolation, but they do not become another coordinator or own a shadow board for the run.
+
+A headless trigger with an existing owner association reuses it.
+A headless trigger with no existing association may create the sole canonical owner once.
+It must not create a parallel update session.
+
+The implementation removes =E_UPDATE_SESSION= metadata, update-session creation helpers, and routing that sends background work to another coordinator session.
+Existing stored =E_UPDATE_SESSION= values are obsolete metadata, not identities to migrate into feature 87.
+
+** Dispatch and chat readiness
+
+The owner session commits a run manifest with a stable run id, bounded label, stable publication key, task identities, and required or optional policy.
+Selected queue tasks carry the same run, task, and attempt identities.
+The initiating turn may finish as soon as dispatch is durable.
+The run lifetime is independent of the turn that created it.
+The composer becomes ready while the run remains active.
+
+The board and task queue have separate authorities.
+Restart reconciliation must enqueue a selected task whose queue record is missing without creating a duplicate.
+A restored =running= task must be reconciled before the runtime retries it or classifies it as missing.
+
+** Shared bounded run projection
+
+One session-scoped reducer projection drives both the chat status and the model-context block.
+It includes:
+
+- every nonterminal run;
+- every terminal run whose completion input is not consumed;
+- every run with optional tasks still active.
+
+Runs are ordered by actionable state, latest durable board event, and run id.
+Record and byte budgets cap detailed entries.
+An omitted count and bounded run-query action preserve access when the budget hides older runs.
+
+Each detailed entry contains:
+
+- run id and bounded label;
+- required task totals by state;
+- optional task totals by state;
+- latest durable event time;
+- conflict or deadline evidence;
+- completion delivery state.
+
+The projection does not copy worker transcripts, prompts, tool results, or reasoning into the owner session.
+The reducer publishes change notifications.
+The chat shell and context provider subscribe to those notifications instead of polling storage, task sessions, or worker transcripts.
+
+** Chat presentation
+
+The chat shows a persistent active-run indicator outside the turn transcript.
+The indicator remains visible while the composer accepts input.
+It is derived from the shared run projection rather than from process-local work handles.
+
+The compact state shows the number of active runs and a bounded summary of the most actionable run.
+A user can open the existing detailed run surface from the indicator.
+The chat does not render the full task graph inline.
+
+The indicator distinguishes at least these states:
+
+- =dispatching= while durable task assignment is being reconciled;
+- =running= while required work remains active;
+- =finishing= when required work is terminal and the completion input is waiting or pending;
+- =attention= when the run has a conflict, deadline, failed publication, or missing task;
+- =restoring= while board or task-queue reconstruction is incomplete.
+
+The presentation must not report no active work from incomplete restore evidence.
+It must not disappear merely because the turn that dispatched the run ended.
+
+** Model context
+
+Every model turn for the owner session receives the same bounded run projection.
+The context block appears even when no run event is present in the visible transcript.
+The agent can therefore answer new input with knowledge of outstanding work.
+It can inspect or steer the run through existing actions without guessing whether work still exists.
+
+The context provider states whether completion is waiting, pending, published, failed, or consumed.
+It includes omitted counts when the detailed budget is exhausted.
+It does not instruct the model to wait blindly.
+
+** Required and optional completion
+
+The manifest declares which tasks are required and which are optional.
+The run becomes terminal when all required tasks settle under that policy.
+Unfinished optional tasks remain visible in the run projection and completion payload.
+The first terminal transition advances one continuation under the stable publication key.
+
+Continuation state is explicit:
+
+- =waiting= before terminal policy is satisfied;
+- =pending= after the board records the publication claim;
+- =published= after the board accepts the keyed completion input;
+- =failed= when publication cannot complete and requires attention;
+- =consumed= after the matching input-consumed receipt.
+
+A pending claim is recorded before publication.
+The completion input uses a stable source-input key.
+The published claim is recorded only after the board accepts that input.
+The matching =input-consumed= receipt advances the run to consumed.
+A crash between any two steps retries with the same keys and cannot append a second completion input.
+
+This contract guarantees one durable completion input.
+It does not guarantee that the provider turn started by that input will produce a successful answer.
+
+** Idle completion delivery
+
+Completion never interrupts an active model turn.
+=e-board-runtime= accepts the queued input while the owner attachment is busy.
+It does not start pickup until the attachment is idle after =turn-finished= or another explicit idle boundary.
+
+If a user turn reaches that boundary first, the participant FIFO preserves normal ordering.
+The run projection continues to show terminal but unconsumed completion until delivery starts and the input is consumed.
+
+** Restart behavior
+
+Board restore replays run facts, keyed inputs, publication claims, and consumption receipts before the chat binding reports ready.
+Task-queue restore reconciles durable task assignments before a task is retried or classified as missing.
+The shared reducer projection is rebuilt before the chat status or model context reports an empty state.
+
+Feature 87 supplies the durable storage path for these records.
+This feature owns their run semantics, projection, presentation, and delivery behavior.
+An in-memory store remains valid for focused tests and ephemeral harnesses.
+
+* Ownership
+
+- =e-board-orchestration= owns manifests, run reduction, required and optional terminal policy, conflicts, continuation intent, and continuation claims.
+- The dispatching capability owns run-specific task policy, the bounded label, and the bounded reconciliation prompt stored in the manifest.
+- The task-queue bridge owns durable run, task, and attempt assignment plus idempotent dispatch reconciliation.
+- =e-chat-service= owns the one session and board association plus generic keyed publication to the owner participant.
+- =e-board-runtime= owns participant FIFO delivery, busy-session deferral, and consumption receipts.
+- A session-scoped context provider emits the bounded run block for model input.
+- The chat shell renders the status from the same projection and opens the detailed run surface.
+- =e-session-storage= persists typed board facts and receipts but does not own run policy, context wording, or rendering.
+
+* Implementation slices
+
+** Slice 1: extract and stabilize the run projection
+
+- Consolidate the feature-82 reducer output into one bounded owner-session projection.
+- Add bounded labels, durable event times, deterministic ordering, budgets, omitted counts, optional-task visibility, and restore states.
+- Expose projection-change notifications and a bounded query action.
+- Gate: reducer tests cover multiple runs, required and optional tasks, conflicts, omitted entries, and incomplete restore.
+
+** Slice 2: show board runs in chat
+
+- Add the persistent status area to the chat shell through =e-ui-work=.
+- Render compact =dispatching=, =running=, =finishing=, =attention=, and =restoring= states.
+- Link the compact status to the existing detailed run surface.
+- Keep composer readiness independent from run lifetime.
+- Gate: chat and graphical tests show the indicator after the initiating turn ends, preserve focus, and update without polling.
+
+** Slice 3: inject active-run context
+
+- Add the session-scoped context provider backed by the same projection.
+- Bound entries and bytes, include omitted counts, and exclude worker transcript content.
+- Keep the block present on later unrelated user turns until the run is no longer active.
+- Gate: context tests prove that the model sees active, terminal-unconsumed, optional-active, attention, and restoring states.
+
+** Slice 4: publish one completion input
+
+- Implement explicit waiting, pending, published, failed, and consumed continuation states.
+- Publish through =e-chat-service= with a stable source-input key.
+- Drive consumed state from the matching board receipt.
+- Gate: fault-injection tests at each claim, publication, and receipt boundary produce one input without loss or duplication.
+
+** Slice 5: defer completion until idle
+
+- Use the existing participant FIFO and attachment busy state.
+- Keep completion queued during an active turn.
+- Preserve ordering when user input is already queued.
+- Gate: runtime and chat-service tests prove that completion never interrupts a turn and starts after an idle boundary.
+
+** Slice 6: remove update sessions
+
+- Route interactive and headless dispatch through the canonical owner session and board.
+- Remove =E_UPDATE_SESSION= writes, reads, creation helpers, and background routing.
+- Treat old metadata as ignored legacy data.
+- Gate: daily and cron tests prove that interactive and headless runs create no second coordinator session or board.
+
+** Slice 7: restart and system proof
+
+- Reconcile board manifests with durable task-queue assignments by stable identities.
+- Restore the run projection before reporting chat readiness.
+- Exercise restart before task persistence, before completion publication, after publication but before consumption, and after consumption.
+- Run focused orchestration, task-queue, board-runtime, chat-service, context, shell, persistence, and daily tests together.
+- Run isolated graphical tests for indicator visibility, composer readiness, focus, and idle completion delivery.
+
+* End-to-end proof
+
+One scenario dispatches required and optional tasks from a main chat turn.
+The turn ends while the run continues.
+The composer is ready, the status is visible, and the next unrelated user turn receives active-run context.
+A later headless trigger reuses the same session participant and board.
+No update session, private coordinator session, or shadow board is created.
+
+The scenario crashes between manifest commit and task-queue persistence and then reconciles without duplicate dispatch.
+It also restores a =running= task before deciding whether to retry it.
+
+The required tasks settle while an optional task and another owner-session turn remain active.
+The completion input does not interrupt that turn.
+The optional task remains visible in the status, context, and completion payload.
+One keyed completion input starts after an idle boundary and advances to consumed.
+
+The scenario restarts before publication, after publication but before consumption, and after consumption.
+No restart loses or duplicates the completion input.
+The status and context never report no work while restore is incomplete.
+
+* Acceptance criteria
+
+- The initiating turn can end while its board run continues and the composer is ready for more input.
+- The owner chat shows a persistent board-run indicator derived from durable board state.
+- Every later model turn receives the bounded run projection while required work, optional work, or completion delivery remains active.
+- The visual status and model context use the same reducer projection.
+- Interactive and headless dispatch use the same canonical session participant and board.
+- No =E_UPDATE_SESSION= metadata, update-session coordinator, or shadow board remains in production routing.
+- Required and optional terminal policy is explicit.
+- Unfinished optional work remains visible after required work triggers completion.
+- Terminal completion creates one bounded keyed input for the owner session.
+- Completion does not interrupt an active turn and is consumed at an idle boundary.
+- Dispatch, publication, consumption, and restart boundaries cannot lose or duplicate the completion input.
+- Incomplete restore is visible as =restoring= or =dispatching= rather than an empty state.
+- Detailed run inspection remains bounded and available from the chat status.
+- Graphical and current-config tests prove the user-visible behavior without touching the live user store.
+
+* Non-goals
+
+- A generic visual editor for arbitrary board topology.
+- Rendering the full task graph inside every chat transcript.
+- Replacing the detailed run shell, subagent shell, task-queue shell, or activity log.
+- Copying worker transcripts, prompts, tool results, or reasoning into the owner session.
+- Making process-local =e-work= handles the source of durable run status.
+- Creating a second coordinator session for background work.
+- Making feature 87 own run policy or presentation.
+- Guaranteeing success of the provider turn triggered by the completion input.
