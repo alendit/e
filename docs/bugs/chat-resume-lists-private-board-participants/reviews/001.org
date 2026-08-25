@@ -1,0 +1,214 @@
+#+title: Review 001 — Chat Resume Private Board Participants
+#+startup: overview
+
+* Decision
+
+Not at fixed point.
+
+Reviewed revision: =ea0e1c27=.
+Baseline parent: =6efa4c10=.
+Review mode: rebaseline.
+
+The revision fixes the reported Grimoire resume rows for canonical persisted
+identities and correctly moves chat navigation policy into
+=e-chat-service-root-session-list=.  Three actionable defects remain: one
+presentation consumer still advertises private participants, board ownership is
+ambiguous across session stores, and the added tests do not establish all
+claimed public contracts.
+
+* Prior findings
+
+No prior numbered review exists.
+
+* Confirmed findings
+
+** P2 F001 — Generic Canvas still advertises private board participants
+
+Classification: inherited defect; incomplete whole-presentation closure.
+
+Proof:
+
+- =e-canvas--read-session= obtains candidates directly from
+  =e-harness-root-session-list= at =lisp/shells/e-canvas.el:381=.
+- =e-canvas--target-session= uses the same generic catalog to decide whether to
+  offer an existing chat at =lisp/shells/e-canvas.el:397=.
+- A production-created root plus private participant produces generic roots
+  =("participant" "root")= while
+  =e-chat-service-root-session-list= correctly produces only =("root")=.
+- The public prompt is =Attach canvas context to e session:=, so the private
+  execution session is advertised as a selectable top-level chat.
+
+Owner and correction:
+
+The Canvas presentation shell must consume the chat service's user-facing root
+catalog for chat selection and existence checks.  Do not add a Canvas-local
+principal, metadata, title, or Grimoire filter; that would duplicate chat
+ownership policy outside its owner.
+
+Required regression:
+
+Create a board and private participant through the chat service, invoke the
+Canvas session-selection composition, and prove that only the owning root is
+offered and selected.
+
+** P2 F002 — Principal/session-id equality is not an unambiguous ownership fact across stores
+
+Classification: inherited architectural defect exposed by the new filter.
+
+Proof:
+
+- =e-chat-service-create-board= defines the owner principal as
+  =chat:<session-id>= at =lisp/core/e-chat-service.el:761=.
+- =e-chat-service-create-participant= permits a private participant in another
+  harness/store to use an explicit session id at
+  =lisp/core/e-chat-service.el:795=.
+- Session ids are store-local: separate stores may contain the same id, and the
+  multi-instance shell explicitly supports separate stores.
+- =e-chat-service--root-session-p= nevertheless treats principal equality with
+  only the local session id as proof of ownership at
+  =lisp/core/e-chat-service.el:1060=.
+
+A minimal supported composition created a board session named =same-id= in one
+store and a private participant named =same-id= in a second store.  Both
+=e-chat-service-root-session-list= calls returned =("same-id")=.  The second
+session is private but is advertised as a root under its unique-store chat
+instance.
+
+Owner and correction:
+
+Chat service must own an unambiguous durable root/participant invariant.  The
+preferred representation is an explicit chat-board role or equally
+unambiguous owner identity persisted with board session state and projected
+into the bounded index.  Canonical legacy =board-id=/=principal= data must
+remain readable without rewriting its journal; new writes must not keep
+deriving role from a store-local id collision.
+
+An alternative is acceptable only if chat service rejects the collision before
+creating or mutating a session and establishes board-wide session-id uniqueness
+for every creation/open/restore route.  Filtering by title, Grimoire metadata,
+harness instance labels, or a second shell-side comparison would preserve the
+ownership defect.
+
+Required regressions:
+
+- same-store root versus participant;
+- different-store participant with the same session id as the root;
+- persisted-index replay of canonical legacy identities;
+- malformed or ambiguous identity fails visibly or remains non-root without
+  mutating persisted data.
+
+** P3 F003 — Regressions claim more public coverage than they assert
+
+Classification: new test-evidence gap in =ea0e1c27=.
+
+Proof:
+
+- =e-chat-test-session-candidates-include-only-board-root-sessions= says switch,
+  resume, active sessions, and overview are covered, but its only public
+  assertion calls =e-chat--session-candidates= at
+  =test/e-chat-test.el:7924=.
+- Both new participant witnesses manually assemble =board-session-state= with
+  =e-session-declare-board-state= rather than using
+  =e-chat-service-create-board= and =e-chat-service-create-participant= at
+  =test/e-chat-test.el:7939= and =test/e-chat-test.el:7979=.
+- Therefore the tests do not cover the production owner-establishment path,
+  =e-chat--latest-session-id=, the direct-harness overview route, the Canvas
+  consumer, or cross-store identity.
+
+Correction and test disposition:
+
+- strengthen the in-memory candidate test to use production service creation;
+- strengthen the indexed test to persist production-created root and
+  participant identities before reopening;
+- add focused semantic tests for latest-session and direct overview consumers;
+- add the Canvas and cross-store contract regressions required by F001/F002;
+- retain existing worker and pre-board partitions;
+- do not retain assertions tied only to the current plist layout if a simpler
+  correct role representation could satisfy the same semantics.
+
+* Sequential coverage ledger
+
+| Contract | Dependencies inspected | Dimensions | Evidence | Test kind | Status |
+|----------+------------------------+------------+----------+-----------+--------|
+| Reported Daily root/participant distinction | report, investigation, service constructors | ownership, lifetime | shared board/principal with distinct ids | contract | cleared |
+| Generic session-root semantics remain generic | =e-session-root-p=, harness root list, chat service | owner, dependency direction | generic lineage unchanged; chat policy layered above it | contract | cleared |
+| Canonical same-store chat root filtering | chat service predicate, candidate shell | root/participant, public composition | focused tests and service source | contract | cleared |
+| Existing canonical index data needs no migration | index projection/replay, service filter | persistence, recovery | indexed regression and current representation bridge | contract | cleared |
+| Resume and switch | =e-chat--session-candidates=, resume/switch | public composition | both consume the filtered candidate catalog | contract | cleared |
+| Active sessions | active picker, candidate catalog | public composition | active picker consumes filtered candidates before prompt filtering | contract | cleared |
+| Latest session | =e-chat--latest-session-id= | direct consumer | source uses service root list; no semantic regression | contract | cleared |
+| Overview | multi-instance and direct-harness paths | direct consumer | both use candidate/service policy; missing dedicated regression | contract | candidate F003 |
+| Generic Canvas chat selection | =e-canvas--read-session=, target selection | duplicated authority, public composition | direct generic catalog exposes participant | contract | candidate F001 |
+| Multi-instance and separate-store identity | constructors, root predicate, instance membership | identity, provenance, substitutability | same-id cross-store reproducer | contract | candidate F002 |
+| Shared-store ownership and deduplication | candidate owner routing | identity, duplication | pre-existing shared-store regression; filter preserves order | contract | cleared |
+| Generic non-board behavior | service filter, board-only shell filters | compatibility | service retains non-board roots; chat shell still rejects them | contract | cleared |
+| Malformed/partial board identity | loaded/index representations, board-only filter | failure contract | incomplete board identity is not advertised | contract | cleared |
+| Private participant durability/usability | persistence and open/bind routes | lifetime, side effects | filter mutates no state and direct lookup/open remains available | contract | cleared |
+| Ordering and cost | session list ordering, service filter, multi-instance sort | ordering, complexity | stable removal over sorted input; linear filtering | contract | cleared |
+| Regression evidence | added tests and claimed surfaces | assertion scope, mechanism coupling | production paths and direct consumers omitted | contract | candidate F003 |
+
+No required cell remains unknown.
+
+* Verification evidence
+
+- Exact diff =6efa4c10..ea0e1c27= inspected.
+- Focused regression command passed:
+  =eldev test -f test/e-chat-test.el -B
+  e-chat-test-session-candidates-include-only-board-root-sessions
+  e-chat-test-session-candidates-exclude-indexed-worker-sessions=
+  — 2 passed, 0 unexpected.
+- Same-store service probe:
+  generic roots =("participant" "root")=;
+  chat roots =("root")=.
+- Cross-store same-id probe:
+  owner chat roots =("same-id")=;
+  private-participant chat roots =("same-id")=.
+- The investigation records the exact-revision complete chat and service suites
+  as passing.  They do not negate the two functional reproducers.
+
+* Progress and fixed-point assessment
+
+The revision materially improves the reported Daily picker and establishes the
+correct dependency for the principal chat shell.  Fixed point is not reached:
+
+1. F001 leaves a public chat-selection surface on generic root policy.
+2. F002 leaves root ownership ambiguous under a supported multi-store
+   composition.
+3. F003 leaves the claimed surface contract under-proved.
+
+After owning remediations and an exact-revision gate, a fresh independent Tick
+is required.  Slice acceptance cannot establish fixed point.
+
+* Architecture self-check
+
+1. The current package is useful if stopped here, but still advertises private
+   participants through Canvas and misclassifies a supported cross-store case.
+2. It moves toward one chat-owned navigation policy; F001/F002 identify the
+   remaining distance.
+3. Board role is stable, while deriving it from store-local ids is uncertain
+   and insufficient.  That uncertainty must be localized at chat persistence
+   ingress, not repeated in shells.
+4. Chat service owns user-facing root semantics.  Generic session owns only
+   generic lineage.  Canvas currently violates that ownership.
+5. Coupling is reduced in =e-chat.el= but remains unnecessarily direct in
+   =e-canvas.el=.
+6. F001 is a remaining wrong-way dependency from presentation to generic
+   harness policy.
+7. The catalog filter itself is pure.  Any durable role write should remain in
+   chat service and flow through the session persistence adapter.
+8. The fix adds no state, but F002 shows that root/participant role is a durable
+   fact not uniquely reconstructible from the present store-local identity.
+9. Canonical filtering is linear and preserves ordering; no regression is
+   required to close the findings.
+10. The service contract is real, but the predicate is not substitutable across
+    distinct stores that reuse a session id.
+11. Canonical old indexes are supported without journal rewriting.  Any legacy
+    classification must be explicit and localized rather than a second
+    presentation authority.
+12. Remove remaining presentation calls to =e-harness-root-session-list= where
+    the consumer is selecting a chat.
+13. Malformed identities are currently hidden, but an ambiguous supported
+    identity is silently promoted; F002 requires exact admission or durable
+    classification.
+14. Existing candidate regressions pass but couple to manually assembled board
+    state and do not prove all claimed public consumers.

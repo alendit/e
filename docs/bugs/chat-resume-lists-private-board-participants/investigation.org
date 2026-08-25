@@ -1,6 +1,11 @@
 #+title: Chat Resume Private Board Participant Investigation
 #+startup: overview
 
+* Review status
+
+[[file:reviews/001.org][Review 001]] found three actionable defects.  The bug is reopened pending
+owner-level remediation and a fresh zero-finding review.
+
 * Summary
 
 The two rows are distinct durable sessions on one board, not duplicate picker
