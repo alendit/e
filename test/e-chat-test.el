@@ -5088,6 +5088,40 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-board-final-assistant-settles-turn-progress ()
+  "Board-final assistant output settles presentation before its summary page."
+  (let ((buffer (e-chat-test--buffer nil "chat-board-final-assistant")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload
+                          '(:message (:role assistant
+                                      :content "Finished answer."
+                                      :terminal-output t))))
+          (let ((record (e-chat--existing-turn-record "turn-1"))
+                (content (buffer-string)))
+            (should-not e-chat--progress-turn-id)
+            (should (= (plist-get record :ended-at) 2))
+            (should (plist-get record :final-rendered))
+            (should (string-match-p "Finished answer" content))
+            (should-not (string-match-p "Thinking for" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-action-activity-renders-in-summary ()
   "Action activity events render in the settled turn summary."
   (let ((buffer (e-chat-test--buffer nil "chat-action-summary")))

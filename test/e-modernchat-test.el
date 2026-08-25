@@ -38,6 +38,32 @@
      (list 'test session-id (e-board-message-count board)))
     (e-chat-service--drain-observer binding)))
 
+(ert-deftest e-chat-service-test-board-output-identifies-terminal-presentation ()
+  "A board output tells shells that the producing turn has already finished."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session
+                   :harness harness :id "terminal-output"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding)))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant
+            (e-chat-service-binding-attachment binding))))
+         (message
+          (e-board-publication-message
+           (e-board-post-output
+            board :id "answer"
+            :author (format "participant:%s" participant-id)
+            :subject-participant-id participant-id :tags '(main)
+            :content "Finished answer." :source-turn-id "source-turn"
+            :source-output-key '(test terminal-output 1))))
+         (event (e-chat-service--message-event binding message))
+         (rendered-message (plist-get (plist-get event :payload) :message)))
+    (should (eq (plist-get event :type) 'message-added))
+    (should (eq (plist-get rendered-message :role) 'assistant))
+    (should (plist-get rendered-message :terminal-output))))
+
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
   (let ((harness (e-harness-create

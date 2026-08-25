@@ -1,0 +1,63 @@
+#+title: e-chat board final output keeps progress investigation
+
+* Evidence
+
+- The captured transcript rendered the final assistant response above a live
+  activity tail that continued to report elapsed thought time.
+- =e-board-runtime--handle-harness-event= publishes board output only while
+  handling =turn-finished=, then publishes a separate =turn-summary= activity.
+- =e-chat-service--message-event= translated the output to a generic assistant
+  =message-added= event and discarded the fact that the output was terminal.
+- =e-chat--render-event= intentionally keeps progress active for generic
+  assistant messages because those may be intermediate provider output.
+
+* Root Cause
+
+The board adapter erased a terminal fact at the shell boundary.  Although a
+board output is created only after the harness turn has finished, its public
+message event was indistinguishable from an intermediate assistant message.
+The presentation therefore depended on a second board row, =turn-summary=, to
+stop progress.  Bounded asynchronous delivery can separate those rows and
+leave the UI presenting an impossible state: final answer plus live work.
+
+* Acceptance Test
+
+- A board output event is identified as terminal presentation.
+- Rendering such output settles progress without waiting for the terminal
+  summary event.
+- An ordinary assistant =message-added= event remains intermediate and keeps
+  progress active until an explicit terminal event.
+
+* Fix
+
+- =e-chat-service--message-event= now preserves the runtime's terminal fact as
+  =:terminal-output= on board-derived assistant messages.
+- =e-chat--settle-successful-turn-presentation= owns idempotent successful-turn
+  settlement and is called by either the terminal output or the later
+  =turn-finished= event.
+- Generic assistant messages remain non-terminal, preserving intermediate
+  answer and provider-retry behavior.
+
+* Fix Evidence
+
+- Verified RED before implementation:
+  =e-chat-test-board-final-assistant-settles-turn-progress= retained
+  =e-chat--progress-turn-id= after rendering the final answer.
+- The focused adapter contract
+  =e-chat-service-test-board-output-identifies-terminal-presentation= passes.
+- The focused presentation regression and the existing intermediate-output
+  contract pass together.
+- The isolated graphical regression
+  =e-chat-behavior-test-board-final-output-stops-live-progress= passes with the
+  final answer visible and no live progress tail before any summary event.
+- The complete affected test files pass: 364 expected results, 1 pre-existing
+  skipped Markdown rendering test, and 0 unexpected results across 365 tests.
+- =git diff --check= passes.
+- =eldev lint= still reports the repository's existing doc/package/regexp
+  warning backlog; the changed =e-chat-service.el= and =e-chat.el= introduce no
+  new warning.
+
+* Live Emacs Status
+
+The user's running Emacs was not reloaded or restarted.  Validation used batch
+Eldev and the repository's isolated graphical test daemon.

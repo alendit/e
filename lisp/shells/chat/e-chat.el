@@ -8111,6 +8111,24 @@ separate dimmed representation instead."
     ('session-reset t)
     (_ nil)))
 
+(defun e-chat--settle-successful-turn-presentation (turn-id ended-at)
+  "Settle successful TURN-ID presentation at ENDED-AT.
+Board-final output and the later terminal summary are independent delivery
+rows, so either may establish this idempotent presentation boundary."
+  (e-chat--set-turn-time turn-id :ended-at ended-at)
+  (e-chat--settle-open-thinking turn-id ended-at 'done)
+  (e-chat--cancel-pending-activity-redraw turn-id)
+  (e-chat--stop-progress-indicator turn-id)
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (e-chat--delete-turn-transient record)
+    (when (plist-get record :assistant-output-rendered)
+      (e-chat--finalize-turn-display turn-id)))
+  (e-chat--refresh-mode-line-status t)
+  (e-chat--mark-buffer-session-read-if-selected)
+  (e-chat--set-status "done")
+  (e-chat--ensure-composer)
+  (e-chat--refresh-composer-position))
+
 (defun e-chat--render-event (event)
   "Render harness EVENT into the current chat buffer."
   (e-chat--profile-call
@@ -8135,21 +8153,7 @@ separate dimmed representation instead."
             (created-at (plist-get event :created-at))
             (output-tail-windows
              (e-chat--capture-live-output-follow-windows)))
-       (e-chat--set-turn-time turn-id :ended-at created-at)
-       (e-chat--settle-open-thinking turn-id created-at 'done)
-       (e-chat--cancel-pending-activity-redraw turn-id)
-       (e-chat--stop-progress-indicator turn-id)
-       (when-let ((record (e-chat--existing-turn-record turn-id)))
-         (e-chat--delete-turn-transient record)
-         ;; Board output and terminal lifecycle are distinct shell events.
-         ;; Only the public terminal event settles chat presentation.
-         (when (plist-get record :assistant-output-rendered)
-           (e-chat--finalize-turn-display turn-id)))
-       (e-chat--refresh-mode-line-status t)
-       (e-chat--mark-buffer-session-read-if-selected)
-       (e-chat--set-status "done")
-       (e-chat--ensure-composer)
-       (e-chat--refresh-composer-position)
+       (e-chat--settle-successful-turn-presentation turn-id created-at)
        (e-chat--restore-output-tail-windows output-tail-windows)))
     ('turn-failed
      (let ((output-tail-windows
@@ -8254,6 +8258,9 @@ separate dimmed representation instead."
            (when assistant-p
              (plist-put (e-chat--turn-record turn-id)
                         :assistant-output-rendered t)
+             (when (plist-get message :terminal-output)
+               (e-chat--settle-successful-turn-presentation
+                turn-id (plist-get event :created-at)))
              (e-chat--restore-output-tail-windows output-tail-windows))
            (when assistant-p
              (e-chat--mark-buffer-session-read-if-selected))

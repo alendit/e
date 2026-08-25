@@ -375,19 +375,25 @@ input publication and the acknowledgement fact."
       ('output
        (append identity
                (list :type 'message-added :session-id session-id
-             :turn-id turn-id
-             :payload
-             (list :message
-                   (list :id (e-board-message-id message) :role 'assistant
-                         :content (e-board-message-content message)
-                         :turn-id turn-id
-                         :created-at (e-board-message-created-at message)
-                         :metadata
-                         (copy-tree (e-board-message-attributes message))
-                         :board-id (e-board-message-board-id message)
-                         :board-seq (e-board-message-seq message)
-                         :subject-participant-id
-                         (e-board-message-subject-participant-id message))))))
+                     :turn-id turn-id
+                     :payload
+                   (list :message
+                         (list :id (e-board-message-id message) :role 'assistant
+                               :content (e-board-message-content message)
+                               ;; Runtime output is published only while
+                               ;; handling `turn-finished'.  Preserve that
+                               ;; terminal witness across the shell boundary
+                               ;; even when the separate turn-summary row
+                               ;; arrives on a later board page.
+                               :terminal-output t
+                               :turn-id turn-id
+                               :created-at (e-board-message-created-at message)
+                               :metadata
+                               (copy-tree (e-board-message-attributes message))
+                               :board-id (e-board-message-board-id message)
+                               :board-seq (e-board-message-seq message)
+                               :subject-participant-id
+                               (e-board-message-subject-participant-id message))))))
       ('activity
        (let ((activity-kind (e-board-message-activity-kind message)))
          (when (and source-turn-id causal-input-id)

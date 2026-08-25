@@ -1,0 +1,16 @@
+#+title: e-chat board final output keeps progress report
+
+* Report
+
+The chat transcript can render the final assistant answer while continuing to
+show and update the turn's live progress block beneath it.  In the observed
+case the answer was followed by a large bounded activity tail whose last row
+continued to display =Thought for ...= as live work.
+
+Board delivery publishes the final output and terminal activity as distinct
+messages.  The visible state can therefore occur when a bounded observer page
+delivers the output before the following terminal summary reaches the shell.
+
+The expected presentation invariant is that a board-final assistant output is
+itself sufficient evidence that the producing turn has finished.  Generic
+assistant messages may still be intermediate and must keep progress active.

@@ -755,6 +755,53 @@ than the invisible insertion position."
              "terminal-event-settles-summary")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-board-final-output-stops-live-progress ()
+  "Board-final output removes the live tail before its summary event arrives."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let ((transcript (plist-get fixture :transcript))
+                (session-id (plist-get fixture :session-id))
+                (started-at (float-time)))
+            (with-current-buffer transcript
+              (e-chat--render-event
+               (e-events-make
+                :type 'turn-started :session-id session-id
+                :turn-id "turn-board-final" :created-at started-at))
+              (e-chat--render-event
+               (e-events-make
+                :type 'provider-request-started :session-id session-id
+                :turn-id "turn-board-final" :created-at started-at)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (equal e-chat--progress-turn-id "turn-board-final")))
+             2.0 "live progress before board-final output")
+            (with-current-buffer transcript
+              (e-chat--render-event
+               (e-events-make
+                :type 'message-added :session-id session-id
+                :turn-id "turn-board-final" :created-at (+ started-at 1.0)
+                :payload
+                '(:message (:id "answer-final" :role assistant
+                            :content "Board-final answer."
+                            :terminal-output t)))))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer transcript
+                 (and (null e-chat--progress-turn-id)
+                      (string-match-p "Board-final answer" (buffer-string))
+                      (not (string-match-p "Thinking for" (buffer-string)))
+                      (null (e-ui-work-pending (current-buffer))))))
+             2.0 "board-final output settles live progress")
+            (e-chat-behavior-test--capture-state
+             "board-final-output-without-live-progress")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-retrying-provider-shows-error-and-retry ()
   "A retrying provider attempt visibly retains its error without claiming failure."
   (skip-unless (display-graphic-p))
