@@ -8,7 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | chat-resume-lists-private-board-participants/ | Chat resume lists private board participants — remediation ready for fresh review |
+| Closed | chat-resume-lists-private-board-participants/ | Chat resume lists private board participants |
 | Closed | session-persistence-valid-manifest-node-budget/ | Valid session checkpoint exceeds structural command budget |
 | Closed | current-config-graphical-contract-drift/ | Current config graphical contract drift |
 | Closed | canvas-new-session-loads-legacy-session/ | Canvas new session loads an unresumable legacy session |

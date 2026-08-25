@@ -3,13 +3,9 @@
 
 * Review status
 
-[[file:reviews/001.org][Review 001]] found three actionable defects.  Their first remediation passed
-the exact-revision gate.  [[file:reviews/002.org][Review 002]] closed the visible selectors and
-cross-store collision but found malformed nested state still conflated with
-absent legacy state.  [[file:reviews/003.org][Review 003]] confirmed that most F004 partitions were
-closed but found physical JSON null still aliased an empty object at index
-ingress.  F005 is now remediated in the working tree; the bug remains open
-pending an exact-revision gate and fresh zero-finding Tick.
+[[file:reviews/001.org][Review 001]] through [[file:reviews/003.org][Review 003]] identified and drove remediation of F001–F005.
+[[file:reviews/004.org][Review 004]] reviewed exact revision =946cf4e2= and reached fixed point with
+zero P0–P3 findings and every coverage cell cleared.  The bug is closed.
 
 * Summary
 
@@ -154,8 +150,11 @@ JSONL and checkpoint parsing are unchanged.
   catalog, production role construction, cross-store same-id, indexed
   role/legacy replay, invalid write admission, three generic/object-shaped index
   regressions, and the Node association checkpoint.  Warning-as-error
-  compilation passed for the changed owner =e-session.el=.  The package-level
-  exact-revision gate and fresh Tick remain after parent acceptance.
+  compilation passed for the changed owner =e-session.el=.
+- The final exact-revision gate for =946cf4e2= ran 2,323 tests: 2,321 expected,
+  0 unexpected, and 2 conditional skips.  Warning-as-error compilation of
+  =lisp/core/e-session.el= and =git diff --check= passed.  Review 004 found zero
+  P0–P3 findings and cleared every coverage cell.
 
 * Architecture self-check
 
