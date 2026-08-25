@@ -448,7 +448,7 @@ messages so the transcript reads as one clean answer."
       (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-root-catalog-does-not-promote-malformed-role ()
-  "Invalid roles fail admission and malformed persisted state stays non-root."
+  "Invalid association roles fail admission before session mutation."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create :enabled-layer-ids nil :sessions store)))
     (e-session-create store :id "malformed")
@@ -457,18 +457,78 @@ messages so the transcript reads as one clean answer."
       store "malformed" "chat:malformed" "malformed-board" "unexpected")
      :type 'error)
     (should-not (plist-get (e-chat-service-session harness "malformed")
-                           :board-session-state))
-    (dolist (fixture
-             '((:id "unknown"
-                :board-state
-                (:board-id "board" :principal "chat:unknown"
-                 :association-role "unexpected"))
-               (:id "partial"
-                :board-state
-                (:board-id "partial-board" :association-role "owner"))))
-      (let ((before (copy-tree fixture)))
-        (should-not (e-chat-service--root-session-p fixture))
-        (should (equal fixture before))))))
+                           :board-session-state))))
+
+(ert-deftest e-chat-service-test-root-catalog-normalizes-index-association-presence ()
+  "Malformed nested index state stays unlisted without hiding valid roots."
+  (let* ((directory (make-temp-file "e-chat-malformed-index-" t))
+         (index-file (expand-file-name "index.json" directory))
+         (json
+          (concat
+           "["
+           "{\"id\":\"explicit-owner\",\"board-state\":{"
+           "\"board-id\":\"owner-board\",\"principal\":\"chat:other\","
+           "\"association-role\":\"owner\"}},"
+           "{\"id\":\"explicit-participant\",\"board-state\":{"
+           "\"board-id\":\"owner-board\",\"principal\":\"chat:other\","
+           "\"association-role\":\"participant\"}},"
+           "{\"id\":\"legacy-root\",\"board-id\":\"legacy-board\","
+           "\"principal\":\"chat:legacy-root\"},"
+           "{\"id\":\"nonboard\",\"board-state\":null,"
+           "\"board-id\":null,\"principal\":null},"
+           "{\"id\":\"flat-incomplete\",\"board-id\":\"flat-board\","
+           "\"principal\":null},"
+           "{\"id\":\"present-null\",\"board-state\":null,"
+           "\"board-id\":\"null-board\",\"principal\":\"chat:present-null\"},"
+           "{\"id\":\"present-empty\",\"board-state\":{},"
+           "\"board-id\":\"empty-board\",\"principal\":\"chat:present-empty\"},"
+           "{\"id\":\"present-partial\",\"board-state\":{"
+           "\"board-id\":\"partial-board\",\"association-role\":\"owner\"},"
+           "\"principal\":\"chat:present-partial\"},"
+           "{\"id\":\"present-scalar\",\"board-state\":\"invalid\","
+           "\"board-id\":\"scalar-board\",\"principal\":\"chat:present-scalar\"},"
+           "{\"id\":\"present-list\",\"board-state\":[{"
+           "\"board-id\":\"list-board\",\"principal\":\"chat:present-list\"}],"
+           "\"board-id\":\"list-board\",\"principal\":\"chat:present-list\"}"
+           ","
+           "{\"id\":\"unknown-role\",\"board-state\":{"
+           "\"board-id\":\"unknown-role-board\","
+           "\"principal\":\"chat:unknown-role\","
+           "\"association-role\":\"unexpected\"}},"
+           "{\"id\":\"extra-key\",\"board-state\":{"
+           "\"board-id\":\"extra-board\",\"principal\":\"chat:extra-key\","
+           "\"association-role\":\"owner\",\"extra\":true}}"
+           "]")))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "sessions" directory) t)
+          (with-temp-file index-file (insert json))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (harness (e-harness-create
+                           :enabled-layer-ids nil :sessions store))
+                 (before (with-temp-buffer
+                           (insert-file-contents index-file)
+                           (buffer-string)))
+                 (sessions (e-chat-service-session-list harness))
+                 (listed (sort (e-chat-service-test--session-ids harness)
+                               #'string<)))
+            (should (equal listed
+                           '("explicit-owner" "legacy-root" "nonboard")))
+            (should (= (length sessions) 12))
+            (dolist (id '("flat-incomplete" "present-null" "present-empty"
+                          "present-partial" "present-scalar" "present-list"
+                          "unknown-role" "extra-key"))
+              (should
+               (e-session-board-association-invalid-p
+                (e-session-board-association
+                 (seq-find (lambda (session)
+                             (equal (plist-get session :id) id))
+                           sessions)))))
+            (should (equal before
+                           (with-temp-buffer
+                             (insert-file-contents index-file)
+                             (buffer-string))))))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
   "Subscriber failure cannot advance another client's cursor or lose identity."

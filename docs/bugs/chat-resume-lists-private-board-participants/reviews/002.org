@@ -1,6 +1,24 @@
 #+title: Review 002 — Chat Resume Private Board Participants
 #+startup: overview
 
+* Current disposition
+
+F004 is remediated in the current working tree and awaits the exact-revision
+gate plus a fresh independent Tick.  =e-session= now distinguishes a genuinely
+absent nested association from every present malformed value at index and
+journal ingress.  Valid whole associations pass through; malformed presence
+becomes one bounded internal non-root marker; flat mirrors reconstruct only a
+role-absent canonical legacy association when the nested key is absent.
+The one exact historical non-board encoding—nested null plus both flat mirrors
+null—remains no association; nested null beside any non-null mirror is invalid.
+
+The persisted-index contract partitions absent legacy state, present null,
+empty, partial-with-flat, scalar, list-invalid, unknown-role, and extra-key
+nested state in one catalog with a valid owner and participant.  Only the
+explicit owner, legacy root, and generic non-board session list; malformed
+entries neither borrow flat fields nor abort the catalog.  This disposition is
+remediation evidence, not a fixed-point decision.
+
 * Decision
 
 Not at fixed point.

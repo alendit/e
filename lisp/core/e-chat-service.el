@@ -1071,18 +1071,14 @@ values delivered by `e-chat-service-subscribe'."
 An explicit durable chat role is authoritative.  Canonical legacy board state
 without that role falls back to its historical `chat:<session-id>' owner
 identity so existing indexes remain readable without mutation."
-  (let* ((state (or (plist-get session :board-session-state)
-                    (plist-get session :board-state)))
-         (board-id (or (plist-get state :board-id)
-                       (plist-get session :board-id)))
+  (let* ((state (e-session-board-association session))
          (role-present (and state (plist-member state :association-role)))
          (role (and role-present (plist-get state :association-role)))
-         (principal (or (plist-get state :principal)
-                        (plist-get session :principal)))
+         (principal (plist-get state :principal))
          (session-id (plist-get session :id)))
     (cond
-     ((and (null state) (null board-id) (null principal)) t)
-     ((not (and (stringp board-id) (stringp principal))) nil)
+     ((null state) t)
+     ((e-session-board-association-invalid-p state) nil)
      (role-present
       (equal role e-chat-service--board-role-root))
      (t

@@ -6,8 +6,8 @@
 [[file:reviews/001.org][Review 001]] found three actionable defects.  Their first remediation passed
 the exact-revision gate.  [[file:reviews/002.org][Review 002]] closed the visible selectors and
 cross-store collision but found malformed nested state still conflated with
-absent legacy state.  The bug remains open pending F004 remediation and a fresh
-zero-finding Tick.
+absent legacy state.  F004 is now remediated in the working tree; the bug
+remains open pending an exact-revision gate and fresh zero-finding Tick.
 
 * Summary
 
@@ -118,12 +118,25 @@ bounded, side-effect-free read.
 - The first exact-revision package gate exposed two adjacent whole-plist
   assertions in fresh-chat integration and persisted-board restart coverage.
   Both are strengthened to assert board id, principal, and owner role as
-  independent durable contracts; their focused rerun passed, while the package
-  gate still awaits its second run.
+  independent durable contracts; their focused rerun and the second exact gate
+  passed.
+- F004's real persisted-index catalog partitions nested-key absence from present
+  null, empty, partial-with-flat, scalar, list-invalid, unknown-role, and
+  extra-key states alongside a valid owner, participant, generic non-board
+  session, and incomplete flat legacy shape.  Only the owner, canonical legacy
+  root, and non-board session list; all malformed entries map to the bounded
+  non-root representation, cannot borrow flat mirrors, do not abort the catalog,
+  and leave =index.json= byte-for-byte unchanged: 1 test passed.
+  The non-board fixture uses the exact historical triple-null projection;
+  nested null with non-null flat mirrors remains malformed and hidden.
+- The valid production owner/participant, cross-store same-id, indexed replay,
+  legacy compatibility, and invalid-write admission partitions remain green: 4
+  focused service tests.  Three focused generic index-store tests and the Node
+  association checkpoint test also passed.
 - All focused commands used checkout source mode.  Warning-as-error compilation
-  passed for =e-session.el=, =e-session-persistence.el=, =e-chat-service.el=,
-  and =e-canvas.el=.  Only the package-level exact-revision gate and fresh Tick
-  remain after parent acceptance.
+  passed for the F004 owners =e-session.el= and =e-chat-service.el=.  The new
+  package-level exact-revision gate and fresh Tick remain after parent
+  acceptance.
 
 * Architecture self-check
 
@@ -150,9 +163,9 @@ bounded, side-effect-free read.
    constant-time field comparisons per session.
 10. The service boundary is real: every new constructor establishes one of the
     two substitutable association roles before the session is advertised.
-11. Existing persisted participants need no migration.  Only role-absent
-    canonical records use legacy classification; explicit malformed state is
-    never silently promoted.
+11. Existing persisted participants need no migration.  Only a genuinely absent
+    nested association permits canonical flat legacy reconstruction; present
+    malformed state is normalized to a non-root marker and never promoted.
 12. Direct shell reads of the generic root catalog are removed.
 13. Invalid role writes fail at admission.  Malformed persisted identities stay
     absent from root catalogs without error swallowing or mutation.

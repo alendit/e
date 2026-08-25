@@ -1701,31 +1701,101 @@ bodies are reconstructed by the later context consumer from session entries."
         (setq marker (e-session--message-assistant-marker message))))
     marker))
 
+(defconst e-session--invalid-board-association
+  '(:invalid-board-association t)
+  "Bounded internal marker for a present malformed board association.")
+
+(defun e-session--board-association-keys-valid-p (association)
+  "Return non-nil when ASSOCIATION contains only its bounded unique keys."
+  (let ((tail association)
+        seen
+        (valid t))
+    (while (and valid tail)
+      (let ((key (pop tail)))
+        (setq valid (and (memq key '(:board-id :principal :association-role))
+                         (not (memq key seen))))
+        (push key seen)
+        (pop tail)))
+    valid))
+
+(defun e-session--valid-board-association-p (association)
+  "Return non-nil when ASSOCIATION has the complete durable board shape."
+  (and (e-session--keyword-plist-shape-p association)
+       (e-session--board-association-keys-valid-p association)
+       (stringp (plist-get association :board-id))
+       (stringp (plist-get association :principal))
+       (or (not (plist-member association :association-role))
+           (member (plist-get association :association-role)
+                   '("owner" "participant")))))
+
+(defun e-session--normalize-board-association (association)
+  "Return a bounded normalized representation of present ASSOCIATION."
+  (if (e-session--valid-board-association-p association)
+      (copy-tree association)
+    (copy-tree e-session--invalid-board-association)))
+
+(defun e-session--projected-board-association (projection)
+  "Return normalized board association from persisted PROJECTION.
+The nested representation is authoritative when its key is present.  Flat
+identity mirrors reconstruct only the canonical legacy shape in its absence."
+  (if (plist-member projection :board-state)
+      (let ((state (plist-get projection :board-state))
+            (board-id (plist-get projection :board-id))
+            (principal (plist-get projection :principal)))
+        ;; Historical indexes projected all three fields as JSON null for an
+        ;; ordinary non-board session.  Preserve only that exact absence shape;
+        ;; a null nested value beside either non-null mirror is malformed.
+        (if (and (null state) (null board-id) (null principal))
+            nil
+          (e-session--normalize-board-association state)))
+    (let ((board-id (plist-get projection :board-id))
+          (principal (plist-get projection :principal)))
+      (if (and (null board-id) (null principal))
+          nil
+        (e-session--normalize-board-association
+         (list :board-id board-id :principal principal))))))
+
+(defun e-session-board-association (session)
+  "Return SESSION's normalized whole board association, or nil when absent."
+  (cond
+   ((plist-member session :board-session-state)
+    (e-session--normalize-board-association
+     (plist-get session :board-session-state)))
+   ((plist-member session :board-state)
+    (e-session--normalize-board-association
+     (plist-get session :board-state)))
+   (t nil)))
+
+(defun e-session-board-association-invalid-p (association)
+  "Return non-nil when ASSOCIATION is the bounded malformed-state marker."
+  (equal association e-session--invalid-board-association))
+
 (defun e-session--session-index-entry (store session)
   "Return public index metadata for SESSION in STORE."
   (e-session--refresh-file-field store session)
-  (list :id (plist-get session :id)
-        :name (plist-get session :name)
-        :summary (plist-get session :summary)
-        :metadata (plist-get session :metadata)
-        :title (e-session--display-title-for-session session)
-        :message-count (or (plist-get session :message-count) 0)
-        :created-at (plist-get session :created-at)
-        :updated-at (plist-get session :updated-at)
-        :updated-seq (plist-get session :updated-seq)
-        :last-message-at (or (plist-get session :last-message-at)
-                             (e-session--last-message-at session))
-        :latest-assistant-marker
-        (or (plist-get session :latest-assistant-marker)
-            (e-session--latest-assistant-marker session))
-        :board-id
-        (plist-get (plist-get session :board-session-state) :board-id)
-        :principal
-        (plist-get (plist-get session :board-session-state) :principal)
-        :board-state
-        (copy-tree (plist-get session :board-session-state))
-        :file (plist-get session :file)
-        :loaded (plist-get session :loaded)))
+  (let* ((state (e-session-board-association session))
+         (entry
+          (list :id (plist-get session :id)
+                :name (plist-get session :name)
+                :summary (plist-get session :summary)
+                :metadata (plist-get session :metadata)
+                :title (e-session--display-title-for-session session)
+                :message-count (or (plist-get session :message-count) 0)
+                :created-at (plist-get session :created-at)
+                :updated-at (plist-get session :updated-at)
+                :updated-seq (plist-get session :updated-seq)
+                :last-message-at (or (plist-get session :last-message-at)
+                                     (e-session--last-message-at session))
+                :latest-assistant-marker
+                (or (plist-get session :latest-assistant-marker)
+                    (e-session--latest-assistant-marker session))
+                :board-id (plist-get state :board-id)
+                :principal (plist-get state :principal)
+                :file (plist-get session :file)
+                :loaded (plist-get session :loaded))))
+    (when (plist-member session :board-session-state)
+      (setq entry (plist-put entry :board-state state)))
+    entry))
 
 (defun e-session--normalize-turn-options (options)
   "Return canonical session turn OPTIONS."
@@ -1958,7 +2028,7 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
       ("board-session-state"
        (when session
          (plist-put session :board-session-state
-                    (copy-tree (plist-get record :board-state)))
+                    (e-session--projected-board-association record))
          (e-session--touch store session timestamp)))
       ("board-messages-cleared"
        (when session
@@ -2297,40 +2367,39 @@ This explicit operation is the only checkpoint-less full-journal replay path."
 
 (defun e-session--index-entry-session (store entry)
   "Return an unloaded session stub from index ENTRY in STORE."
-  (let ((id (plist-get entry :id)))
+  (let ((id (plist-get entry :id))
+        (association (e-session--projected-board-association entry)))
     (when id
-      (e-session--initialize-list-state
-       (list :id id
-             :metadata
-             (e-session--normalize-metadata-for-replay
-              (plist-get entry :metadata))
-             :session-events nil
-             :messages nil
-             :activity-events nil
-             :branch-summaries nil
-             :current-branch nil
-             :compactions nil
-             :provider-anchors nil
-             :process-reports nil
-             :turn-options nil
-             :created-at (plist-get entry :created-at)
-             :updated-at (plist-get entry :updated-at)
-             :updated-seq (or (plist-get entry :updated-seq) 0)
-             :name (plist-get entry :name)
-             :summary (plist-get entry :summary)
-             :message-count (or (plist-get entry :message-count) 0)
-             :last-message-at (plist-get entry :last-message-at)
-             :board-id (plist-get entry :board-id)
-             :principal (plist-get entry :principal)
-             :board-session-state
-             (or (copy-tree (plist-get entry :board-state))
-                 (when (and (plist-get entry :board-id)
-                            (plist-get entry :principal))
-                   (list :board-id (plist-get entry :board-id)
-                         :principal (plist-get entry :principal))))
-             :file (or (plist-get entry :file)
-                       (e-session--session-file store id))
-             :loaded nil)))))
+      (let ((session
+             (list :id id
+                   :metadata
+                   (e-session--normalize-metadata-for-replay
+                    (plist-get entry :metadata))
+                   :session-events nil
+                   :messages nil
+                   :activity-events nil
+                   :branch-summaries nil
+                   :current-branch nil
+                   :compactions nil
+                   :provider-anchors nil
+                   :process-reports nil
+                   :turn-options nil
+                   :created-at (plist-get entry :created-at)
+                   :updated-at (plist-get entry :updated-at)
+                   :updated-seq (or (plist-get entry :updated-seq) 0)
+                   :name (plist-get entry :name)
+                   :summary (plist-get entry :summary)
+                   :message-count (or (plist-get entry :message-count) 0)
+                   :last-message-at (plist-get entry :last-message-at)
+                   :board-id (plist-get entry :board-id)
+                   :principal (plist-get entry :principal)
+                   :file (or (plist-get entry :file)
+                             (e-session--session-file store id))
+                   :loaded nil)))
+        (when association
+          (setq session
+                (plist-put session :board-session-state association)))
+        (e-session--initialize-list-state session)))))
 
 (defun e-session--put-index-entry (store entry)
   "Add index ENTRY to STORE as an unloaded session."

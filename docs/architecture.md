@@ -222,7 +222,13 @@ Board-session association state is a bounded board id and principal plus an
 optional `owner`/`participant` association role. Chat service establishes the
 role for new associations and owns user-facing root classification; generic
 session root lineage remains a separate concern.  Role-absent legacy records
-use only the localized chat-service compatibility inference.  Presentation
+use only the localized chat-service compatibility inference. At persistence
+ingress, `e-session` treats nested association-key presence as authoritative,
+normalizes the complete bounded shape, and maps malformed presence to a
+non-root internal marker without rewriting durable input; flat identity mirrors
+reconstruct legacy state only when the nested key is absent. The exact
+historical triple-null nested/id/principal projection remains no association;
+null nested state with a non-null mirror is malformed. Presentation
 surfaces that select chats consume the chat-service root catalog rather than
 reconstructing ownership.
 
