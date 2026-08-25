@@ -74,6 +74,38 @@
        :type 'e-session-persistence-error)
       (should-not encoded))))
 
+(ert-deftest e-session-persistence-test-default-node-budget-accepts-bounded-checkpoint ()
+  "The structural guard accommodates a valid bounded checkpoint manifest."
+  (let* ((store (e-session-store-create))
+         (session-id "large-checkpoint"))
+    (e-session-create store :id session-id)
+    ;; Facts are retained independently of the recent board tail.  This is the
+    ;; same bounded union shape that exposed the too-small default node limit.
+    (dotimes (index 73)
+      (e-session-append-board-message
+       store session-id
+       (list :id (format "fact-%03d" index) :kind 'fact)))
+    (dotimes (index 256)
+      (e-session-append-board-message
+       store session-id
+       (list :id (format "activity-%03d" index) :kind 'activity)))
+    (dotimes (index 1100)
+      (e-session-append-message
+       store session-id
+       (list :id (format "entry-%04d" index)
+             :role 'user
+             :content "x")))
+    (let* ((manifest (e-session-checkpoint-manifest store session-id))
+           (request (list :op "checkpoint" :sessions (vector manifest))))
+      (should (= (length (plist-get manifest :board-message-identities)) 329))
+      (should (= (length (plist-get manifest :entry-ids)) 1100))
+      (should (< (string-bytes (json-encode request))
+                 e-session-persistence-command-byte-limit))
+      (should-not
+       (let ((e-session-persistence-command-node-limit 4096))
+         (e-session-persistence--command-within-budget-p request)))
+      (should (e-session-persistence--command-within-budget-p request)))))
+
 (ert-deftest e-session-persistence-test-json-error-never-enters-outbox ()
   "Opaque runtime state fails before it becomes an unsettled retry obligation."
   (require 'e-board-runtime)

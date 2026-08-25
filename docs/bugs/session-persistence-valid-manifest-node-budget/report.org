@@ -1,0 +1,20 @@
+#+title: Valid Session Checkpoint Exceeds Structural Command Budget
+#+startup: overview
+
+* Report
+
+While Grimoire Daily was running, the composer repeatedly displayed:
+
+#+begin_example
+Error (e-session-persistence): Invalid session persistence command:
+"Writer command exceeds pre-encoding budget"
+#+end_example
+
+The affected chat remained in =waiting for provider=, but its derived session
+checkpoint could not advance.
+
+Expected behavior: a semantically valid checkpoint that is comfortably below
+the encoded command byte limit is accepted by persistence preflight.  Normal
+session and board growth must not produce repeated terminal persistence
+warnings solely because the Lisp representation has more nodes than an
+undersized structural guard permits.

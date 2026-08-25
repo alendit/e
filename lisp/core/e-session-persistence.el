@@ -50,8 +50,10 @@
   :type 'integer
   :group 'e-session-persistence)
 
-(defcustom e-session-persistence-command-node-limit 4096
-  "Maximum Lisp value nodes inspected before encoding one writer command."
+(defcustom e-session-persistence-command-node-limit 32768
+  "Maximum Lisp value nodes inspected before encoding one writer command.
+This remains a structural allocation guard while allowing valid checkpoint
+manifests to reach the independent encoded-byte limit."
   :type 'integer
   :group 'e-session-persistence)
 
