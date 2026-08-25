@@ -1,0 +1,290 @@
+#+title: Review 003 — Chat Resume Private Board Participants
+#+startup: overview
+
+* Decision
+
+Not at fixed point.
+
+Reviewed revision: =4002456f=.
+Review baseline: =e604aa97=.
+Remediation commit: =4002456f=.
+Review mode: incremental with whole-scope confirmation.
+
+F001, F002, and F003 remain closed.  F004's previously reproduced partial and
+scalar cases are corrected, but its whole-shape persistence requirement remains
+incomplete for one adjacent partition: the JSON reader maps both nested JSON
+=null= and an empty nested object to Lisp nil.  When both flat mirrors are null,
+the persistence boundary therefore cannot distinguish the accepted historical
+triple-null non-board projection from a present malformed empty association.
+
+* Prior-finding dispositions
+
+** F001 — Generic Canvas advertises private participants
+
+Required boundary: Canvas chat selection and existence checks consume the
+chat-service root catalog, while generic session lineage remains generic.
+
+Current proof:
+
+- =e-canvas--read-session= and =e-canvas--target-session= consume
+  =e-chat-service-root-session-list=.
+- No presentation shell or layer calls =e-harness-root-session-list= directly.
+- The composed Canvas regression creates a production owner and participant,
+  offers only the owner, attaches to it, and leaves the participant untouched.
+- Generic non-board roots remain visible in the generic service catalog while
+  board-only chat navigation retains its board-identity filter.
+
+Disposition: closed.
+
+** F002 — Store-local session ids do not establish board ownership
+
+Required boundary: new associations carry an explicit durable role; canonical
+role-absent data remains readable; malformed or ambiguous state is not promoted.
+
+Current proof:
+
+- Production board and participant constructors write =owner= and =participant=
+  respectively.
+- Explicit role is authoritative in the service predicate.
+- The cross-store same-id regression lists only the owner while preserving
+  direct access to the participant.
+- Role state survives the Elisp index, checkpoint records, Node checkpoint and
+  reindex path, index stubs, and full restart.
+- Canonical role-absent board identity still uses the localized historical
+  principal/session-id inference.
+
+Disposition: closed for valid and canonical legacy associations.  The remaining
+JSON-shape ambiguity is tracked as incomplete F004 evidence rather than a
+recurrence of the cross-store ownership defect.
+
+** F003 — Regression evidence overclaims public coverage
+
+Required boundary: production owner-level and composed regressions cover the
+affected selectors without freezing incidental whole-plist layout.
+
+Current proof:
+
+- Candidate and index tests use production constructors.
+- Focused regressions cover same-store and cross-store classification, index
+  replay, Canvas attachment, candidates, latest-session, and direct overview.
+- Existing public tests cover resume/switch, active sessions, context targets,
+  multi-instance and shared-store routing, ordering, fresh-chat construction,
+  and restart.
+- Fresh-chat and restart tests assert board id, principal, and role as separate
+  contracts rather than asserting a whole plist.
+
+Disposition: closed, except that the new persisted malformed-state test still
+misses the exact empty-object/triple-null partition described below.
+
+** F004 — Present malformed board state falls through to legacy mirrors
+
+Required boundary: nested-key presence is authoritative; only genuine nested
+absence permits flat legacy reconstruction; malformed state is bounded,
+non-root, isolated, and non-mutating.
+
+Current proof:
+
+- =e-session--projected-board-association= branches on =plist-member= rather
+  than nested-state truthiness.
+- A present valid association is normalized as one complete shape.
+- Flat mirrors are consulted only when =:board-state= is absent.
+- Partial nested state cannot borrow a flat principal.
+- Scalar, list, unknown-role, duplicate/extra-key, and incomplete states map to
+  one bounded invalid marker.
+- =e-chat-service--root-session-p= consumes only
+  =e-session-board-association= and no longer merges nested and flat fields.
+- The previous direct reproducer now returns:
+  =nil= for partial state, =nil= for scalar state, =t= for canonical legacy
+  state, and =t= for a generic non-board session.
+- Actual index-store coverage proves malformed entries do not abort listing and
+  leaves =index.json= byte-for-byte unchanged.
+
+The exact empty-object case remains unresolved because physical JSON type is
+lost before the new normalizer runs.
+
+Disposition: incomplete.
+
+* Confirmed findings
+
+** P3 F005 — Empty nested JSON state aliases the historical null projection
+
+Classification: incomplete closure of F004.
+
+Proof:
+
+The accepted historical non-board index representation is:
+
+#+begin_src json
+{"board-state": null, "board-id": null, "principal": null}
+#+end_src
+
+A present empty association is:
+
+#+begin_src json
+{"board-state": {}, "board-id": null, "principal": null}
+#+end_src
+
+=e-session--json-read-file= parses with plist objects and =:null-object nil=.
+An empty JSON object also becomes an empty plist, which is Lisp nil.  The two
+physical inputs consequently become the identical value:
+
+#+begin_example
+(:board-state nil :board-id nil :principal nil)
+#+end_example
+
+=e-session--projected-board-association= must preserve the historical
+triple-null case, so it returns nil for both.  The malformed empty association
+is therefore treated as generic non-board state instead of the bounded invalid
+marker.
+
+The independent reproducer parsed both JSON objects and returned:
+
+#+begin_example
+((:id "null"  :board-state nil :board-id nil :principal nil)
+ (:id "empty" :board-state nil :board-id nil :principal nil)
+ nil
+ nil)
+#+end_example
+
+The persisted-index regression includes =present-empty= only with non-null flat
+mirrors.  Those mirrors make it distinguishable from triple-null, so the test
+does not exercise this exact partition.
+
+Owner and principled correction:
+
+The persistence parser or index-ingress adapter must preserve enough JSON type
+information to distinguish JSON null from an empty object before board
+association normalization.  The historical null projection may map to absence;
+a present object, including an empty object, must pass whole-shape validation
+and map to the bounded invalid marker when incomplete.
+
+Do not remove historical triple-null compatibility, infer validity from flat
+mirrors, special-case a session id/title, or catch the ambiguity in a picker.
+Those alternatives would either break existing indexes or move persistence
+semantics into presentation.
+
+Required regression:
+
+Load one real =index.json= containing both exact entries above alongside a valid
+owner, participant, and generic session.  Prove:
+
+- triple-null remains generic non-board;
+- empty nested object becomes the invalid marker and is not a chat root;
+- neither entry affects other catalog rows;
+- the index remains byte-for-byte unchanged;
+- valid, legacy, partial, scalar, list, unknown-role, and extra-key partitions
+  remain unchanged.
+
+* Sequential coverage ledger
+
+| Contract | Dependencies inspected | Dimensions | Evidence | Test kind | Status |
+|----------+------------------------+------------+----------+-----------+--------|
+| F001 Canvas closure | Canvas and chat service | ownership, public composition | production Canvas regression | contract | cleared |
+| F002 explicit roles | chat constructors and session declaration | admission, lifetime | owner/participant written before advertisement | contract | cleared |
+| F002 cross-store identity | separate stores and service catalog | provenance, substitutability | same-id production regression | contract | cleared |
+| F003 selector evidence | candidate, latest, overview, Canvas, existing public suites | composition, assertion scope | production semantic regressions | contract | cleared |
+| F004 nested authority | projected association helper | representation authority | =plist-member= selects nested representation as a whole | contract | cleared |
+| F004 no nested/flat borrowing | session ingress and service predicate | duplicated authority | prior reproducer now returns nil | contract | cleared |
+| F004 malformed isolation | index stub and service root catalog | recovery, boundedness | persisted partial/scalar/list/role/key partitions | contract | cleared |
+| Historical triple-null index | JSON reader and association projection | compatibility | exact null projection remains absent | contract | cleared |
+| Empty-object versus triple-null | JSON reader before normalization | physical type, malformed recovery | both parse identically and both project absent | contract | candidate F005 |
+| Journal ingress | record presence and replay normalization | replay, recovery | no state record stays absent; valid/legacy records normalize; malformed records retain explicit non-root presence | contract | cleared |
+| Persistence non-mutation | index load and journal replay | side effects | index readback unchanged; replay appends no records | contract | cleared |
+| Elisp index projection | normalized session state | adapter equivalence | complete association or bounded marker projected | contract | cleared |
+| Checkpoint and Node projection | manifest, compacted record, reindex | restart equivalence | role-bearing association retained by exact gate and focused test | contract | cleared |
+| Invalid write admission | session declaration | admission before mutation | invalid role rejected before session mutation | contract | cleared |
+| Generic non-board visibility | generic root, service root, board-only consumers | compatibility | absent association remains generic; chat shell filters pre-board sessions | contract | cleared |
+| Generic lineage | session root predicate | dependency direction | subagent/task lineage unchanged | contract | cleared |
+| Resume/switch/active/context | shared candidate path | public composition | filtered candidate catalog | contract | cleared |
+| Latest and overview | direct service consumers | public composition | focused regressions | contract | cleared |
+| Canvas and Org Canvas | presentation consumers | dependency direction | service catalog used consistently | contract | cleared |
+| Multi-instance/shared-store | service filtering and instance ownership | duplication, ordering | existing tests plus cross-store role test | contract | cleared |
+| Private participant durability | direct service lookup/open | lifetime | filtering is read-only and participant remains addressable | contract | cleared |
+| Ordering and performance | sorted generic catalog and bounded normalization | ordering, complexity | stable linear filtering; association validation bounded to three fields | contract | cleared |
+| Compatibility locality/removability | session ingress and chat service | legacy fallback | localized except unresolved physical null/empty distinction | contract | candidate F005 |
+| Architecture documentation | architecture and investigation | ownership, state lifetime | implementation model documented; empty-object claim is currently too broad | contract | candidate F005 |
+
+No required coverage cell remains unknown.
+
+* Verification evidence
+
+Independent focused reproducer after F004 remediation:
+
+#+begin_example
+partial nested state  -> nil
+scalar nested state   -> nil
+canonical legacy root -> t
+generic non-board     -> t
+#+end_example
+
+Independent focused test command covered malformed index normalization,
+invalid-role admission, cross-store same-id reuse, Canvas composition,
+candidates, latest, overview, and Node checkpoint persistence:
+
+- 9 passed;
+- 0 unexpected.
+
+Independent JSON-type reproducer:
+
+- nested JSON null and empty object parsed to identical plist values;
+- both projected to nil association.
+
+Exact clean-revision gate supplied for =4002456f=:
+
+- =eldev test=: 2,323 tests; 2,321 expected; 0 unexpected; 2 conditional
+  skips;
+- warning-as-error compilation of =e-session.el= and =e-chat-service.el=:
+  passed;
+- =git diff --check=: passed.
+
+The green gate does not cover or negate F005.
+
+* Progress and fixed-point assessment
+
+The current revision closes the reported Daily duplication, the Canvas bypass,
+cross-store same-id ambiguity, and the previously reproduced partial/scalar
+malformed-state failures.  Ownership, state lifetime, dependency direction,
+public selectors, and normal persistence are substantially improved.
+
+Fixed point is not reached because the persistence boundary cannot yet
+distinguish the one accepted historical JSON-null projection from a present
+empty JSON object.  This leaves one malformed physical representation silently
+classified as generic non-board state and makes the investigation's
+whole-shape claim too broad.
+
+After F005 is corrected and the exact revision passes its gate, a fresh
+independent Tick is required.
+
+* Architecture self-check
+
+1. The package is materially better than the baseline, but one malformed
+   persisted shape still bypasses whole-shape validation.
+2. It moves toward explicit durable board association ownership with one
+   service-owned navigation policy.
+3. Owner/participant role is stable.  Historical JSON null is a real
+   compatibility case; empty-object handling is uncertain only because ingress
+   erases their physical distinction.
+4. =e-session= owns persistence shape and normalization; chat service owns role
+   construction and root semantics; presentation consumes the service.
+5. Presentation coupling is reduced.  F005 is a persistence representation
+   issue, not a reason to add shell coupling.
+6. Dependency direction is correct from presentation to service to session
+   contracts.
+7. Normalization and catalog reads are side-effect free.  The correction should
+   remain at parse/ingress rather than adding presentation effects.
+8. Association role has session/board lifetime and is the smallest durable fact
+   that resolves cross-store ownership.
+9. Catalog filtering is linear and association validation is constant-bounded.
+   Preserving null/object type at ingress need not change that complexity.
+10. Owner and participant roles are semantically real and substitutable.
+    Empty-object aliasing violates the physical representation contract.
+11. Canonical role-absent and historical triple-null data require compatibility.
+    The compatibility path should accept only actual null, not every value that
+    becomes Lisp nil.
+12. No presentation fallback remains.  The remaining obsolete behavior is the
+    parser-level collapse of empty object into the null compatibility case.
+13. Invalid role writes fail before mutation and most malformed reads isolate
+    correctly.  Empty object is still silently downgraded to absence.
+14. Tests cover owner and public behavior well, but the malformed persisted
+    partition must place exact null and empty-object entries with identical flat
+    mirrors in the same real index fixture.
