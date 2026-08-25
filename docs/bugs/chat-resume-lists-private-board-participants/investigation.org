@@ -3,9 +3,11 @@
 
 * Review status
 
-[[file:reviews/001.org][Review 001]] found three actionable defects.  Their owner-level remediation
-is ready for an exact-revision gate and fresh independent review.  The bug
-remains open until a new Tick establishes the fixed-point criteria.
+[[file:reviews/001.org][Review 001]] found three actionable defects.  Their first remediation passed
+the exact-revision gate.  [[file:reviews/002.org][Review 002]] closed the visible selectors and
+cross-store collision but found malformed nested state still conflated with
+absent legacy state.  The bug remains open pending F004 remediation and a fresh
+zero-finding Tick.
 
 * Summary
 

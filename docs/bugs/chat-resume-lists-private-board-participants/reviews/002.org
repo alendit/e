@@ -1,0 +1,233 @@
+#+title: Review 002 — Chat Resume Private Board Participants
+#+startup: overview
+
+* Decision
+
+Not at fixed point.
+
+Reviewed revision: =0c229e14=.
+Baseline before remediation: =3369983c=.
+Remediation commits: =68fe7934= and =0c229e14=.
+Review mode: incremental.
+
+F001 and F003 are closed.  F002's original cross-store collision is closed, but
+its malformed/ambiguous persistence requirement remains incomplete: a present
+invalid nested board state can be silently completed from flat legacy fields
+and promoted as a root.  A scalar nested state also raises
+=wrong-type-argument= from the catalog predicate.
+
+* Prior-finding dispositions
+
+** F001 — Generic Canvas advertises private participants
+
+Required boundary: Canvas chat selection and existence checks must consume the
+chat-service user-facing root catalog.
+
+Current proof:
+
+- =e-canvas--read-session= and =e-canvas--target-session= both call
+  =e-chat-service-root-session-list=.
+- No presentation shell or layer still calls
+  =e-harness-root-session-list= directly.
+- =e-canvas-test-attach-current-buffer-to-selected-session= creates a board and
+  participant through production constructors, proves only the owner is
+  offered, attaches to that owner, and proves the participant remains untouched.
+
+Disposition: closed.
+
+** F002 — Store-local session ids do not establish board ownership
+
+Required boundary: new board associations carry an unambiguous durable role;
+canonical role-absent data remains readable without journal migration;
+malformed or ambiguous state must not be promoted.
+
+Current proof:
+
+- =e-chat-service-create-board= writes =owner= and
+  =e-chat-service-create-participant= writes =participant= before installing
+  the corresponding binding.
+- =e-session-declare-board-state= validates the optional role before mutating
+  the session.
+- Full board association state flows through the Elisp index, checkpoint
+  manifest, checkpoint replay record, Node index rebuild, and index-stub replay.
+- The cross-store same-id regression proves the owner remains listed and the
+  same-id private participant remains directly addressable but unlisted.
+- Canonical role-absent index data still follows the localized historical
+  principal/session-id inference.
+
+The malformed-state partition is incomplete.  Index replay and service
+classification use truthiness and per-field fallback rather than representation
+presence and whole-shape validity.  A reproducer silently promoted a partial
+nested state using its flat principal and raised on a scalar state.
+
+Disposition: incomplete.
+
+** F003 — Regression evidence overclaims public coverage
+
+Required boundary: production construction plus owner-level and composed
+regressions must cover affected public selectors without freezing incidental
+plist layout.
+
+Current proof:
+
+- Candidate and indexed tests now use production board/participant constructors.
+- Focused tests cover production role creation, same-store filtering,
+  cross-store same-id reuse, new and legacy index replay, Canvas attachment,
+  candidates, latest-session, and direct-harness overview.
+- Fresh-chat and restart integration tests assert board id, principal, and owner
+  role independently instead of asserting the complete plist.
+- Existing worker, pre-board, ordering, shared-store, resume/switch, active
+  session, and multi-instance tests remain applicable.
+- The full exact-revision gate passed after two stale whole-plist assertions
+  were corrected.
+
+Disposition: closed, except that malformed-state evidence must be strengthened
+as part of the remaining F002 correction.
+
+* Confirmed findings
+
+** P2 F004 — Present malformed board state falls through to legacy mirrors
+
+Classification: incomplete prior closure of F002.
+
+Proof:
+
+=e-session--index-entry-session= reconstructs board state with a truthy =or=:
+
+#+begin_src emacs-lisp
+(or (copy-tree (plist-get entry :board-state))
+    (when (and (plist-get entry :board-id)
+               (plist-get entry :principal))
+      ...))
+#+end_src
+
+This collapses a missing =:board-state= key and a present nil or empty invalid
+value into the same legacy case.
+
+=e-chat-service--root-session-p= then selects nested and flat fields
+independently:
+
+#+begin_src emacs-lisp
+(board-id (or (plist-get state :board-id)
+              (plist-get session :board-id)))
+(principal (or (plist-get state :principal)
+               (plist-get session :principal)))
+#+end_src
+
+Consequently, a catalog entry carrying a partial nested owner plus a flat
+principal is advertised as a root.  A scalar =:board-state= reaches =plist-get=
+and raises =wrong-type-argument=, allowing one malformed entry to abort catalog
+traversal.
+
+The independent reproducer returned exactly:
+
+#+begin_example
+(t (:error wrong-type-argument))
+#+end_example
+
+This contradicts the investigation claim that explicit malformed or partial
+persisted state remains non-root.
+
+Owner and principled correction:
+
+=e-session= owns the durable association schema and must preserve the
+distinction between an absent legacy representation and a present invalid
+representation at index and journal ingress.  A present association must be
+normalized or rejected as one bounded whole: string board id, string principal,
+and absent or valid scalar role.  Flat board-id/principal mirrors may reconstruct
+state only when the nested representation key is genuinely absent.
+
+=e-chat-service= should consume one normalized association rather than combining
+nested and flat fields independently.  Explicit invalid state must not fall into
+legacy inference.  Do not catch errors in pickers, treat every malformed value
+as legacy, or add another shell-side filter.
+
+Required regressions:
+
+- missing nested state plus canonical flat legacy fields remains readable;
+- present nil or empty nested state plus flat fields is not promoted;
+- present partial nested state cannot borrow fields from flat mirrors;
+- scalar or list-invalid nested state does not abort the root catalog;
+- valid explicit owner/participant and canonical legacy cases remain unchanged;
+- malformed cases pass through an actual index-store/catalog boundary, not only
+  the private predicate.
+
+* Sequential coverage ledger
+
+| Contract | Dependencies inspected | Dimensions | Evidence | Test kind | Status |
+|----------+------------------------+------------+----------+-----------+--------|
+| F001 Canvas closure | chat service, Canvas selection and attachment | ownership, public composition | production composed Canvas regression | contract | cleared |
+| F002 new owner/participant writes | chat constructors, session declaration | admission, mutation order, lifetime | validated role persisted before binding installation | contract | cleared |
+| F002 cross-store same-id | service catalog, separate stores | identity, provenance | focused production regression | contract | cleared |
+| F002 role absence versus invalid presence | index ingress, service predicate | compatibility, malformed recovery | partial state promoted; scalar raises | contract | candidate F004 |
+| F003 production evidence | service, Canvas, candidate, latest, overview | owner/public composition | focused semantic tests | contract | cleared |
+| Elisp journal/index projection | session declaration and index entry | representation, bounded state | full association copied | contract | cleared |
+| Checkpoint/replay projection | manifest and replay records | restart equivalence | state copied through checkpoint records | contract | cleared |
+| Node writer projection | checkpoint and index rebuild | adapter equivalence | complete board state carried | contract | cleared |
+| Invalid write admission | session declaration | admission before mutation | invalid role rejected before mutation | contract | cleared |
+| Generic non-board behavior and lineage | generic and chat root predicates | compatibility, ownership | generic semantics unchanged | contract | cleared |
+| Resume/switch/active/context/latest/overview selectors | shared/service catalogs | public composition | focused semantic tests | contract | cleared |
+| Canvas and Org Canvas selectors | Canvas shells | dependency direction | all chat selectors consume service policy | contract | cleared |
+| Multi-instance/shared-store behavior | filtering and instance ownership | identity, duplication | prior tests plus cross-store role test | contract | cleared |
+| Ordering and cost | generic ordering, filtered catalog | performance | stable linear filtering | contract | cleared |
+| Compatibility locality | index ingress and predicate | fallback/removability | invalid presence can enter fallback | contract | candidate F004 |
+| Private participant durability | direct service lookup/open | lifetime | filtering is non-mutating | contract | cleared |
+| Architecture documentation | architecture document | ownership, state lifetime | durable role and catalog owner documented | contract | cleared |
+| Malformed-state evidence | modern-chat tests | assertion scope | persisted malformed partitions omitted | contract | candidate F004 |
+
+No required cell remains unknown.
+
+* Verification evidence
+
+- Independent focused review gate: 10 passed, 0 unexpected.
+- Independent malformed-state reproducer: partial nested owner plus flat
+  principal promoted; scalar nested state raised =wrong-type-argument=.
+- Exact clean-revision package gate for =0c229e14=: 2,322 tests, 2,320
+  expected, 0 unexpected, 2 conditional skips.
+- Warning compilation of =e-session.el=, =e-session-persistence.el=,
+  =e-chat-service.el=, and =e-canvas.el=: passed.
+- =git diff --check=: passed.
+
+The green gate does not negate F004's concrete reproducer.
+
+* Progress and fixed-point assessment
+
+The remediation closes the visible Daily duplication, Canvas bypass, and
+supported cross-store same-id case at their owning boundaries.  It also improves
+public and restart evidence.
+
+Fixed point is not reached because explicit malformed representation is not kept
+distinct from absent legacy representation.  F004 leaves duplicated nested/flat
+semantic authority and can advertise an invalid root or abort the whole catalog.
+
+After remediation and an exact-revision gate, a fresh independent Tick is
+required.
+
+* Architecture self-check
+
+1. The package is better than its baseline: normal and cross-store private
+   participants are hidden across all known selectors.
+2. It moves toward explicit durable association ownership with one chat-service
+   navigation policy.
+3. Owner/participant role is stable.  Legacy absence is real compatibility;
+   invalid presence is currently conflated with it.
+4. =e-session= owns durable association representation; chat service owns role
+   establishment and root semantics; presentation consumes the service.
+5. Presentation coupling is reduced.  F004 identifies remaining coupling
+   between two physical projections of one semantic state.
+6. Shell dependency direction is correct.  The defect is inside the stable
+   persistence-to-service boundary.
+7. Association writes stay in chat service/session persistence; catalogs remain
+   side-effect free.
+8. The role has session/board-association lifetime and is written once by normal
+   constructors.  Durability is justified by cross-store ambiguity.
+9. Normal filtering remains linear with constant bounded work.
+10. Explicit roles are real and substitutable; malformed representations violate
+    the normalized contract.
+11. Canonical role-absent data requires compatibility.  Flat fallback should
+    apply only when nested state is absent.
+12. Remove per-field fallback mixing present nested state with flat mirrors.
+13. Invalid role writes fail before mutation; malformed replay/index state can
+    still be promoted or abort listing.
+14. Main owner/public routes are covered, but malformed evidence needs actual
+    index-boundary absent/present partitions.
