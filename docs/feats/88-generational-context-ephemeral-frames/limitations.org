@@ -1,0 +1,421 @@
+#+title: Feature 88 Limitations and Experimental Handoff
+#+date: 2026-08-25
+#+startup: overview
+
+* Status
+
+Ready.  This document records limitations observed after Feature 88 and its
+request-local observation-delivery addendum were enabled in the live ChatGPT
+Codex adapter.  It is an evidence handoff for later remediation, not a design
+review, proposed architecture, or acceptance decision.
+
+* Purpose
+
+Feature 88 successfully separates durable context from one-transition
+observations and exposes request-local replacement of current-state and
+dynamic-context observations.  The live experiments below also exposed two
+limits that dominate ordinary use:
+
+1. a turn that calls a tool does not leave a durable provider continuation
+   anchor; and
+2. a clean anchor in the ChatGPT Codex profile is useful only while its
+   connection-local WebSocket state remains alive.
+
+The experiments further distinguish provider continuation from provider
+prompt-cache accounting.  An incremental request can send only one new input
+message while the provider still reports and bills the preceding chain as
+input tokens.  A successful =previous_response_id= continuation therefore
+does not imply a large =cached_input_tokens= value.
+
+This distinction matters for remediation.  The following are separate
+properties:
+
+#+begin_example
+semantic visibility
+  what current state and tool observations the model can see
+
+anchor eligibility
+  whether a response is safe to retain as a future continuation point
+
+transport continuation
+  whether the next request can send only its delta with previous_response_id
+
+prompt-cache accounting
+  how many input tokens the provider reports as cached
+
+response retention
+  whether a response ID remains resolvable after connection loss
+#+end_example
+
+* Systems and sessions inspected
+
+All observations came from persisted session JSONL, checkpoints, and the
+supported bounded live chat probe.  The running Emacs and the sessions were not
+mutated during inspection.
+
+The directly compared sessions were:
+
+| Session | Shape | Purpose |
+|---------+-------+---------|
+| =20260825T115804-25620514759a= | adjusted adapter, attached =01-semantic-ir.md= canvas | primary six-turn experiment |
+| =20260824T221013-87a83771367e= | earlier adapter, attached =01-semantic-ir.md= canvas | closest pre-addendum canvas baseline |
+| =20260825T063020-a293c4e8049a= | earlier adapter, same document without a canvas | manual document-access baseline |
+
+The persisted store inspected was:
+
+#+begin_example
+~/.emacs.d/.local/cache/e/sessions/sessions/
+#+end_example
+
+The prompts and edited passages were not byte-for-byte identical across all
+three sessions.  Each session did follow the same useful three-turn pattern:
+summarize the document, edit one focused passage, then produce an exact
+tool-free response.  The figures below are observational comparisons rather
+than a controlled provider benchmark.
+
+* Experimental results
+
+** Baseline comparison
+
+| Measure | Adjusted canvas | Earlier canvas | No canvas |
+|---------+-----------------+----------------+-----------|
+| Provider requests | 7 | 7 | 24 |
+| Tool calls | 4 | 4 | 24 |
+| Processed input tokens | 116,489 | 116,244 | 348,917 |
+| Cached input tokens | 67,072 | 87,040 | 301,056 |
+| Cached share | 57.5% | 74.8% | 86.2% |
+| Summed provider-request time | 40.572 s | 32.688 s | 141.884 s |
+| Durable provider anchors after three turns | 1 | 0 | 0 |
+
+The no-canvas session's high cached share is misleading in isolation.  Its 21
+incremental tool follow-ups repeatedly reused a large prefix, but it processed
+about three times as many input tokens and took about three and a half times as
+much provider-request time as the adjusted canvas session.  It made 17 =read=
+calls, including six failed reads, plus discovery, buffer, save, and edit tool
+calls.  Both canvas sessions needed only one =edit=, one
+=resource_sync_status=, and two =process_marker= calls; all four calls
+succeeded.
+
+The canvas remains materially useful.  The limitations below concern the
+continuation and cache behavior around that useful context source, not whether
+the canvas should exist.
+
+** Adjusted session turns one through three
+
+The first three adjusted turns produced three distinct current-state
+fingerprints.  Every request reported:
+
+#+begin_example
+observation-delivery: request-local-replaceable
+replaceable-current-state-present: true
+provider-anchor-safety: advance-eligible
+#+end_example
+
+The top-level request message counts were =26 → 28 → 30=.  Each completed
+turn added only its user and assistant messages.  Raw function calls, provider
+replay items, and tool results did not accumulate in the next top-level full
+request.  This is evidence that ephemeral tool bundles disappeared from the
+semantic projection as intended.
+
+Turn one summarized the attached document and called =process_marker=.  The
+immediate follow-up used =previous_response_id= incrementally, but the tool
+result and its final descendant were contaminated and no durable anchor was
+retained.
+
+Turn two edited the canvas and called =edit=, =resource_sync_status=, and
+=process_marker=.  All follow-ups used the immediate response chain
+incrementally, but no durable anchor was retained for the following user turn.
+
+Turn three explicitly used no tools.  Its response produced one durable
+provider anchor.  That anchor was present in both the JSONL journal and the
+checkpoint with:
+
+#+begin_example
+observation-delivery: request-local-replaceable
+provider: openai adapter / codex profile
+model: gpt-5.6-sol
+#+end_example
+
+This was the first live evidence that a changing attached canvas no longer
+prevents a clean response from advancing the durable anchor.
+
+** Turns four through six
+
+Turns four through six isolated connection lifetime from observation
+replacement.  Before each turn, the canvas observation changed and produced a
+new current-state fingerprint.  Each prompt required an exact response without
+tools or actions.
+
+| Turn | Delay from prior completion | Socket | Continuation | Request messages | Cached / input tokens | Fallback |
+|------+-----------------------------+--------+--------------+------------------+-----------------------+----------|
+| 4 | 17 min 28 s | new =e-ws-4= | full | 32 | 2,560 / 15,555 | =new-connection= |
+| 5 | 33 min 34 s | new =e-ws-5= | full | 34 | 0 / 15,613 | =new-connection= |
+| 6 | 25 s | reused =e-ws-5= | used | 1 | 2,560 / 15,660 | none |
+
+Turn four found the turn-three durable anchor, but the earlier WebSocket had
+already closed.  Diagnostics reported =provider-anchor-present: true= while
+also reporting =provider-continuation: full=,
+=previous-response-id-present: nil=, =websocket-request-mode: full=, and
+=websocket-fallback-reason: new-connection=.  The response was correct and
+created a new clean anchor.
+
+Turn five repeated the same behavior after a longer pause.  It found the
+turn-four anchor, opened =e-ws-5=, replayed 34 input messages, and created
+another clean anchor.
+
+Turn six began 25 seconds later.  Its canvas fingerprint differed from turn
+five, yet diagnostics reported:
+
+#+begin_example
+provider-continuation: used
+previous-response-id-present: true
+provider-anchor-present: true
+websocket-request-mode: incremental
+websocket-connection-id: e-ws-5
+websocket-reused: true
+websocket-reuse-count: 1
+websocket-fallback-reason: nil
+input-message-count: 1
+#+end_example
+
+This is the positive live evidence for the request-local interface: on one
+retained socket, a new complete canvas observation replaced the prior
+observation while the request continued from the clean provider response ID.
+
+* Confirmed behavior to preserve
+
+Later remediation must preserve these working properties:
+
+1. Current-state and dynamic-context are resolved through the static,
+   kind-scoped adapter capability rather than runtime discovery.
+2. Attached canvas contents are visible as a complete request-local
+   observation and can change between continued requests.
+3. Tool call, replay, and result bundles are visible to their matching
+   follow-up and absent from the following ordinary turn.
+4. A tool-producing response ID is used only for its immediate matching
+   follow-up.
+5. Neither that response ID nor its contaminated descendant becomes a durable
+   anchor.
+6. A clean tool-free response can advance and persist an anchor despite a
+   changing canvas.
+7. A retained ChatGPT Codex WebSocket can use that anchor incrementally with
+   changed top-level instructions.
+8. Stateless/full reconstruction remains available when no usable anchor
+   exists.
+9. The canvas avoids the large read/discovery tool loop observed without an
+   attached document.
+
+* Limitation: ordinary tool use removes the cross-turn anchor
+
+The dominant limitation is not an exceptional lifecycle.  Useful agent turns
+normally call tools.
+
+Feature 88 deliberately treats =tool-result= as inherited.  A provider
+response that emits a tool call may be used for the immediate matching
+follow-up.  The tool result then exists in the provider response chain.  The
+final assistant response descending from that result remains contaminated even
+after the raw bundle disappears from the next local semantic projection.
+Neither response can safely become a durable anchor because ordinary causal
+transformer state cannot remove the inherited observation.
+
+The resulting normal path is:
+
+#+begin_example
+clean anchor A
+  → model emits tool call
+  → immediate follow-up uses tool-producing response ID
+  → tool result enters provider chain
+  → final assistant response descends from tool result
+  → no durable anchor after the turn
+  → next user turn performs full reconstruction
+#+end_example
+
+The first adjusted turn demonstrates that even a routine =process_marker=
+call is sufficient.  Its result was only =ok=, but its presence made the final
+descendant ineligible.  The edit turn demonstrates the same behavior for
+substantive tools.
+
+Thus the local ephemeral projection works while provider continuation is lost
+at the user-turn boundary.  Calling this merely a cache miss understates the
+mechanism: tool use removes durable anchor eligibility, which then forces the
+next turn onto full replay and ordinary prompt caching.
+
+For a tool-heavy harness, clean tool-free boundaries are uncommon.  The live
+sixth-turn success required deliberately constructed tool-free turns three,
+four, and five before the incremental turn.
+
+* Limitation: the ChatGPT continuation is connection-local
+
+The ChatGPT Codex profile uses Responses WebSocket mode with =store=false=.
+Its useful response lineage is held in the connection-local provider cache.
+The adapter currently retains an idle socket for:
+
+#+begin_example
+e-openai-websocket-connection-idle-seconds = 300
+#+end_example
+
+After five idle minutes, the adapter closes the socket.  Turns four and five
+show that a locally persisted anchor can still be selected after that close,
+but the selected response ID cannot be used by the new socket.  The adapter
+records =provider-anchor-present: true= and then falls back to a full request
+with =new-connection=.
+
+The five-minute close is local adapter policy.  The provider's documented
+WebSocket lifetime can be longer, but any connection loss still clears the
+connection-local cache.  The first-party
+[[https://developers.openai.com/api/docs/guides/websocket-mode][Responses WebSocket mode guide]]
+states that a new connection can recover a stored response by ID; when the
+prior response is unavailable, the caller must provide full input context.
+The ChatGPT Codex profile's =store=false= behavior therefore cannot rely on
+stored-response recovery after the connection-local cache disappears.
+
+The effective capability window is currently:
+
+#+begin_example
+clean tool-free anchor
+  + next turn before the five-minute idle close
+  + same healthy WebSocket
+  = request-local incremental continuation
+#+end_example
+
+Network failure, backend replacement, Emacs restart, or the provider's own
+connection limit can end that window earlier or later than the local idle
+timer.  A durable local anchor record does not make the remote response state
+durable.
+
+* Limitation: continuation and prompt-cache savings are different
+
+The sixth request proves transport continuation: its body contained one new
+input message and =previous_response_id=.  Its provider usage still reported
+15,660 input tokens, of which only 2,560 were cached.
+
+The first-party
+[[https://developers.openai.com/api/docs/guides/conversation-state][conversation-state guide]]
+states that previous input tokens in a =previous_response_id= chain continue
+to be billed as input tokens.  The connection-local response cache supports
+stateful, low-payload continuation; =cached_input_tokens= separately reports
+ordinary prompt-cache accounting.
+
+Consequently Feature 88 currently proves:
+
+- smaller incremental request bodies;
+- provider lineage reuse while the socket is alive; and
+- replacement of request-local instructions without inherited stale canvas
+  content.
+
+It does not currently prove:
+
+- that previous-chain tokens receive cached-input pricing;
+- a particular provider KV-cache implementation;
+- lower billed input tokens for a continued chain; or
+- a latency improvement independent of output and provider variance.
+
+The fifth and sixth exact-response requests both completed in approximately
+three seconds.  That workload is too small to demonstrate a latency difference.
+
+* Limitation: full fallback showed weaker prefix-cache hits
+
+The adjusted and earlier canvas sessions used the same number of requests and
+tool calls and processed nearly identical total input tokens.  Their observed
+prompt-cache reuse differed:
+
+| Cache source | Adjusted canvas | Earlier canvas |
+|--------------+-----------------+----------------|
+| Tool-follow-up cached input | 64,512 | 64,512 |
+| Top-level cached input | 2,560 | 22,528 |
+| Total cached input | 67,072 | 87,040 |
+
+The within-turn tool-follow-up cache total was exactly unchanged.  The entire
+observed reduction came from top-level full requests.
+
+The provider cache is opaque and the delays differed, so this experiment does
+not establish a single cause.  The result is consistent with a changed
+request-local =instructions= value breaking the reusable prefix earlier when
+full reconstruction is required.  Provider cache expiry and load may also
+contribute.  The third adjusted turn received zero cached input after an
+8-minute-52-second pause, while the earlier canvas run received 8,704 cached
+tokens after an 11-minute-20-second pause, demonstrating that elapsed time
+alone does not explain the variance.
+
+The practical issue is still observable: when a tool-bearing turn removes the
+anchor and the next turn falls back to a full request, the request-local layout
+did not preserve the strong top-level prompt-cache hits seen in the earlier
+canvas run.
+
+* Limitation: one semantic capability covers different retention behavior
+
+Both canonical OpenAI and ChatGPT Codex can accept changed request-local
+=instructions= with =previous_response_id=.  They do not necessarily have the
+same response-retention lifetime.
+
+The public =request-local-replaceable= capability accurately describes
+observation semantics.  It does not describe whether a response ID is:
+
+- connection-local;
+- stored and recoverable on a new connection;
+- unavailable after =store=false= connection loss; or
+- subject to a short adapter-owned idle close.
+
+The live experiments therefore establish request-local semantic conformance
+for ChatGPT Codex only while its connection-local response exists.  They do not
+establish substitutable continuation durability across the ChatGPT Codex and
+canonical OpenAI profiles.
+
+* Limitation: existing acceptance covered only the warm path
+
+The credentialed addendum acceptance test proved changed instructions and
+=previous_response_id= on one retained native WebSocket.  That test was valid
+for the claimed warm-socket behavior, but it did not cover the conditions that
+dominate the later live experiment:
+
+- a normal turn that uses at least one tool and then starts another user turn;
+- a routine =process_marker=-only tool turn;
+- a forced idle close before the next clean turn;
+- a new WebSocket with a locally selected but remotely unavailable anchor;
+- the distinction between one-message transport input and billed input-token
+  accounting; or
+- the prompt-cache behavior of full reconstruction with changed request-local
+  instructions.
+
+The original three-turn live acceptance also stopped immediately after
+creating its first clean durable anchor.  It did not send the following turn
+that would consume that anchor.  Turns four through six supplied that missing
+evidence and exposed the connection-lifetime boundary.
+
+* Remediation handoff requirements
+
+Remediation work should begin from the observed state above.  It must account
+for all of these ordinary paths rather than treating tool use or pauses as edge
+cases.
+
+At minimum, later acceptance evidence needs to distinguish and exercise:
+
+1. a clean turn followed immediately by a changed-canvas turn on the same
+   socket;
+2. a clean turn followed by a changed-canvas turn after the configured idle
+   close;
+3. a substantive tool-bearing turn followed by another user turn;
+4. a =process_marker=-only turn followed by another user turn;
+5. a forced socket loss independent of the idle timer;
+6. a stored canonical OpenAI response on a new connection, when credentials
+   are available;
+7. a ChatGPT Codex =store=false= response on a new connection;
+8. literal request shape, provider continuation diagnostics, and persisted
+   anchor state for each path; and
+9. transport input size, total input tokens, cached input tokens, request
+   latency, and full-fallback frequency as separate measurements.
+
+The handoff must preserve the boundary already established for Feature 88:
+
+- session remains the sole durable semantic body source;
+- runtime observation frames remain consumer-bound;
+- provider wire behavior remains in the adapter;
+- no crash-recovery transaction system, journaling protocol, exactly-once
+  machinery, or interim ACID abstraction is added ahead of the planned SQLite
+  persistence work; and
+- an optimization failure continues to fall back to correct full
+  reconstruction rather than stale or incomplete context.
+
+This document does not select the remediation mechanism.  It records the
+behavior that mechanism must change and the evidence required to show that the
+normal tool-heavy, pause-prone workflow improved.
