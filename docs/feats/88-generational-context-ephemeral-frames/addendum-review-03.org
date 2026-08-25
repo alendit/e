@@ -1,0 +1,50 @@
+#+title: Addendum Design Review 03: Fixed Point
+#+date: 2026-08-25
+#+startup: overview
+
+* Decision
+
+Ready.  The reused independent reviewer reports zero P0, P1, P2, or P3
+findings.  The addendum has reached its design fixed point and implementation
+may begin.
+
+Reviewed repository revision:
+=f25acad6bd8f37c390799978db191ba75f7d534a=.
+
+Reviewed addendum SHA-256 before the status-only completion edit:
+=61b8dd33300bc12e73a134d9f5fcf3c16d6220704ecaea1034c426e9f7827755=.
+
+The reviewer was unattended and read-only.  It made no edits, Git writes,
+network calls, live-Emacs calls, or permission requests.
+
+* Prior finding disposition
+
+- F88.A1: closed.  Existing provider-neutral effective-context and branching
+  evidence remains authoritative; no duplicate simulator is planned.
+- F88.A2: closed.  The live probe asserts the first-turn no-leak precondition.
+- F88.A3: closed.  Static means configuration-declared and lookup-time
+  resolved, not construction-time frozen.
+
+* Cleared design cells
+
+- existing kind-scoped backend interface;
+- static exact built-in Codex normalization and explicit opt-out;
+- endpoint, transport, requester, reserved-id, and custom-profile fallback;
+- canonical OpenAI non-regression;
+- current/dynamic-only replacement with conservative other kinds;
+- mixed-frontier contamination;
+- existing branching/effective-context evidence reuse;
+- minimal socket-boundary integration and live disappearance evidence;
+- no duplicate capability, framework, or simulator; and
+- no persistence, transaction, recovery, compaction, runtime discovery, or
+  pre-SQLite machinery.
+
+Unknown design cells: none.  Credentialed execution and implementation gates
+remain acceptance evidence for the implementation phase, not design unknowns.
+
+* Architecture conclusion
+
+Core owns the semantic capability, the OpenAI adapter owns static profile and
+wire proof, and the harness owns frontier cleanliness and anchor policy.
+Expected identity mismatch selects conservative stateless fallback; unexpected
+configuration and transport errors remain visible.

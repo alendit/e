@@ -1,0 +1,50 @@
+#+title: Addendum Design Review 02: Static Declaration Lifetime
+#+date: 2026-08-25
+#+startup: overview
+
+* Decision
+
+Not yet at a design fixed point.  F88.A1 and F88.A2 are closed.  One wording-
+only P3 finding remains; implementation stays gated until a fresh zero-finding
+Tick.
+
+Reviewed repository revision:
+=f25acad6bd8f37c390799978db191ba75f7d534a=.
+
+Reviewed addendum SHA-256:
+=4e0820f56e22ca8bfc20b174430fd5779c46a102507fd7dede7cc9f352a5cac6=.
+
+The reused reviewer was unattended and read-only.  It made no edits, Git
+writes, network calls, live-Emacs calls, or permission requests.
+
+* Prior finding disposition
+
+- F88.A1: closed.  The design reuses the existing provider-neutral effective-
+  context and branching evidence and limits new work to the existing WebSocket
+  socket-boundary integration.
+- F88.A2: closed.  The live probe now asserts first-turn absence from both the
+  assistant response and durable canonical message before turn two.
+
+* Finding
+
+** P3 F88.A3: Static declaration wording contradicts lookup lifetime
+
+The addendum says profile data is already present when the backend is
+constructed, which implies construction-time capture.  Current capability and
+request resolution correctly re-read the normalized current profile at each
+existing lookup.  Static means configuration-declared rather than runtime-
+discovered; it does not mean frozen when the backend object is created.
+
+*** Exact correction
+
+#+begin_quote
+These are static adapter/profile declarations.  Resolution reads the normalized
+configured profile current at each existing profile lookup and capability
+query; it never learns support by making a provider request, running a probe,
+or consulting a discovery registry/cache.
+#+end_quote
+
+* Next action
+
+Apply only F88.A3 in =addendum.org=, then reuse the same reviewer for a fresh
+complete Design Tick 3.

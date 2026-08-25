@@ -1,0 +1,89 @@
+#+title: Addendum Design Review 01: Static Request-Local Observation Delivery
+#+date: 2026-08-25
+#+startup: overview
+
+* Decision
+
+Not at a design fixed point.  The independent read-only Tick found two P2
+design issues.  Implementation must not begin until both are remediated and a
+fresh Tick reports zero P0--P3 findings.
+
+Reviewed repository revision:
+=f25acad6bd8f37c390799978db191ba75f7d534a=.
+
+Reviewed addendum SHA-256:
+=6426d5cc6821ec6d5110d2c6dab2e1c4805402a9b05f2a4ff87ecb5aeeec9e79=.
+
+The reviewer was unattended and read-only.  It made no edits, Git writes,
+network calls, live-Emacs calls, or permission requests.
+
+* Findings
+
+** P2 F88.A1: The proposed stateful provider simulator duplicates existing evidence
+
+The draft requires a new stateful fake transport and computed effective-model
+context.  Feature 88 already proves the provider-neutral semantics in
+=e-context-lifetime-e2e-test-canvas-replacement-profiles=, including per-kind
+conservatism, old-canvas disappearance, and replaceable-anchor advancement.
+The existing Responses WebSocket integration already crosses the real harness
+and renderer at the socket boundary.
+
+*** Owning correction
+
+Keep the existing generic Feature 88 effective-context test as the semantic
+proof.  Minimally extend or parameterize the existing Responses WebSocket
+integration for the exact built-in =codex= and =openai= profiles.  Assert the
+resolved kind map, literal request shapes, =previous_response_id=, incremental
+mode, and newest clean anchor.  Do not create another provider-context
+simulator.
+
+*Exact replacement direction for implementation item 3:*
+
+#+begin_quote
+In =test/e-provider-continuation-integration-test.el=, extend the existing
+Responses WebSocket integration at the socket boundary to run the exact
+built-in =codex= and canonical =openai= profiles without =:request-function=.
+Assert the resolved five-kind map, literal first/second request shapes,
+=previous_response_id=, incremental mode, and retained newest clean anchor.
+Keep =e-context-lifetime-e2e-test-canvas-replacement-profiles= as the
+provider-neutral effective-context and anchor-policy proof; do not add another
+provider-context simulator.
+#+end_quote
+
+Remove the fake provider's computed effective-context assertion from the
+package acceptance and cite the existing canvas-replacement E2E for that cell.
+
+** P2 F88.A2: The live marker probe does not assert its no-leak precondition
+
+The draft says the first turn is constructed so =OBSERVATION-OLD= is never
+copied into durable assistant output, but does not require an assertion.  If
+the first assistant response contains the old marker, that durable response is
+legitimately inherited through continuation and the second answer cannot
+isolate instruction replacement.
+
+*** Owning correction
+
+Before turn two, assert that the first assistant response and durable session
+message contain no =OBSERVATION-OLD=.  Then require the second response to
+report =OBSERVATION-NEW= and reject =OBSERVATION-OLD=.  A first-turn leak must
+fail the conformance probe as ambiguous.
+
+* Coverage
+
+| Cell | Status |
+|------+--------|
+| Existing provider-neutral interface reused | cleared |
+| Static exact Codex profile proof | cleared |
+| Explicit inherited opt-out | cleared |
+| Endpoint/transport/requester override fallback | cleared |
+| Canonical OpenAI non-regression | cleared |
+| Tool-result/trace/excerpt conservatism | cleared |
+| Mixed-frontier contamination | cleared |
+| Minimal deterministic built-in composition | unknown through F88.A1 |
+| Live old-observation disappearance | unknown through F88.A2 |
+| No persistence/recovery/compaction/UI/runtime discovery | cleared |
+
+* Next action
+
+Remediate only F88.A1 and F88.A2 in =addendum.org= with the persistent
+implementer, then reuse the same reviewer for a fresh complete design Tick.

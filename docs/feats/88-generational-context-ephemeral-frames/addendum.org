@@ -1,0 +1,492 @@
+#+title: Addendum: Proven Request-Local Observation Delivery for ChatGPT Codex
+#+date: 2026-08-25
+#+startup: overview
+
+* Status
+
+Ready.  Design Tick 3 accepted this addendum with zero P0--P3 findings.  This
+addendum reopens one narrow adapter-conformance package after
+Feature 88: expose the existing kind-scoped observation-delivery interface from
+the built-in ChatGPT Codex profile, and preserve the canonical OpenAI API
+profile's already-supported behavior.
+
+Design and implementation each require their own normal, non-fast Tick/Tock
+fixed point before this addendum is Done.  The parent Feature 88 design remains
+authoritative except where this addendum changes the built-in Codex capability
+claim and its acceptance evidence.
+
+* Decision
+
+Use the interface Feature 88 already provides:
+
+#+begin_src elisp
+(e-backend-context-capabilities backend options)
+(e-backend-observation-delivery-for-kind capabilities kind)
+#+end_src
+
+Do not add a second capability, provider predicate, harness switch, or OpenAI
+wire field to core.  The OpenAI adapter will expose its proven semantics through
+the existing =:observation-delivery= capability.  The preferred returned value
+is the explicit kind-scoped map:
+
+#+begin_src elisp
+(:observation-delivery
+ ((:kind current-state :mode request-local-replaceable)
+  (:kind dynamic-context :mode request-local-replaceable)
+  (:kind tool-result :mode inherited)
+  (:kind trace :mode inherited)
+  (:kind retrieved-excerpt :mode inherited)))
+#+end_src
+
+The built-in ChatGPT Codex profile may advertise this map only for the exact
+profile and effective wire identity whose behavior has been proved.  The
+canonical OpenAI API profile must continue to advertise the same semantic map.
+The harness resolves each frontier item with
+=e-backend-observation-delivery-for-kind= and remains unaware of
+=instructions=, =previous_response_id=, ChatGPT auth, or provider profile
+names.
+
+The adapter-private profile declaration may remain the compact proof flag
+=:observation-delivery request-local-replaceable=.  The adapter capability
+resolver, not callers, expands that proof into the public kind-scoped map.
+=inherited= remains the conservative profile default.  This is one interface
+with an adapter-owned declaration and a provider-neutral resolved value, not two
+capability systems.
+
+These are static adapter/profile declarations.  Resolution reads the normalized
+configured profile current at each existing profile lookup and capability
+query; it never learns support by making a provider request, running a probe,
+or consulting a discovery registry/cache.
+
+* Scope
+
+This package covers only replacement of =current-state= and =dynamic-context=
+on a normal request.  For an eligible Responses continuation, their complete
+current values are rendered in the new request's top-level =instructions=.
+
+It does not claim replacement for:
+
+- =tool-result=;
+- =trace=;
+- =retrieved-excerpt=;
+- a function call, replay item, and result bundle; or
+- any other inherited request or response item.
+
+Missing map entries resolve to =inherited=.  A mixed frontier with replaceable
+current state and any inherited ephemeral item remains contaminated as a whole.
+It must hold the prior clean anchor or use stateless reconstruction; it must not
+advance through the mixed response merely because its canvas was replaceable.
+
+No runtime capability discovery/probe, discovery registry/cache, persistence,
+lifecycle journal, transaction, crash recovery, compaction, UI, generic provider
+framework, new context state, or speculative replacement mechanism is part of
+this addendum.  In particular, it adds no interim machinery ahead of the
+separately planned SQLite ACID persistence boundary.
+
+* Evidence baseline
+
+The following is existing evidence, not completion evidence for this addendum:
+
+1. =lisp/core/e-backend.el= already validates kind-scoped
+   =:observation-delivery= and provides
+   =e-backend-observation-delivery-for-kind=.  Missing kinds are inherited, and
+   the legacy scalar is deliberately limited to =current-state= and
+   =dynamic-context=.
+2. The canonical =openai= profile already declares
+   =request-local-replaceable=.  Its effective capability is gated by the
+   canonical first-party endpoint and Responses WebSocket transport.
+3. The built-in =codex= profile currently omits the declaration and therefore
+   resolves to =inherited=.  Consequently
+   =e-live-e2e-test-openai-codex-store-false-continues= deliberately expects a
+   held anchor, full replay, and no =previous_response_id=.
+4. =e-openai--normalize-model-providers= recognizes the canonical built-in
+   Codex profile and =e-openai-provider-profile= reapplies normalization on
+   every lookup.  The current Doom configuration redefines that same canonical
+   profile shape after package load, so lookup-time normalization is the owning
+   compatibility boundary; the host configuration must not need a duplicate
+   capability declaration.
+5. The 2026-08-12
+   [[../../bugs/openai-websocket-cross-turn-instructions-replay/investigation.org][OpenAI WebSocket cross-turn instructions investigation]]
+   includes a credentialed live-provider E2E.  It proved that the ChatGPT Codex
+   Responses WebSocket accepted changed top-level instructions together with
+   =previous_response_id= on one retained socket.  It did not connect that
+   transport fact to Feature 88's anchor-advancement policy.
+6. The first-party [[https://developers.openai.com/api/reference/resources/responses/methods/create][OpenAI Responses create reference]] states that when
+   =instructions= is used with =previous_response_id=, the previous response's
+   instructions are not carried into the next response.  This documents the
+   canonical OpenAI API claim.  It does not by itself document the private
+   ChatGPT endpoint; that claim remains grounded in credentialed conformance
+   evidence.
+
+Completion therefore requires new evidence that the exact built-in ChatGPT
+profile resolves the static capability and drives the existing generic harness
+and WebSocket request path safely, plus renewed credentialed endpoint evidence.
+The existing provider-neutral canvas-replacement E2E remains the effective-
+context and anchor-policy proof; passing the old adapter transport test alone is
+insufficient.
+
+* Semantic and wire protocol
+
+Let =C= be stable developer input, =D1= and =D2= durable/user deltas, and =E1=
+and =E2= successive current-state or dynamic-context observations.
+
+For an eligible clean ChatGPT or OpenAI continuation:
+
+#+begin_example
+request 1:
+  input        = [C, D1]
+  instructions = E1
+  previous_response_id absent
+                         -> response R1, clean anchor candidate
+
+request 2:
+  input        = [D2]
+  instructions = E2
+  previous_response_id = R1
+                         -> response R2, clean anchor candidate
+#+end_example
+
+=E1= must be absent from request 2's literal =instructions= and =input=, and
+=E2= must be present once.  Provider-neutral disappearance from effective model
+context and the corresponding anchor policy remain proved by
+=e-context-lifetime-e2e-test-canvas-replacement-profiles=; this addendum does
+not create another provider-context simulator.  Stable input already owned by
+=R1= is not resent on the warm continuation.  ChatGPT retains its existing
+=store=false=, encrypted-reasoning, segmented developer-input, and
+no-explicit-breakpoint shape; enabling semantic replacement must not send
+=prompt_cache_options= to that endpoint.
+
+=R2= may replace =R1= as the clean anchor only when all request and response
+frontier items are replaceable or durable.  A tool call/result/replay bundle or
+other inherited ephemeral ancestry keeps the existing Feature 88 contamination
+rules unchanged.
+
+* Provider identity and fallback
+
+The built-in ChatGPT proof is bound to all of these facts:
+
+- provider id =codex=;
+- profile name =ChatGPT Codex=;
+- profile base URL
+  =https://chatgpt.com/backend-api/codex=;
+- =:wire-api responses=;
+- =:responses-transport websocket=; and
+- ChatGPT/Codex authentication via =:requires-openai-auth=.
+
+=e-openai--builtin-codex-profile-p= remains the single adapter owner of that
+profile identity.  =e-openai--normalize-model-providers= adds the built-in proof
+to that exact profile when it is absent, alongside the existing mandatory
+Codex wire requirements.  An explicit =inherited= declaration is a conservative
+opt-out and is not overwritten.  Because provider lookup normalizes every time,
+the checked-in default and a later canonical redefinition such as Doom's obtain
+the same behavior.
+
+=e-openai--profile-context-capabilities= must also validate effective identity.
+The following cases are normative:
+
+| Profile/effective request | Resolved delivery | Continuation consequence |
+|---------------------------+-------------------+--------------------------|
+| exact built-in =codex=, canonical endpoint, Responses WebSocket, native requester | current/dynamic replaceable; all other kinds inherited | existing linear continuation remains eligible |
+| built-in =codex= with effective base-URL override | inherited | =none=; stateless fallback |
+| built-in =codex= with HTTP/transport override | inherited | =none=; stateless fallback |
+| built-in =codex= with injected request function | inherited | =none=; treat it as an unproved transport |
+| noncanonical profile under the reserved =codex= id | inherited unless it is restored to exact built-in identity | no built-in proof |
+| distinct custom profile without an explicit proof declaration | inherited | its separately declared continuation cannot authorize replacement |
+| distinct custom profile with explicit proof and matching configured/effective endpoint and transport | current/dynamic replaceable; all other kinds inherited | its declared continuation may be used |
+| custom profile with an effective endpoint or transport override | inherited | =none=; stateless fallback |
+| exact canonical =openai= API profile and native Responses WebSocket | current/dynamic replaceable; all other kinds inherited | existing linear continuation remains eligible |
+| canonical =openai= with endpoint, transport, or requester override | inherited | preserve the existing stateless fallback |
+
+A custom profile's explicit declaration is evidence supplied by that profile's
+owner; similarity to an OpenAI URL, model name, auth mode, or JSON shape is not
+proof.  A named custom profile may retain the existing injected requester path
+for its own deterministic conformance tests, but the two built-in first-party
+claims may not cross such an override.
+
+All rows describe static configuration resolution.  None authorizes runtime
+probing, provider negotiation, learned capability state, or a cache of discovery
+results.
+
+* Ownership and material entities
+
+| Entity | Owner | Representation | Lifetime | Transaction boundary | Public surface | Named evidence |
+|--------+-------+----------------+----------+----------------------+----------------+----------------|
+| Semantic delivery capability | =e-backend= core contract | validated kind-scoped =:observation-delivery= map | recomputed for effective request options; not persisted | pure capability query before projection | =e-backend-context-capabilities= and =e-backend-observation-delivery-for-kind= | =e-backend-test-observation-delivery-is-kind-scoped= and conservative-default tests |
+| Built-in ChatGPT proof | OpenAI adapter profile normalization and identity gate | private profile proof expanded to the five-kind semantic map | configuration-derived; refreshed on every profile lookup and capability query | profile/effective-identity resolution before harness context construction | only the generic backend capability escapes the adapter | 2026-08-12 investigation; new normalizer, identity, and credentialed Codex tests |
+| Canonical OpenAI API proof | OpenAI adapter profile and identity gate | same public five-kind semantic map | configuration-derived per query | same adapter capability boundary | only the generic backend capability escapes the adapter | official Responses create reference; existing and new canonical OpenAI regressions |
+| Observation frontier and anchor decision | harness | per-kind frontier entries, effective scalar delivery for the current request, and existing anchor-safety diagnostics | one context/request and resulting runtime candidate | atomic context projection before send; candidate admission after response | existing harness context/options and bounded diagnostics; no new API | =e-context-lifetime-e2e-test-canvas-replacement-profiles= and existing mixed-frontier tests |
+| Responses request | OpenAI adapter | top-level =instructions=, fresh =input= delta, optional =previous_response_id= | one provider request on the existing connection-local session | request render/send; incompatible identity selects full/stateless path before send | existing backend start/stream contract | changed-instructions adapter regression, composed literal-request assertions, live E2E |
+| Provider response anchor | session/harness policy with opaque adapter ID | existing provider-anchor candidate and cleanliness metadata | disposable runtime/session optimization under existing Feature 88 rules | promote only after successful response admission and cleanliness check | existing provider-anchor surfaces | safe-advancement, mixed-frontier, and fallback tests |
+
+No entity gains a new durable store or recovery protocol.  The adapter owns the
+truth of the endpoint claim; the harness owns what that semantic claim permits.
+
+* Implementation package
+
+Implement this as one coherent package:
+
+1. In =lisp/adapters/openai/e-openai.el=, make the exact built-in Codex
+   normalizer supply the proof by default, preserve explicit conservative
+   opt-out, return the preferred kind-scoped map for every proven OpenAI
+   profile, and extend effective-identity gating to the exact built-in Codex
+   profile and native requester.  Do not change core capability vocabulary.
+2. In =test/e-openai-test.el=, cover canonical normalization/lookup, exact
+   identity, opt-out, malformed values, custom-profile proof, override
+   fallback, and canonical OpenAI non-regression.  Update scalar expectations
+   to use the public per-kind helper or assert the explicit returned map.
+3. In =test/e-provider-continuation-integration-test.el=, minimally extend or
+   parameterize the existing Responses WebSocket integration at the socket
+   boundary to run the exact built-in =codex= and canonical =openai= profiles
+   without =:request-function=.  Assert the resolved five-kind map, literal
+   first/second request shapes, =previous_response_id=, incremental mode, and
+   retained newest clean anchor.  Keep
+   =e-context-lifetime-e2e-test-canvas-replacement-profiles= as the
+   provider-neutral effective-context and anchor-policy proof; do not add
+   another provider-context simulator.  Passing =:request-function= to a
+   built-in profile is intentionally an override and must downgrade
+   capabilities.
+4. In =e2e/e-live-e2e-test.el=, change the profile-gated Codex regression from
+   inherited/full-replay expectations to request-local/incremental expectations
+   and add the asserted first-turn no-leak precondition followed by the
+   model-visible old/new marker assertion.  Keep the OpenAI API live regression
+   as a non-regression gate.
+5. Update the Feature 88 ledger/index only when implementation status changes,
+   following the repository workflow.  No presentation or graphical file is
+   expected to change.
+
+If implementation requires a runtime capability probe/discovery path, registry,
+cache, new core capability, durable field, lifecycle state, transaction,
+recovery path, compaction path, or provider-general framework, stop and return
+to design Tick; that is a scope change, not an implementation detail.  Do not
+build interim persistence machinery ahead of SQLite ACID persistence.
+
+* Acceptance
+
+** Deterministic owner tests
+
+- Core resolves =current-state= and =dynamic-context= to
+  =request-local-replaceable= and resolves =tool-result=, =trace=, an omitted
+  kind, and =retrieved-excerpt= to =inherited=.
+- Missing capability declarations remain fully inherited; malformed or unknown
+  declarations fail visibly.
+- A stale canonical Codex profile matching the current Doom redefinition is
+  normalized on lookup to the built-in proof without changing Doom config.
+- A noncanonical or custom profile is not modified merely because its endpoint
+  resembles ChatGPT or OpenAI.  An explicit custom proof works only for its
+  matching endpoint/transport.
+- Explicit built-in =inherited= remains an opt-out.
+- Effective base-URL, transport, and built-in requester overrides resolve to
+  inherited delivery and no continuation.  This must be proved for both
+  built-in ChatGPT and the existing canonical OpenAI profile.
+- The canonical OpenAI API profile still resolves both current kinds as
+  replaceable and all other kinds as inherited.
+
+** Harness and adapter composition
+
+Use two existing proof layers; do not add another stateful provider/effective-
+context simulator.
+
+The credential-free
+=e-context-lifetime-e2e-test-canvas-replacement-profiles= remains the
+provider-neutral proof of effective-context equivalence, old-canvas
+disappearance, per-kind conservatism, stable-prefix fencing, and clean-anchor
+advancement for none, linear, branchable, and replaceable profiles.
+
+Minimally extend or parameterize the existing Responses WebSocket integration
+at the socket boundary for the exact built-in =codex= and canonical =openai=
+profiles.  It crosses the real harness, session, context assembly, static
+capability resolver, OpenAI renderer, and existing anchor admission without
+=:request-function=.  It must prove:
+
+1. the resolved capability is the five-kind map: =current-state= and
+   =dynamic-context= are replaceable while =tool-result=, =trace=, and
+   =retrieved-excerpt= are inherited;
+2. request 1 contains =OBSERVATION-OLD= only in current top-level
+   =instructions= and contains no =previous_response_id=;
+3. response =resp-1= becomes an eligible clean anchor;
+4. request 2 uses =previous_response_id= =resp-1=, sends only its fresh input
+   delta, and contains =OBSERVATION-NEW= exactly once in =instructions=;
+5. =OBSERVATION-OLD= is absent from the complete literal request 2;
+6. the socket/request mode is incremental and response =resp-2= safely advances
+   the clean anchor;
+7. ChatGPT request bodies remain =store=false=, request encrypted reasoning,
+   preserve segmented stable input, and omit explicit prompt-cache fields;
+8. the same scenario against the canonical OpenAI profile preserves its
+   explicit-cache request shape and replacement semantics.
+
+The existing
+=e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor=
+remains the required mixed-frontier gate: an inherited tool-result frontier
+cannot advance the clean anchor even beside replaceable current state.  The
+built-in socket scenario does not duplicate that tool lifecycle because the
+capability map and anchor decision are already covered at their owning
+boundaries.
+
+** Credentialed ChatGPT E2E
+
+Run the exact built-in ChatGPT Codex profile over its real Responses WebSocket.
+The revised =e-live-e2e-test-openai-codex-store-false-continues= must require:
+
+- exact canonical profile identity before making a claim;
+- one reused WebSocket and an incremental second request;
+- a second-request =previous_response_id= matching the first completed
+  response;
+- before turn two, an explicit assertion that both the first assistant response
+  and its durable canonical session message contain no =OBSERVATION-OLD=;
+  either leak fails the probe as ambiguous rather than continuing or skipping;
+- =OBSERVATION-NEW= in fresh =instructions= and no =OBSERVATION-OLD= anywhere
+  in the second literal request;
+- a second-turn answer that reports =OBSERVATION-NEW= and rejects
+  =OBSERVATION-OLD=;
+- =request-local-replaceable= diagnostics, a present replaceable frontier, and
+  =advance-eligible= anchor safety;
+- the newest clean response becoming the retained anchor; and
+- continued absence of =prompt_cache_options= and explicit breakpoints.
+
+The asserted first-turn no-leak condition makes the model-visible second-turn
+marker check an unambiguous renewal of endpoint conformance.  The existing
+canvas-replacement E2E remains the non-probabilistic provider-neutral
+effective-context proof, and the minimal built-in socket integration proves the
+literal adapter path.  A credential or endpoint skip must be reported as a
+skip, not a live pass.
+
+** Canonical OpenAI verification
+
+At implementation time, re-open the first-party Responses create reference and
+confirm the =instructions= plus =previous_response_id= replacement statement has
+not changed.  Then prove the canonical =openai= profile through:
+
+- capability-resolution and override tests;
+- =e-context-lifetime-e2e-test-canvas-replacement-profiles= for
+  provider-neutral effective context and anchor policy;
+- the minimal exact built-in two-turn Responses WebSocket integration for
+  literal request shape and anchor advancement;
+- the existing =e-live-e2e-test-openai-gpt56-explicit-cache-continues= when
+  =OPENAI_API_KEY= is available; and
+- the full OpenAI adapter regression file.
+
+If the API credential is unavailable, deterministic repository verification may
+pass, but the handoff must say that the OpenAI live E2E skipped and must not
+claim renewed live API execution.  The official API contract and an old live
+run are not substitutes for reporting the current run accurately.
+
+** Verification commands
+
+Run focused suites serially:
+
+#+begin_src sh
+eldev test -f test/e-backend-test.el
+eldev test -f test/e-openai-test.el
+eldev test -f test/e-harness-test.el
+eldev test -f test/e-provider-continuation-integration-test.el
+#+end_src
+
+Run each available credentialed profile separately:
+
+#+begin_src sh
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  eldev test -f e2e/e-live-e2e-test.el
+
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
+  eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+Finally run =eldev compile --warnings-as-errors=, the complete batch suite, and
+=git diff --check=.  Graphical E2E is not required because this package changes
+no presentation, redisplay, focus, timer, or window behavior.  Leave the user's
+running Emacs unchanged; adapter/harness changes require a restart to use.
+
+* Existing evidence versus new acceptance
+
+| Claim | Existing evidence | New acceptance required |
+|-------+-------------------+-------------------------|
+| Generic interface is kind-scoped | core implementation and owner tests | keep owner tests green; no new interface |
+| Public OpenAI API replaces prior instructions | first-party reference and canonical profile tests | recheck docs; explicit map, composed behavior, and adapter non-regression |
+| ChatGPT WebSocket accepts changed instructions with continuation | 2026-08-12 credentialed transport E2E | exact built-in capability resolution, harness anchor advancement, and renewed credentialed Feature 88 E2E |
+| Prior observation disappears | =e-context-lifetime-e2e-test-canvas-replacement-profiles= already proves provider-neutral effective-context disappearance | literal built-in second request plus asserted first-turn no-leak and live old/new marker check |
+| Overrides are safe | existing canonical OpenAI override tests | equivalent exact Codex identity/requester tests plus custom-profile fallback |
+| Mixed frontiers remain contaminated | existing Feature 88 composed tool-bundle test | keep it green against the new kind map and assert all non-current kinds remain inherited |
+
+* Performance and compatibility
+
+The normal path adds only a small profile field/map expansion and existing
+per-kind lookups.  It removes repeated full transcript input for clean ChatGPT
+turns whose only changing ephemeral frontier is current state.  No additional
+provider call, capability probe, discovery lookup, model call, history scan,
+persistent write, or UI work is allowed.
+
+The public core accepts the legacy scalar, so third-party adapters remain
+compatible.  OpenAI changes to the preferred explicit map; consumers must use
+=e-backend-observation-delivery-for-kind= instead of assuming the capability is
+a scalar.  Explicit inherited profiles and all unproved identities retain the
+safe current behavior.  The only obsolete path removed is the built-in Codex
+default that treats its already-conformed request-local instruction channel as
+inherited and therefore forces full replay.
+
+* Tick/Tock execution protocol
+
+1. *Design Tock:* write this addendum only.
+2. *Design Tick:* independently review the complete addendum against Feature 88,
+   current source/tests, the 2026-08-12 evidence, and current first-party OpenAI
+   documentation.  Review one fixed tree and report concrete findings.
+3. *Design Tock:* remediate only those findings in this file.  Repeat fresh
+   design Tick/Tock cycles until a Tick reports zero findings.
+4. *Implementation Tock:* implement the one coherent adapter/test/E2E package
+   above, update the ledger/status, and run focused acceptance.  Do not begin an
+   unrelated package.
+5. *Implementation Tick:* independently review the complete fixed
+   implementation and its evidence.  Remediate concrete findings with the same
+   scoped implementer and repeat a fresh Tick until zero findings.
+6. Only after the zero-finding implementation Tick, run final full validation,
+   make the semantic commit, and mark the addendum Done.
+
+Neither phase reviews a moving tree.  A prior zero-finding design Tick does not
+stand in for implementation review, and an old credentialed run does not stand
+in for current acceptance.
+
+Design fixed-point evidence is recorded in =addendum-review-01.org= through
+=addendum-review-03.org=.
+
+* Architecture self-check
+
+1. *Useful stopping point?* Yes.  The package turns an already-proved ChatGPT
+   wire behavior into safe generic anchor advancement while retaining stateless
+   fallback.
+2. *Final direction?* Provider-neutral semantic lifetime policy accelerated by
+   narrow adapter conformance claims.
+3. *Stable and uncertain decisions?* Kind-scoped replacement and conservative
+   fallback are stable.  Private endpoint behavior is empirical and therefore
+   isolated in one exact profile/identity gate with a renewable E2E.
+4. *Owner?* Core owns the delivery vocabulary and lookup; the OpenAI adapter
+   owns endpoint evidence and wire projection; the harness owns frontier and
+   anchor policy.  Each has one reason to change.
+5. *Coupling?* Reduced: the harness consumes only the existing semantic helper,
+   and neither core nor tests need a ChatGPT-specific policy switch.
+6. *Dependency direction?* The provider adapter depends on the stable backend
+   contract.  Core gains no dependency on OpenAI, WebSocket, profile, or auth
+   details.
+7. *Side effects outward?* Network and socket behavior remain in the adapter;
+   capability resolution and projection remain pure before send.
+8. *State?* No state is added.  Capabilities are derived from static
+   configuration; request/frontier data is turn-local; anchors remain
+   disposable existing optimization state.
+9. *Performance?* Capability lookup is bounded by five kinds.  Eligible warm
+   turns replace full replay with one continuation delta; fallback cost is
+   unchanged.
+10. *Real substitutable interface?* Yes.  Every adapter may truthfully return
+    inherited; proven adapters return the same kind map without weakening any
+    non-current observation semantics.
+11. *Compatibility?* Legacy scalar declarations remain accepted, explicit
+    opt-out remains available, host canonical-profile redefinitions are
+    normalized on lookup, and unproved overrides become stateless.
+12. *Legacy removable now?* Remove only the built-in Codex inherited default
+    and scalar assumptions in OpenAI-specific expectations.  Keep generic
+    scalar compatibility.
+13. *Errors?* Unknown declarations remain configuration errors.  Expected
+    identity mismatch selects explicit conservative fallback; transport errors
+    continue through the existing backend path.
+14. *Independent proof?* Core owner tests prove kind semantics; the existing
+    canvas-replacement E2E proves provider-neutral effective disappearance and
+    anchor policy; a minimal built-in socket integration proves profile/request
+    mapping; credentialed E2E proves the private endpoint after an asserted
+    no-leak precondition; canonical OpenAI tests and docs prove non-regression.
