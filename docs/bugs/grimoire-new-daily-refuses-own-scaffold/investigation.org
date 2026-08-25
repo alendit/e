@@ -94,3 +94,31 @@ new behavior needs entry-point tests for both =grimoire-daily= and the headless
 notes.  The implementation should establish or explicitly authorize the exact
 generated scaffold before controller binding; it should not broadly ignore
 dirty Git state.
+
+* Resolution
+
+Grimoire commits =d63f85d= and =c2528d2= implement the narrow recovery contract.
+
+- =grimoire-topic-daily= now builds the canonical scaffold in one function and
+  marks a descriptor =:pristine-scaffold t= only when the file is exactly that
+  scaffold.  A file-level drawer containing only =E_SESSION= and/or
+  =E_UPDATE_SESSION= is accepted because presentation can persist those before
+  controller binding.  Any other property or content makes the descriptor
+  non-pristine.
+- =grimoire-daily-run-start= treats a pristine scaffold as =populate= input and
+  permits its expected untracked Git status.  The original guard remains for
+  every unstarted note containing saved user content.
+- Interactive Daily, headless tick, foreground update, and the =daily-run/:start=
+  action preserve the descriptor fact through controller dispatch.
+
+The exact matcher classified the reported =daily/2026-08-25.org= as pristine in
+a read-only check, so the existing orphaned scaffold is recoverable after the
+new modules are loaded; no manual scaffold commit or fabricated run manifest is
+needed.
+
+Repository-side validation passed with 46/46 Daily controller tests, 11/11
+topic-session tests, focused entry-point and guard regressions, warning-as-error
+compilation, and =git diff --check=.  The two runtime modules were compiled
+outside the active Emacs so their bytecode is current.  The running Emacs was
+left unchanged and still needs an explicit extension reload or restart before
+the fix is active.
