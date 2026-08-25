@@ -4,11 +4,14 @@
 
 * Status
 
-Ready.  Design Tick 3 accepted this addendum with zero P0--P3 findings.  This
-addendum reopens one narrow adapter-conformance package after
-Feature 88: expose the existing kind-scoped observation-delivery interface from
-the built-in ChatGPT Codex profile, and preserve the canonical OpenAI API
-profile's already-supported behavior.
+Done.  Design Tick 3 and Implementation Tick 4 each reached a fixed point with
+zero P0--P3 findings.  Credentialed ChatGPT Codex acceptance and final
+repository gates passed.  Canonical OpenAI live execution was unavailable because
+=OPENAI_API_KEY= was absent; deterministic adapter/provider verification
+passed.  This addendum completes the narrow adapter-conformance package opened
+after Feature 88: expose the existing kind-scoped observation-delivery
+interface from the built-in ChatGPT Codex profile, and preserve the canonical
+OpenAI API profile's already-supported behavior.
 
 Design and implementation each require their own normal, non-fast Tick/Tock
 fixed point before this addendum is Done.  The parent Feature 88 design remains

@@ -427,6 +427,15 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
        (eq (plist-get profile :responses-transport) 'websocket)
        (plist-get profile :requires-openai-auth)))
 
+(defconst e-openai--request-local-observation-delivery-map
+  '((:kind current-state :mode request-local-replaceable)
+    (:kind dynamic-context :mode request-local-replaceable)
+    (:kind tool-result :mode inherited)
+    (:kind trace :mode inherited)
+    (:kind retrieved-excerpt :mode inherited))
+  "Kind-scoped delivery map for statically proven identity-compatible
+Responses profiles.")
+
 (defun e-openai--builtin-openai-profile ()
   "Return the canonical first-party OpenAI API provider profile."
   (list :name "OpenAI API"
@@ -438,9 +447,9 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
         :prompt-cache-breakpoint-mode 'explicit
         ;; The first-party Responses API documents that top-level
         ;; `instructions' are request-local when `previous_response_id' is
-        ;; supplied.  Gate this semantic claim per profile; OpenAI-shaped
-        ;; gateways and the ChatGPT Codex endpoint remain conservative unless
-        ;; they opt in explicitly.
+        ;; supplied.  Gate this semantic claim per profile and effective wire
+        ;; identity; OpenAI-shaped gateways remain conservative unless they
+        ;; opt in explicitly.
         :observation-delivery 'request-local-replaceable
         :include-encrypted-reasoning t
         :continuation t
@@ -457,16 +466,23 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
                      (if (e-openai--builtin-codex-profile-p
                           provider-id
                           profile)
-                         (cons
-                          provider-id
-                          (plist-put
-                           (plist-put
-                            (plist-put
-                             (plist-put (copy-sequence profile)
-                                        :response-store :json-false)
-                             :prompt-cache-breakpoint-mode nil)
-                            :responses-context-layout 'developer-input)
-                           :include-encrypted-reasoning t))
+                         (let ((normalized
+                                (plist-put
+                                 (plist-put
+                                  (plist-put
+                                   (plist-put (copy-sequence profile)
+                                              :response-store :json-false)
+                                   :prompt-cache-breakpoint-mode nil)
+                                  :responses-context-layout 'developer-input)
+                                 :include-encrypted-reasoning t)))
+                           (unless (plist-member normalized
+                                                 :observation-delivery)
+                             (setq normalized
+                                   (plist-put
+                                    normalized
+                                    :observation-delivery
+                                    'request-local-replaceable)))
+                           (cons provider-id normalized))
                        entry)))
                  providers)))
     (if (assq 'openai normalized)
@@ -483,6 +499,7 @@ DEPTH limits recursive descent.  SEEN tracks container identity."
      :response-store :json-false
      :prompt-cache-breakpoint-mode nil
      :responses-context-layout developer-input
+     :observation-delivery request-local-replaceable
      :include-encrypted-reasoning t
      :continuation t
      :requires-openai-auth t)
@@ -762,19 +779,21 @@ injected requester for conformance tests."
          (transport-compatible
           (or (null requested-transport)
               (eq requested-transport profile-transport)))
-         ;; The built-in OpenAI profile's proof is tied to the first-party
-         ;; Responses endpoint and its configured transport.  Its injectable
-         ;; requester is an effective transport override, whereas a named
-         ;; custom profile is allowed to use an injected requester in its own
-         ;; conformance tests.
+         (first-party-provider-p (memq provider '(codex openai)))
+         ;; Built-in proof is tied to the first-party Responses endpoint and
+         ;; native WebSocket requester.  A named custom profile may still use
+         ;; an injected requester in its own conformance tests.
          (first-party-transport-compatible
-          (or (not (eq provider 'openai))
+          (or (not first-party-provider-p)
               (and (not request-function)
                    (eq profile-transport 'websocket))))
          (first-party-profile-compatible
-          (or (not (eq provider 'openai))
-              (e-openai--context-base-url-equal-p
-               profile-base-url e-openai-api-default-base-url)))
+          (pcase provider
+            ('codex (e-openai--builtin-codex-profile-p provider profile))
+            ('openai
+             (e-openai--context-base-url-equal-p
+              profile-base-url e-openai-api-default-base-url))
+            (_ t)))
          (identity-compatible
           (and endpoint-compatible
                transport-compatible
@@ -784,7 +803,7 @@ injected requester for conformance tests."
           (if (and identity-compatible
                    (eq wire-api 'responses)
                    (eq declared-delivery 'request-local-replaceable))
-              'request-local-replaceable
+              (copy-tree e-openai--request-local-observation-delivery-map)
             'inherited))
          (prefix-cache
           (cond

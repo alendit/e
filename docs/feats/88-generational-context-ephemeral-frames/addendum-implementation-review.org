@@ -1,0 +1,300 @@
+#+title: Addendum Implementation Review: Request-Local Observation Delivery
+#+date: 2026-08-25
+#+startup: overview
+
+* Implementation Tock 1 candidate
+
+Status: candidate for an independent implementation Tick.  This is not a
+fixed-point decision and does not mark the addendum Done.
+
+Implementation base: =ad4c75473cd25c18e600802c578c5b0600d7a9ca=.
+
+The candidate keeps the existing =e-backend= capability interface.  Exact
+built-in =codex= normalization now supplies the static proof unless the profile
+explicitly opts out with =inherited=.  The adapter expands proved built-in
+=codex= and =openai= identities to the five-kind map at capability-query time.
+Endpoint, transport, or requester overrides fall back to inherited delivery
+and no continuation.  Custom profiles retain their existing explicit-proof and
+injected-requester conformance path through the public per-kind resolver.
+
+No runtime probe, discovery registry/cache, new persistence state, transaction,
+recovery, compaction, UI, or pre-SQLite mechanism was added.  Existing harness
+frontier and anchor policy remains unchanged.
+
+* Candidate evidence
+
+- =eldev test -f test/e-backend-test.el=: 16/16 passed.
+- =eldev test -f test/e-openai-test.el=: 139/139 passed.
+- =eldev test -f test/e-harness-test.el=: 156/156 passed.
+- =eldev test -f test/e-provider-continuation-integration-test.el=: 10/10
+  passed on the final run.  An earlier 9/10 run exposed only that the
+  synchronous socket fixture sampled durable request-start activity too early;
+  the final test reads the native backend request handle's actual transport
+  metadata.
+- =eldev test -f e2e/e-context-lifetime-e2e-test.el=: 4/4 passed unchanged,
+  including canvas replacement and mixed-frontier anchor policy.
+- =e2e/e-live-e2e-test.el= passed a non-executing =check-parens= load check.
+- =git diff --check= passed; the new review ledger has no trailing whitespace.
+- The current [[https://developers.openai.com/api/reference/cli/resources/responses/methods/create][official OpenAI Responses create reference]] still states that
+  a new =instructions= value used with =previous_response_id= does not carry
+  the prior response's instructions forward.
+
+Total final credential-free tests: 325 passed, 0 failed, 0 skipped.
+
+The credentialed ChatGPT Codex and canonical OpenAI live suites were not run in
+this Tock.  Their revised/retained tests remain required acceptance for the
+independent review phase; an unavailable credential must be reported as a skip.
+The complete batch suite and warnings-as-errors compile are likewise deferred
+to the final post-review gate described by the addendum.
+
+The user's running Emacs was not contacted or changed.  These adapter/harness
+changes require an Emacs restart before use.
+
+* Implementation-sensitive review focus
+
+The independent Tick should verify that the normalizer remains the sole static
+built-in Codex proof owner, the capability resolver remains the sole effective
+identity gate, and the map changes only current-state and dynamic-context.
+It should also inspect the exact built-in socket scenario's literal requests,
+newest clean anchor, custom/override fallbacks, and both credentialed live test
+dispositions.  The architecture self-check in =addendum.org= remains current;
+this candidate adds no state or dependency-direction change beyond that
+accepted design.
+
+* Implementation Tick 1 findings
+
+** P2 F88.I1: custom proof exposed the provider-neutral legacy scalar
+
+The adapter expanded =request-local-replaceable= to the preferred five-kind
+map only for built-in providers.  An identity-compatible custom Responses
+profile with the same explicit proof still exposed the legacy scalar through
+=e-openai--profile-context-capabilities=.  That made the adapter's public
+representation depend on provider identity even though the semantic proof was
+the same.  The scalar compatibility form belongs only to the provider-neutral
+=e-backend= boundary for adapters that have not migrated.
+
+Required correction: every identity-compatible Responses profile whose static
+configuration explicitly declares =request-local-replaceable= must return a
+fresh copy of the same five-kind map.  Unproved profiles and effective
+endpoint/transport overrides remain conservative.
+
+** P2 F88.I2: the credentialed Codex test observed request-start state
+
+The revised live test captured the proposed literal body, but obtained
+transport diagnostics from the durable =provider-request-started= event.  An
+incremental request can later retry as a full request on the same native
+request handle, updating its final metadata.  Therefore the start event could
+pass while the completed transport path had already fallen back.
+
+Required correction: retain both native request handles returned by
+=e-openai-codex--websocket-request-start= and inspect the second handle after
+the turn settles.  Its final metadata and the correlated finished event must
+prove successful incremental completion, no fallback, the prior response id,
+socket reuse, and reuse count.  Existing literal request and marker assertions
+remain required.
+
+* Implementation Tock 2 candidate
+
+Status: both Tick 1 findings have candidate dispositions.  This remains a
+candidate for a fresh independent Tick and is not a fixed-point decision.
+
+** F88.I1 disposition
+
+=e-openai--profile-context-capabilities= now copies the preferred five-kind
+map for every identity-compatible Responses profile with explicit static
+=request-local-replaceable= proof, including custom profiles.  The custom
+proof owner test asserts the exact raw map as well as per-kind resolution.
+Explicit opt-out, missing proof, endpoint override, transport override, and
+built-in requester override still fall back conservatively.  The existing
+provider-neutral scalar compatibility test remains in =e-backend=.
+
+The existing provider-neutral canvas replacement E2E is unchanged in shape and
+behavior; its representation assertion now expects the OpenAI adapter's
+five-kind map for its explicit custom proof.
+
+** F88.I2 disposition
+
+The credentialed Codex test now captures the actual request handles returned by
+the native WebSocket starter.  After both turns complete, it reads the second
+handle's final metadata and requires incremental mode, an explicit nil fallback
+reason, prior-response presence, socket reuse, and reuse count one.  It also
+requires exactly two successfully finished provider requests and checks that
+the second finished event carries the same final transport evidence.  An
+internal unresolved-anchor or reconnect retry mutates the handle to
+=full-retry= with a fallback reason and therefore fails these assertions.
+
+The first-turn assistant/durable no-old-marker precondition, literal second
+request checks, changed instructions, exact second answer, and newest-anchor
+checks remain intact.
+
+** Tock 2 evidence
+
+- =eldev test -f test/e-backend-test.el=: 16/16 passed.
+- =eldev test -f test/e-openai-test.el=: 139/139 passed.
+- =eldev test -f test/e-harness-test.el=: 156/156 passed.
+- =eldev test -f test/e-provider-continuation-integration-test.el=: 10/10
+  passed.
+- =eldev test -f e2e/e-context-lifetime-e2e-test.el=: 4/4 passed.
+- With =E_E2E=1= and no =E_E2E_CONFIG=,
+  =eldev test -f e2e/e-live-e2e-test.el= loaded the live file cleanly and
+  skipped all 16 credentialed tests before provider setup.
+
+Total final credential-free behavior tests: 325 passed, 0 failed, 0 skipped.
+The separate live-file load check reported 0 failed and 16 skipped.
+
+The credentialed ChatGPT Codex and canonical OpenAI live executions remain for
+the parent-owned acceptance run.  The user's running Emacs was not contacted or
+changed, and no commit or push was made in this Tock.
+
+* Implementation Tick 2 finding
+
+** P2 F88.I3: live completion correlation treated request ordinal as session-global
+
+The parent-owned credentialed ChatGPT Codex run reached the expected provider
+behavior.  The second native request handle's final metadata reported
+=incremental= mode, a present previous response id, socket reuse count one, an
+explicit nil fallback reason, =request-local-replaceable= observation delivery,
+and =advance-eligible= anchor safety.  The live test failed only because it
+expected the second turn's =provider-request-ordinal= to be 2.
+
+Provider request ordinals are local to one top-level turn.  Each of these two
+=prompt-batch= calls owns a distinct turn, so the second turn's only provider
+request correctly has ordinal 1.  Taking the last session-wide finished event
+and expecting ordinal 2 was therefore an invalid and potentially ambiguous
+cross-turn correlation in the test, not an adapter failure.
+
+Required correction: capture the settled second prompt entry's turn id, select
+the durable =provider-request-finished= event with that exact =:turn-id=, and
+then compare its successful terminal diagnostics with the second native request
+handle.  Do not use request ordinal as a cross-turn identity.
+
+* Implementation Tock 3 candidate
+
+Status: F88.I3 has a candidate test-only disposition.  This remains subject to
+a fresh credentialed acceptance run and is not a fixed-point decision.
+
+The live test now retains =:id= from the second settled =prompt-batch= entry,
+filters finished provider events by that exact turn id, and requires exactly one
+match.  That event must have turn-local request ordinal 1 and status =done=;
+its diagnostics must still agree with the second native request handle's final
+incremental mode, nil fallback, previous-response presence, socket reuse, and
+reuse count.  No lifecycle, adapter, state, or persistence behavior changed.
+
+Tock 3 credential-free evidence:
+
+- =eldev test -f test/e-harness-test.el
+  e-harness-test-provider-request-lifecycle-events-are-durable=: 1/1 passed.
+- With =E_E2E=1= and no =E_E2E_CONFIG=,
+  =eldev test -f e2e/e-live-e2e-test.el= loaded cleanly and skipped all 16
+  credentialed tests before provider setup.
+
+The credentialed provider was not called again in this Tock.  The parent owns
+the required ChatGPT Codex rerun.  The user's running Emacs was not contacted or
+changed, and no commit or push was made.
+
+* Implementation Tock 4 candidate
+
+Status: documentation-only candidate disposition; no fixed-point claim.
+
+The delivery-map constant's stale docstring described the representation as a
+built-in-only map.  It now states the accepted scope directly: the kind-scoped
+map applies to statically proven, identity-compatible Responses profiles.  No
+capability resolution or runtime behavior changed.
+
+Nearby inspection confirmed that
+=e-openai--profile-context-capabilities= copies the map only when effective
+identity is compatible, the wire API is Responses, and static profile
+configuration declares =request-local-replaceable=.  The F88.I3 live test also
+retains the settled second turn's =:id=, requires exactly one finished event
+with that =:turn-id=, treats request ordinal 1 as turn-local, and compares its
+successful diagnostics with the final second native request handle.  No obvious
+syntax or semantic issue was found in either boundary.
+
+Tock 4 evidence:
+
+- =eldev test -f test/e-openai-test.el
+  e-openai-test-first-party-capabilities-follow-effective-identity=: 1/1
+  passed, covering built-in, custom-proof, unproved, and override identities.
+- =check-parens= passed for the adapter and live E2E files.
+- =git diff --check= passed; the untracked review ledger has no trailing
+  whitespace.
+
+No credentialed provider call, running-Emacs contact, commit, or push occurred.
+
+* Implementation Tick 3 finding
+
+** P3 F88.I4: addendum status named an obsolete implementation Tock
+
+The addendum's status still said that Implementation Tock 1 was underway after
+the review had advanced through later Tocks and credentialed acceptance.  That
+volatile milestone made the otherwise current design document stale.
+
+* Implementation Tock 5 candidate
+
+Status: F88.I4 has a documentation-only candidate disposition.  This is not a
+fixed-point decision.
+
+The addendum status now says that implementation Tick/Tock review and
+credentialed acceptance are underway.  This remains accurate across individual
+review iterations without naming an obsolete Tock.  No source or test behavior
+changed.
+
+Parent-owned credentialed acceptance evidence:
+
+- =E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el eldev test -f
+  e2e/e-live-e2e-test.el
+  e-live-e2e-test-openai-codex-store-false-continues=: 1/1 passed in 7.43
+  seconds.
+- A current credentialed canonical OpenAI network run was not possible because
+  =OPENAI_API_KEY= was absent.  No canonical OpenAI live pass is claimed.  Its
+  first-party contract verification, focused deterministic coverage, and live
+  test disposition remain required in the final gates.
+
+Tock 5 repository evidence:
+
+- Both changed Org files passed batch =org-element-parse-buffer= parsing.
+- =check-parens= passed for the review ledger.  It stopped in =addendum.org=
+  at the unchanged request-shape example near line 141; the same failure
+  reproduces against committed =HEAD= near line 140, so it is pre-existing and
+  not caused by this status edit.
+- =git diff --check= passed; the untracked review ledger has no trailing
+  whitespace.
+
+No provider call, running-Emacs contact, source/test edit, commit, or push
+occurred in this Tock.
+
+* Implementation Tick 4 fixed point
+
+Decision: zero P0--P3 findings.  F88.I1--F88.I4 are closed, and the addendum's
+implementation has reached its required normal, non-fast fixed point.
+
+The parent-owned final gates passed:
+
+- =eldev compile --warnings-as-errors= passed.
+- The complete =eldev test= run executed 2,313 tests: 2,311 expected passes,
+  zero unexpected results, and the same two named pre-existing skips:
+  =e-chat-surface-integration-test-evil-escape-routes-transcript-commands= and
+  =e-chat-test-assistant-markdown-renders-with-text-properties=.
+- Deterministic OpenAI adapter/provider verification passed, including the
+  focused capability, override, request-shape, continuation, and context
+  lifetime coverage recorded above.
+
+The credentialed ChatGPT Codex acceptance remains 1/1 passed.  A canonical
+OpenAI credentialed network run remained unavailable because =OPENAI_API_KEY=
+was absent, so no canonical OpenAI live pass is claimed.
+
+* Final handoff Tock 6
+
+Feature 88 and this addendum are now marked Done.  This handoff changes only
+documentation and status: no source, tests, abstraction, runtime discovery,
+persistence, or lifecycle behavior changed.  The user's running Emacs remained
+untouched, and no commit or push was made.
+
+Final documentation verification:
+
+- All three changed Org files passed batch =org-element-parse-buffer= parsing.
+- =check-parens= passed for the review ledger and feature index.  The addendum
+  retains the pre-existing request-shape-example stop reproduced against
+  committed =HEAD= and documented in Tock 5.
+- =git diff --check= passed; the untracked review ledger has no trailing
+  whitespace.

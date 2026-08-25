@@ -542,15 +542,18 @@ provider turn to settle without an implicit local deadline."
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
 (ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
-  "ChatGPT Codex keeps inherited current state out of continuation anchors."
+  "ChatGPT Codex replaces current state on its proved native continuation."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
-  (let ((profile (e-openai-provider-profile e-openai-default-provider)))
-    (unless (and (eq (plist-get profile :responses-transport) 'websocket)
-                 (eq (plist-get profile :response-store) :json-false))
-      (ert-skip "The configured provider is not an unstored Responses WebSocket.")))
-  (let* ((current-state "subscription dynamic state one")
+  (let* ((provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
+    (should (eq (plist-get profile :response-store) :json-false)))
+  (let* ((old-marker "OBSERVATION-OLD")
+         (new-marker "OBSERVATION-NEW")
+         (current-state old-marker)
          (provider
           (e-context-provider-create
            :name 'live-codex-current-state
@@ -569,31 +572,112 @@ provider turn to settle without an implicit local deadline."
              :context-providers (list provider))))))
     (e-live-e2e--with-harness (harness session-id :layers (list layer))
       (let ((original-start
-             (symbol-function 'e-openai-codex--websocket-request-start))
-            request-bodies)
+            (symbol-function 'e-openai-codex--websocket-request-start))
+            request-bodies
+            request-handles
+            first-response-id
+            first-assistant
+            first-durable-assistant
+            second-assistant
+            second-turn-id)
         (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (push (copy-tree (plist-get args :body-data)) request-bodies)
-                     (apply original-start args))))
-          (e-board-e2e-prompt-batch
-           harness session-id
-           "Reply with exactly: LOCAL-CONTINUATION-ONE")
-          (setq current-state "subscription dynamic state two")
-          (e-board-e2e-prompt-batch
-           harness session-id
-           "Reply with exactly: LOCAL-CONTINUATION-TWO"))
+                     (let ((request (apply original-start args)))
+                       (push request request-handles)
+                       request))))
+          (let ((first-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  (concat
+                   "Reply with exactly: FIRST-TURN-READY. "
+                   "Do not repeat any observation marker."))))
+            (setq first-assistant
+                  (e-live-e2e--assistant-content first-result))
+            (setq first-durable-assistant
+                  (car
+                   (last
+                    (seq-filter
+                     (lambda (message)
+                       (eq (plist-get message :role) 'assistant))
+                     (e-harness-messages harness session-id)))))
+            ;; This is an asserted precondition, not a post-hoc explanation:
+            ;; if turn one leaked the old marker, turn two would be ambiguous.
+            (should first-durable-assistant)
+            (should-not
+             (e-live-e2e--contains-p first-assistant old-marker))
+            (should-not
+             (e-live-e2e--contains-p
+              (plist-get first-durable-assistant :content)
+              old-marker))
+            (setq first-response-id
+                  (plist-get
+                   (plist-get
+                    (car
+                     (last
+                      (e-session-provider-anchors
+                       (e-harness-sessions harness) session-id)))
+                    :metadata)
+                   :response-id))
+            (should (stringp first-response-id)))
+          (setq current-state new-marker)
+          (let ((second-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  (concat
+                   "Reply with exactly the current observation marker from "
+                   "your instructions and no other text."))))
+            (setq second-assistant
+                  (e-live-e2e--assistant-content second-result))
+            (setq second-turn-id (plist-get second-result :id))))
         (let* ((ordered-bodies (nreverse request-bodies))
+               (ordered-handles (nreverse request-handles))
                (first-body (car ordered-bodies))
                (second-body (car (last ordered-bodies)))
+               (second-request-handle (car (last ordered-handles)))
                (first-input (append (plist-get first-body :input) nil))
                (second-input (append (plist-get second-body :input) nil))
-               (second-literal-input (prin1-to-string second-input))
-               (requests (e-live-e2e--activity-of-type
-                          harness session-id 'provider-request-started))
+               (second-literal-request (prin1-to-string second-body))
+               (request-metadata
+                (e-backend-request-metadata second-request-handle))
                (diagnostics
-                (plist-get (plist-get (car (last requests)) :payload)
-                           :diagnostics)))
+                (plist-get request-metadata :diagnostics))
+               (second-turn-finished-events
+                (seq-filter
+                 (lambda (event)
+                   (equal (plist-get event :turn-id) second-turn-id))
+                 (e-live-e2e--activity-of-type
+                  harness session-id 'provider-request-finished)))
+               (second-finished-event (car second-turn-finished-events))
+               (second-finished-payload
+                (plist-get second-finished-event :payload))
+               (finished-diagnostics
+                (plist-get second-finished-payload :diagnostics))
+               (anchors
+                (e-session-provider-anchors
+                 (e-harness-sessions harness) session-id))
+               (newest-anchor (car (last anchors)))
+               (newest-response-id
+                (plist-get (plist-get newest-anchor :metadata) :response-id)))
           (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
+            (should (equal
+                     (plist-get
+                      (e-backend-context-capabilities
+                       (e-harness-backend harness)
+                       nil)
+                     :observation-delivery)
+                     e-openai--request-local-observation-delivery-map))
+            (should (= (length ordered-bodies) 2))
+            (should (= (length ordered-handles) 2))
+            (should (e-backend-request-p second-request-handle))
+            (should (stringp second-turn-id))
+            (should (= (length second-turn-finished-events) 1))
+            (should (equal (plist-get second-finished-event :turn-id)
+                           second-turn-id))
+            (should (= (plist-get second-finished-payload
+                                  :provider-request-ordinal)
+                       1))
+            (should (eq (plist-get second-finished-payload :status) 'done))
             (should (eq (plist-get first-body :store) :json-false))
             (should (equal (plist-get first-body :include)
                            ["reasoning.encrypted_content"]))
@@ -601,43 +685,72 @@ provider turn to settle without an implicit local deadline."
             (should (eq (plist-get second-body :store) :json-false))
             (should (equal (plist-get second-body :include)
                            ["reasoning.encrypted_content"]))
-            (should-not (plist-member second-body :previous_response_id))
-            (should-not (plist-member second-body :prompt_cache_options))
+            (should (equal (plist-get second-body :previous_response_id)
+                           first-response-id))
+            (dolist (body (list first-body second-body))
+              (should-not (plist-member body :prompt_cache_options))
+              (should-not
+               (e-live-e2e--contains-p
+                (prin1-to-string body)
+                "prompt_cache_breakpoint")))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    first-input)
-                           '("developer" "developer" "user")))
+                           '("developer" "user")))
+            (should-not
+             (e-live-e2e--contains-p (prin1-to-string first-input)
+                                     old-marker))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    second-input)
-                           '("developer" "developer" "user" "assistant" "user")))
+                           '("user")))
             (should
              (seq-find
               (lambda (item)
                 (string-match-p
                  "subscription stable instructions"
                  (or (plist-get (aref (plist-get item :content) 0) :text) "")))
-              second-input))
-            (should
-             (seq-find
-              (lambda (item)
-                (string-match-p
-                 "subscription dynamic state two"
-                 (or (plist-get (aref (plist-get item :content) 0) :text) "")))
-              second-input))
+              first-input))
+            (should (equal (plist-get first-body :instructions)
+                           (concat "You are a helpful assistant.\n\n"
+                                   old-marker)))
+            (should (equal (plist-get second-body :instructions)
+                           (concat "You are a helpful assistant.\n\n"
+                                   new-marker)))
             (should (e-live-e2e--contains-p
-                     second-literal-input
-                     "subscription dynamic state two"))
+                     (plist-get second-body :instructions)
+                     new-marker))
             (should-not (e-live-e2e--contains-p
-                         second-literal-input
-                         "subscription dynamic state one"))
+                         second-literal-request
+                         old-marker))
+            (should (equal (string-trim second-assistant) new-marker))
+            (should-not
+             (e-live-e2e--contains-p second-assistant old-marker))
             (should (equal (plist-get diagnostics :prompt-cache-mode)
                            "implicit-segmented"))
             (should (eq (plist-get diagnostics :observation-delivery)
-                        'inherited))
+                        'request-local-replaceable))
+            (should (eq (plist-get diagnostics
+                                   :replaceable-current-state-present)
+                        t))
             (should (eq (plist-get diagnostics :provider-anchor-safety)
-                        'hold-inherited-observation))
-            (should (eq (plist-get diagnostics :websocket-request-mode) 'full))
-            (should-not
-             (plist-get diagnostics :previous-response-id-present))))))))
+                        'advance-eligible))
+            (should (eq (plist-get diagnostics :websocket-request-mode)
+                        'incremental))
+            (should (plist-member diagnostics :websocket-fallback-reason))
+            (should-not (plist-get diagnostics :websocket-fallback-reason))
+            (should (eq (plist-get diagnostics :previous-response-id-present)
+                        t))
+            (should (eq (plist-get diagnostics :websocket-reused) t))
+            (should (= (plist-get diagnostics :websocket-reuse-count) 1))
+            (dolist (key '(:websocket-request-mode
+                           :websocket-fallback-reason
+                           :previous-response-id-present
+                           :websocket-reused
+                           :websocket-reuse-count))
+              (should (equal (plist-get finished-diagnostics key)
+                             (plist-get diagnostics key))))
+            (should (= (length anchors) 2))
+            (should (stringp newest-response-id))
+            (should-not (equal newest-response-id first-response-id))))))))
 
 (ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
   "The configured OpenAI provider accepts encrypted reasoning full replay."

@@ -44,6 +44,17 @@
    'text
    (aref (alist-get 'content (aref (alist-get 'input body) 0)) 0)))
 
+(defun e-provider-continuation-integration--jwt ()
+  "Return a fake JWT carrying the ChatGPT account claim used by Codex auth."
+  (let* ((payload (json-encode
+                   '(:https://api.openai.com/auth
+                     (:chatgpt_account_id "acct-test"))))
+         (encoded (base64-encode-string payload 'no-line-break)))
+    (setq encoded (string-replace "+" "-" encoded))
+    (setq encoded (string-replace "/" "_" encoded))
+    (setq encoded (replace-regexp-in-string "=+$" "" encoded))
+    (format "header.%s.signature" encoded)))
+
 (defun e-provider-continuation-integration--run-ephemeral-anchor-profile
     (continuation observation-delivery)
   "Run a normal tool follow-up for semantic CONTINUATION and DELIVERY.
@@ -813,111 +824,203 @@ covered by the adapter tests below."
                   'done)))))
 
 (ert-deftest e-provider-continuation-integration-test-websocket-gpt56-explicit-cache ()
-  "GPT-5.6 replaces request-local current state without growing input history."
-  (let* ((process-environment
-          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
-         (e-harness-auto-compaction-enabled nil)
-         (e-openai-websocket-idle-timeout-seconds nil)
-         (e-openai-websocket-connection-idle-seconds nil)
-         (e-openai-model-providers
-          '((continuation-websocket-e2e
-             :name "Continuation WebSocket E2E"
-             :base-url "https://gateway.example.test/v1"
-             :auth bearer
-             :env-key "OPENAI_GATEWAY_API_KEY"
-             :wire-api responses
-             :responses-transport websocket
-             :response-store :json-false
-             :prompt-cache-breakpoint-mode explicit
-             :observation-delivery request-local-replaceable
-             :continuation t
-             :requires-openai-auth nil)))
-         (current-state "state one")
-         (dynamic-provider
-          (e-context-provider-create
-           :name 'cross-turn-current-state
-           :cache-placement 'dynamic-context
-           :build (lambda (&rest _)
-                    (list (list :role 'system :content current-state)))))
-         (harness
-          (e-openai-create-harness
-           :provider 'continuation-websocket-e2e
-           :model "gpt-5.6-sol"))
-         (open-count 0)
-         (send-count 0)
-         sends
-         on-message)
-    (e-harness-activate-capability
-     harness
-     (e-capability-create
-      :id 'cross-turn-current-state-capability
-      :instructions "stable instructions"
-      :context-providers (list dynamic-provider)))
-    (cl-letf (((symbol-function 'websocket-open)
-               (lambda (_url &rest args)
-                 (cl-incf open-count)
-                 (setq on-message (plist-get args :on-message))
-                 'fake-websocket))
-              ((symbol-function 'websocket-send-text)
-               (lambda (websocket text)
-                 (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
-                   (cl-incf send-count)
-                   (push payload sends)
-                   (funcall on-message websocket
-                            (json-encode
-                             `(:type "response.output_text.done"
-                               :text ,(format "answer-%d" send-count))))
-                   (funcall on-message websocket
-                            (json-encode
-                             `(:type "response.completed"
-                               :response
-                               (:id ,(format "resp-%d" send-count)
-                                :status "completed")))))))
-              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
-      (e-board-e2e-reset-runtime)
-      (e-board-e2e-create-session harness :id "session-one")
-      (e-session-set-turn-options
-       (e-harness-sessions harness)
-       "session-one"
-       '(:prompt-cache-default t))
-      (e-board-e2e-prompt-batch harness "session-one" "first prompt")
-      (setq current-state "state two")
-      (e-board-e2e-prompt-batch harness "session-one" "second prompt")
-      (let* ((ordered (nreverse sends))
-             (first (car ordered))
-             (second (cadr ordered))
-             (first-input (plist-get first :input))
-             (second-input (plist-get second :input))
-             (stable-block
-              (car (plist-get (car first-input) :content)))
-        (should (= open-count 1))
-        (should (= send-count 2))
-        (should (stringp (plist-get first :prompt_cache_key)))
-        (should (equal (plist-get first :prompt_cache_options)
-                       '(:mode "explicit")))
-        (should (equal (plist-get stable-block :text)
-                       "stable instructions"))
-        (should (equal (plist-get stable-block :prompt_cache_breakpoint)
-                       '(:mode "explicit")))
-        (should (equal (plist-get first :instructions)
-                       "You are a helpful assistant.\n\nstate one"))
-        (should (equal (plist-get second :previous_response_id) "resp-1"))
-        (should (equal (plist-get second :instructions)
-                       "You are a helpful assistant.\n\nstate two"))
-        (should (equal (plist-get second :prompt_cache_options)
-                       '(:mode "explicit")))
-        (should (equal (mapcar (lambda (item) (plist-get item :role))
-                               second-input)
-                       '("user")))
-        (should (equal (plist-get
-                        (car (plist-get (car second-input) :content))
-                        :text)
-                       "second prompt")))))))
+  "Built-in Codex and OpenAI replace current state on their native sockets."
+  (dolist (provider-id '(codex openai))
+    (let* ((process-environment
+            (cons "OPENAI_API_KEY=test-api-token" process-environment))
+           (e-harness-auto-compaction-enabled nil)
+           (e-openai-websocket-idle-timeout-seconds nil)
+           (e-openai-websocket-connection-idle-seconds nil)
+           (e-openai-model-providers
+            (list
+             (cons
+              'codex
+              (list
+               :name "ChatGPT Codex"
+               :base-url (concat e-openai-codex-default-base-url "/codex")
+               :wire-api 'responses
+               :responses-transport 'websocket
+               :continuation t
+               :requires-openai-auth t))
+             (cons 'openai (e-openai--builtin-openai-profile))))
+           (current-state "OBSERVATION-OLD")
+           (dynamic-provider
+            (e-context-provider-create
+             :name 'cross-turn-current-state
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      (list (list :role 'system :content current-state)))))
+           (harness
+            (e-openai-create-harness
+             :provider provider-id
+             :model "gpt-5.6-sol"))
+           (capabilities
+            (e-backend-context-capabilities
+             (e-harness-backend harness)
+             nil))
+           (open-count 0)
+           (send-count 0)
+           (original-websocket-start
+            (symbol-function 'e-openai-codex--websocket-request-start))
+           backend-requests
+           sends
+           on-message)
+      (e-harness-activate-capability
+       harness
+       (e-capability-create
+        :id 'cross-turn-current-state-capability
+        :instructions "stable instructions"
+        :context-providers (list dynamic-provider)))
+      (cl-letf (((symbol-function 'e-openai-codex-read-auth)
+                 (lambda (&optional _auth-file)
+                   (list :tokens
+                         (list :access_token
+                               (e-provider-continuation-integration--jwt)))))
+                ((symbol-function 'e-openai-codex--websocket-request-start)
+                 (lambda (&rest args)
+                   (let ((request (apply original-websocket-start args)))
+                     (push request backend-requests)
+                     request)))
+                ((symbol-function 'websocket-open)
+                 (lambda (_url &rest args)
+                   (cl-incf open-count)
+                   (setq on-message (plist-get args :on-message))
+                   'fake-websocket))
+                ((symbol-function 'websocket-send-text)
+                 (lambda (websocket text)
+                   (let ((payload
+                          (json-parse-string text
+                                             :object-type 'plist
+                                             :array-type 'list
+                                             :null-object nil
+                                             :false-object :json-false)))
+                     (cl-incf send-count)
+                     (push payload sends)
+                     (funcall on-message websocket
+                              (json-encode
+                               `(:type "response.output_text.done"
+                                 :text ,(format "answer-%d" send-count))))
+                     (funcall on-message websocket
+                              (json-encode
+                               `(:type "response.completed"
+                                 :response
+                                 (:id ,(format "resp-%d" send-count)
+                                  :status "completed")))))))
+                ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+        (e-board-e2e-create-session harness :id "session-one")
+        (e-session-set-turn-options
+         (e-harness-sessions harness)
+         "session-one"
+         '(:prompt-cache-default t))
+        (e-board-e2e-prompt-batch harness "session-one" "first prompt")
+        (let* ((anchors
+                (e-session-provider-anchors
+                 (e-harness-sessions harness) "session-one"))
+               (latest (car (last anchors))))
+          (should (equal (plist-get (plist-get latest :metadata) :response-id)
+                         "resp-1")))
+        (setq current-state "OBSERVATION-NEW")
+        (e-board-e2e-prompt-batch harness "session-one" "second prompt")
+        (let* ((ordered (nreverse sends))
+               (first (car ordered))
+               (second (cadr ordered))
+               (first-input (plist-get first :input))
+               (second-input (plist-get second :input))
+               (stable-block
+                (car (plist-get (car first-input) :content)))
+               (second-literal (prin1-to-string second))
+               (diagnostics
+                (plist-get (e-backend-request-metadata
+                            (car backend-requests))
+                           :diagnostics))
+               (anchors
+                (e-session-provider-anchors
+                 (e-harness-sessions harness) "session-one"))
+               (anchor-ids
+                (mapcar
+                 (lambda (anchor)
+                   (plist-get (plist-get anchor :metadata) :response-id))
+                 anchors)))
+          (ert-info ((format "Built-in WebSocket provider: %S" provider-id))
+            (should (equal (plist-get capabilities :observation-delivery)
+                           e-openai--request-local-observation-delivery-map))
+            (dolist (kind '(current-state dynamic-context))
+              (should
+               (eq (e-backend-observation-delivery-for-kind
+                    capabilities kind)
+                   'request-local-replaceable)))
+            (dolist (kind '(tool-result trace retrieved-excerpt))
+              (should
+               (eq (e-backend-observation-delivery-for-kind
+                    capabilities kind)
+                   'inherited)))
+            (should (= open-count 1))
+            (should (= send-count 2))
+            (should (equal (plist-get first :type) "response.create"))
+            (should (eq (plist-get first :store) :json-false))
+            (should (equal (plist-get first :include)
+                           '("reasoning.encrypted_content")))
+            (should-not (plist-member first :previous_response_id))
+            (should (equal (plist-get first :instructions)
+                           "You are a helpful assistant.\n\nOBSERVATION-OLD"))
+            (should-not (string-match-p
+                         "OBSERVATION-OLD"
+                         (prin1-to-string
+                          (let ((without-instructions (copy-sequence first)))
+                            (cl-remf without-instructions :instructions)
+                            without-instructions))))
+            (should (equal (mapcar (lambda (item) (plist-get item :role))
+                                   first-input)
+                           '("developer" "user")))
+            (should (equal (plist-get stable-block :text)
+                           "stable instructions"))
+            (should (eq (plist-get second :store) :json-false))
+            (should (equal (plist-get second :include)
+                           '("reasoning.encrypted_content")))
+            (should (equal (plist-get second :previous_response_id) "resp-1"))
+            (should (equal (plist-get second :instructions)
+                           "You are a helpful assistant.\n\nOBSERVATION-NEW"))
+            (should-not (string-match-p "OBSERVATION-OLD" second-literal))
+            (should-not (string-match-p "OBSERVATION-NEW"
+                                        (prin1-to-string second-input)))
+            (should (equal (mapcar (lambda (item) (plist-get item :role))
+                                   second-input)
+                           '("user")))
+            (should (equal (plist-get
+                            (car (plist-get (car second-input) :content))
+                            :text)
+                           "second prompt"))
+            (should (eq (plist-get diagnostics :websocket-request-mode)
+                        'incremental))
+            (should (eq (plist-get diagnostics :previous-response-id-present)
+                        t))
+            (should (eq (plist-get diagnostics :websocket-reused) t))
+            (should (eq (plist-get diagnostics :observation-delivery)
+                        'request-local-replaceable))
+            (should (eq (plist-get diagnostics
+                                   :replaceable-current-state-present)
+                        t))
+            (should (eq (plist-get diagnostics :provider-anchor-safety)
+                        'advance-eligible))
+            (should (equal anchor-ids '("resp-1" "resp-2")))
+            (if (eq provider-id 'codex)
+                (progn
+                  (should-not (plist-member first :prompt_cache_options))
+                  (should-not (plist-member second :prompt_cache_options))
+                  (should-not
+                   (string-match-p "prompt_cache_breakpoint"
+                                   (prin1-to-string first-input)))
+                  (should (equal (plist-get diagnostics :prompt-cache-mode)
+                                 "implicit-segmented")))
+              (should (equal (plist-get first :prompt_cache_options)
+                             '(:mode "explicit")))
+              (should (equal (plist-get second :prompt_cache_options)
+                             '(:mode "explicit")))
+              (should (equal (plist-get stable-block
+                                        :prompt_cache_breakpoint)
+                             '(:mode "explicit")))
+              (should (equal (plist-get diagnostics :prompt-cache-mode)
+                             "explicit")))))))))
 
 (ert-deftest e-provider-continuation-integration-test-branchable-inherited-reuses-clean-anchor ()
   "Branchable inherited observations reuse one clean anchor without promotion."

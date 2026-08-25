@@ -70,6 +70,17 @@
           (cl-remf content :prompt_cache_breakpoint))))
     copy))
 
+(defun e-openai-test--assert-observation-delivery (capabilities replaceable)
+  "Assert per-kind delivery in CAPABILITIES according to REPLACEABLE."
+  (dolist (kind '(current-state dynamic-context))
+    (should
+     (eq (e-backend-observation-delivery-for-kind capabilities kind)
+         (if replaceable 'request-local-replaceable 'inherited))))
+  (dolist (kind '(tool-result trace retrieved-excerpt))
+    (should
+     (eq (e-backend-observation-delivery-for-kind capabilities kind)
+         'inherited))))
+
 (ert-deftest e-openai-test-auth-file-uses-codex-home ()
   "Codex auth file resolution honors CODEX_HOME."
   (let ((process-environment
@@ -627,11 +638,10 @@
          (e-openai--profile-context-capabilities
           '(:wire-api chat-completion :continuation t)
           nil)))
-    (should (equal (plist-get replaceable :observation-delivery)
-                   'request-local-replaceable))
+    (e-openai-test--assert-observation-delivery replaceable t)
     (should (eq (plist-get replaceable :continuation) 'linear))
-    (should (eq (plist-get inherited :observation-delivery) 'inherited))
-    (should (eq (plist-get chat :observation-delivery) 'inherited))
+    (e-openai-test--assert-observation-delivery inherited nil)
+    (e-openai-test--assert-observation-delivery chat nil)
     (should (eq (plist-get chat :continuation) 'none))))
 
 (ert-deftest e-openai-test-profile-context-capabilities-reject-unknown-delivery ()
@@ -646,48 +656,90 @@
 
 (ert-deftest e-openai-test-first-party-capabilities-follow-effective-identity ()
   "First-party replacement proof does not cross endpoint or transport overrides."
-  (let* ((profile (e-openai-provider-profile 'openai))
-         (canonical (e-openai--profile-context-capabilities
-                     profile nil
-                     :provider 'openai
-                     :request-function nil))
-         (endpoint-override (e-openai--profile-context-capabilities
-                             profile nil
-                             :provider 'openai
-                             :base-url "https://gateway.example.test/v1"))
-         (request-override (e-openai--profile-context-capabilities
-                             profile nil
-                             :provider 'openai
-                             :request-function #'ignore))
-         (transport-override (e-openai--profile-context-capabilities
-                              profile '(:responses-transport http)
-                              :provider 'openai))
+  (let* ((openai-profile (e-openai-provider-profile 'openai))
+         (codex-profile (e-openai-provider-profile 'codex))
+         (canonical-openai
+          (e-openai--profile-context-capabilities
+           openai-profile nil :provider 'openai :request-function nil))
+         (canonical-codex
+          (e-openai--profile-context-capabilities
+           codex-profile nil :provider 'codex :request-function nil))
+         (openai-endpoint-override
+          (e-openai--profile-context-capabilities
+           openai-profile nil
+           :provider 'openai
+           :base-url "https://gateway.example.test/v1"))
+         (codex-endpoint-override
+          (e-openai--profile-context-capabilities
+           codex-profile nil
+           :provider 'codex
+           :base-url "https://gateway.example.test/codex"))
+         (openai-request-override
+          (e-openai--profile-context-capabilities
+           openai-profile nil :provider 'openai :request-function #'ignore))
+         (codex-request-override
+          (e-openai--profile-context-capabilities
+           codex-profile nil :provider 'codex :request-function #'ignore))
+         (openai-transport-override
+          (e-openai--profile-context-capabilities
+           openai-profile '(:responses-transport http) :provider 'openai))
+         (codex-transport-override
+          (e-openai--profile-context-capabilities
+           codex-profile '(:responses-transport http) :provider 'codex))
+         (noncanonical-codex
+          (e-openai--profile-context-capabilities
+           (plist-put (copy-sequence codex-profile)
+                      :name "Custom Codex")
+           nil :provider 'codex))
          (custom-profile
-          (plist-put (copy-sequence profile)
+          (plist-put (copy-sequence openai-profile)
                      :base-url "https://custom.example.test/v1"))
          (custom-proof (e-openai--profile-context-capabilities
                         custom-profile nil
                         :provider 'custom-proven
                         :request-function #'ignore))
+         (custom-without-proof
+          (e-openai--profile-context-capabilities
+           (let ((copy (copy-sequence custom-profile)))
+             (cl-remf copy :observation-delivery)
+             copy)
+           nil
+           :provider 'custom-unproven
+           :request-function #'ignore))
          (custom-endpoint-override
           (e-openai--profile-context-capabilities
            custom-profile nil
            :provider 'custom-proven
            :base-url "https://other.example.test/v1"
+           :request-function #'ignore))
+         (custom-transport-override
+          (e-openai--profile-context-capabilities
+           custom-profile '(:responses-transport http)
+           :provider 'custom-proven
            :request-function #'ignore)))
-    (should (eq (plist-get canonical :observation-delivery)
-                'request-local-replaceable))
-    (should (eq (plist-get canonical :continuation) 'linear))
-    (dolist (capabilities (list endpoint-override
-                                request-override
-                                transport-override
-                                custom-endpoint-override))
-      (should (eq (plist-get capabilities :observation-delivery) 'inherited))
+    (dolist (capabilities (list canonical-openai canonical-codex))
+      (should (equal (plist-get capabilities :observation-delivery)
+                     e-openai--request-local-observation-delivery-map))
+      (e-openai-test--assert-observation-delivery capabilities t)
+      (should (eq (plist-get capabilities :continuation) 'linear)))
+    (dolist (capabilities (list openai-endpoint-override
+                                codex-endpoint-override
+                                openai-request-override
+                                codex-request-override
+                                openai-transport-override
+                                codex-transport-override
+                                noncanonical-codex
+                                custom-endpoint-override
+                                custom-transport-override))
+      (e-openai-test--assert-observation-delivery capabilities nil)
       (should (eq (plist-get capabilities :continuation) 'none)))
+    (e-openai-test--assert-observation-delivery custom-without-proof nil)
+    (should (eq (plist-get custom-without-proof :continuation) 'linear))
     ;; A named custom profile carries its own endpoint proof and may use the
     ;; injected requester used by its conformance test.
-    (should (eq (plist-get custom-proof :observation-delivery)
-                'request-local-replaceable))
+    (should (equal (plist-get custom-proof :observation-delivery)
+                   e-openai--request-local-observation-delivery-map))
+    (e-openai-test--assert-observation-delivery custom-proof t)
     (should (eq (plist-get custom-proof :continuation) 'linear))))
 
 (ert-deftest e-openai-test-first-party-endpoint-override-disables-harness-anchor ()
@@ -1537,7 +1589,8 @@
        :requires-openai-auth t
        :prompt-cache-breakpoint-mode nil
        :responses-context-layout developer-input
-       :include-encrypted-reasoning t)
+       :include-encrypted-reasoning t
+       :observation-delivery request-local-replaceable)
       (custom-codex
        :name "Custom Codex"
        :base-url ,(concat e-openai-codex-default-base-url "/codex")
@@ -1562,7 +1615,7 @@
        :default-model "gpt-5.6")))))
 
 (ert-deftest e-openai-test-provider-profile-normalizes-builtin-codex-requirements ()
-  "Provider lookup applies current built-in Codex cache and store constraints."
+  "Every lookup applies current built-in Codex wire and semantic constraints."
   (let ((e-openai-model-providers
          `((codex
             :name "ChatGPT Codex"
@@ -1578,11 +1631,57 @@
       (should-not (plist-get profile :prompt-cache-breakpoint-mode))
       (should (eq (plist-get profile :responses-context-layout)
                   'developer-input))
-      (should (plist-get profile :include-encrypted-reasoning)))))
+      (should (plist-get profile :include-encrypted-reasoning))
+      (should (eq (plist-get profile :observation-delivery)
+                  'request-local-replaceable)))
+    (let ((backend (e-openai-backend-create :provider 'codex)))
+      ;; Doom may replace the canonical profile after backend construction.
+      ;; Lookup-time normalization must prove that later configuration too.
+      (setq e-openai-model-providers
+            `((codex
+               :name "ChatGPT Codex"
+               :base-url ,(concat e-openai-codex-default-base-url "/codex")
+               :wire-api responses
+               :responses-transport websocket
+               :continuation t
+               :requires-openai-auth t)))
+      (let ((profile (e-openai-provider-profile 'codex))
+            (capabilities (e-backend-context-capabilities backend nil)))
+        (should (eq (plist-get profile :response-store) :json-false))
+        (should (eq (plist-get profile :responses-context-layout)
+                    'developer-input))
+        (should (eq (plist-get profile :observation-delivery)
+                    'request-local-replaceable))
+        (should (equal (plist-get capabilities :observation-delivery)
+                       e-openai--request-local-observation-delivery-map))))))
+
+(ert-deftest e-openai-test-builtin-codex-normalization-preserves-opt-out ()
+  "An explicit inherited Codex declaration remains conservative."
+  (let ((e-openai-model-providers
+         `((codex
+            :name "ChatGPT Codex"
+            :base-url ,(concat e-openai-codex-default-base-url "/codex")
+            :wire-api responses
+            :responses-transport websocket
+            :observation-delivery inherited
+            :continuation t
+            :requires-openai-auth t))))
+    (let* ((profile (e-openai-provider-profile 'codex))
+           (capabilities
+            (e-backend-context-capabilities
+             (e-openai-backend-create :provider 'codex)
+             nil)))
+      (should (eq (plist-get profile :observation-delivery) 'inherited))
+      (e-openai-test--assert-observation-delivery capabilities nil)
+      (should (eq (plist-get capabilities :continuation) 'linear)))))
 
 (ert-deftest e-openai-test-canonical-api-profile-shares-responses-contract ()
   "The first-party API profile differs from Codex only in provider capability."
-  (let ((profile (e-openai-provider-profile 'openai)))
+  (let* ((profile (e-openai-provider-profile 'openai))
+         (capabilities
+          (e-backend-context-capabilities
+           (e-openai-backend-create :provider 'openai)
+           nil)))
     (should (equal (plist-get profile :base-url)
                    e-openai-api-default-base-url))
     (should (equal (plist-get profile :env-key) "OPENAI_API_KEY"))
@@ -1592,9 +1691,14 @@
     (should (eq (plist-get profile :responses-context-layout)
                 'developer-input))
     (should (eq (plist-get profile :prompt-cache-breakpoint-mode) 'explicit))
+    (should (eq (plist-get profile :observation-delivery)
+                'request-local-replaceable))
     (should (plist-get profile :include-encrypted-reasoning))
     (should (plist-get profile :continuation))
-    (should (equal (plist-get profile :default-model) "gpt-5.6"))))
+    (should (equal (plist-get profile :default-model) "gpt-5.6"))
+    (should (equal (plist-get capabilities :observation-delivery)
+                   e-openai--request-local-observation-delivery-map))
+    (e-openai-test--assert-observation-delivery capabilities t)))
 
 (ert-deftest e-openai-test-codex-and-api-profiles-render-equivalent-common-body ()
   "Canonical providers share one body modulo explicit-cache capability."

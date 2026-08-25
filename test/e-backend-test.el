@@ -300,6 +300,10 @@
              (e-backend-observation-delivery-for-kind
               capabilities 'trace)
              'inherited))
+    (should (equal
+             (e-backend-observation-delivery-for-kind
+              capabilities 'retrieved-excerpt)
+             'inherited))
     (should (eq (plist-get capabilities :reserved-effect-carrier)
                 'context-promote-wire))))
 
