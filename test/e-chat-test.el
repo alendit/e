@@ -7934,12 +7934,14 @@ surface; switch, resume, active-sessions, and overview list only root chats."
       (let ((e-chat-default-harness-id :chat-alpha))
         (e-chat-test--register-chat-instance
          :chat-alpha "Alpha Target" harness t)
-        (e-chat-test--create-session store :id "top-level"
-                          :metadata '(:name "Top Level"))
-        (e-session-create store :id "private-participant"
-                          :metadata '(:name "Private Participant"))
-        (e-session-declare-board-state
-         store "private-participant" "chat:top-level" "test-board:top-level")
+        (let* ((binding
+                (e-chat-service-create-board
+                 :harness harness :id "top-level"
+                 :metadata '(:name "Top Level")))
+               (board (e-chat-service-binding-board binding)))
+          (e-chat-service-create-participant
+           board harness :id "private-participant"
+           :metadata '(:name "Private Participant")))
         (e-chat-test--create-session store :id "child-by-parent"
                           :metadata '(:name "Child"
                                       :parent-session-id "top-level"))
@@ -7966,20 +7968,27 @@ surface; switch, resume, active-sessions, and overview list only root chats."
 (ert-deftest e-chat-test-session-candidates-exclude-indexed-worker-sessions ()
   "Resume candidates classify indexed workers and private participants."
   (let* ((directory (make-temp-file "e-chat-index-candidates-" t))
-         (writer (e-session-persistent-store-create directory)))
+         (writer (e-session-persistent-store-create directory))
+         (writer-harness
+          (e-chat-test--activate-chat-session
+           (e-harness-create
+            :backend (e-backend-fake-create :items nil)
+            :sessions writer))))
     (unwind-protect
         (progn
-          (e-chat-test--create-session writer :id "top-level"
-                                       :metadata '(:name "Top Level"))
+          (let* ((binding
+                  (e-chat-service-create-board
+                   :harness writer-harness :id "top-level"
+                   :metadata '(:name "Top Level")))
+                 (board (e-chat-service-binding-board binding)))
+            (e-chat-service-create-participant
+             board writer-harness :id "private-participant"
+             :metadata '(:name "Private Participant")))
           (e-chat-test--create-session
            writer :id "worker"
            :metadata '(:parent-session-id "top-level"
                        :subagent-role "tool-user"
                        :subagent-label "nested work"))
-          (e-session-create writer :id "private-participant"
-                            :metadata '(:name "Private Participant"))
-          (e-session-declare-board-state
-           writer "private-participant" "chat:top-level" "test-board:top-level")
           (let* ((store (e-session-persistent-index-store-create directory))
                  (harness
                   (e-chat-test--activate-chat-session
@@ -7996,6 +8005,21 @@ surface; switch, resume, active-sessions, and overview list only root chats."
                                  (e-chat--session-candidates))
                          '("top-level")))))))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-latest-session-selects-board-owning-root ()
+  "Latest-session navigation never selects a newer private participant."
+  (let* ((harness
+          (e-chat-test--activate-chat-session
+           (e-harness-create :backend (e-backend-fake-create :items nil))))
+         (binding
+          (e-chat-service-create-board
+           :harness harness :id "latest-root"
+           :metadata '(:name "Latest Root")))
+         (board (e-chat-service-binding-board binding)))
+    (e-chat-service-create-participant
+     board harness :id "latest-private"
+     :metadata '(:name "Latest Private"))
+    (should (equal (e-chat--latest-session-id harness) "latest-root"))))
 
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
   "Switch-session candidates list newest last message first."
@@ -8215,6 +8239,33 @@ surface; switch, resume, active-sessions, and overview list only root chats."
                 (kill-buffer buffer)))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-direct-overview-renders-only-board-owning-roots ()
+  "A direct-harness overview never renders a private board participant."
+  (let* ((harness
+          (e-chat-test--activate-chat-session
+           (e-harness-create :backend (e-backend-fake-create :items nil))))
+         (binding
+          (e-chat-service-create-board
+           :harness harness :id "overview-root"
+           :metadata '(:name "Overview Owner")))
+         (board (e-chat-service-binding-board binding))
+         (buffer (get-buffer-create "*e-chat-overview-roots-test*")))
+    (unwind-protect
+        (progn
+          (e-chat-service-create-participant
+           board harness :id "overview-private"
+           :metadata '(:name "Overview Private"))
+          (with-current-buffer buffer
+            (e-chat-overview-mode)
+            (e-chat-overview--render harness)
+            (let ((text (buffer-string)))
+              (should (= (e-chat-test--count-occurrences
+                          "Overview Owner" text)
+                         1))
+              (should-not (string-match-p "Overview Private" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-overview-compacts-multiline-session-summary ()
   "Overview rows do not expand raw prompt context into the sidebar."

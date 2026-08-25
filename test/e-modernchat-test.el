@@ -27,6 +27,11 @@
 
 (defvar e-modernchat-test--project-action-result nil)
 
+(defun e-chat-service-test--session-ids (harness)
+  "Return user-facing root session ids from HARNESS."
+  (mapcar (lambda (session) (plist-get session :id))
+          (e-chat-service-root-session-list harness)))
+
 (defun e-modernchat-test--post-board-output (harness session-id id content)
   "Post one board-visible test output and drain its bounded projection page."
   (let* ((binding (e-chat-service-ensure-binding harness session-id))
@@ -366,6 +371,104 @@ messages so the transcript reads as one clean answer."
       (should (= (length (plist-get first :boards)) 1))
       (should (= (length (plist-get second :boards)) 1))
       (should-not (plist-get second :next-after)))))
+
+(ert-deftest e-chat-service-test-root-catalog-uses-production-board-roles ()
+  "Production constructors durably distinguish a root from its participant."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (binding (e-chat-service-create-board
+                   :harness harness :id "role-root"))
+         (board (e-chat-service-binding-board binding))
+         (participant
+          (e-chat-service-create-participant
+           board harness :id "role-participant")))
+    (should
+     (equal (plist-get
+             (plist-get (e-chat-service-session harness "role-root")
+                        :board-session-state)
+             :association-role)
+            "owner"))
+    (should
+     (equal (plist-get (plist-get participant :board-session-state)
+                       :association-role)
+            "participant"))
+    (should (equal (e-chat-service-test--session-ids harness) '("role-root")))
+    ;; Filtering the public catalog never destroys the private session.
+    (should (equal (plist-get
+                    (e-chat-service-session harness "role-participant") :id)
+                   "role-participant"))))
+
+(ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
+  "A participant cannot become a root by reusing the owner's id in its store."
+  (let* ((owner-harness (e-harness-create :enabled-layer-ids nil))
+         (participant-harness (e-harness-create :enabled-layer-ids nil))
+         (binding (e-chat-service-create-board
+                   :harness owner-harness :id "same-id"))
+         (board (e-chat-service-binding-board binding)))
+    (e-chat-service-create-participant
+     board participant-harness :id "same-id")
+    (should (equal (e-chat-service-test--session-ids owner-harness)
+                   '("same-id")))
+    (should-not (e-chat-service-test--session-ids participant-harness))
+    (should (equal (plist-get
+                    (e-chat-service-session participant-harness "same-id") :id)
+                   "same-id"))))
+
+(ert-deftest e-chat-service-test-root-catalog-replays-new-and-legacy-index-state ()
+  "Indexed role state is authoritative and canonical legacy state still works."
+  (let* ((directory (make-temp-file "e-chat-role-index-" t))
+         (writer-store (e-session-persistent-store-create directory))
+         (writer-harness (e-harness-create
+                          :enabled-layer-ids nil :sessions writer-store)))
+    (unwind-protect
+        (let* ((binding (e-chat-service-create-board
+                         :harness writer-harness :id "indexed-root"))
+               (board (e-chat-service-binding-board binding)))
+          (e-chat-service-create-participant
+           board writer-harness :id "indexed-participant")
+          ;; This is the canonical pre-role representation already on disk.
+          (e-session-create writer-store :id "legacy-root")
+          (e-session-declare-board-state
+           writer-store "legacy-root" "chat:legacy-root" "legacy-board")
+          (let* ((indexed-store
+                  (e-session-persistent-index-store-create directory))
+                 (indexed-harness
+                  (e-harness-create
+                   :enabled-layer-ids nil :sessions indexed-store))
+                 (participant-state
+                  (plist-get
+                   (e-chat-service-session indexed-harness
+                                           "indexed-participant")
+                   :board-session-state)))
+            (should (equal (plist-get participant-state :association-role)
+                           "participant"))
+            (should (equal (sort (e-chat-service-test--session-ids
+                                  indexed-harness)
+                                 #'string<)
+                           '("indexed-root" "legacy-root")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-service-test-root-catalog-does-not-promote-malformed-role ()
+  "Invalid roles fail admission and malformed persisted state stays non-root."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store)))
+    (e-session-create store :id "malformed")
+    (should-error
+     (e-session-declare-board-state
+      store "malformed" "chat:malformed" "malformed-board" "unexpected")
+     :type 'error)
+    (should-not (plist-get (e-chat-service-session harness "malformed")
+                           :board-session-state))
+    (dolist (fixture
+             '((:id "unknown"
+                :board-state
+                (:board-id "board" :principal "chat:unknown"
+                 :association-role "unexpected"))
+               (:id "partial"
+                :board-state
+                (:board-id "partial-board" :association-role "owner"))))
+      (let ((before (copy-tree fixture)))
+        (should-not (e-chat-service--root-session-p fixture))
+        (should (equal fixture before))))))
 
 (ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
   "Subscriber failure cannot advance another client's cursor or lose identity."

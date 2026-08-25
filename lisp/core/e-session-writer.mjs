@@ -275,6 +275,7 @@ export function updateIndexEntry(entry, record, file) {
   } else if (record.type === "board-session-state") {
     entry["board-id"] = record["board-id"] || record["board-state"]?.["board-id"];
     entry.principal = record.principal || record["board-state"]?.principal;
+    entry["board-state"] = record["board-state"] || entry["board-state"];
   }
 }
 

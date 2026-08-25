@@ -1722,6 +1722,8 @@ bodies are reconstructed by the later context consumer from session entries."
         (plist-get (plist-get session :board-session-state) :board-id)
         :principal
         (plist-get (plist-get session :board-session-state) :principal)
+        :board-state
+        (copy-tree (plist-get session :board-session-state))
         :file (plist-get session :file)
         :loaded (plist-get session :loaded)))
 
@@ -2321,10 +2323,11 @@ This explicit operation is the only checkpoint-less full-journal replay path."
              :board-id (plist-get entry :board-id)
              :principal (plist-get entry :principal)
              :board-session-state
-             (when (and (plist-get entry :board-id)
-                        (plist-get entry :principal))
-               (list :board-id (plist-get entry :board-id)
-                     :principal (plist-get entry :principal)))
+             (or (copy-tree (plist-get entry :board-state))
+                 (when (and (plist-get entry :board-id)
+                            (plist-get entry :principal))
+                   (list :board-id (plist-get entry :board-id)
+                         :principal (plist-get entry :principal))))
              :file (or (plist-get entry :file)
                        (e-session--session-file store id))
              :loaded nil)))))
@@ -2817,10 +2820,18 @@ silently replacing records from another namespace."
      (list :type "board-messages-cleared" :session-id session-id))
     nil))
 
-(defun e-session-declare-board-state (store session-id principal board-id)
-  "Persist SESSION-ID's board identity and PRINCIPAL."
+(defun e-session-declare-board-state
+    (store session-id principal board-id &optional association-role)
+  "Persist SESSION-ID's board identity and ASSOCIATION-ROLE.
+ASSOCIATION-ROLE is either `owner' or `participant'.  Nil omits the role for
+replay-compatible callers that create the legacy board identity shape."
+  (unless (member association-role '(nil "owner" "participant"))
+    (error "Invalid board association role: %S" association-role))
   (let* ((session (e-session--get-live store session-id))
          (board-state (list :board-id board-id :principal principal)))
+    (when association-role
+      (setq board-state
+            (plist-put board-state :association-role association-role)))
     (plist-put session :board-session-state (copy-tree board-state))
     (e-session--append-record
      store session-id

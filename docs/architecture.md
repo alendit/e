@@ -218,6 +218,14 @@ remain a compatibility path and must reject unowned, presentation-only, or
 volatile state. Shells and layers can own presentation or live context, but they
 should persist only stable references or explicit user intent.
 
+Board-session association state is a bounded board id and principal plus an
+optional `owner`/`participant` association role. Chat service establishes the
+role for new associations and owns user-facing root classification; generic
+session root lineage remains a separate concern.  Role-absent legacy records
+use only the localized chat-service compatibility inference.  Presentation
+surfaces that select chats consume the chat-service root catalog rather than
+reconstructing ownership.
+
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a
 presentation shell; they should be session records or separate resources with

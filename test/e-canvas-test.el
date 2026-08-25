@@ -184,26 +184,46 @@
       (delete-file file))))
 
 (ert-deftest e-canvas-test-attach-current-buffer-to-selected-session ()
-  "Manual attachment adds the current buffer as non-canvas live context."
+  "Manual attachment offers and selects only a board-owning chat root."
   (let ((harness (e-canvas-test--harness)))
     (unwind-protect
         (e-canvas-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :canvas-test))
             (e-harness-registry-register :canvas-test harness)
-            (e-harness-test-create-board-session harness :id "target-session")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (cadr collection))))
-              (with-temp-buffer
-                (rename-buffer "canvas-extra" t)
-                (insert "extra context")
-                (e-canvas-attach-current-buffer)
-                (let ((attachment (car (e-chat-session-attachments
-                                        harness
-                                        "target-session"))))
-                  (should-not (plist-get attachment :canvas))
-                  (should (equal (plist-get attachment :uri)
-                                 "buffer://canvas-extra")))))))
+            (let* ((binding
+                    (e-chat-service-create-board
+                     :harness harness :id "target-session"
+                     :metadata '(:name "Canvas Owner")))
+                   (board (e-chat-service-binding-board binding)))
+              (e-chat-service-create-participant
+               board harness :id "private-participant"
+               :metadata '(:name "Private Participant"))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt collection &rest _args)
+                           (should (= (length collection) 2))
+                           (should (seq-some
+                                    (lambda (label)
+                                      (string-match-p "Canvas Owner" label))
+                                    collection))
+                           (should-not (seq-some
+                                        (lambda (label)
+                                          (string-match-p
+                                           "Private Participant" label))
+                                        collection))
+                           (cadr collection))))
+                (with-temp-buffer
+                  (rename-buffer "canvas-extra" t)
+                  (insert "extra context")
+                  (e-canvas-attach-current-buffer)
+                  (let ((attachment (car (e-chat-session-attachments
+                                          harness
+                                          "target-session"))))
+                    (should-not (plist-get attachment :canvas))
+                    (should (equal (plist-get attachment :uri)
+                                   "buffer://canvas-extra"))
+                    (should-not
+                     (e-chat-session-attachments
+                      harness "private-participant"))))))))
       (e-canvas-test--kill-chat-buffers))))
 
 (ert-deftest e-canvas-test-attach-can-target-new-session ()

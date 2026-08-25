@@ -631,7 +631,8 @@
         (progn
           (e-session-create store :id "session-1")
           (e-session-persistence-declare-board-state
-           controller "session-1" "principal:owner" "board-1")
+           controller "session-1" "principal:owner" "board-1"
+           "participant")
           (e-session-persistence-test--await-durable store)
           (let* ((indexed-store
                   (e-session-persistent-index-store-create directory))
@@ -639,13 +640,17 @@
             (should (equal (plist-get entry :id) "session-1"))
             (should (equal (plist-get entry :board-id) "board-1"))
             (should (equal (plist-get entry :principal) "principal:owner"))
+            (should (equal (plist-get (plist-get entry :board-state)
+                                      :association-role)
+                           "participant"))
             (should-not (plist-member entry :state)))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (state (plist-get (e-session-get loaded "session-1")
                                    :board-session-state)))
             (should (equal state
                            '(:board-id "board-1"
-                             :principal "principal:owner")))))
+                             :principal "principal:owner"
+                             :association-role "participant")))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

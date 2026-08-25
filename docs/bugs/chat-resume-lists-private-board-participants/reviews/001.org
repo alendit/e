@@ -1,6 +1,24 @@
 #+title: Review 001 — Chat Resume Private Board Participants
 #+startup: overview
 
+* Current disposition
+
+All three findings are remediated in the current working tree and await the
+exact-revision gate plus a fresh independent Tick:
+
+- F001: Canvas chat selection and existence checks now consume the chat
+  service root catalog; the composed attachment regression offers and selects
+  only the production-created board owner.
+- F002: new board associations persist a bounded, validated owner/participant
+  role through journals, checkpoints, and indexes.  The explicit role is
+  authoritative across stores; role-absent canonical data retains the localized
+  legacy identity fallback.
+- F003: production constructors now drive candidate, indexed replay, Canvas,
+  latest-session, direct-overview, cross-store, and malformed-state evidence.
+
+This disposition records remediation only.  Review 001 remains the historical
+finding authority and does not establish fixed point.
+
 * Decision
 
 Not at fixed point.

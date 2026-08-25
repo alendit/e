@@ -378,7 +378,7 @@ chat buffer in a side pane."
 
 (defun e-canvas--read-session (harness prompt)
   "Read a HARNESS session id or a new-session choice with PROMPT."
-  (let* ((sessions (e-harness-root-session-list harness))
+  (let* ((sessions (e-chat-service-root-session-list harness))
          (labels (mapcar #'e-canvas--session-choice-label sessions))
          (new-label "[New e session]")
          (choices (cons new-label labels))
@@ -394,7 +394,7 @@ chat buffer in a side pane."
   (cond
    ((and (derived-mode-p 'e-chat-mode) e-chat-session-id)
     e-chat-session-id)
-   ((e-harness-root-session-list harness)
+   ((e-chat-service-root-session-list harness)
     (or (e-canvas--read-session harness
                                 "Attach canvas context to e session: ")
         (plist-get (e-chat--create-session harness) :id)))

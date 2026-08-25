@@ -745,13 +745,20 @@ input publication and the acknowledgement fact."
         (e-chat-service--install-participant-binding
          board harness session-id :principal principal))))
 
+(defconst e-chat-service--board-role-root "owner"
+  "Durable chat board role for the user-facing owning session.")
+
+(defconst e-chat-service--board-role-participant "participant"
+  "Durable chat board role for a private execution session.")
+
 (defun e-chat-service--persist-board-state
-    (store session-id principal board-id)
-  "Persist SESSION-ID's BOARD-ID and PRINCIPAL through STORE's owning path."
+    (store session-id principal board-id role)
+  "Persist SESSION-ID's BOARD-ID, PRINCIPAL, and chat ROLE through STORE."
   (if-let ((controller (e-session-store-persistence-controller store)))
       (e-session-persistence-declare-board-state
-       controller session-id principal board-id)
-    (e-session-declare-board-state store session-id principal board-id)))
+       controller session-id principal board-id role)
+    (e-session-declare-board-state
+     store session-id principal board-id role)))
 
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
@@ -762,7 +769,8 @@ input publication and the acknowledgement fact."
          (board (e-board-registry-create :principal principal))
          (store (e-harness-sessions harness)))
     (e-chat-service--persist-board-state
-     store session-id principal (e-board-registry-board-id board))
+     store session-id principal (e-board-registry-board-id board)
+     e-chat-service--board-role-root)
     (e-chat-service--install-participant-binding
      board harness session-id :principal principal)))
 
@@ -803,7 +811,8 @@ LIMIT defaults to the registry's fixed page bound."
          (principal (e-board-registry-board-principal board))
          (store (e-harness-sessions harness))
          (_ (e-chat-service--persist-board-state
-             store session-id principal (e-board-registry-board-id board)))
+             store session-id principal (e-board-registry-board-id board)
+             e-chat-service--board-role-participant))
          (binding
           (e-chat-service--install-participant-binding
            board harness session-id
@@ -1059,19 +1068,26 @@ values delivered by `e-chat-service-subscribe'."
 
 (defun e-chat-service--root-session-p (session)
   "Return non-nil when SESSION is a user-facing chat root.
-Generic session lineage excludes explicit workers first.  For board-native
-sessions, the chat that created the board owns the `chat:<session-id>'
-principal; another session carrying that principal is a private participant on
-the root's board and belongs on the board or worker surface instead."
-  (let* ((state (plist-get session :board-session-state))
+An explicit durable chat role is authoritative.  Canonical legacy board state
+without that role falls back to its historical `chat:<session-id>' owner
+identity so existing indexes remain readable without mutation."
+  (let* ((state (or (plist-get session :board-session-state)
+                    (plist-get session :board-state)))
          (board-id (or (plist-get state :board-id)
                        (plist-get session :board-id)))
+         (role-present (and state (plist-member state :association-role)))
+         (role (and role-present (plist-get state :association-role)))
          (principal (or (plist-get state :principal)
                         (plist-get session :principal)))
          (session-id (plist-get session :id)))
-    (or (null board-id)
-        (and (stringp session-id)
-             (equal principal (format "chat:%s" session-id))))))
+    (cond
+     ((and (null state) (null board-id) (null principal)) t)
+     ((not (and (stringp board-id) (stringp principal))) nil)
+     (role-present
+      (equal role e-chat-service--board-role-root))
+     (t
+      (and (stringp session-id)
+           (equal principal (format "chat:%s" session-id)))))))
 
 (defun e-chat-service-root-session-list (harness)
   "Return HARNESS's user-facing chat roots for shell navigation."
