@@ -3263,6 +3263,403 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (e-backend-cancel-request second-request)
         (should (= close-count 1))))))
 
+(ert-deftest e-openai-test-websocket-reuses-older-known-response ()
+  "Older anchors survive a property-mismatch full fallback on one socket."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :continuation t
+             :requires-openai-auth nil)))
+         (open-count 0)
+         sends
+         on-message
+         (done-count 0)
+         error
+         second-request
+         third-request
+         fourth-request)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (cl-incf open-count)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (let* ((payload
+                         (json-parse-string text
+                                            :object-type 'plist
+                                            :array-type 'list
+                                            :null-object nil
+                                            :false-object :json-false))
+                        (index (length sends)))
+                   (push payload sends)
+                   (funcall on-message
+                            websocket
+                            (json-encode
+                             `(:type "response.completed"
+                               :response
+                               (:id ,(nth index '("resp-one"
+                                                 "resp-two"
+                                                 "resp-three"
+                                                 "resp-four"))
+                                :status "completed")))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start
+         backend
+         :messages '((:role user :content "one"))
+         :options '(:model "gpt-test"
+                    :session-id "session-one"
+                    :provider-continuation t)
+         :on-item #'ignore
+         :on-done (lambda (_status) (cl-incf done-count))
+         :on-error (lambda (err) (setq error err)))
+        (should (e-openai-test--wait-until (lambda () (= done-count 1)) 0.2))
+        (should-not error)
+        (setq second-request
+              (e-backend-start
+               backend
+               :messages '((:role user :content "one")
+                           (:role user :content "two"))
+               :options
+               '(:model "gpt-test"
+                 :session-id "session-one"
+                 :provider-continuation t
+                 :provider-anchor
+                 (:provider-id openai
+                  :metadata (:response-id "resp-one"))
+                 :provider-anchor-delta-messages
+                 ((:role user :content "two"))
+                 :provider-anchor-source-message-count 1)
+               :on-item #'ignore
+               :on-done (lambda (_status) (cl-incf done-count))
+               :on-error #'signal))
+        (should (e-openai-test--wait-until (lambda () (= done-count 2)) 0.2))
+        (setq third-request
+              (e-backend-start
+               backend
+               :messages '((:role user :content "one")
+                           (:role user :content "two")
+                           (:role user :content "three"))
+               :options
+               '(:model "gpt-other"
+                 :session-id "session-one"
+                 :provider-continuation t
+                 :provider-anchor
+                 (:provider-id openai
+                  :metadata (:response-id "resp-one"))
+                 :provider-anchor-delta-messages
+                 ((:role user :content "two")
+                  (:role user :content "three"))
+                 :provider-anchor-source-message-count 2)
+               :on-item #'ignore
+               :on-done (lambda (_status) (cl-incf done-count))
+               :on-error #'signal))
+        (should (e-openai-test--wait-until (lambda () (= done-count 3)) 0.2))
+        (setq fourth-request
+              (e-backend-start
+               backend
+               :messages '((:role user :content "one")
+                           (:role user :content "two")
+                           (:role user :content "three")
+                           (:role user :content "four"))
+               :options
+               '(:model "gpt-test"
+                 :session-id "session-one"
+                 :provider-continuation t
+                 :provider-anchor
+                 (:provider-id openai
+                  :metadata (:response-id "resp-two"))
+                 :provider-anchor-delta-messages
+                 ((:role user :content "two")
+                  (:role user :content "three")
+                  (:role user :content "four"))
+                 :provider-anchor-source-message-count 3)
+               :on-item #'ignore
+               :on-done (lambda (_status) (cl-incf done-count))
+               :on-error #'signal))
+        (should (e-openai-test--wait-until (lambda () (= done-count 4)) 0.2))
+        (should (= open-count 1))
+        (let* ((chronological (nreverse sends))
+               (first (nth 0 chronological))
+               (second (nth 1 chronological))
+               (third (nth 2 chronological))
+               (fourth (nth 3 chronological))
+               (second-diagnostics
+                (plist-get (e-backend-request-metadata second-request)
+                           :diagnostics))
+               (third-diagnostics
+                (plist-get (e-backend-request-metadata third-request)
+                           :diagnostics))
+               (fourth-diagnostics
+                (plist-get (e-backend-request-metadata fourth-request)
+                           :diagnostics)))
+          (should-not (plist-member first :previous_response_id))
+          (should (equal (plist-get second :previous_response_id)
+                         "resp-one"))
+          (should-not (plist-member third :previous_response_id))
+          (should (equal (plist-get fourth :previous_response_id)
+                         "resp-two"))
+          (should (eq (plist-get second-diagnostics :websocket-request-mode)
+                      'incremental))
+          (should (eq (plist-get third-diagnostics :websocket-request-mode)
+                      'full))
+          (should (eq (plist-get third-diagnostics
+                                 :websocket-fallback-reason)
+                      'request-properties-changed))
+          (should (equal (plist-get third-diagnostics
+                                    :websocket-changed-properties)
+                         ":model"))
+          (should (eq (plist-get fourth-diagnostics :websocket-request-mode)
+                      'incremental)))
+        (e-backend-cancel-request fourth-request)))))
+
+(ert-deftest e-openai-test-websocket-ledger-cap-and-close-cleanup ()
+  "The response and eviction ledgers have deterministic bounded cleanup."
+  (let ((session (e-openai-codex--websocket-session-create)))
+    (e-openai-codex--websocket-session-ensure-response-ledger session)
+    (dotimes (index 513)
+      (e-openai-codex--websocket-session-record-response
+       session
+       (format "resp-%03d" index)
+       (list :model "gpt-test")))
+    (let ((ledger
+           (e-openai-codex--websocket-session-response-ledger session))
+          (order
+           (e-openai-codex--websocket-session-response-order session))
+          (evicted
+           (e-openai-codex--websocket-session-evicted-response-ledger session))
+          (evicted-order
+           (e-openai-codex--websocket-session-evicted-response-order session)))
+      (should (= (hash-table-count ledger) 256))
+      (should (= (length order) 256))
+      (should (equal (car order) "resp-257"))
+      (should-not (gethash "resp-256" ledger))
+      (should (gethash "resp-512" ledger))
+      (should (equal (car (last order)) "resp-512"))
+      (should (equal (car evicted-order) "resp-001"))
+      (should (= (hash-table-count evicted) 256))
+      (should-not (gethash "resp-000" evicted))
+      (should (gethash "resp-001" evicted))
+      (should (gethash "resp-256" evicted)))
+    (e-openai-codex--websocket-session-close session)
+    (should (= (hash-table-count
+                (e-openai-codex--websocket-session-response-ledger session))
+               0))
+    (should (= (hash-table-count
+                (e-openai-codex--websocket-session-evicted-response-ledger
+                 session))
+               0))
+    (should-not (e-openai-codex--websocket-session-response-order session))
+    (should-not
+     (e-openai-codex--websocket-session-evicted-response-order session))))
+
+(ert-deftest e-openai-test-websocket-eviction-fallback-diagnostics ()
+  "Evicted anchors report bounded history and retired anchors report unknown."
+  (let* ((session (e-openai-codex--websocket-session-create))
+         (url "wss://gateway.example.test/v1/responses")
+         (headers nil)
+         sends
+         on-message
+         (response-sequence 0))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (push (json-parse-string text
+                                          :object-type 'plist
+                                          :array-type 'list
+                                          :null-object nil
+                                          :false-object :json-false)
+                       sends)
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           `(:type "response.completed"
+                             :response
+                             (:id ,(format "recovery-%d"
+                                           (cl-incf response-sequence))
+                              :status "completed"))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-openai-codex--websocket-session-open session url headers)
+      ;; 513 completed responses produce 257 historical evictions: resp-000
+      ;; retires while resp-002 remains diagnosable as evicted after the first
+      ;; full fallback records one replacement response.
+      (dotimes (index 513)
+        (e-openai-codex--websocket-session-record-response
+         session
+         (format "resp-%03d" index)
+         '(:model "gpt-test")))
+      (cl-labels
+          ((start (response-id)
+             (e-openai-codex--websocket-request-start
+              :session session
+              :url url
+              :headers headers
+              :body-data (list :model "gpt-test"
+                               :input nil
+                               :previous_response_id response-id)
+              :full-body-data '(:model "gpt-test" :input nil)
+              :request-metadata '(:diagnostics nil)
+              :on-item #'ignore
+              :on-complete #'ignore
+              :on-error (lambda (error)
+                          (signal (car error) (cdr error))))))
+        (let* ((retired-request (start "resp-000"))
+               (retired-payload (car sends))
+               (retired-diagnostics
+                (plist-get (e-backend-request-metadata retired-request)
+                           :diagnostics)))
+          (should-not (plist-member retired-payload :previous_response_id))
+          (should (eq (plist-get retired-diagnostics
+                                 :websocket-fallback-reason)
+                      'previous-response-unknown))
+          (should (eq (plist-get retired-diagnostics :websocket-request-mode)
+                      'full))
+          (should retired-request))
+        (let* ((evicted-request (start "resp-002"))
+               (evicted-payload (car sends))
+               (evicted-diagnostics
+                (plist-get (e-backend-request-metadata evicted-request)
+                           :diagnostics)))
+          (should-not (plist-member evicted-payload :previous_response_id))
+          (should (eq (plist-get evicted-diagnostics
+                                 :websocket-fallback-reason)
+                      'response-evicted))
+          (should (eq (plist-get evicted-diagnostics :websocket-request-mode)
+                      'full))
+          (should evicted-request))
+        (e-openai-codex--websocket-session-close session)))))
+
+(ert-deftest e-openai-test-websocket-terminal-and-transport-cleanup ()
+  "Failed, partial, cancelled, and transport-failed requests do not retain IDs."
+  (let* ((url "wss://gateway.example.test/v1/responses")
+         (headers nil)
+         (mode nil)
+         on-message
+         on-error
+         (close-count 0)
+         partial-item-seen
+         transport-error)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 (setq on-error (plist-get args :on-error))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket _text)
+                 (pcase mode
+                   ('partial
+                    (funcall on-message
+                             websocket
+                             (json-encode
+                              '(:type "response.output_text.delta"
+                                :delta "partial"))))
+                   ('failed
+                    (funcall on-message
+                             websocket
+                             (json-encode
+                              '(:type "response.failed"
+                                :response
+                                (:id "failed-response"
+                                 :status "failed"
+                                 :error (:code "server_error"
+                                          :message "failed"))))))
+                   ('transport
+                    (funcall on-error websocket :payload "transport failed")))))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)
+                 t)))
+      (cl-labels
+          ((empty-ledger-p (session)
+             (and (= (hash-table-count
+                      (e-openai-codex--websocket-session-response-ledger
+                       session))
+                     0)
+                  (= (hash-table-count
+                      (e-openai-codex--websocket-session-evicted-response-ledger
+                       session))
+                     0)
+                  (null
+                   (e-openai-codex--websocket-session-response-order session))
+                  (null
+                   (e-openai-codex--websocket-session-evicted-response-order
+                    session))))
+           (prepare-session ()
+             (let ((session (e-openai-codex--websocket-session-create)))
+               (e-openai-codex--websocket-session-open session url headers)
+               (e-openai-codex--websocket-session-record-response
+                session "prior-response" '(:model "gpt-test"))
+               (e-openai-codex--websocket-session-record-evicted-response
+                session "old-evicted-response")
+               session))
+           (start (session on-item on-error)
+             (e-openai-codex--websocket-request-start
+              :session session
+              :url url
+              :headers headers
+              :body-data '(:model "gpt-test" :input nil)
+              :full-body-data '(:model "gpt-test" :input nil)
+              :request-metadata '(:diagnostics nil)
+              :on-item on-item
+              :on-complete #'ignore
+              :on-error on-error)))
+        ;; A partial event never admits its unconfirmed response.  Cancelling
+        ;; this active request then clears the pre-existing lineage as part of
+        ;; socket cleanup.
+        (let* ((session (prepare-session))
+               (request
+                (progn
+                  (setq mode 'partial)
+                  (start session
+                         (lambda (item) (setq partial-item-seen item))
+                         #'ignore))))
+          (should partial-item-seen)
+          (should-not
+           (gethash "partial-response"
+                    (e-openai-codex--websocket-session-response-ledger session)))
+          (should (= (hash-table-count
+                      (e-openai-codex--websocket-session-response-ledger session))
+                     1))
+          (should (e-backend-cancel-request request))
+          (should (empty-ledger-p session)))
+        ;; A failed terminal event closes the socket and clears all owner-local
+        ;; state; the failed response ID is never admitted.
+        (let* ((session (prepare-session))
+               (request (progn
+                          (setq mode 'failed)
+                          (start session #'ignore #'ignore))))
+          (should request)
+          (should-not
+           (e-openai-codex--websocket-session-websocket session))
+          (should-not
+           (gethash "failed-response"
+                    (e-openai-codex--websocket-session-response-ledger session)))
+          (should (empty-ledger-p session)))
+        ;; Transport failure follows the same one-owner close path and clears
+        ;; both live and evicted state before surfacing the request error.
+        (let* ((session (prepare-session))
+               (request
+                (progn
+                  (setq mode 'transport)
+                  (start session #'ignore
+                         (lambda (error) (setq transport-error error))))))
+          (should request)
+          (should transport-error)
+          (should-not
+           (e-openai-codex--websocket-session-websocket session))
+          (should (empty-ledger-p session)))
+        (should (= close-count 3))))))
+
 (ert-deftest e-openai-test-websocket-changed-instructions-continue-incrementally ()
   "Replacement instructions keep the current response anchor and socket."
   (let* ((process-environment
@@ -3478,7 +3875,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          sends
          on-message
          (done-count 0)
-         second-request)
+         error
+         second-request
+         third-request
+         fourth-request)
     (cl-letf (((symbol-function 'websocket-open)
                (lambda (_url &rest args)
                  (setq on-message (plist-get args :on-message))
@@ -3513,6 +3913,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                (json-encode
                                 '(:type "response.completed"
                                   :response (:id "resp-two"
+                                             :status "completed")))))
+                     (4
+                      (funcall on-message websocket
+                               (json-encode
+                                '(:type "response.completed"
+                                  :response (:id "resp-three"
+                                             :status "completed")))))
+                     (5
+                      (funcall on-message websocket
+                               (json-encode
+                                '(:type "response.completed"
+                                  :response (:id "resp-four"
                                              :status "completed")))))))))
               ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
       (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
@@ -3543,7 +3955,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                :on-done (lambda (_status) (cl-incf done-count))
                :on-error #'signal))
         (should (e-openai-test--wait-until (lambda () (= done-count 2)) 0.2))
-        (let* ((chronological (nreverse sends))
+        (let* ((chronological (reverse sends))
                (incremental (cadr chronological))
                (fallback (caddr chronological))
                (diagnostics
@@ -3557,7 +3969,74 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                       'full-retry))
           (should (eq (plist-get diagnostics :websocket-fallback-reason)
                       'previous-response-unresolved)))
-        (e-backend-cancel-request second-request)))))
+        (setq third-request
+              (e-backend-start
+               backend
+               :messages '((:role user :content "one")
+                           (:role user :content "two")
+                           (:role user :content "three"))
+               :options
+               '(:model "gpt-test"
+                 :session-id "session-one"
+                 :provider-continuation t
+                 :provider-anchor
+                 (:provider-id openai
+                  :metadata (:response-id "resp-one"))
+                 :provider-anchor-delta-messages
+                 ((:role user :content "three"))
+                 :provider-anchor-source-message-count 2)
+               :on-item #'ignore
+               :on-done (lambda (_status) (cl-incf done-count))
+               :on-error (lambda (err) (setq error err))))
+        (should (e-openai-test--wait-until
+                 (lambda () (or error (= done-count 3)))
+                 0.2))
+        (should-not error)
+        (setq fourth-request
+              (e-backend-start
+               backend
+               :messages '((:role user :content "one")
+                           (:role user :content "two")
+                           (:role user :content "three")
+                           (:role user :content "four"))
+               :options
+               '(:model "gpt-test"
+                 :session-id "session-one"
+                 :provider-continuation t
+                 :provider-anchor
+                 (:provider-id openai
+                  :metadata (:response-id "resp-two"))
+                 :provider-anchor-delta-messages
+                 ((:role user :content "three")
+                  (:role user :content "four"))
+                 :provider-anchor-source-message-count 3)
+               :on-item #'ignore
+               :on-done (lambda (_status) (cl-incf done-count))
+               :on-error #'signal))
+        (should (e-openai-test--wait-until (lambda () (= done-count 4)) 0.2))
+        (let* ((chronological (nreverse sends))
+               (removed-anchor-request (nth 3 chronological))
+               (preserved-anchor-request (nth 4 chronological))
+               (removed-diagnostics
+                (plist-get (e-backend-request-metadata third-request)
+                           :diagnostics))
+               (preserved-diagnostics
+                (plist-get (e-backend-request-metadata fourth-request)
+                           :diagnostics)))
+          (should-not (plist-member removed-anchor-request
+                                      :previous_response_id))
+          (should (eq (plist-get removed-diagnostics :websocket-request-mode)
+                      'full))
+          (should (eq (plist-get removed-diagnostics
+                                 :websocket-fallback-reason)
+                      'previous-response-unknown))
+          (should (equal (plist-get preserved-anchor-request
+                                    :previous_response_id)
+                         "resp-two"))
+          (should (eq (plist-get preserved-diagnostics
+                                 :websocket-request-mode)
+                      'incremental)))
+        (e-backend-cancel-request fourth-request)))))
 
 (ert-deftest e-openai-test-websocket-idle-timeout-settles-error ()
   "Responses WebSocket idle timeout settles stalled requests as errors."

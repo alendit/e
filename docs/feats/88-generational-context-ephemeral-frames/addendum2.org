@@ -4,14 +4,13 @@
 
 * Status
 
-Planned.
+In-progress.
 This addendum addresses the two highest-priority continuation limits recorded in =limitations.org=.
 It preserves the Feature 88 lifetime model and adds the adapter behavior needed to use that model on the ChatGPT Codex Responses WebSocket.
 Design review reached a fixed point in =addendum2-review-04.org= with zero P0--P3 findings.
-Implementation has not started.
-The operator must mark this addendum ready before implementation begins.
-The Feature 88 entry in =docs/feats/index.org= is =Planned= while this addendum awaits readiness.
-Change it to =Ready=, =In-progress=, =In-review=, and =Done= through the repository status workflow for this package.
+Implementation has started with Slice 1.
+The Feature 88 entry in =docs/feats/index.org= is =In-progress= while this package is under implementation.
+Advance it to =In-review= and =Done= through the repository status workflow for this package.
 
 The parent Feature 88 design, its first addendum, and their accepted implementation remain authoritative except where this document changes WebSocket response compatibility and connection retention.
 The first addendum's request-local observation-delivery contract remains unchanged.

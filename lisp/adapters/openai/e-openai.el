@@ -1965,16 +1965,141 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
   close-function
   connection-id
   reuse-count
-  last-response-id
-  last-request-properties
+  response-ledger
+  response-order
+  evicted-response-ledger
+  evicted-response-order
   active-request
   idle-timer)
+
+(defconst e-openai--websocket-response-ledger-capacity 256
+  "Maximum completed response IDs retained for one WebSocket connection.")
+
+(defconst e-openai--websocket-evicted-response-ledger-capacity 256
+  "Maximum recently evicted response IDs retained for diagnostics.")
 
 (defvar e-openai-codex--websocket-connection-sequence 0
   "Process-local sequence for bounded WebSocket connection diagnostics.")
 
 (define-error 'e-openai-websocket-busy
   "Responses WebSocket already has an active request")
+
+(defun e-openai-codex--json-value-copy (value)
+  "Return a detached copy of JSON-like VALUE.
+Hash tables are copied by contents so the connection-local response ledger does
+not share mutable request-property objects with a later request."
+  (cond
+   ((hash-table-p value)
+    (let ((copy (make-hash-table :test (hash-table-test value))))
+      (maphash (lambda (key entry)
+                 (puthash (e-openai-codex--json-value-copy key)
+                          (e-openai-codex--json-value-copy entry)
+                          copy))
+               value)
+      copy))
+   ((vectorp value)
+    (apply #'vector
+           (mapcar #'e-openai-codex--json-value-copy value)))
+   ((consp value)
+    (cons (e-openai-codex--json-value-copy (car value))
+          (e-openai-codex--json-value-copy (cdr value))))
+   (t value)))
+
+(defun e-openai-codex--websocket-session-ensure-response-ledger (session)
+  "Initialize SESSION's private response ledgers and return SESSION."
+  (unless (hash-table-p
+           (e-openai-codex--websocket-session-response-ledger session))
+    (setf (e-openai-codex--websocket-session-response-ledger session)
+          (make-hash-table :test 'equal)))
+  (unless (hash-table-p
+           (e-openai-codex--websocket-session-evicted-response-ledger session))
+    (setf (e-openai-codex--websocket-session-evicted-response-ledger session)
+          (make-hash-table :test 'equal)))
+  session)
+
+(defun e-openai-codex--websocket-session-clear-response-ledger (session)
+  "Clear all connection-local response state owned by SESSION."
+  (when (hash-table-p
+         (e-openai-codex--websocket-session-response-ledger session))
+    (clrhash (e-openai-codex--websocket-session-response-ledger session)))
+  (when (hash-table-p
+         (e-openai-codex--websocket-session-evicted-response-ledger session))
+    (clrhash
+     (e-openai-codex--websocket-session-evicted-response-ledger session)))
+  (setf (e-openai-codex--websocket-session-response-order session) nil)
+  (setf (e-openai-codex--websocket-session-evicted-response-order session)
+        nil)
+  session)
+
+(defun e-openai-codex--websocket-session-remove-response (session response-id)
+  "Remove RESPONSE-ID from SESSION's live response ledger only."
+  (when (hash-table-p
+         (e-openai-codex--websocket-session-response-ledger session))
+    (remhash response-id
+             (e-openai-codex--websocket-session-response-ledger session)))
+  (setf (e-openai-codex--websocket-session-response-order session)
+        (delete response-id
+                (e-openai-codex--websocket-session-response-order session)))
+  session)
+
+(defun e-openai-codex--websocket-session-record-evicted-response
+    (session response-id)
+  "Record evicted RESPONSE-ID in SESSION's bounded diagnostic history."
+  (e-openai-codex--websocket-session-ensure-response-ledger session)
+  (let ((ledger
+         (e-openai-codex--websocket-session-evicted-response-ledger session))
+        (order
+         (e-openai-codex--websocket-session-evicted-response-order session)))
+    ;; A response id is normally unique, but keeping the history itself
+    ;; duplicate-free makes the FIFO contract explicit if a test or provider
+    ;; ever reuses an id.
+    (when (gethash response-id ledger)
+      (setq order (delete response-id order)))
+    (puthash response-id t ledger)
+    (setq order (append order (list response-id)))
+    (when (> (length order)
+             e-openai--websocket-evicted-response-ledger-capacity)
+      (let ((oldest (pop order)))
+        (remhash oldest ledger)))
+    (setf (e-openai-codex--websocket-session-evicted-response-order session)
+          order))
+  session)
+
+(defun e-openai-codex--websocket-session-record-response
+    (session response-id properties)
+  "Record completed RESPONSE-ID and PROPERTIES for SESSION.
+Only completed terminal responses call this owner.  The live ledger is FIFO
+bounded, while evicted IDs are retained in the separate bounded diagnostic
+history."
+  (when (and (stringp response-id) (not (string-empty-p response-id)))
+    (e-openai-codex--websocket-session-ensure-response-ledger session)
+    (let ((ledger
+           (e-openai-codex--websocket-session-response-ledger session))
+          (order
+           (e-openai-codex--websocket-session-response-order session))
+          (evicted
+           (e-openai-codex--websocket-session-evicted-response-ledger session))
+          (missing (make-symbol "missing-response")))
+      ;; A re-observed id becomes live again and is no longer an evicted
+      ;; diagnostic.  Normally response ids are unique, but this keeps the
+      ;; lookup/order invariants exact.
+      (when (not (eq (gethash response-id ledger missing) missing))
+        (setq order (delete response-id order)))
+      (when (not (eq (gethash response-id evicted missing) missing))
+        (remhash response-id evicted)
+        (setf (e-openai-codex--websocket-session-evicted-response-order session)
+              (delete response-id
+                      (e-openai-codex--websocket-session-evicted-response-order
+                       session))))
+      (puthash response-id (e-openai-codex--json-value-copy properties) ledger)
+      (setq order (append order (list response-id)))
+      (when (> (length order) e-openai--websocket-response-ledger-capacity)
+        (let ((oldest (pop order)))
+          (remhash oldest ledger)
+          (e-openai-codex--websocket-session-record-evicted-response
+           session oldest)))
+      (setf (e-openai-codex--websocket-session-response-order session) order)))
+  session)
 
 (defun e-openai-codex--websocket-cancel-idle-close (session)
   "Cancel SESSION's pending idle close timer."
@@ -1986,6 +2111,7 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
 (defun e-openai-codex--websocket-session-close (session)
   "Close SESSION's connection and discard its warm continuation state."
   (e-openai-codex--websocket-cancel-idle-close session)
+  (e-openai-codex--websocket-session-clear-response-ledger session)
   (let ((websocket (e-openai-codex--websocket-session-websocket session))
         (close-function
          (e-openai-codex--websocket-session-close-function session)))
@@ -1995,8 +2121,6 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
     (setf (e-openai-codex--websocket-session-url session) nil)
     (setf (e-openai-codex--websocket-session-headers session) nil)
     (setf (e-openai-codex--websocket-session-close-function session) nil)
-    (setf (e-openai-codex--websocket-session-last-response-id session) nil)
-    (setf (e-openai-codex--websocket-session-last-request-properties session) nil)
     (setf (e-openai-codex--websocket-session-reuse-count session) 0)
     (when (and websocket close-function)
       (funcall close-function websocket))))
@@ -2033,13 +2157,15 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
                (let ((active
                       (e-openai-codex--websocket-session-active-request
                        session)))
+                 (e-openai-codex--websocket-cancel-idle-close session)
                  (setf (e-openai-codex--websocket-session-websocket session) nil)
-                 (setf (e-openai-codex--websocket-session-last-response-id
+                 (setf (e-openai-codex--websocket-session-url session) nil)
+                 (setf (e-openai-codex--websocket-session-headers session) nil)
+                 (setf (e-openai-codex--websocket-session-close-function
                         session)
                        nil)
-                 (setf (e-openai-codex--websocket-session-last-request-properties
-                        session)
-                       nil)
+                 (e-openai-codex--websocket-session-clear-response-ledger
+                  session)
                  (setf (e-openai-codex--websocket-session-active-request session)
                        nil)
                  (when-let ((handler (plist-get active :on-close)))
@@ -2219,6 +2345,7 @@ list.  Return a cancellable `e-backend-request' handle."
                       (e-openai-codex--websocket-session-create)))
          (timeout e-openai-websocket-idle-timeout-seconds)
          (full-body-data (or full-body-data body-data))
+         (_ (e-openai-codex--websocket-session-ensure-response-ledger session))
          (properties
           (e-openai-codex--websocket-request-properties full-body-data))
          (requested-response-id (plist-get body-data :previous_response_id))
@@ -2229,29 +2356,47 @@ list.  Return a cancellable `e-backend-request' handle."
                (equal url (e-openai-codex--websocket-session-url session))
                (equal headers
                       (e-openai-codex--websocket-session-headers session))))
+         (missing-response (make-symbol "missing-response"))
+         (recorded-properties
+          (when (and existing-websocket
+                     (stringp requested-response-id))
+            (gethash requested-response-id
+                     (e-openai-codex--websocket-session-response-ledger session)
+                     missing-response)))
+         (response-known-p
+          (and existing-websocket
+               (stringp requested-response-id)
+               (not (eq recorded-properties missing-response))))
+         (response-evicted-p
+          (and existing-websocket
+               (stringp requested-response-id)
+               (not response-known-p)
+               (let ((evicted
+                      (e-openai-codex--websocket-session-evicted-response-ledger
+                       session)))
+                 (and (hash-table-p evicted)
+                      (gethash requested-response-id evicted)))))
          (properties-compatible
-          (e-openai-codex--json-value-equal-p
-           properties
-           (e-openai-codex--websocket-session-last-request-properties
-            session)))
-         (response-compatible
-          (and (stringp requested-response-id)
-               (equal requested-response-id
-                      (e-openai-codex--websocket-session-last-response-id
-                       session))))
+          (and response-known-p
+               (e-openai-codex--json-value-equal-p
+                properties
+                recorded-properties)))
          (incremental-p
-          (and connection-compatible properties-compatible response-compatible))
+          (and connection-compatible response-known-p properties-compatible))
          (fallback-reason
           (cond
            (incremental-p nil)
            ((not requested-response-id) nil)
            ((not connection-compatible) 'new-connection)
-           ((not response-compatible) 'previous-response-mismatch)
+           ((not response-known-p)
+            (if response-evicted-p
+                'response-evicted
+              'previous-response-unknown))
            ((not properties-compatible) 'request-properties-changed)))
          (changed-properties
           (when (eq fallback-reason 'request-properties-changed)
             (e-openai-codex--websocket-changed-property-names
-             (e-openai-codex--websocket-session-last-request-properties session)
+             recorded-properties
              properties)))
          (actual-body-data (if incremental-p body-data full-body-data))
          (reused connection-compatible)
@@ -2329,11 +2474,8 @@ list.  Return a cancellable `e-backend-request' handle."
              (setq settled t)
              (cancel-timeout)
              (clear-active-request)
-             (setf (e-openai-codex--websocket-session-last-response-id session)
-                   completed-response-id)
-             (setf
-              (e-openai-codex--websocket-session-last-request-properties session)
-              properties)
+             (e-openai-codex--websocket-session-record-response
+              session completed-response-id properties)
              (e-openai-codex--websocket-schedule-idle-close session)
              (when on-complete
                (funcall on-complete '(:status done)))))
@@ -2380,15 +2522,12 @@ list.  Return a cancellable `e-backend-request' handle."
                                  actual-body-data))))
          (retry-full-request ()
            (setq retried-full t)
+           (e-openai-codex--websocket-session-remove-response
+            session requested-response-id)
            (setq actual-body-data full-body-data)
            (setq completed-response-id nil)
            (setq assistant-message-candidate nil)
            (setq assistant-message-seen nil)
-           (setf (e-openai-codex--websocket-session-last-response-id session)
-                 nil)
-           (setf
-            (e-openai-codex--websocket-session-last-request-properties session)
-            nil)
            (refresh-request-metadata 'full-retry
                                      'previous-response-unresolved)
            (arm-timeout)
