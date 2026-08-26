@@ -233,6 +233,9 @@ replacement."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defconst e-openai--builtin-codex-websocket-idle-close-seconds 600
+  "Idle-close policy for the exact built-in ChatGPT Codex WebSocket profile.")
+
 (defcustom e-openai-diagnostic-print-length 50
   "Maximum list/vector/hash entries printed in OpenAI diagnostic fallbacks."
   :type 'integer
@@ -457,6 +460,22 @@ Responses profiles.")
         :env-key "OPENAI_API_KEY"
         :default-model "gpt-5.6"))
 
+(defun e-openai--profile-websocket-idle-close-seconds (profile)
+  "Return the effective WebSocket idle-close policy for PROFILE.
+An explicitly declared profile value must be a non-negative number.  Profiles
+without the adapter-private field retain the existing global fallback,
+including its nil no-timer behavior."
+  (if (plist-member profile :websocket-idle-close-seconds)
+      (let ((value (plist-get profile :websocket-idle-close-seconds)))
+        (unless (and (numberp value) (>= value 0))
+          (signal 'e-openai-provider-invalid
+                  (list
+                   (format
+                    "Invalid :websocket-idle-close-seconds %S"
+                    value))))
+        value)
+    e-openai-websocket-connection-idle-seconds))
+
 (defun e-openai--normalize-model-providers (providers)
   "Return PROVIDERS with current built-in OpenAI requirements applied."
   (let ((normalized
@@ -482,6 +501,11 @@ Responses profiles.")
                                     normalized
                                     :observation-delivery
                                     'request-local-replaceable)))
+                           (setq normalized
+                                 (plist-put
+                                  normalized
+                                  :websocket-idle-close-seconds
+                                  e-openai--builtin-codex-websocket-idle-close-seconds))
                            (cons provider-id normalized))
                        entry)))
                  providers)))
@@ -500,6 +524,8 @@ Responses profiles.")
      :prompt-cache-breakpoint-mode nil
      :responses-context-layout developer-input
      :observation-delivery request-local-replaceable
+     :websocket-idle-close-seconds
+     ,e-openai--builtin-codex-websocket-idle-close-seconds
      :include-encrypted-reasoning t
      :continuation t
      :requires-openai-auth t)
@@ -538,7 +564,9 @@ supports returning stateless reasoning items for complete replay.  A Responses
 profile may set `:observation-delivery' to `request-local-replaceable' only
 when that profile and transport have proven that top-level `instructions' are
 not inherited by its continuation response; otherwise the conservative
-default is `inherited'."
+default is `inherited'.  Responses WebSocket profiles may set the adapter-
+private `:websocket-idle-close-seconds' to a non-negative number; when absent,
+the existing `e-openai-websocket-connection-idle-seconds' fallback applies."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -2187,18 +2215,21 @@ history."
     (setf (e-openai-codex--websocket-session-reuse-count session) 0)
     websocket))
 
-(defun e-openai-codex--websocket-schedule-idle-close (session)
-  "Schedule an idle close for SESSION when configured."
+(defun e-openai-codex--websocket-schedule-idle-close
+    (session idle-close-seconds)
+  "Schedule SESSION's idle close using IDLE-CLOSE-SECONDS.
+The effective policy is resolved by the request context before the WebSocket
+request starts; this owner never reads the global fallback directly."
   (e-openai-codex--websocket-cancel-idle-close session)
-  (when (and (numberp e-openai-websocket-connection-idle-seconds)
-             (>= e-openai-websocket-connection-idle-seconds 0)
+  (when (and (numberp idle-close-seconds)
+             (>= idle-close-seconds 0)
              (e-openai-codex--websocket-session-websocket session))
     (let ((connection-id
            (e-openai-codex--websocket-session-connection-id session)))
       (setf
        (e-openai-codex--websocket-session-idle-timer session)
        (run-at-time
-        e-openai-websocket-connection-idle-seconds nil
+        idle-close-seconds nil
         (lambda ()
           (setf (e-openai-codex--websocket-session-idle-timer session) nil)
           (when (and
@@ -2334,7 +2365,8 @@ CHANGED-PROPERTIES names incompatible top-level request properties."
 
 (cl-defun e-openai-codex--websocket-request-start
     (&key session url headers body-data full-body-data request-metadata
-          prompt-layout-revision on-item on-complete on-error)
+          prompt-layout-revision idle-close-seconds on-item on-complete
+          on-error)
   "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
 SESSION owns a connection reusable by compatible sequential requests.
 FULL-BODY-DATA is the safe request without provider continuation.
@@ -2476,7 +2508,8 @@ list.  Return a cancellable `e-backend-request' handle."
              (clear-active-request)
              (e-openai-codex--websocket-session-record-response
               session completed-response-id properties)
-             (e-openai-codex--websocket-schedule-idle-close session)
+             (e-openai-codex--websocket-schedule-idle-close
+              session idle-close-seconds)
              (when on-complete
                (funcall on-complete '(:status done)))))
          (settle-backend-error (item)
@@ -3188,6 +3221,9 @@ OpenAI request and backend-neutral context."
      (let* ((profile (e-openai-provider-profile provider))
             (wire-api (e-openai--provider-wire-api profile))
             (responses-transport (e-openai--profile-responses-transport profile))
+            (websocket-idle-close-seconds
+             (when (eq responses-transport 'websocket)
+               (e-openai--profile-websocket-idle-close-seconds profile)))
             (effective-options (copy-sequence options))
             (_ (when (and (eq responses-transport 'websocket)
                           (not (eq wire-api 'responses)))
@@ -3303,6 +3339,7 @@ OpenAI request and backend-neutral context."
        (list :provider provider
              :wire-api wire-api
              :responses-transport responses-transport
+             :websocket-idle-close-seconds websocket-idle-close-seconds
              :prompt-layout-revision
              (plist-get metadata :openai-prompt-layout-revision)
              :session-id session-id
@@ -3662,6 +3699,8 @@ default when turn options do not include `:model'.  The provider profile's
                     :request-metadata (websocket-request-metadata context)
                     :prompt-layout-revision
                     (plist-get context :prompt-layout-revision)
+                    :idle-close-seconds
+                    (plist-get context :websocket-idle-close-seconds)
                     :on-item on-item
                     :on-complete (lambda (_status)
                                    (setq done t))
@@ -3746,6 +3785,8 @@ default when turn options do not include `:model'.  The provider profile's
                       :request-metadata (websocket-request-metadata context)
                       :prompt-layout-revision
                       (plist-get context :prompt-layout-revision)
+                      :idle-close-seconds
+                      (plist-get context :websocket-idle-close-seconds)
                       :on-item on-item
                       :on-complete on-done
                       :on-error on-error)))

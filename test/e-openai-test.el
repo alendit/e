@@ -1590,7 +1590,9 @@
        :prompt-cache-breakpoint-mode nil
        :responses-context-layout developer-input
        :include-encrypted-reasoning t
-       :observation-delivery request-local-replaceable)
+       :observation-delivery request-local-replaceable
+       :websocket-idle-close-seconds
+       ,e-openai--builtin-codex-websocket-idle-close-seconds)
       (custom-codex
        :name "Custom Codex"
        :base-url ,(concat e-openai-codex-default-base-url "/codex")
@@ -1633,7 +1635,9 @@
                   'developer-input))
       (should (plist-get profile :include-encrypted-reasoning))
       (should (eq (plist-get profile :observation-delivery)
-                  'request-local-replaceable)))
+                  'request-local-replaceable))
+      (should (= (plist-get profile :websocket-idle-close-seconds)
+                 e-openai--builtin-codex-websocket-idle-close-seconds)))
     (let ((backend (e-openai-backend-create :provider 'codex)))
       ;; Doom may replace the canonical profile after backend construction.
       ;; Lookup-time normalization must prove that later configuration too.
@@ -1652,6 +1656,8 @@
                     'developer-input))
         (should (eq (plist-get profile :observation-delivery)
                     'request-local-replaceable))
+        (should (= (plist-get profile :websocket-idle-close-seconds)
+                   e-openai--builtin-codex-websocket-idle-close-seconds))
         (should (equal (plist-get capabilities :observation-delivery)
                        e-openai--request-local-observation-delivery-map))))))
 
@@ -1674,6 +1680,90 @@
       (should (eq (plist-get profile :observation-delivery) 'inherited))
       (e-openai-test--assert-observation-delivery capabilities nil)
       (should (eq (plist-get capabilities :continuation) 'linear)))))
+
+(ert-deftest e-openai-test-builtin-codex-idle-policy-normalizes-only-canonical-profile ()
+  "Only the exact built-in Codex endpoint receives 600-second retention."
+  (let* ((providers
+          `((codex
+             :name "ChatGPT Codex"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport websocket
+             :continuation t
+             :requires-openai-auth t)
+            (codex-lookalike
+             :name "ChatGPT Codex"
+             :base-url "https://gateway.example.test/codex"
+             :wire-api responses
+             :responses-transport websocket
+             :continuation t
+             :requires-openai-auth t)))
+         (normalized (e-openai--normalize-model-providers providers))
+         (canonical (cdr (assq 'codex normalized)))
+         (lookalike (cdr (assq 'codex-lookalike normalized))))
+    (should (= (plist-get canonical :websocket-idle-close-seconds)
+               e-openai--builtin-codex-websocket-idle-close-seconds))
+    (should-not (plist-member lookalike :websocket-idle-close-seconds))))
+
+(ert-deftest e-openai-test-request-context-resolves-websocket-idle-policy ()
+  "Request context resolves profile retention once with global fallbacks."
+  (let ((process-environment
+         (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+               process-environment)))
+    (dolist (case '((271 nil 271)
+                    (nil nil nil)
+                    (271 0 0)
+                    (271 17 17)))
+      (pcase-let ((`(,global ,profile-value ,expected) case))
+        (let* ((e-openai-websocket-connection-idle-seconds global)
+               (e-openai-model-providers
+                `((websocket-policy
+                   :name "WebSocket Policy"
+                   :base-url "https://gateway.example.test/v1"
+                   :env-key "OPENAI_GATEWAY_API_KEY"
+                   :wire-api responses
+                   :responses-transport websocket
+                   ,@(when profile-value
+                       (list :websocket-idle-close-seconds profile-value))
+                   :requires-openai-auth nil)))
+               (context
+                (e-openai--request-context
+                 :provider 'websocket-policy
+                 :messages '((:role user :content "hello"))
+                 :options '(:model "gpt-test"))))
+          (should (plist-member context :websocket-idle-close-seconds))
+          (should (equal (plist-get context :websocket-idle-close-seconds)
+                         expected)))))))
+
+(ert-deftest e-openai-test-request-context-rejects-negative-websocket-idle-policy-before-request ()
+  "A negative explicit policy fails before opening a WebSocket."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+                process-environment))
+         (e-openai-model-providers
+          '((websocket-policy
+             :name "WebSocket Policy"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :websocket-idle-close-seconds -1
+             :requires-openai-auth nil)))
+         (backend (e-openai-backend-create :provider 'websocket-policy))
+         (websocket-opened nil))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (&rest _args)
+                 (setq websocket-opened t)
+                 'fake-websocket)))
+      (should-error
+       (e-backend-start backend
+                       :messages '((:role user :content "hello"))
+                       :options '(:model "gpt-test")
+                       :on-item #'ignore
+                       :on-done #'ignore
+                       :on-error #'ignore)
+       :type 'e-openai-provider-invalid))
+    (should-not websocket-opened)))
 
 (ert-deftest e-openai-test-canonical-api-profile-shares-responses-contract ()
   "The first-party API profile differs from Codex only in provider capability."
@@ -3459,6 +3549,109 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should-not (e-openai-codex--websocket-session-response-order session))
     (should-not
      (e-openai-codex--websocket-session-evicted-response-order session))))
+
+(ert-deftest e-openai-test-websocket-profile-idle-close-boundary-clears-ledger ()
+  "A resolved 600-second idle policy closes and clears one socket at expiry."
+  (let* ((session (e-openai-codex--websocket-session-create))
+         (url "wss://gateway.example.test/v1/responses")
+         (headers nil)
+         (scheduled-seconds nil)
+         (scheduled-callback nil)
+         (close-count 0))
+    (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
+          (e-openai-codex--websocket-session-url session) url
+          (e-openai-codex--websocket-session-headers session) headers
+          (e-openai-codex--websocket-session-connection-id session) "e-ws-test"
+          (e-openai-codex--websocket-session-reuse-count session) 0
+          (e-openai-codex--websocket-session-close-function session)
+          (lambda (_websocket) (cl-incf close-count)))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (seconds _repeat callback)
+                 (setq scheduled-seconds seconds
+                       scheduled-callback callback)
+                 'fake-timer))
+              ((symbol-function 'timerp)
+               (lambda (timer) (eq timer 'fake-timer)))
+              ((symbol-function 'cancel-timer) #'ignore)
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket _text)
+                 (funcall
+                  (plist-get
+                   (e-openai-codex--websocket-session-active-request session)
+                   :on-message)
+                  websocket
+                  (json-encode
+                   '(:type "response.completed"
+                     :response (:id "response-at-expiry"
+                                :status "completed")))))))
+      (e-openai-codex--websocket-request-start
+       :session session
+       :url url
+       :headers headers
+       :body-data '(:model "gpt-test" :input nil)
+       :full-body-data '(:model "gpt-test" :input nil)
+       :request-metadata '(:diagnostics nil)
+       :idle-close-seconds 600
+       :on-item #'ignore
+       :on-complete #'ignore
+       :on-error #'signal)
+      ;; The scheduler receives the resolved request policy exactly, and no
+      ;; callback can close the socket before that 600-second boundary.
+      (should (= scheduled-seconds 600))
+      (should (= close-count 0))
+      (should (gethash
+               "response-at-expiry"
+               (e-openai-codex--websocket-session-response-ledger session)))
+      (should scheduled-callback)
+      ;; Firing the deterministic callback represents the boundary at 600.
+      (funcall scheduled-callback)
+      (should (= close-count 1))
+      (should-not
+       (e-openai-codex--websocket-session-websocket session))
+      (should (= (hash-table-count
+                  (e-openai-codex--websocket-session-response-ledger session))
+                 0))
+      (should (= (hash-table-count
+                  (e-openai-codex--websocket-session-evicted-response-ledger
+                   session))
+                 0))
+      (should-not
+       (e-openai-codex--websocket-session-response-order session))
+      (should-not
+       (e-openai-codex--websocket-session-evicted-response-order session)))))
+
+(ert-deftest e-openai-test-websocket-profile-idle-close-nil-does-not-schedule ()
+  "A nil resolved idle policy retains the existing no-timer fallback."
+  (let ((session (e-openai-codex--websocket-session-create))
+        scheduled)
+    (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
+          (e-openai-codex--websocket-session-connection-id session) "e-ws-test")
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (&rest _args)
+                 (setq scheduled t)
+                 'fake-timer)))
+      (e-openai-codex--websocket-schedule-idle-close session nil))
+    (should-not scheduled)
+    (should-not
+     (e-openai-codex--websocket-session-idle-timer session))))
+
+(ert-deftest e-openai-test-websocket-profile-idle-close-explicit-zero-schedules-value ()
+  "An explicit zero-second profile policy reaches the scheduler unchanged."
+  (let ((session (e-openai-codex--websocket-session-create))
+        scheduled-seconds)
+    (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
+          (e-openai-codex--websocket-session-connection-id session) "e-ws-test")
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (seconds _repeat _callback)
+                 (setq scheduled-seconds seconds)
+                 'fake-timer))
+              ((symbol-function 'timerp)
+               (lambda (timer) (eq timer 'fake-timer)))
+              ((symbol-function 'cancel-timer) #'ignore))
+      (e-openai-codex--websocket-schedule-idle-close session 0))
+    (should (= scheduled-seconds 0))
+    (should (eq (e-openai-codex--websocket-session-idle-timer session)
+                'fake-timer))))
 
 (ert-deftest e-openai-test-websocket-eviction-fallback-diagnostics ()
   "Evicted anchors report bounded history and retired anchors report unknown."
