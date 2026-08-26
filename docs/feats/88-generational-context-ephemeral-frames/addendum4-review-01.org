@@ -1,0 +1,369 @@
+#+title: Feature 88 Addendum 4 Specification Review 01
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This independent rebaseline specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum4.org= at exact
+revision =bd02dcb508091f74be58c0ea35077a67c1fa5701=.
+
+Addendum 4 has not reached a specification fixed point and is not ready for
+implementation.
+
+Findings:
+
+- P0: none.
+- P1: three.
+- P2: two.
+
+The keep/summarize/drop direction is coherent and feasible against the current
+runtime frame, session projection, reserved-effect, and OpenAI adapter owners.
+Implementation is blocked by missing aggregate bounds, complete response
+atomicity, durable-schema compatibility, a sole normative matrix with evidence
+dispositions, and a deterministic token-size presentation contract.
+
+External provider capability remains separate and =capability-unconfirmed=.  No
+provider request was made by this review.  Addendum 4 changes the material prompt
+and reserved-tool shape, so any future implementation invalidates earlier cache
+evidence under =F88A3-CACHE= even though cache semantics remain inherited.
+
+* Reviewed revision and scope
+
+Review mode: rebaseline specification review.
+
+Reviewed target:
+
+- =docs/feats/88-generational-context-ephemeral-frames/addendum4.org=
+- exact revision =bd02dcb508091f74be58c0ea35077a67c1fa5701=
+- Addendum 4 introduction commit =5f0be97d=, confirmed in ancestry
+
+The review inspected the original Feature 88 plan, Addenda 3 and 4, Addendum 3
+Reviews 01--03, Plan Review 08, the final Feature 88 implementation review,
+=docs/agents/review.org=, =docs/feats/index.org=, current lifetime/harness/loop/
+session/OpenAI source, and focused owner and integration tests.
+
+Addendum 4 supersedes only =F88A3-PROMOTION= and the original model-facing
+promotion schema.  =F88A3-SEM=, =F88A3-LAYOUT=, =F88A3-DELIVERY=,
+=F88A3-TOOL=, =F88A3-CACHE=, =F88A3-CLEANUP=, and =F88A3-COMPAT= remain
+inherited unless their join with the replacement contract is stated below.
+
+The reviewer changed no file, created no commit, contacted no running Emacs,
+and made no credentialed provider request.  The unrelated dirty
+=docs/feats/87-sqlite-session-board-persistence/plan.org= was preserved.
+
+* Normalized override and inheritance matrix
+
+| Contract ID | Relationship | Observable contract | Owner and composition | Evidence | Review status |
+|-------------+--------------+---------------------+-----------------------+----------+---------------|
+| =F88A4-PRESENT= | new | Each active frame input has one deterministic frame-local label and an approximate size; labels, size annotations, and internal IDs are not retained as semantic content. | core lifetime presentation consumed by harness/adapter late frontier | per-input rendering and exact-value separation | unknown: P2-05 |
+| =F88A4-CURATE= | replaces =F88A3-PROMOTION= | One reserved =context-curate= effect selects exact source values, replaces one or more sources with model-authored summaries, and drops omitted sources without model-supplied bookkeeping. | core schema/provenance; loop carrier; harness/session application; adapter wire codec | keep-summary-drop composition | clear in isolation; dependent cells open |
+| =F88A4-ATOMIC= | replacement join with =F88A3-TOOL= | Zero or one effect is accepted per complete response; all validation precedes mutation; valid state commits before subsequent provider dispatch; invalid or multiple effects use the existing response-failure boundary. | loop and harness response-completion boundary | mixed reserved/ordinary-tool ordering | unknown: P1-02 |
+| =F88A4-BOUNDS= | replaces original promotion limits | Core owns exact source-count and prepared-durable-payload limits, including exact-bound and one-over behavior. | pure core validation before session mutation | boundary owner tests and composed rejection | unknown: P1-01 |
+| =F88A4-DURABLE= | replacement join with =F88A3-COMPAT= | Durable selected items retain exact value or summary text plus per-item core-derived provenance and response ownership; runtime presentation and backing objects remain absent. | core record codec plus session append/projection | reopen, branch, compaction, and mixed-version projection | unknown: P1-03 |
+| =F88A4-COST= | new guidance | Per-input sizes are deterministic and informational; optional monetary guidance stays adapter/presentation-owned and cannot change semantic acceptance. | core neutral estimator; outer capability/presentation for pricing | deterministic estimate tests; numerical pricing not acceptance | unknown: P2-05 |
+| =F88A3-SEM= | inherited with terminology substitution | The next ordinary request is canonical durable state plus successful curation replacements and the new frontier; consumed raw values and contaminated lineage are absent. | unchanged session/harness projection | revised canonical observe-curate-forget scenario | retained |
+| =F88A3-LAYOUT= | inherited | Curation labels and sizes are late-frontier material; stable policy and the reserved schema remain stable-prefix-compatible and fingerprinted. | unchanged harness/OpenAI layout owners | literal request order and prefix comparison | retained; Addendum 4 delta must be mapped |
+| =F88A3-DELIVERY= | inherited | Affected OpenAI frontier observations remain inherited under continuation and contaminated descendants remain immediate-followup-only. | unchanged capability/anchor owners | existing delivery and anchor-safety scenarios | retained |
+| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tool lifecycle and one canonical recovery remain unchanged; reserved-carrier acknowledgement is immediate wire replay only. | loop and adapter | mixed curation/tool continuation | retained; join blocked by P1-02 |
+| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantic correctness; implementation changes invalidate evidence through material request-shape identity. | OpenAI external-evidence boundary | canonical minimal and tool-heavy scenarios | specification retained; capability unconfirmed |
+| =F88A3-CLEANUP= | inherited | No historical response graph or new durable recovery machinery returns; the old model-facing =context-promote= carrier is removed. | adapter and negative source inventory | negative searches and lifecycle tests | retained; removal must be explicit |
+| =F88A3-COMPAT= | inherited | Persisted historical context records, generic anchors, branches, compaction, and unrelated transports remain valid. | session/core plus unaffected adapters | mixed-version reopen and regressions | blocked by P1-03 |
+
+* Findings
+
+** TODO P1-01: =F88A4-BOUNDS= has no aggregate correctness or resource boundary
+
+*** Contract cell
+
+=F88A4-BOUNDS=.
+
+*** Observed source fact
+
+Addendum 4 calls each exact source “bounded” and recommends bounded previews,
+but defines no maximum selected-source count, output count, summary size, or
+aggregate durable size (=addendum4.org:59-60= and =addendum4.org:75-84=).
+
+The superseded contract accepted 1--16 facts and at most 8 KiB of normalized
+UTF-8 payload (=plan.org:293-305=).  Current core implements those limits at
+=lisp/core/e-context-lifetime.el:63-70= and
+=lisp/core/e-context-lifetime.el:250-275,775-813=, with exact-limit tests at
+=test/e-context-lifetime-test.el:200-255=.
+
+*** Consequence
+
+A label-only keep request can select aggregate source content much larger than
+the wire arguments, and summary text is presently unlimited.  A conforming
+implementation could append unbounded session state and repeat it in every
+later request, while another could silently reuse the old limits.
+
+*** Minimal correction
+
+Core must accept a curation only when at least one source has a keep or summary
+disposition, no more than 16 distinct frame labels have dispositions, every
+summary has at least one source and non-empty text, and the canonical prepared
+durable record is at most 8,192 UTF-8 bytes.  The measurement must include exact
+values, summary text, and core-derived provenance.  Exactly 16 labels and 8,192
+bytes are accepted; 17 labels or 8,193 bytes reject before semantic mutation.
+Changing either limit must change the contract, boundary tests, schema
+fingerprint, and cache-evidence identity together.
+
+*** Acceptance evidence
+
+- exact-bound and one-over core tests for both limits;
+- proof that exact values, summaries, and provenance participate;
+- large-handle proof that only the bounded preview can fit; and
+- prompt/schema fingerprint fencing when a limit changes.
+
+** TODO P1-02: =F88A4-ATOMIC= does not define multiple-call, failure, or wire-continuation behavior
+
+*** Contract cell
+
+=F88A4-ATOMIC= joined to inherited =F88A3-TOOL=.
+
+*** Observed source fact
+
+Addendum 4 rejects malformed or duplicate dispositions and permits at most one
+successful call per frame, but does not define two valid calls, interaction
+with ordinary streamed tool calls, or whether invalid input stops later
+dispatch (=addendum4.org:65-73=).
+
+The inherited contract requires invalid promotion to use the existing failure
+path without later dispatch or semantic mutation (=addendum3.org:46-53=).
+Current loop code rejects a second reserved effect and retains an opaque
+immediate acknowledgement (=lisp/core/e-loop.el:847-875=).  The original
+contract preserves already-streamed calls while stopping later calls
+(=plan.org:307-320,857-861=).  Frame completion drops observation bodies
+(=lisp/core/e-context-lifetime.el:746-773=), while the harness currently
+completes the frame before resolving promotion effects
+(=lisp/core/e-harness.el:3090-3140=).
+
+*** Consequence
+
+Implementations could commit the first call or reject both, dispatch different
+ordinary-tool subsets, lose an exact source by consuming the frame too early,
+or leave an unmatched provider function call.
+
+*** Minimal correction
+
+More than one =context-curate= effect in one complete response must reject the
+entire curation before durable or frame mutation.  Invalid curation preserves
+already-streamed ordinary calls, dispatches no later calls, and appends no
+curation record.  At provider completion, core validates and prepares the
+complete curation against the still-live consumer-bound frame.  The harness
+appends it and consumes the frame before any later provider request.  No valid
+effect means consume and drop the frame.  A provider-required acknowledgement
+may survive only as opaque replay metadata for the matching immediate
+continuation.
+
+*** Acceptance evidence
+
+- zero, one, and two-effect response tests;
+- invalid-before/between/after ordinary-tool orderings;
+- both provider-done/tool-result orderings;
+- preparation before source-body removal; and
+- immediate acknowledgement with later semantic and lineage exclusion.
+
+** TODO P1-03: =F88A4-DURABLE= and inherited compatibility do not define the new record or old-record behavior
+
+*** Contract cell
+
+=F88A4-DURABLE= joined to =F88A3-COMPAT= and =F88A3-SEM=.
+
+*** Observed source fact
+
+Addendum 4 says the runtime creates durable IDs/schema revision and that audit
+records may retain provenance, but gives no item schema, ordering, projection,
+migration, or removal contract (=addendum4.org:46-55,124-136=).
+
+Current version-2 promotion records contain flat facts and promotion-wide
+source arrays (=lisp/core/e-context-lifetime.el:698-739=).  Session replay,
+ownership, projection, and append explicitly recognize =context-promotion=
+(=lisp/core/e-session.el:159-160,3145-3196,3708-3776=).  Existing tests prove
+v2 reopen and projection (=test/e-session-test.el:29-110,2737-2803=).
+
+*** Consequence
+
+An implementation could drop active durable facts on reopen, attach all
+sources to every replacement, persist presentation metadata, or retain dual
+model-facing writers.
+
+*** Minimal correction
+
+Keep the persisted session family =context-promotion= for compatibility, but
+make new writers emit version 3 with ordered =:items=.  Exact items contain one
+detached canonical value and one source’s core-derived ID/ref/fingerprint;
+summary items contain model text and one or more sources’ parallel provenance.
+Exact items follow =keep= order and then summary items follow submission order.
+The record contains no frame labels, token hints, provider acknowledgement,
+backing object, live frame body, settlement, or retry state.  Projection emits
+only the exact value or summary text.
+
+Version-2 records remain readable and model-visible on the active generation,
+and remain audit-only when covered.  V2 and v3 may coexist across reopen,
+branching, and compaction.  New code writes only v3.  Remove the old
+model-facing =context-promote= tool, decoder, encoder, fingerprint, and writer;
+the v2 reader is the sole compatibility path.  The generation codec remains
+version 2.
+
+*** Acceptance evidence
+
+- exact and multi-source-summary v3 codec round trips;
+- strict malformed/mismatched provenance rejection;
+- mixed v2/v3 reopen, projection, branching, and compaction;
+- exact projection excludes metadata and backing values; and
+- negative source tests find no old carrier or dual writer.
+
+** TODO P2-04: Addendum 4 lacks one normative contract/evidence authority
+
+*** Contract cell
+
+All =F88A4-*= rows and inherited joins.
+
+*** Observed source fact
+
+Addendum 4 has prose and six acceptance bullets (=addendum4.org:21-143=), but no
+stable contract IDs, owners, composition boundaries, evidence classes,
+external disposition, exact-limit record, or retain/strengthen/replace/delete
+test ledger.  Addendum 3 made its matrix the sole authority
+(=addendum3.org:38-53=).
+
+*** Consequence
+
+An implementer cannot distinguish durable requirements from rationale, map
+retained Addendum 3 tests, or tell whether external evidence blocks semantics.
+
+*** Minimal correction
+
+Insert the normalized matrix as Addendum 4’s sole normative authority, clear
+the other four findings in its rows, and add deterministic scenarios for
+keep/summary/drop, invalid atomicity, exact bounds, wire follow-up,
+persistence compatibility, and a large external handle.  Retain Addendum 3’s
+two external cache scenarios, rerun after the material shape change, and keep
+external status =capability-unconfirmed= until a fresh identity-complete run.
+
+The test ledger must retain lifetime/continuation/branch/compaction/session
+regressions, strengthen the new curation behaviors, replace old promotion
+owner/wire/writer tests, delete old model-facing IDs/carrier aliases, and retain
+only the v2 durable reader compatibility path.
+
+*** Acceptance evidence
+
+Every row must be independently cleared or explicitly not applicable; each
+scenario must name its owner and boundary; deterministic and external evidence
+must remain separate; and all limits need exact/one-over tests.
+
+** TODO P2-05: =F88A4-PRESENT= does not define the mandatory approximate token count
+
+*** Contract cell
+
+=F88A4-PRESENT= and =F88A4-COST=.
+
+*** Observed source fact
+
+Addendum 4 mandates an approximate token count for every ephemeral input but
+does not define the value counted, estimator, rounding, fallback, owner,
+durability, or cache-fingerprint effect (=addendum4.org:88-106,122-126=).
+Core already has a provider-neutral estimator using configurable UTF-8 bytes
+per token, a 4.0 fallback, and upward rounding
+(=lisp/core/e-context-budget.el:52-87=).
+
+*** Consequence
+
+Adapters could count different wrappers, annotations could contaminate the
+retained exact value, and material prompt changes could evade cache fencing.
+
+*** Minimal correction
+
+Core must estimate each exact canonical source value before adding its label or
+annotation, using the existing configurable bytes/token ratio, upward rounding,
+and 4.0 fallback.  Tests inject the ratio.  A late-frontier marker such as
+=[1, ~120 tokens]= participates in prompt-layout/schema fingerprints, but is
+not retained or persisted.  Optional monetary guidance belongs to an outer
+owner and must record all pricing assumptions; absent assumptions yield only
+source sizes and the qualitative warning.  Cost never changes semantic
+acceptance.
+
+*** Acceptance evidence
+
+- injected-ratio per-item rounding and fallback tests;
+- label/count exclusion from exact durable values;
+- cache-identity change when presentation changes; and
+- absent pricing leaves semantics unchanged.
+
+* Evidence scenarios and test disposition required by remediation
+
+| Scenario | Class | Required proof |
+|----------+-------+----------------|
+| =curate-keep-summary-drop= | deterministic | keep one exact value, summarize multiple sources, omit another, and reconstruct the next ordinary request without raw inputs or internal metadata |
+| =curate-invalid-atomic= | deterministic | unknown, duplicate, malformed, over-limit, and multiple effects commit nothing and preserve the inherited streamed-tool boundary |
+| =curate-exact-boundaries= | deterministic | exact source/count/byte boundaries and one-over rejection |
+| =curate-wire-follow-up= | deterministic | reserved carrier stays outside ordinary tools; opaque acknowledgement joins only its matching immediate continuation |
+| =curate-persistence-compat= | deterministic | v2/v3 reopen, mixed projection, branches, and compaction |
+| =curate-large-handle= | deterministic | only the presented preview can become durable; backing value remains external |
+| =chatgpt-canonical-warm-prefix= | external compatibility | inherited F88A3 scenario rerun after material request-shape change |
+| =chatgpt-canonical-tool-heavy= | external compatibility | inherited tool-heavy scenario rerun with the curation carrier |
+
+All curation semantics are repository-controlled deterministic gates.  External
+cache evidence cannot substitute for them or block implementation.
+
+Required disposition:
+
+- Retain frame binding, canonical reconstruction, provenance, ordinary tool,
+  continuation, branch, compaction, disabled-feature, session-load, and
+  unrelated-transport tests.
+- Strengthen exact copying, summary provenance, omission, labels/sizes,
+  aggregate bounds, multiple effects, mixed tool ordering, v2/v3 coexistence,
+  and cache-identity invalidation.
+- Replace old core-effect, OpenAI schema/decoder/ack, loop effect, fact
+  rendering, and writer tests with =context-curate= behavior.
+- Delete model-facing frame/generation/observation/fact IDs, the old carrier and
+  aliases, and tests whose only purpose is that superseded schema.
+- Retain the v2 reader and compatibility tests; do not retain a v2 writer.
+
+* Evidence and implementation feasibility
+
+The replacement fits the existing owners: core has runtime bodies and trusted
+provenance; harness owns composition; loop owns reserved streaming effects;
+session owns strict durable codecs/replay/branches; and OpenAI owns only wire
+schema and opaque acknowledgement.  The material change is to prepare exact
+selections while the frame body is live, add a version-dispatched durable item
+codec, replace the reserved wire schema, and reuse existing response/projection
+boundaries.  No provider policy, board state, or persistent frame recovery is
+required.
+
+* Architecture self-check
+
+1. The package is a useful stopping point: it makes lifetime choice expressive
+   without requiring compaction or tool-result redesign.
+2. It moves toward canonical durable context selected at an ephemeral frontier.
+3. Pricing and future compaction remain local; keep/summary/drop is the stable
+   semantic operation.
+4. Core owns rewrite semantics and limits; session owns durability; harness
+   owns commit composition; loop owns streaming control; adapters own wire.
+5. The model-facing interface narrows to labels and summary text.
+6. Dependencies continue from adapters toward provider-neutral core.
+7. Acknowledgement, pricing, transport, and cache effects remain outward.
+8. Only selected values, summaries, and provenance are durable.
+9. Aggregate bounds make validation linear in one bounded frame.
+10. Adapters do not weaken the core contract or own alternate limits.
+11. Historical v2 records require a reader; the old writer and carrier do not.
+12. Old =context-promote= helpers and tests become removable.
+13. Expected validation errors use the existing response failure boundary.
+14. Owner tests can change narrowly at core, loop, session, harness, and adapter
+    boundaries.
+
+* Verification
+
+The reviewer ran six focused baseline tests covering the superseded promotion,
+loop, session-v2, projection, and OpenAI carrier behavior: 6/6 passed.  These
+prove feasibility, not Addendum 4 acceptance.  Org parsing, ancestry, and
+=git diff --check 5f0be97d^..5f0be97d= also passed.
+
+Running Emacs was unchanged and no provider request was made.
+
+* Implementation readiness
+
+Blocked by P1-01, P1-02, P1-03, P2-04, and P2-05.  A fresh incremental Tick
+must disposition all five corrections and every matrix join before
+implementation begins.
