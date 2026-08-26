@@ -2997,19 +2997,22 @@ fork's session name (otherwise it inherits the source name)."
          (source-checkpoint
           (and source-generation
                (e-context-lifetime-generation-checkpoint source-generation)))
+         (promotion-messages
+          (plist-get portable-projection :promotion-messages))
          ;; A deliberate non-empty portable generation is the only fork seed
-         ;; that may replace the ordinary message copy.  Its checkpoint and
-         ;; eligible tail/facts are the source semantic projection; covered
-         ;; prefix messages are never resurrected in the fork.
+         ;; that may replace the ordinary message copy.  A generation with
+         ;; active promotions but no checkpoint still needs a portable seed so
+         ;; v2/v3 durable items are not lost when the branch is selected.
          (portable-checkpoint
-          (when source-checkpoint
+          (when (and source-generation
+                     (or source-checkpoint promotion-messages))
             (e-context-lifetime-portable-checkpoint
              (append
               (copy-tree source-checkpoint)
               (mapcar #'e-context-lifetime-portable-message
                       (plist-get portable-projection :durable-tail))
-              (e-context-lifetime-promotion-fact-messages
-               (plist-get portable-projection :promotions)))
+              (mapcar #'e-context-lifetime-portable-message
+                      promotion-messages))
              t)))
          (messages (seq-filter (lambda (entry)
                                  (eq (plist-get entry :type) 'message))
@@ -3097,6 +3100,21 @@ its dedicated board journal accessors."
   (copy-tree
    (plist-get (e-session--get-live store session-id) :context-promotions)))
 
+(defun e-session-context-curations (store session-id)
+  "Return version-3 curation records for SESSION-ID in insertion order.
+
+The persisted entry family remains `context-promotion' for compatibility, so
+this accessor selects the new record version without exposing v2 promotion
+records as if they were v3 records."
+  (delq nil
+        (mapcar
+         (lambda (entry)
+           (let ((record (e-session--context-record entry)))
+             (when (equal (plist-get record :record-version)
+                          e-context-lifetime-curation-record-version)
+               (copy-tree record))))
+         (e-session-context-promotions store session-id))))
+
 (defun e-session-context-lifetime-current-generation
     (store session-id &optional head-id)
   "Return the latest narrowed semantic generation on SESSION-ID's path.
@@ -3174,26 +3192,60 @@ consumer-bound frame at request construction time."
          ;; Promotions before a deliberate portable boundary are absorbed into
          ;; its checkpoint.  Historical records remain in the audit journal but
          ;; only facts owned by the active generation are eligible here.
-         (promotions
-          (delq nil
-                (mapcar
-                 (lambda (entry)
-                   (when (and (eq (plist-get entry :type)
-                                  'context-promotion)
-                              generation-id)
-                     (condition-case error
-                         (let ((record (e-session--context-record entry)))
-                           (when (equal (plist-get record :generation-id)
-                                        generation-id)
-                             (e-context-lifetime-promotion-from-record record)))
-                       (e-context-lifetime-invalid-record
-                        (signal 'e-session-error
-                                (list "Invalid current context promotion"
-                                      session-id error))))))
-                 path))))
-    (list :generation generation
-          :durable-tail messages
-          :promotions promotions)))
+         (promotions nil)
+         (curations nil)
+         (promotion-message-entry-groups nil)
+         (promotion-frontier nil))
+    (dolist (entry path)
+      (when (and (eq (plist-get entry :type) 'context-promotion)
+                 generation-id)
+        (condition-case error
+            (let ((record (e-session--context-record entry)))
+              (when (equal (plist-get record :generation-id)
+                           generation-id)
+                (if (equal (plist-get record :record-version)
+                           e-context-lifetime-curation-record-version)
+                    (let ((curation
+                           (e-context-lifetime-curation-from-record record)))
+                      (push curation curations)
+                      (push
+                       (mapcar
+                        (lambda (message)
+                          (list :kind 'v3 :message
+                                (copy-tree message)))
+                        (e-context-lifetime-curation-messages curation))
+                       promotion-message-entry-groups))
+                  (let ((promotion
+                         (e-context-lifetime-promotion-from-record record)))
+                    (push promotion promotions)
+                    (push
+                     (mapcar
+                      (lambda (message)
+                        (list :kind 'v2 :message
+                              (copy-tree message)))
+                      (e-context-lifetime-promotion-fact-messages
+                       (list promotion)))
+                     promotion-message-entry-groups)))
+                (push (plist-get record :id) promotion-frontier)))
+          (e-context-lifetime-invalid-record
+           (signal 'e-session-error
+                   (list "Invalid current context promotion"
+                         session-id error))))))
+    (let* ((promotion-message-entries
+            (if promotion-message-entry-groups
+                (apply #'append (nreverse promotion-message-entry-groups))
+              nil))
+           (promotion-messages
+            (mapcar (lambda (entry) (plist-get entry :message))
+                    promotion-message-entries)))
+      (list :generation generation
+            :durable-tail messages
+            :promotions (nreverse promotions)
+            :curations (nreverse curations)
+            :promotion-messages promotion-messages
+            :promotion-message-entries
+            (copy-tree promotion-message-entries)
+            :promotion-frontier (nreverse promotion-frontier)))))
 
 (defun e-session-process-reports (store session-id)
   "Return process reports for SESSION-ID in STORE in insertion order."
@@ -3652,25 +3704,46 @@ record before the core decoder sees them."
           (push key seen)))
       duplicate)))
 
-(defun e-session--normalize-context-record (type record)
-  "Decode and canonicalize narrowed v2 context RECORD.
+(defun e-session--normalize-context-record (type record
+                                            &optional expected-record-version)
+  "Decode and canonicalize a narrowed context RECORD.
 
 This is shared by append and replay.  Legacy v1 frame and settlement records
 are handled by the replay caller as ignored audit history and never enter this
-validator."
+validator.  Context generations remain version 2.  Context promotions dispatch
+version 3 to the curation codec and retain the version-2 promotion reader for
+compatibility.  EXPECTED-RECORD-VERSION, when non-nil, fences an append
+boundary to one context-promotion version."
   (unless (memq type e-session--context-lifetime-entry-types)
     (signal 'e-session-error (list "Unknown context lifetime entry" type)))
   (when (e-session--context-record-has-duplicate-key-p record)
     (signal 'e-session-error
             (list "Context lifetime record has duplicate fields" type)))
   (condition-case error
-      (let ((decoded
-             (if (eq type 'context-generation)
-                 (e-context-lifetime-generation-from-record record)
-               (e-context-lifetime-promotion-from-record record))))
-        (if (eq type 'context-generation)
-            (e-context-lifetime-generation-record decoded)
-          (e-context-lifetime-promotion-record decoded)))
+      (let* ((record-version (and (e-session--keyword-plist-p record)
+                                  (plist-get record :record-version)))
+             (decoded
+              (if (eq type 'context-generation)
+                  (e-context-lifetime-generation-from-record record)
+                (if (equal record-version
+                           e-context-lifetime-curation-record-version)
+                    (e-context-lifetime-curation-from-record record)
+                  (e-context-lifetime-promotion-from-record record))))
+             (normalized
+              (if (eq type 'context-generation)
+                  (e-context-lifetime-generation-record decoded)
+                (if (equal record-version
+                           e-context-lifetime-curation-record-version)
+                    (e-context-lifetime-curation-record decoded)
+                  (e-context-lifetime-promotion-record decoded)))))
+        (when (and expected-record-version
+                   (not (equal expected-record-version
+                               (plist-get normalized :record-version))))
+          (signal 'e-session-error
+                  (list "Context promotion record version is not accepted"
+                        expected-record-version
+                        (plist-get normalized :record-version))))
+        normalized)
     (e-context-lifetime-invalid-record
      (signal 'e-session-error
              (list "Invalid context lifetime record" type error)))))
@@ -3726,14 +3799,15 @@ validator."
     context-record))
 
 (cl-defun e-session--append-context-entry
-    (store session-id type field context-record &key (write-index t))
+    (store session-id type field context-record &key (write-index t)
+           expected-record-version)
   "Append narrowed provider-neutral CONTEXT-RECORD under TYPE."
   (unless (memq type e-session--context-lifetime-entry-types)
     (signal 'e-session-error (list "Unknown context lifetime entry" type)))
   (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (context-record (e-session--normalize-context-record
-                          type context-record))
+                          type context-record expected-record-version))
          (_ownership
           (e-session--validate-context-entry-ownership
            store session-id type context-record))
@@ -3767,13 +3841,30 @@ validator."
 
 (cl-defun e-session-append-context-promotion
     (store session-id promotion &key (write-index t))
-  "Append selected durable PROMOTION and return its durable session entry."
+  "Append temporary pre-switch v2 PROMOTION compatibility data.
+
+The old model-facing `context-promote' path is retained only until the later
+runtime switch removes it.  This writer is explicitly fenced to version 2;
+new curation callers must use `e-session-append-context-curation'."
   (e-session--append-context-entry
    store session-id 'context-promotion :context-promotions
    (if (e-context-lifetime-promotion-p promotion)
        (e-context-lifetime-promotion-record promotion)
      promotion)
-   :write-index write-index))
+   :write-index write-index
+   :expected-record-version e-context-lifetime-record-version))
+
+(cl-defun e-session-append-context-curation
+    (store session-id record &key (write-index t))
+  "Append prepared version-3 curation RECORD and return its session entry.
+
+RECORD must be the pure prepared value returned by
+`e-context-lifetime-prepare-curation'.  The session boundary accepts no v2
+alias and validates the record through the same codec used during replay."
+  (e-session--append-context-entry
+   store session-id 'context-promotion :context-promotions record
+   :write-index write-index
+   :expected-record-version e-context-lifetime-curation-record-version))
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."

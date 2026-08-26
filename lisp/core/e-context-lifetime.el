@@ -38,7 +38,7 @@ projection."
   :group 'e-context-lifetime)
 
 (defconst e-context-lifetime-record-version 2
-  "Version of the narrowed durable generation and promotion records.")
+  "Version of the narrowed durable generation and legacy promotion records.")
 
 (defconst e-context-lifetime-portable-message-roles
   '(system user assistant)
@@ -74,10 +74,7 @@ have a closed role vocabulary."
   "Maximum normalized UTF-8 bytes accepted in one promotion effect.")
 
 (defconst e-context-lifetime-curation-record-version 3
-  "Version of prepared durable context-curation records.
-
-The session codec is introduced by a later Addendum 4 slice.  This core slice
-only prepares the exact record shape that codec will accept.")
+  "Version of durable prepared context-curation records.")
 
 (defconst e-context-lifetime-curation-schema-revision "context-curate-v1"
   "Stable revision of the model-facing context-curate shape.")
@@ -1228,6 +1225,192 @@ validated FRAME, never as caller-supplied positional provenance."
    :source-observation-ids (plist-get record :source-observation-ids)
    :source-refs (plist-get record :source-refs)
    :source-fingerprints (plist-get record :source-fingerprints)))
+
+(defun e-context-lifetime--curation-record-items (items)
+  "Return ITEMS as a non-empty strict curation item sequence."
+  (let ((items
+         (cond
+          ((vectorp items) (append items nil))
+          ((and (proper-list-p items)
+                (not (e-context-lifetime--keyword-plist-p items)))
+           items)
+          (t
+           (signal 'e-context-lifetime-invalid-record
+                   (list 'curation-record :items items)))))
+        result)
+    (unless items
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-record :empty-items)))
+    (dolist (item items (nreverse result))
+      (unless (e-context-lifetime--keyword-plist-p item)
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-item :not-keyword-plist item)))
+      (push item result))))
+
+(defun e-context-lifetime--curation-item-kind (kind)
+  "Return canonical curation item KIND or signal a shape error."
+  (let ((kind (cond
+               ((eq kind 'exact) 'exact)
+               ((equal kind "exact") 'exact)
+               ((eq kind 'summary) 'summary)
+               ((equal kind "summary") 'summary))))
+    (unless (memq kind '(exact summary))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-item :kind kind)))
+    kind))
+
+(defun e-context-lifetime--curation-item-provenance-record
+    (item kind)
+  "Return normalized provenance for curation ITEM of KIND.
+
+The source arrays are the durable audit boundary.  Exact items require one
+source, summaries require one or more, and all arrays must remain parallel.
+Observation IDs are checked for uniqueness within the item here; the record
+decoder applies the curation-wide uniqueness check."
+  (let* ((source-observation-ids
+          (e-context-lifetime--id-list
+           (plist-get item :source-observation-ids)
+           'curation-source-observation))
+         (source-refs
+          (e-context-lifetime--reference-list
+           (plist-get item :source-refs) 'curation-source-ref))
+         (source-fingerprints
+          (e-context-lifetime--reference-list
+           (plist-get item :source-fingerprints)
+           'curation-source-fingerprint))
+         (count (length source-observation-ids)))
+    (unless (if (eq kind 'exact) (= count 1) (> count 0))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-item :source-count kind count)))
+    (unless (and (= count (length source-refs))
+                 (= count (length source-fingerprints)))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-item :parallel-provenance
+                    source-observation-ids source-refs source-fingerprints)))
+    (list :source-observation-ids
+          (mapcar #'e-context-lifetime--detached-copy source-observation-ids)
+          :source-refs
+          (mapcar #'e-context-lifetime--detached-copy source-refs)
+          :source-fingerprints
+          (mapcar #'e-context-lifetime--detached-copy source-fingerprints))))
+
+(defun e-context-lifetime--curation-item-from-record (item)
+  "Return one canonical strict v3 curation ITEM."
+  (let ((kind (e-context-lifetime--curation-item-kind
+               (plist-get item :kind))))
+    (if (eq kind 'exact)
+        (progn
+          (e-context-lifetime--validate-exact-plist
+           item '(:kind :value :source-observation-ids :source-refs
+                  :source-fingerprints)
+           'curation-exact-item)
+          (append
+           (list :kind 'exact
+                 :value
+                 (e-context-lifetime--detached-canonical
+                  (plist-get item :value)))
+           (e-context-lifetime--curation-item-provenance-record item kind)))
+      (e-context-lifetime--validate-exact-plist
+       item '(:kind :text :source-observation-ids :source-refs
+              :source-fingerprints)
+       'curation-summary-item)
+      (let ((text (plist-get item :text)))
+        (unless (and (stringp text) (not (string-empty-p text)))
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-summary-item :non-empty-text text)))
+        (append
+         (list :kind 'summary :text (copy-sequence text))
+         (e-context-lifetime--curation-item-provenance-record item kind))))))
+
+(defun e-context-lifetime--curation-record-from-record (record)
+  "Return a detached canonical version-3 curation RECORD."
+  (e-context-lifetime--validate-exact-plist
+   record
+   '(:record-version :type :id :frame-id :generation-id
+     :consumer-request-id :response-entry-id :items)
+   'curation-record)
+  (unless (and (equal (plist-get record :record-version)
+                      e-context-lifetime-curation-record-version)
+               (eq (plist-get record :type) 'context-promotion))
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-record :version-or-type record)))
+  (let (items source-observation-ids)
+    (dolist (item (e-context-lifetime--curation-record-items
+                   (plist-get record :items)))
+      (let* ((normalized (e-context-lifetime--curation-item-from-record item))
+             (item-source-ids
+              (plist-get normalized :source-observation-ids)))
+        (dolist (source-id item-source-ids)
+          (when (member source-id source-observation-ids)
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'curation-record :duplicate-source-observation
+                          source-id)))
+          (push source-id source-observation-ids))
+        (push normalized items)))
+    (when (> (length source-observation-ids)
+             e-context-lifetime-curation-max-sources)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-record :source-count
+                    (length source-observation-ids))))
+    (let ((normalized
+           (list :record-version e-context-lifetime-curation-record-version
+                 :type 'context-promotion
+                 :id (e-context-lifetime--detached-copy
+                      (e-context-lifetime--require-id
+                       (plist-get record :id) 'curation-id))
+                 :frame-id (e-context-lifetime--detached-copy
+                            (e-context-lifetime--require-id
+                             (plist-get record :frame-id) 'curation-frame))
+                 :generation-id (e-context-lifetime--detached-copy
+                                 (e-context-lifetime--require-id
+                                  (plist-get record :generation-id)
+                                  'curation-generation))
+                 :consumer-request-id
+                 (e-context-lifetime--detached-copy
+                  (e-context-lifetime--require-id
+                   (plist-get record :consumer-request-id)
+                   'curation-consumer))
+                 :response-entry-id
+                 (e-context-lifetime--detached-copy
+                  (e-context-lifetime--require-id
+                   (plist-get record :response-entry-id)
+                   'curation-response))
+                 :items (nreverse items))))
+      (let ((bytes (e-context-lifetime--bytes normalized)))
+        (when (> bytes e-context-lifetime-curation-max-record-bytes)
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-record :bytes bytes))))
+      normalized)))
+
+(defun e-context-lifetime-curation-from-record (record)
+  "Decode and strictly canonicalize a version-3 curation RECORD.
+
+The returned plist is detached and contains only the durable
+`context-promotion' fields.  It accepts JSON-decoded vectors and string item
+kinds, but does not coerce missing, extra, or malformed fields."
+  (e-context-lifetime--curation-record-from-record record))
+
+(defun e-context-lifetime-curation-record (record)
+  "Encode prepared version-3 curation RECORD in canonical durable form.
+
+The prepared record is revalidated at this codec boundary so a session cannot
+append a v3 value that it would be unable to replay."
+  (e-context-lifetime-curation-from-record record))
+
+(defun e-context-lifetime-curation-messages (record)
+  "Return one portable system message per v3 curation item in RECORD order.
+
+Exact items retain their canonical source value and summary items retain their
+model-authored text.  No label, estimate, provenance, identifier, prefix, or
+`prin1' conversion is introduced."
+  (mapcar
+   (lambda (item)
+     (e-context-lifetime--portable-message
+      (list :role 'system
+            :content (if (eq (plist-get item :kind) 'exact)
+                         (plist-get item :value)
+                       (plist-get item :text)))))
+   (plist-get (e-context-lifetime-curation-from-record record) :items)))
 
 (defun e-context-lifetime-frame-consumed-p (frame)
   "Return non-nil when runtime FRAME has a consuming response binding."

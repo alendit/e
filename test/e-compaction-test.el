@@ -242,6 +242,295 @@ later assistant/tool-call message instead of signalling no-boundary."
                   (e-context-lifetime-generation-checkpoint
                    (plist-get after :generation)))))))))
 
+(ert-deftest e-compaction-test-v3-curation-survives-mixed-boundary-reopen-and-fork ()
+  "Mixed v2/v3 context records retain literal v3 messages across compaction."
+  (let* ((directory (make-temp-file "e-compaction-v3-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "portable-v3")
+         (v2-record
+          '(:record-version 2 :type context-promotion :id "promotion-v2"
+            :frame-id "frame-v2" :generation-id "generation-v3-compaction"
+            :consumer-request-id "consumer-v2" :response-entry-id "response-v2"
+            :facts ((:id "fact-v2" :value "legacy value"))
+            :source-observation-ids ("observation-v2")
+            :source-refs ("source-v2")
+            :source-fingerprints ("fingerprint-v2")))
+         (v3-record
+          '(:record-version 3 :type context-promotion :id "curation-v3"
+            :frame-id "frame-v3" :generation-id "generation-v3-compaction"
+            :consumer-request-id "consumer-v3" :response-entry-id "response-v3"
+            :items
+            ((:kind exact :value (:answer "exact value")
+              :source-observation-ids ("observation-v3-exact")
+              :source-refs ("source-v3-exact")
+              :source-fingerprints ("fingerprint-v3-exact"))
+             (:kind summary :text "curation summary"
+              :source-observation-ids ("observation-v3-a" "observation-v3-b")
+              :source-refs ("source-v3-a" "source-v3-b")
+              :source-fingerprints ("fingerprint-v3-a" "fingerprint-v3-b")))))
+         (source-checkpoint
+          '((:role system :content "C1")
+            (:role system :content "Promoted fact fact-v2: legacy value")
+            (:role system :content (:answer "exact value"))
+            (:role system :content "curation summary"))))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (e-session-append-context-generation
+           store session-id
+           (e-context-lifetime-generation-create
+            :id "generation-v3-compaction"
+            :checkpoint '((:role system :content "C0"))
+            :covered-session-boundary
+            (plist-get (e-session-get store session-id) :root-event-id)))
+          (e-session-append-message store session-id
+                                    '(:role user :content "before"))
+          (e-session-append-message store session-id
+                                    '(:role assistant :content "boundary"))
+          (e-session-append-context-promotion store session-id v2-record)
+          (e-session-append-context-curation store session-id v3-record)
+          (let* ((before (e-session-context-lifetime-projection
+                          store session-id))
+                 (before-v3
+                  (e-context-lifetime-curation-messages
+                   (car (plist-get before :curations))))
+                 (preparation
+                  (e-compaction-prepare store session-id
+                                        :keep-recent-tokens 1 :portable t))
+                 (input (plist-get preparation :portable-input)))
+            (should (= (length (plist-get input :promotions)) 1))
+            (should (= (length (plist-get input :curations)) 1))
+            (let* ((summary-messages
+                    (e-compaction-portable-summary-messages input))
+                   (summary-text
+                    (plist-get (cadr summary-messages) :content))
+                   (v3-messages (cddr summary-messages))
+                   (request-text (prin1-to-string summary-messages)))
+              ;; The v3 values are actual trailing portable messages.  In
+              ;; particular, the exact value remains structured rather than
+              ;; passing through `prin1-to-string'.
+              (should (equal
+                       v3-messages
+                       '((:role system :content (:answer "exact value"))
+                         (:role system :content "curation summary"))))
+              (should (listp (plist-get (car v3-messages) :content)))
+              ;; The existing user packaging remains for checkpoint, durable
+              ;; tail, and v2 compatibility, but has no v3 audit section.
+              (should-not (string-match-p "Curated portable messages"
+                                          summary-text))
+              (should-not (string-match-p "curation summary" summary-text))
+              (dolist (leak '("curation-v3" "frame-v3"
+                              "observation-v3" "source-v3"
+                              "fingerprint-v3" ":kind"
+                              "label" "estimated-tokens"))
+                (should-not (string-match-p leak request-text))))
+            (should (equal before-v3
+                           '((:role system :content (:answer "exact value"))
+                             (:role system :content "curation summary"))))
+            (let* ((checkpoint
+                    (e-compaction-portable-checkpoint-from-summary
+                     preparation "C1"))
+                   (application
+                    (e-compaction-preflight-portable-boundary
+                     store session-id preparation checkpoint)))
+              (e-compaction-apply-portable-boundary
+               store session-id application)))
+          (let* ((after (e-session-context-lifetime-projection
+                         store session-id))
+                 (checkpoint
+                  (e-context-lifetime-generation-checkpoint
+                   (plist-get after :generation))))
+            (should (equal checkpoint source-checkpoint))
+            (should-not (plist-get after :curations)))
+          (e-session-flush-write-queue store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (after-reopen (e-session-context-lifetime-projection
+                                reopened session-id))
+                 (fork (e-session-fork reopened session-id))
+                 (fork-projection
+                  (e-session-context-lifetime-projection
+                   reopened (plist-get fork :id))))
+            (should (equal
+                     (e-context-lifetime-generation-checkpoint
+                      (plist-get after-reopen :generation))
+                     source-checkpoint))
+            (should (equal
+                     (e-context-lifetime-generation-checkpoint
+                      (plist-get fork-projection :generation))
+                     (append source-checkpoint
+                             '((:role assistant :content "boundary"))))))
+      (delete-directory directory t)))))
+
+(ert-deftest e-compaction-test-v3-portable-message-order-and-duplicates-survive-boundary-reopen-and-fork ()
+  "Interleaved v3/v2 records retain one portable message per v3 item."
+  (let* ((directory (make-temp-file "e-compaction-v3-duplicates-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "portable-v3-duplicates")
+         (generation-id "generation-v3-duplicates")
+         (v3-first
+          '(:record-version 3 :type context-promotion :id "curation-v3-first"
+            :frame-id "frame-v3-first" :generation-id "generation-v3-duplicates"
+            :consumer-request-id "consumer-v3-first"
+            :response-entry-id "response-v3-first"
+            :items
+            ((:kind exact :value "same durable value"
+              :source-observation-ids ("observation-v3-first-a")
+              :source-refs ("source-v3-first-a")
+              :source-fingerprints ("fingerprint-v3-first-a")
+              )
+             (:kind exact :value "same durable value"
+              :source-observation-ids ("observation-v3-first-b")
+              :source-refs ("source-v3-first-b")
+              :source-fingerprints ("fingerprint-v3-first-b")))))
+         (v2
+          '(:record-version 2 :type context-promotion :id "promotion-v2-middle"
+            :frame-id "frame-v2-middle" :generation-id "generation-v3-duplicates"
+            :consumer-request-id "consumer-v2-middle"
+            :response-entry-id "response-v2-middle"
+            :facts ((:id "fact-v2-middle" :value "legacy middle"))
+            :source-observation-ids ("observation-v2-middle")
+            :source-refs ("source-v2-middle")
+            :source-fingerprints ("fingerprint-v2-middle")))
+         (v3-second
+          '(:record-version 3 :type context-promotion :id "curation-v3-second"
+            :frame-id "frame-v3-second" :generation-id "generation-v3-duplicates"
+            :consumer-request-id "consumer-v3-second"
+            :response-entry-id "response-v3-second"
+            :items
+            ((:kind exact :value "same durable value"
+              :source-observation-ids ("observation-v3-second")
+              :source-refs ("source-v3-second")
+              :source-fingerprints ("fingerprint-v3-second")))))
+         (session (e-session-create store :id session-id)))
+    (unwind-protect
+        (progn
+          (e-session-append-context-generation
+           store session-id
+           (e-context-lifetime-generation-create
+            :id generation-id
+            :checkpoint '((:role system :content "C0"))
+            :covered-session-boundary (plist-get session :root-event-id)))
+          (let ((before-entry
+                 (e-session-append-message
+                  store session-id '(:role user :content "before"))))
+            (e-session-append-message
+             store session-id '(:role assistant :content "boundary"))
+            ;; The durable records deliberately interleave v3, v2, and v3;
+            ;; the first v3 record also contains two equal-valued items.
+            (e-session-append-context-curation store session-id v3-first)
+            (e-session-append-context-promotion store session-id v2)
+            (e-session-append-context-curation store session-id v3-second)
+            (let* ((projection
+                    (e-session-context-lifetime-projection store session-id))
+                   (entries (plist-get projection :promotion-message-entries))
+                   (entry-shape
+                    (mapcar
+                     (lambda (entry)
+                       (list (plist-get entry :kind)
+                             (plist-get (plist-get entry :message) :content)))
+                     entries))
+                   (preparation
+                    (e-compaction-prepare store session-id
+                                          :keep-recent-tokens 1 :portable t))
+                   (input (plist-get preparation :portable-input))
+                   (created-checkpoint
+                    (e-compaction-portable-checkpoint-from-summary
+                     preparation "C1"))
+                   (application
+                    (e-compaction-preflight-portable-boundary
+                     store session-id preparation created-checkpoint))
+                   (checkpoint (plist-get application :checkpoint))
+                   (checkpoint-contents
+                    (mapcar (lambda (message)
+                              (plist-get message :content))
+                            checkpoint))
+                   (context-contents nil))
+              (should (equal entry-shape
+                             '((v3 "same durable value")
+                               (v3 "same durable value")
+                               (v2 "Promoted fact fact-v2-middle: legacy middle")
+                               (v3 "same durable value"))))
+              (should (equal
+                       (mapcar
+                        (lambda (entry)
+                          (list (plist-get entry :kind)
+                                (plist-get (plist-get entry :message)
+                                           :content)))
+                        (plist-get input :promotion-message-entries))
+                       entry-shape))
+              (should (equal checkpoint-contents
+                             '("C1" "same durable value" "same durable value"
+                               "Promoted fact fact-v2-middle: legacy middle"
+                               "same durable value")))
+              ;; Preflight must not re-append the already complete v3
+              ;; checkpoint, even though equal v3 messages are distinct.
+              (should (equal (plist-get application :checkpoint)
+                             created-checkpoint))
+              (e-compaction-apply-portable-boundary
+               store session-id application)
+              (let* ((after (e-session-context-lifetime-projection
+                             store session-id))
+                     (new-generation (plist-get after :generation))
+                     (new-generation-id
+                      (e-context-lifetime-generation-id new-generation))
+                     (v3-post
+                      (list :record-version 3 :type 'context-promotion
+                            :id "curation-v3-post" :frame-id "frame-v3-post"
+                            :generation-id new-generation-id
+                            :consumer-request-id "consumer-v3-post"
+                            :response-entry-id "response-v3-post"
+                            :items
+                            '((:kind exact :value "same durable value"
+                              :source-observation-ids ("observation-v3-post")
+                              :source-refs ("source-v3-post")
+                              :source-fingerprints ("fingerprint-v3-post")))))
+                     (covered-boundary
+                      (plist-get (plist-get preparation :portable-input)
+                                 :covered-session-boundary)))
+                (should (equal covered-boundary
+                               (plist-get before-entry :id)))
+                (e-session-append-context-curation store session-id v3-post)
+                (let* ((context-messages
+                        (e-compaction-portable-context-messages
+                         store session-id checkpoint covered-boundary)))
+                  (setq context-contents
+                        (mapcar (lambda (message)
+                                  (plist-get message :content))
+                                context-messages))
+                  (should (equal context-contents
+                                 '("C1" "same durable value"
+                                   "same durable value"
+                                   "Promoted fact fact-v2-middle: legacy middle"
+                                   "same durable value" "boundary"
+                                   "same durable value")))
+                  (should (= (cl-count "same durable value"
+                                       context-contents :test #'equal)
+                             4)))
+                (e-session-flush-write-queue store)
+                (let* ((reopened (e-session-persistent-store-create directory))
+                       (reopened-context
+                        (e-compaction-portable-context-messages
+                         reopened session-id checkpoint covered-boundary))
+                       (fork (e-session-fork reopened session-id))
+                       (fork-projection
+                        (e-session-context-lifetime-projection
+                         reopened (plist-get fork :id)))
+                       (fork-checkpoint
+                        (e-context-lifetime-generation-checkpoint
+                         (plist-get fork-projection :generation))))
+                  (should (equal
+                           (mapcar (lambda (message)
+                                     (plist-get message :content))
+                                   reopened-context)
+                           context-contents))
+                  (should (equal
+                           (mapcar (lambda (message)
+                                     (plist-get message :content))
+                                   fork-checkpoint)
+                           (append checkpoint-contents
+                                   '("boundary" "same durable value"))))))))))
+      (delete-directory directory t)))
+
 (ert-deftest e-compaction-test-portable-boundary-retains-checkpoint-and-fresh-generation ()
   "A portable boundary starts a minimal generation and derives a new tail."
   (let* ((store (e-session-store-create))

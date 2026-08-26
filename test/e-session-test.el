@@ -110,6 +110,111 @@
              (plist-member (car before-promotions) :body))))
       (delete-directory directory t)))
 
+(ert-deftest e-session-test-context-v3-append-reopen-projection-and-fork ()
+  "Prepared v3 curation records persist beside v2 and fork literally."
+  (let* ((directory (make-temp-file "e-session-context-v3-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-v3")
+         (v2-record
+          '(:record-version 2
+            :type context-promotion
+            :id "promotion-v2"
+            :frame-id "frame-v2"
+            :generation-id "generation-v3"
+            :consumer-request-id "consumer-v2"
+            :response-entry-id "response-v2"
+            :facts ((:id "fact-v2" :value "legacy value"))
+            :source-observation-ids ("observation-v2")
+            :source-refs ("source-v2")
+            :source-fingerprints ("fingerprint-v2")))
+         (v3-record
+          '(:record-version 3
+            :type context-promotion
+            :id "curation-v3"
+            :frame-id "frame-v3"
+            :generation-id "generation-v3"
+            :consumer-request-id "consumer-v3"
+            :response-entry-id "response-v3"
+            :items
+            ((:kind exact :value (:count 2 :decision "retain")
+              :source-observation-ids ("observation-v3-exact")
+              :source-refs ("source-v3-exact")
+              :source-fingerprints ("fingerprint-v3-exact"))
+             (:kind summary :text "summarized replacement"
+              :source-observation-ids ("observation-v3-a" "observation-v3-b")
+              :source-refs ("source-v3-a" "source-v3-b")
+              :source-fingerprints ("fingerprint-v3-a" "fingerprint-v3-b")))))
+         generation-entry)
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (setq generation-entry
+                (e-session-append-context-generation
+                 store session-id
+                 (e-context-lifetime-generation-create
+                  :id "generation-v3"
+                  :checkpoint '((:role system :content "C0"))
+                  :covered-session-boundary
+                  (plist-get (e-session-get store session-id)
+                             :root-event-id))))
+          (e-session-append-context-promotion store session-id v2-record)
+          (e-session-append-context-curation store session-id v3-record)
+          ;; The old compatibility writer is deliberately v2-only.
+          (should-error
+           (e-session-append-context-promotion store session-id v3-record)
+           :type 'e-session-error)
+          (e-session-flush-write-queue store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (records (mapcar #'e-session--context-record
+                                  (e-session-context-promotions
+                                   reopened session-id)))
+                 (projection (e-session-context-lifetime-projection
+                              reopened session-id))
+                 (promotion-messages
+                  (plist-get projection :promotion-messages))
+                 (fork (e-session-fork reopened session-id))
+                 (fork-id (plist-get fork :id))
+                 (fork-generation
+                  (plist-get
+                   (e-session-context-lifetime-projection reopened fork-id)
+                   :generation))
+                 (selected-head
+                  (plist-get
+                   (car (e-session-context-promotions reopened session-id))
+                   :id))
+                 (selected-fork
+                  (e-session-fork reopened session-id :at selected-head))
+                 (selected-generation
+                  (plist-get
+                   (e-session-context-lifetime-projection
+                    reopened (plist-get selected-fork :id))
+                   :generation)))
+            (should (equal records (list v2-record v3-record)))
+            (should (= (length (plist-get projection :promotions)) 1))
+            (should (= (length (plist-get projection :curations)) 1))
+            (should (equal
+                     (mapcar (lambda (message)
+                               (list (plist-get message :role)
+                                     (plist-get message :content)))
+                             promotion-messages)
+                     '((system "Promoted fact fact-v2: legacy value")
+                       (system (:count 2 :decision "retain"))
+                       (system "summarized replacement"))))
+            (should (equal
+                     (e-context-lifetime-generation-checkpoint fork-generation)
+                     '((:role system :content "C0")
+                       (:role system
+                        :content "Promoted fact fact-v2: legacy value")
+                       (:role system :content (:count 2 :decision "retain"))
+                       (:role system :content "summarized replacement"))))
+            (should (equal
+                     (e-context-lifetime-generation-checkpoint
+                      selected-generation)
+                     '((:role system :content "C0")
+                       (:role system
+                        :content "Promoted fact fact-v2: legacy value"))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-context-codecs-own-malformed-append-and-replay ()
   "Both context record kinds reject malformed versions at the session boundary."
   (cl-labels

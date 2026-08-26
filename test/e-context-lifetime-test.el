@@ -828,6 +828,86 @@
     (should (= (plist-get first :max-sources) 16))
     (should (= (plist-get first :max-record-bytes) 8192))))
 
+(ert-deftest e-context-lifetime-test-curation-v3-codec-projects-literal-messages ()
+  "The v3 codec preserves ordered exact/summary content and provenance."
+  (let* ((record
+          '(:record-version 3
+            :type context-promotion
+            :id "curation-record-1"
+            :frame-id "frame-1"
+            :generation-id "generation-1"
+            :consumer-request-id "consumer-1"
+            :response-entry-id "response-1"
+            :items
+            ((:kind exact
+              :value (:enabled :json-false :topic "kept")
+              :source-observation-ids ("observation-1")
+              :source-refs ("source-1")
+              :source-fingerprints ("fingerprint-1"))
+             (:kind summary
+              :text "submitted summary"
+              :source-observation-ids ("observation-2" "observation-3")
+              :source-refs ("source-2" "source-3")
+              :source-fingerprints ("fingerprint-2" "fingerprint-3")))))
+         (decoded (e-context-lifetime-curation-from-record record))
+         (messages (e-context-lifetime-curation-messages decoded)))
+    (should (equal decoded record))
+    (should (equal messages
+                   '((:role system :content (:enabled :json-false :topic "kept"))
+                     (:role system :content "submitted summary"))))
+    (should-not (string-match-p
+                 "Promoted fact\|fingerprint\|observation\|frame-1"
+                 (prin1-to-string messages)))))
+
+(ert-deftest e-context-lifetime-test-curation-v3-codec-detaches-and-rejects-drift ()
+  "The v3 record boundary detaches content and rejects schema drift."
+  (let* ((value (copy-sequence "detached exact"))
+         (record
+          (list :record-version 3
+                :type 'context-promotion
+                :id "curation-record-detached"
+                :frame-id "frame-detached"
+                :generation-id "generation-detached"
+                :consumer-request-id "consumer-detached"
+                :response-entry-id "response-detached"
+                :items
+                (list (list :kind 'exact :value value
+                            :source-observation-ids '("observation-detached")
+                            :source-refs '("source-detached")
+                            :source-fingerprints '("fingerprint-detached")))))
+         (decoded (e-context-lifetime-curation-from-record record)))
+    (aset value 0 ?X)
+    (should (equal (plist-get (car (plist-get decoded :items)) :value)
+                   "detached exact"))
+    (dolist (bad
+             (list
+              (let ((copy (copy-tree record)))
+                (plist-put copy :extra t))
+              (let ((copy (copy-tree record)))
+                (plist-put copy :items
+                           (list (list :kind 'exact :value "value"
+                                       :source-observation-ids nil
+                                       :source-refs nil
+                                       :source-fingerprints nil)))
+                copy)
+              (let ((copy (copy-tree record)))
+                (plist-put copy :items
+                           (list (list :kind 'summary :text "summary"
+                                       :source-observation-ids '("one")
+                                       :source-refs nil
+                                       :source-fingerprints '("fingerprint"))))
+                copy)
+              (let ((copy (copy-tree record)))
+                (plist-put copy :items
+                           (list (list :kind 'summary :text "summary"
+                                       :source-observation-ids '("one")
+                                       :source-refs '("source")
+                                       :source-fingerprints '("one" "two"))))
+                copy)))
+      (should-error
+       (e-context-lifetime-curation-from-record bad)
+       :type 'e-context-lifetime-invalid-record))))
+
 (provide 'e-context-lifetime-test)
 
 ;;; e-context-lifetime-test.el ends here

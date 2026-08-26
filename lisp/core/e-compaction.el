@@ -428,7 +428,8 @@ cache counters, runtime frames, and diagnostics."
          (generation (plist-get projection :generation))
          (promotions
           (mapcar #'e-context-lifetime-promotion-record
-                  (plist-get projection :promotions))))
+                  (plist-get projection :promotions)))
+         (curations (copy-tree (plist-get projection :curations))))
     (list :generation-id
           (and generation
                (e-context-lifetime-generation-id generation))
@@ -446,8 +447,14 @@ cache counters, runtime frames, and diagnostics."
                      (e-context-lifetime-portable-message message)))
                  summarized-entries))
           :promotions (copy-tree promotions)
+          :curations curations
+          :promotion-messages
+          (mapcar #'e-context-lifetime-portable-message
+                  (plist-get projection :promotion-messages))
+          :promotion-message-entries
+          (copy-tree (plist-get projection :promotion-message-entries))
           :promotion-frontier
-          (mapcar (lambda (record) (plist-get record :id)) promotions)
+          (copy-sequence (plist-get projection :promotion-frontier))
           :covered-session-boundary covered-session-boundary)))
 
 (defun e-compaction-portable-summary-messages (portable-input)
@@ -455,26 +462,33 @@ cache counters, runtime frames, and diagnostics."
 
 This helper is intentionally a pure presentation of the portable input.  A
 caller may pass it to the existing summary backend, but the backend sees only
-the checkpoint, eligible durable tail, and promotion facts; it cannot receive
-runtime observation bodies or provider continuation artifacts through this
-boundary."
+the checkpoint, eligible durable tail, legacy v2 promotion data, and literal
+v3 portable messages; it cannot receive runtime observation bodies or provider
+continuation artifacts through this boundary."
   (let ((checkpoint (plist-get portable-input :checkpoint))
         (durable-tail (plist-get portable-input :durable-tail))
-        (promotions (plist-get portable-input :promotions)))
-    (list
-     (list :role 'system
-           :content
-           "Compact only the portable semantic context. Preserve intent, decisions, selected facts, and unresolved work. Do not invent facts.")
-     (list :role 'user
-           :content
-           (string-join
-            (list (format "Portable checkpoint:\n%s"
-                          (e-compaction--stringify checkpoint))
-                  (format "Durable tail:\n%s"
-                          (e-compaction--stringify durable-tail))
-                  (format "Promoted facts and provenance:\n%s"
-                          (e-compaction--stringify promotions)))
-            "\n\n")))))
+        (promotions (plist-get portable-input :promotions))
+        (curation-messages
+         (e-compaction--portable-curation-messages portable-input)))
+    (append
+     (list
+      (list :role 'system
+            :content
+            "Compact only the portable semantic context. Preserve intent, decisions, selected facts, and unresolved work. Do not invent facts.")
+      (list :role 'user
+            :content
+            (string-join
+             (list (format "Portable checkpoint:\n%s"
+                           (e-compaction--stringify checkpoint))
+                   (format "Durable tail:\n%s"
+                           (e-compaction--stringify durable-tail))
+                   (format "Promoted facts and provenance:\n%s"
+                           (e-compaction--stringify promotions)))
+             "\n\n")))
+     ;; V3 curation values are already canonical provider-neutral messages.
+     ;; Keep them as real messages so compaction sees the exact role/content
+     ;; projection instead of a second stringification or presentation layer.
+     (copy-tree curation-messages))))
 
 (defun e-compaction-prepared-summary-messages (preparation)
   "Return the summary request for PREPARATION's selected mode."
@@ -482,18 +496,77 @@ boundary."
       (e-compaction-summary-messages preparation)))
 
 (defun e-compaction--portable-fact-messages (portable-input)
-  "Return selected promotion facts from PORTABLE-INPUT as messages."
+  "Return selected v2 promotion facts from PORTABLE-INPUT as messages."
   (e-context-lifetime-promotion-fact-messages
    (mapcar #'e-context-lifetime-promotion-from-record
            (plist-get portable-input :promotions))))
 
+(defun e-compaction--portable-promotion-message-entries (portable-input)
+  "Return typed selected v2/v3 messages from PORTABLE-INPUT.
+
+The entry kind is internal compaction bookkeeping.  It preserves the v3
+contract that every curation item remains a model message, while allowing the
+legacy v2 fact projection to retain its historical value-based deduplication.
+Older callers that only provide the untyped message list are treated as v2
+compatibility input."
+  (cond
+   ((plist-member portable-input :promotion-message-entries)
+    (copy-tree (plist-get portable-input :promotion-message-entries)))
+   ;; Preparation values made before the typed internal field existed carry
+   ;; only their flattened messages.  Keep those on the legacy deduplicating
+   ;; path rather than silently changing their compatibility semantics.
+   ((plist-member portable-input :promotion-messages)
+    (mapcar (lambda (message) (list :kind 'v2 :message message))
+            (copy-tree (plist-get portable-input :promotion-messages))))
+   (t
+    (append
+     (mapcar (lambda (message) (list :kind 'v2 :message message))
+             (e-compaction--portable-fact-messages portable-input))
+     (mapcar (lambda (message) (list :kind 'v3 :message message))
+             (mapcan #'e-context-lifetime-curation-messages
+                     (mapcar #'e-context-lifetime-curation-from-record
+                             (plist-get portable-input :curations))))))))
+
+(defun e-compaction--portable-curation-messages (portable-input)
+  "Return v3 literal messages from PORTABLE-INPUT without audit metadata."
+  (if (plist-member portable-input :promotion-message-entries)
+      (mapcar (lambda (entry)
+                (e-context-lifetime-portable-message
+                 (plist-get entry :message)))
+              (seq-filter
+               (lambda (entry)
+                 (eq (plist-get entry :kind) 'v3))
+               (plist-get portable-input :promotion-message-entries)))
+    (mapcan #'e-context-lifetime-curation-messages
+            (mapcar #'e-context-lifetime-curation-from-record
+                    (plist-get portable-input :curations)))))
+
+(defun e-compaction--portable-promotion-messages (portable-input)
+  "Return all selected v2/v3 promotion messages from PORTABLE-INPUT."
+  (mapcar (lambda (entry) (plist-get entry :message))
+          (e-compaction--portable-promotion-message-entries portable-input)))
+
+(defun e-compaction--append-portable-promotion-entries
+    (checkpoint promotion-message-entries)
+  "Return CHECKPOINT with typed PROMOTION-MESSAGE-ENTRIES absorbed.
+
+Version-3 entries are exact append operations; version-2 entries retain their
+historical value-based deduplication."
+  (let ((messages (copy-tree checkpoint)))
+    (dolist (entry promotion-message-entries)
+      (let ((message (e-context-lifetime-portable-message
+                      (plist-get entry :message))))
+        (if (eq (plist-get entry :kind) 'v3)
+            (setq messages (append messages (list message)))
+          (unless (member message messages)
+            (setq messages (append messages (list message)))))))
+    messages))
+
 (defun e-compaction--append-new-portable-facts (checkpoint portable-input)
   "Return CHECKPOINT with pre-boundary facts from PORTABLE-INPUT absorbed."
-  (let ((messages (copy-tree checkpoint)))
-    (dolist (message (e-compaction--portable-fact-messages portable-input))
-      (unless (member message messages)
-        (setq messages (append messages (list message)))))
-    messages))
+  (e-compaction--append-portable-promotion-entries
+   checkpoint
+   (e-compaction--portable-promotion-message-entries portable-input)))
 
 (defun e-compaction-portable-checkpoint-from-summary
     (preparation summary)
@@ -539,15 +612,20 @@ for optional opaque backend compaction."
       (when (equal (plist-get entry :id) covered-session-boundary)
         (setq after-boundary t)))
     (let* ((projection (e-session-context-lifetime-projection store session-id))
-           (fact-messages
-            (e-context-lifetime-promotion-fact-messages
-             (plist-get projection :promotions)))
+           (promotion-message-entries
+            (or (plist-get projection :promotion-message-entries)
+                (mapcar (lambda (message)
+                          (list :kind 'v2 :message message))
+                        (plist-get projection :promotion-messages))))
            (messages (append checkpoint (nreverse tail))))
-      (dolist (fact fact-messages)
-        (unless (member fact messages)
-          (setq messages (append messages
-                                 (list (e-context-lifetime-portable-message
-                                        fact))))))
+      (dolist (entry promotion-message-entries)
+        (let ((promotion-message
+               (e-context-lifetime-portable-message
+                (plist-get entry :message))))
+          (if (eq (plist-get entry :kind) 'v3)
+              (setq messages (append messages (list promotion-message)))
+            (unless (member promotion-message messages)
+              (setq messages (append messages (list promotion-message)))))))
       messages)))
 
 (defun e-compaction--portable-boundary-on-path-p
@@ -562,11 +640,14 @@ for optional opaque backend compaction."
   "Validate and return the captured portable input in PREPARATION."
   (let ((input (plist-get preparation :portable-input)))
     (unless (and (e-context-lifetime--keyword-plist-p input)
-                 (= (length input) 12)
+                 (= (length input) 18)
                  (plist-member input :generation-id)
                  (plist-member input :checkpoint)
                  (plist-member input :durable-tail)
                  (plist-member input :promotions)
+                 (plist-member input :curations)
+                 (plist-member input :promotion-messages)
+                 (plist-member input :promotion-message-entries)
                  (plist-member input :promotion-frontier)
                  (plist-member input :covered-session-boundary))
       (signal 'e-compaction-error
@@ -575,10 +656,9 @@ for optional opaque backend compaction."
 
 (defun e-compaction--portable-promotion-frontier (store session-id)
   "Return the active promotion IDs on SESSION-ID's current path."
-  (mapcar #'e-context-lifetime-promotion-id
-          (plist-get (e-session-context-lifetime-projection
-                      store session-id)
-                     :promotions)))
+  (copy-sequence
+   (plist-get (e-session-context-lifetime-projection store session-id)
+              :promotion-frontier)))
 
 (defun e-compaction-preflight-portable-boundary
     (store session-id preparation checkpoint)
@@ -620,8 +700,19 @@ domain validation or observe a different preparation."
     (list :portable-input (copy-tree input)
           :checkpoint
           (condition-case error
+              ;; `e-compaction-portable-checkpoint-from-summary' owns
+              ;; absorption of the captured v3 entries.  Preflight receives
+              ;; that complete checkpoint and must not append v3 items a
+              ;; second time: unlike legacy v2 facts, equal v3 messages are
+              ;; intentionally distinct items.  Keep the old v2 behavior for
+              ;; callers that provide a checkpoint without its legacy facts.
               (e-context-lifetime-portable-checkpoint
-               (e-compaction--append-new-portable-facts checkpoint input)
+               (e-compaction--append-portable-promotion-entries
+                checkpoint
+                (seq-filter
+                 (lambda (entry)
+                   (eq (plist-get entry :kind) 'v2))
+                 (e-compaction--portable-promotion-message-entries input)))
                t)
             (e-context-lifetime-invalid-record
              (signal 'e-compaction-error
