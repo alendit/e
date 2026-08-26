@@ -140,6 +140,32 @@ E_E2E_CONFIG=e2e/e-e2e-config-anthropic.el \
 eldev test -f e2e/e-live-e2e-test.el
 #+end_src
 
+The two fresh Feature 88 cache-compatibility selectors are:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+E_E2E_CACHE_SCENARIO_TIMEOUT_SECONDS=120 \
+eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-chatgpt-canonical-warm-prefix \
+  e-live-e2e-test-chatgpt-canonical-tool-heavy
+#+end_src
+
+The =chatgpt-canonical-warm-prefix= selector sends a canonical pair on a
+retained WebSocket and repeats it after deliberately replacing that socket.
+The =chatgpt-canonical-tool-heavy= selector records a real tool call, its
+matching immediate continuation, and a real reserved =context-curate= effect
+before checking the following canonical ordinary request.  Each selector
+prints one bounded JSON line beginning with =E88 external evidence:=.  The
+record includes provider/profile and endpoint identity, transport and store
+mode, model and layout/cache-key revisions, request-shape digests, socket
+identity, usage, timeout, elapsed time, repository revision, and separate
+semantic/cache classifications.  Missing Codex authentication produces a
+bounded =configuration-unavailable= record before the selector skips.  Prompt contents, authentication headers,
+response bodies, and provider-internal values are not printed.  A missing
+cached-token field is reported as =unavailable=; it is not inferred to be a
+cache hit.  The timeout is a private runner bound and is not a product limit.
+
 Useful environment variables:
 
 - =E_E2E_CONFIG=: readable Elisp file that configures and registers the
@@ -160,20 +186,13 @@ before prompting that same configured default harness.  This matches the
 observed Grimoire daily request shape closely enough to cover the large retained
 session path while keeping the fixture independent of personal Grimoire data.
 
-The explicit-cache E2E runs only when the selected OpenAI Responses profile
-sets =:prompt-cache-breakpoint-mode explicit=.  ChatGPT Codex currently rejects
-the OpenAI API's explicit cache fields, so its sample deliberately leaves the
-capability disabled and that one provider-specific test skips.  Its separate
-=store=false= E2E verifies segmented stable/dynamic developer input,
-connection-local continuation, and whichever new-connection fallback the live
-provider happens to expose.  A separate credentialed live regression obtains a
-real =summary: null= encrypted reasoning item and proves that the provider
-accepts it as =summary: []= on full replay.  For HTTP profiles this is the normal
-stateless path; for WebSocket profiles the test deliberately closes the
-connection first.  Deterministic provider-continuation integration coverage
-also forces the conversion.  Both first-party OpenAI profiles request encrypted
-reasoning output and retain it with its following assistant message or tool
-call so a stateless full replay preserves the provider's original item order.
+Both canonical cache selectors require the exact built-in ChatGPT Codex
+profile.  They use its actual usage fields and report explicit zero, missing
+usage, and positive warm usage separately.  These are compatibility
+measurements, not deterministic semantic gates: external capability remains
+unconfirmed until fresh records show the required warm results with matching
+identity.  The repository-side tests continue to cover provider-continuation
+and encrypted-reasoning fallbacks without credentials.
 
 * Development bytecode smoke test
 

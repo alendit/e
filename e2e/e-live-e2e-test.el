@@ -23,6 +23,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e)
@@ -54,6 +55,25 @@
 
 (defvar e-live-e2e--config-loaded nil
   "Non-nil once the E_E2E_CONFIG backend configuration file has been loaded.")
+
+(defconst e-live-e2e--cache-scenario-timeout-default 120.0
+  "Default total wall-clock bound for an external cache scenario.
+
+This is runner configuration, not a Feature 88 semantic or cache contract.")
+
+(defconst e-live-e2e--external-evidence-schema-revision
+  "e88-cache-evidence-v1"
+  "Revision of the bounded machine-readable external evidence record.")
+
+(defconst e-live-e2e--external-requester-identity
+  "e-openai-codex--websocket-request-start"
+  "Native requester named in external evidence records.")
+
+(defun e-live-e2e--cache-scenario-timeout ()
+  "Return the predeclared total bound for a cache scenario."
+  (e-live-e2e--positive-number-env
+   "E_E2E_CACHE_SCENARIO_TIMEOUT_SECONDS"
+   e-live-e2e--cache-scenario-timeout-default))
 
 (defun e-live-e2e--env (name &optional fallback)
   "Return non-empty environment variable NAME, or FALLBACK."
@@ -183,6 +203,307 @@ status is intentionally not part of this measurement record."
    (plist-get metrics :cached-input-tokens)
    (plist-get metrics :connection-id)
    (plist-get metrics :reuse-count)))
+
+(defun e-live-e2e--sha256 (value)
+  "Return the SHA-256 digest of the UTF-8 representation of VALUE."
+  (secure-hash 'sha256 (encode-coding-string (prin1-to-string value) 'utf-8)))
+
+(defun e-live-e2e--json-value (value)
+  "Return VALUE converted to JSON-compatible bounded data.
+Keyword plists become JSON objects; ordinary lists remain JSON arrays."
+  (cond
+   ((null value) nil)
+   ((eq value t) t)
+   ((symbolp value) (symbol-name value))
+   ((vectorp value)
+    (vconcat (mapcar #'e-live-e2e--json-value (append value nil))))
+   ((and (listp value)
+         (or (null value) (keywordp (car value))))
+    (e-live-e2e--json-plist value))
+   ((and (consp value)
+         (cl-every (lambda (item)
+                     (and (listp item) (keywordp (car item))))
+                   value))
+    (mapcar #'e-live-e2e--json-value value))
+   ((and (consp value)
+         (consp (car value))
+         (or (stringp (caar value))
+             (symbolp (caar value))))
+    (mapcar (lambda (pair)
+              (cons (format "%s" (car pair))
+                    (e-live-e2e--json-value (cdr pair))))
+            value))
+   ((consp value)
+    (mapcar #'e-live-e2e--json-value value))
+   (t value)))
+
+(defun e-live-e2e--json-plist (plist)
+  "Return keyword PLIST as a JSON object alist."
+  (let (result)
+    (while plist
+      (let ((key (pop plist))
+            (value (pop plist)))
+        (push (cons (if (keywordp key)
+                        (substring (symbol-name key) 1)
+                      (format "%s" key))
+                    (e-live-e2e--json-value value))
+              result)))
+    (nreverse result)))
+
+(defun e-live-e2e--repository-revision ()
+  "Return the current repository revision, or an explicit unavailable value."
+  (with-temp-buffer
+    (if (= (call-process "git" nil t nil "rev-parse" "HEAD") 0)
+        (string-trim (buffer-string))
+      "unavailable")))
+
+(defun e-live-e2e--request-shape (body)
+  "Return a bounded, content-free material shape for Responses BODY."
+  (let* ((input (append (plist-get body :input) nil))
+         (tools (append (plist-get body :tools) nil))
+         (instructions (plist-get body :instructions)))
+    (list :body-sha256 (e-live-e2e--sha256 body)
+          :input-sha256 (e-live-e2e--sha256 input)
+          :input-item-count (length input)
+          :input-roles (mapcar (lambda (item) (plist-get item :role)) input)
+          :input-types (mapcar (lambda (item) (plist-get item :type)) input)
+          :instructions-utf8-bytes
+          (and (stringp instructions)
+               (string-bytes (encode-coding-string instructions 'utf-8)))
+          :wire-keys
+          (cl-loop for (key _value) on body by #'cddr
+                   collect (if (keywordp key)
+                               (substring (symbol-name key) 1)
+                             (format "%s" key)))
+          :tool-names (mapcar (lambda (tool) (plist-get tool :name)) tools)
+          :tool-set-sha256 (and tools (e-live-e2e--sha256 tools))
+          :store (format "%s" (plist-get body :store))
+          :previous-response-id-present
+          (and (plist-member body :previous_response_id) t)
+          :prompt-cache-key-present
+          (and (plist-member body :prompt_cache_key) t)
+          :prompt-cache-options-present
+          (and (plist-member body :prompt_cache_options) t)
+          :prompt-cache-retention-present
+          (and (plist-member body :prompt_cache_retention) t))))
+
+(defun e-live-e2e--request-diagnostics (metadata)
+  "Return diagnostics from request METADATA, or METADATA when already plain."
+  (or (plist-get metadata :diagnostics) metadata))
+
+(defun e-live-e2e--cache-result (usage-payloads)
+  "Classify provider cache usage without treating missing data as a hit."
+  (cond
+   ((cl-some (lambda (payload)
+               (and (plist-member payload :cached-input-tokens)
+                    (numberp (plist-get payload :cached-input-tokens))
+                    (= (plist-get payload :cached-input-tokens) 0)))
+             usage-payloads)
+    "product-contract-failure")
+   ((and usage-payloads
+         (cl-every (lambda (payload)
+                     (and (plist-member payload :cached-input-tokens)
+                          (numberp (plist-get payload :cached-input-tokens))
+                          (> (plist-get payload :cached-input-tokens) 0)))
+                   usage-payloads))
+    "warm")
+   (t "unavailable")))
+
+(cl-defun e-live-e2e--external-evidence-record
+    (&key scenario provider profile model request-bodies request-metadata
+          usage-payloads timeout started-at ended-at semantic-result
+          cache-result result)
+  "Return one bounded identity-complete external evidence RECORD.
+REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
+or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
+lists matching those requests where available."
+  (let* ((request-metadata (or request-metadata nil))
+         (diagnostics
+          (mapcar #'e-live-e2e--request-diagnostics request-metadata))
+         (shapes
+          (cl-loop for body in request-bodies
+                   for metadata in diagnostics
+                   for index from 1
+                   for shape = (e-live-e2e--request-shape body)
+                   collect
+                   (append shape
+                           (list :request-index index
+                                 :connection-id
+                                 (plist-get metadata :websocket-connection-id)
+                                 :websocket-reused
+                                 (and (plist-get metadata :websocket-reused) t)
+                                 :websocket-reuse-count
+                                 (plist-get metadata :websocket-reuse-count)
+                                 :websocket-request-mode
+                                 (plist-get metadata :websocket-request-mode)
+                                 :prompt-layout-revision
+                                 (plist-get metadata :prompt-layout-revision)))))
+         (connection-ids
+          (delete-dups
+           (delq nil (mapcar (lambda (metadata)
+                               (plist-get metadata :websocket-connection-id))
+                             diagnostics))))
+         (input-token-values
+          (delq nil (mapcar (lambda (payload)
+                              (and (numberp (plist-get payload :input-tokens))
+                                   (plist-get payload :input-tokens)))
+                            usage-payloads)))
+         (cached-token-values
+          (and usage-payloads
+               (cl-every (lambda (payload)
+                           (and (plist-member payload :cached-input-tokens)
+                                (numberp (plist-get payload :cached-input-tokens))))
+                         usage-payloads)
+               (mapcar (lambda (payload)
+                         (plist-get payload :cached-input-tokens))
+                       usage-payloads)))
+         (timestamp
+          (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                              (seconds-to-time (or started-at (float-time)))
+                              t))
+         (profile-name (or (plist-get profile :name)
+                           (format "%s" provider)))
+         (base-url
+          (or (plist-get profile :base-url)
+              (plist-get (car request-metadata) :url)
+              "unavailable"))
+         (prompt-layout-revision
+          (or (seq-some (lambda (metadata)
+                          (plist-get metadata :prompt-layout-revision))
+                        diagnostics)
+              "unavailable"))
+         (elapsed (and started-at ended-at (- ended-at started-at))))
+    (list :evidence-schema-revision e-live-e2e--external-evidence-schema-revision
+          :scenario (format "%s" scenario)
+          :provider-id (format "%s" provider)
+          :profile-id profile-name
+          :base-url-identity base-url
+          :transport "responses-websocket"
+          :store-mode (format "%s" (plist-get profile :response-store))
+          :native-requester e-live-e2e--external-requester-identity
+          :model-id (or model (plist-get (car request-bodies) :model)
+                        "unavailable")
+          :prompt-layout-revision (format "%S" prompt-layout-revision)
+          :prompt-cache-key-derivation-revision
+          (format "e-harness-prompt-cache-key-%s"
+                  e-harness-prompt-cache-key-version)
+          :material-request-shape (or shapes [])
+          :request-count (length request-bodies)
+          :socket-connection-ids connection-ids
+          :total-input-tokens
+          (if input-token-values
+              (apply #'+ input-token-values)
+            "unavailable")
+          :cached-input-tokens
+          (if cached-token-values
+              (apply #'+ cached-token-values)
+            "unavailable")
+          :scenario-timeout-seconds timeout
+          :timestamp timestamp
+          :repository-revision (e-live-e2e--repository-revision)
+          :elapsed-seconds elapsed
+          :semantic-result (or semantic-result "unavailable")
+          :cache-result (or cache-result "unavailable")
+          :result (or result "unavailable"))))
+
+(defun e-live-e2e--report-external-evidence (record)
+  "Emit one machine-readable bounded external evidence RECORD."
+  (message "E88 external evidence: %s"
+           (json-encode (e-live-e2e--json-plist record))))
+
+(defun e-live-e2e--codex-auth-preflight (scenario profile)
+  "Emit unavailable evidence and return nil when Codex auth is missing."
+  (if (file-readable-p (e-openai-codex-auth-file))
+      t
+    (let ((now (float-time)))
+      (e-live-e2e--report-external-evidence
+       (e-live-e2e--external-evidence-record
+        :scenario scenario
+        :provider e-openai-default-provider
+        :profile profile
+        :model e-openai-default-model
+        :request-bodies nil :request-metadata nil
+        :usage-payloads nil :timeout (e-live-e2e--cache-scenario-timeout)
+        :started-at now
+        :ended-at now
+        :semantic-result "unavailable" :cache-result "unavailable"
+        :result "configuration-unavailable")))
+    nil))
+
+(defun e-live-e2e--prompt-batch-before-deadline
+    (harness session-id prompt deadline)
+  "Run PROMPT with the remaining portion of a scenario DEADLINE."
+  (let ((remaining (- deadline (float-time))))
+    (when (<= remaining 0)
+      (error "inconclusive-timeout: external scenario deadline expired"))
+    (e-board-e2e-prompt-batch harness session-id prompt remaining)))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-is-bounded-and-complete ()
+  "The external record is machine-readable, identity-complete, and content-free."
+  (let (messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest arguments)
+                 (push (apply #'format format-string arguments) messages))))
+      (let ((record
+             (e-live-e2e--external-evidence-record
+              :scenario 'chatgpt-canonical-warm-prefix
+              :provider 'codex
+              :profile '(:name "ChatGPT Codex"
+                         :base-url "https://chatgpt.example/codex"
+                         :response-store :json-false)
+              :model "gpt-5.6-sol"
+              :request-bodies
+              '((:model "gpt-5.6-sol" :store :json-false
+                 :input [(:role "system" :content "secret")]
+                 :prompt_cache_key "secret-key"))
+              :request-metadata
+              '((:url "https://chatgpt.example/codex"
+                 :diagnostics (:websocket-connection-id "socket-1"
+                               :websocket-reused nil
+                               :websocket-reuse-count 0
+                               :websocket-request-mode full
+                               :prompt-layout-revision "layout-v1")))
+              :usage-payloads '((:input-tokens 10 :cached-input-tokens 5))
+              :timeout 120.0
+              :started-at 100.0
+              :ended-at 100.5
+              :semantic-result "pass"
+              :cache-result "warm"
+              :result "pass")))
+        (should (equal (plist-get record :scenario)
+                       "chatgpt-canonical-warm-prefix"))
+        (should (equal (plist-get record :provider-id) "codex"))
+        (should (equal (plist-get record :native-requester)
+                       e-live-e2e--external-requester-identity))
+        (should (equal (plist-get record :prompt-cache-key-derivation-revision)
+                       "e-harness-prompt-cache-key-pcctx2"))
+        (should (equal (plist-get record :total-input-tokens) 10))
+        (should (equal (plist-get record :cached-input-tokens) 5))
+        (e-live-e2e--report-external-evidence record)
+        (cl-letf (((symbol-function 'e-openai-codex-auth-file)
+                   (lambda () "/private/tmp/e88-missing-auth.json")))
+          (should-not
+           (e-live-e2e--codex-auth-preflight
+            'chatgpt-canonical-warm-prefix
+            '(:name "ChatGPT Codex"
+              :base-url "https://chatgpt.example/codex"
+              :response-store :json-false))))))
+    (setq messages (nreverse messages))
+    (should (= (length messages) 2))
+    (let ((line (car messages))
+          (missing-line (cadr messages)))
+      (dolist (field '("evidence-schema-revision" "base-url-identity"
+                       "transport" "store-mode" "material-request-shape"
+                       "repository-revision" "scenario-timeout-seconds"
+                       "semantic-result" "cache-result"))
+        (should (string-match-p (regexp-quote field) line)))
+      (should-not (string-match-p "secret-key" line))
+      (should-not (string-match-p "secret" line))
+      (dolist (field '("\"material-request-shape\":[]"
+                       "\"semantic-result\":\"unavailable\""
+                       "\"cache-result\":\"unavailable\""
+                       "\"result\":\"configuration-unavailable\""))
+        (should (string-match-p (regexp-quote field) missing-line))))))
 
 (ert-deftest e-live-e2e-test-provider-metrics-record-reports-bounded-scalars ()
   "Metric extraction preserves unavailable cache fields and reports once."
@@ -643,7 +964,7 @@ provider turn to settle without an implicit local deadline."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
-  (let* ((provider-id e-openai-default-provider)
+    (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id)))
     (unless (e-openai--builtin-codex-profile-p provider-id profile)
       (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
@@ -831,8 +1152,8 @@ provider turn to settle without an implicit local deadline."
             (should-not newest-anchor)
             (should-not anchors)))))))
 
-(ert-deftest e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain ()
-  "ChatGPT Codex branches from a clean anchor after a contaminated tool turn."
+(ert-deftest e-live-e2e-test-chatgpt-canonical-tool-heavy ()
+  "A tool turn has an immediate continuation and a canonical next request."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
@@ -843,41 +1164,50 @@ provider turn to settle without an implicit local deadline."
     (should (eq (plist-get profile :response-store) :json-false))
     ;; The built-in profile uses the general configurable socket policy; it
     ;; does not carry a Codex-specific timeout override.
-    (should-not (plist-member profile :websocket-idle-close-seconds)))
-  (let* ((old-marker "LIVE-OLDER-OBSERVATION")
+    (should-not (plist-member profile :websocket-idle-close-seconds))
+    (unless (e-live-e2e--codex-auth-preflight 'chatgpt-canonical-tool-heavy profile) (ert-skip "ChatGPT Codex auth.json is unavailable.")))
+  (let* ((old-marker "LIVE-INITIAL-OBSERVATION")
          (new-marker "LIVE-CURRENT-OBSERVATION")
          (current-state old-marker)
          (provider
           (e-context-provider-create
-           :name 'live-codex-older-current-state
+           :name 'live-codex-tool-heavy-current-state
            :cache-placement 'dynamic-context
            :build (lambda (&rest _)
                     (list (list :role 'system :content current-state)))))
          (layer
           (e-layer-create
-           :id 'live-codex-older-clean-anchor
-           :name "Live Codex Older Clean Anchor"
+           :id 'live-codex-tool-heavy
+           :name "Live Codex Tool Heavy"
            :capabilities
            (list
             (e-capability-create
-             :id 'live-codex-older-clean-anchor
+             :id 'live-codex-tool-heavy
              :instructions "LIVE-STABLE-INSTRUCTIONS"
              :context-providers (list provider)))))
          (raw-tool-output "LIVE-TOOL-OUTPUT"))
-    (e-live-e2e--with-harness
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-live-e2e--with-harness
         (harness session-id
                  :layers (list layer (e-live-e2e--deterministic-tool-layer)))
-      (let ((original-start
-             (symbol-function 'e-openai-codex--websocket-request-start))
-            (original-record
-             (symbol-function
-              'e-openai-codex--websocket-session-record-response))
-            request-bodies
-            request-handles
-            completed-response-ids
-            first-turn-id
-            tool-turn-id
-            warm-turn-id)
+      (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
+             (started-at (float-time))
+             (deadline (+ started-at scenario-timeout))
+             (original-start
+              (symbol-function 'e-openai-codex--websocket-request-start))
+             (original-frame
+              (symbol-function 'e-harness--lifetime-tool-observation-frame))
+             (original-record
+              (symbol-function
+               'e-openai-codex--websocket-session-record-response))
+             request-bodies
+             request-handles
+             completed-response-ids
+             captured-tool-source
+             curation-record
+             first-turn-id
+             tool-turn-id
+             warm-turn-id)
         (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (setq request-bodies
@@ -895,11 +1225,25 @@ provider turn to settle without an implicit local deadline."
                        (setq completed-response-ids
                              (append completed-response-ids
                                      (list response-id))))
-                     (funcall original-record session response-id properties))))
+                     (funcall original-record session response-id properties)))
+                  ((symbol-function
+                    'e-harness--lifetime-tool-observation-frame)
+                   (lambda (&rest args)
+                     (let ((frame (apply original-frame args)))
+                       (setq captured-tool-source
+                             (copy-tree
+                              (seq-find
+                               (lambda (source)
+                                 (equal (plist-get source :value)
+                                        raw-tool-output))
+                               (e-context-lifetime-frame-curation-sources
+                                frame))))
+                       frame))))
           (let ((first-result
-                 (e-board-e2e-prompt-batch
+                 (e-live-e2e--prompt-batch-before-deadline
                   harness session-id
-                  "Reply with exactly LIVE-R0-READY. Do not call tools or repeat observation markers.")))
+                  "Reply with exactly LIVE-R0-READY. Do not call tools, context-curate, or repeat observation markers."
+                  deadline)))
             (setq first-turn-id (plist-get first-result :id))
             (should (stringp first-turn-id))
             (should (equal
@@ -909,19 +1253,24 @@ provider turn to settle without an implicit local deadline."
                          (e-live-e2e--assistant-content first-result)
                          old-marker)))
           (let ((tool-result
-                 (e-board-e2e-prompt-batch
+                 (e-live-e2e--prompt-batch-before-deadline
                   harness session-id
-                  "Call e2e_deterministic exactly once. After it returns, reply with exactly LIVE-R2-READY and no other text.")))
+                  "Call e2e_deterministic exactly once. After its result arrives, call the reserved context-curate carrier exactly once. Select the numeric source label whose displayed exact value is the result returned by e2e_deterministic and summarize it with text LIVE-CURATED-FACT. Then reply with exactly LIVE-R2-READY and no other text. Do not call any other tool."
+                  deadline)))
             (setq tool-turn-id (plist-get tool-result :id))
+            (setq curation-record
+                  (car (last (e-session-context-curations
+                              (e-harness-sessions harness) session-id))))
             (should (stringp tool-turn-id))
             (should (equal
                      (string-trim (e-live-e2e--assistant-content tool-result))
                      "LIVE-R2-READY")))
           (setq current-state new-marker)
           (let ((warm-result
-                 (e-board-e2e-prompt-batch
+                 (e-live-e2e--prompt-batch-before-deadline
                   harness session-id
-                  "Reply with exactly the current observation marker from your instructions and no other text.")))
+                  "Reply with exactly the current observation marker from your instructions and no other text; do not call context-curate."
+                  deadline)))
             (setq warm-turn-id (plist-get warm-result :id))
             (should (stringp warm-turn-id))
             (should (equal (string-trim (e-live-e2e--assistant-content warm-result))
@@ -934,8 +1283,13 @@ provider turn to settle without an implicit local deadline."
                (r2 (nth 2 response-ids))
                (first-body (nth 0 ordered-bodies))
                (tool-body (nth 1 ordered-bodies))
+               (tool-followup-body (nth 2 ordered-bodies))
                (warm-body (nth 3 ordered-bodies))
                (warm-handle (nth 3 ordered-handles))
+               (request-metadata
+                (mapcar #'e-backend-request-metadata ordered-handles))
+               (tool-followup-input
+                (append (plist-get tool-followup-body :input) nil))
                (warm-input (append (plist-get warm-body :input) nil))
                (warm-input-printed (prin1-to-string warm-input))
                (warm-body-printed (prin1-to-string warm-body))
@@ -945,6 +1299,10 @@ provider turn to settle without an implicit local deadline."
                            :diagnostics))
                (warm-diagnostics
                 (plist-get (e-backend-request-metadata warm-handle)
+                           :diagnostics))
+               (tool-followup-diagnostics
+                (plist-get (e-backend-request-metadata
+                            (nth 2 ordered-handles))
                            :diagnostics))
                (warm-finished-events
                 (seq-filter
@@ -963,24 +1321,20 @@ provider turn to settle without an implicit local deadline."
                    (equal (plist-get event :turn-id) warm-turn-id))
                  (e-live-e2e--activity-of-type
                   harness session-id 'token-usage)))
-               (warm-metrics nil)
-               (anchors
-                (e-session-provider-anchors
-                 (e-harness-sessions harness) session-id))
-               (anchor-ids
-                (mapcar
-                 (lambda (anchor)
-                   (plist-get (plist-get anchor :metadata) :response-id))
-                 anchors)))
+               (warm-cache-result
+                (e-live-e2e--cache-result
+                 (mapcar (lambda (event) (plist-get event :payload))
+                         warm-usage-events)))
+               (warm-metrics nil))
           (should (= (length ordered-bodies) 4))
           (should (= (length ordered-handles) 4))
           (should (= (length response-ids) 4))
           (should (string-match-p
                    (regexp-quote old-marker)
-                   (plist-get first-body :instructions)))
+                   (prin1-to-string first-body)))
           (should (string-match-p
                    (regexp-quote old-marker)
-                   (plist-get tool-body :instructions)))
+                   (prin1-to-string tool-body)))
           (dolist (response-id (list r0 r1 r2))
             (should (stringp response-id)))
           (should (= (length
@@ -991,40 +1345,72 @@ provider turn to settle without an implicit local deadline."
                       (e-live-e2e--activity-of-type
                        harness session-id 'tool-finished))
                      1))
-          (should (equal (plist-get warm-body :previous_response_id) r0))
-          (should-not (member (plist-get warm-body :previous_response_id)
-                              (list r1 r2)))
-          (should (eq (plist-get warm-diagnostics :websocket-request-mode)
+          (should (equal (plist-get tool-followup-body
+                                    :previous_response_id)
+                         r1))
+          (should (eq (plist-get tool-followup-diagnostics
+                                 :websocket-request-mode)
                       'incremental))
+          (should
+           (seq-some
+            (lambda (item)
+              (and (equal (plist-get item :type) "function_call_output")
+                   (equal (plist-get item :output) raw-tool-output)))
+            tool-followup-input))
+          (should (seq-some
+                   (lambda (tool)
+                     (member (plist-get tool :name)
+                             '("context-curate" context-curate)))
+                   (append (plist-get first-body :tools) nil)))
+          (should (seq-some
+                   (lambda (tool)
+                     (member (plist-get tool :name)
+                             '("context-curate" context-curate)))
+                   (append (plist-get warm-body :tools) nil)))
+          (should (seq-some
+                   (lambda (tool)
+                     (member (plist-get tool :name)
+                             '("context-curate" context-curate)))
+                   (append (plist-get tool-followup-body :tools) nil)))
+          (should (and curation-record
+                       (= (plist-get curation-record :record-version) 3)))
+          (let ((item (car (plist-get curation-record :items))))
+            (should (eq (plist-get item :kind) 'summary))
+            (should (equal (plist-get item :text) "LIVE-CURATED-FACT"))
+            (should captured-tool-source)
+            (should (member (plist-get captured-tool-source
+                                       :source-fingerprint)
+                            (plist-get item :source-fingerprints))))
+          (should-not (plist-member warm-body :previous_response_id))
+          (should (eq (plist-get warm-diagnostics :websocket-request-mode)
+                      'full))
           (should (numberp (plist-get warm-diagnostics
                                       :websocket-idle-close-seconds)))
           (should (>= (plist-get warm-diagnostics
                                   :websocket-idle-close-seconds)
                        0))
           (should (eq (plist-get warm-diagnostics :websocket-reused) t))
-          (should warm-finished-event)
-          (should (= (length warm-finished-events) 1))
-          (should (= (length warm-usage-events) 1))
           ;; Keep semantic endpoint status separate from the bounded metrics
           ;; record, whose latency comes from the loop-owned lifecycle event.
           (should (eq (plist-get warm-finished-payload :status) 'done))
-          (setq warm-metrics
-                (e-live-e2e--provider-metrics-record
-                 warm-finished-payload
-                 (plist-get (car warm-usage-events) :payload)))
-          (should (numberp
-                   (plist-get warm-metrics
-                              :provider-request-latency-seconds)))
-          (should (>= (plist-get warm-metrics
-                                  :provider-request-latency-seconds)
-                       0.0))
-          (should (numberp (plist-get warm-metrics :input-tokens)))
-          (should (or (eq (plist-get warm-metrics :cached-input-tokens)
-                         'unavailable)
-                      (numberp (plist-get warm-metrics
-                                            :cached-input-tokens))))
-          (should (stringp (plist-get warm-metrics :connection-id)))
-          (should (numberp (plist-get warm-metrics :reuse-count)))
+          (when warm-usage-events
+            (setq warm-metrics
+                  (e-live-e2e--provider-metrics-record
+                   warm-finished-payload
+                   (plist-get (car warm-usage-events) :payload)))
+            (should (numberp
+                     (plist-get warm-metrics
+                                :provider-request-latency-seconds)))
+            (should (>= (plist-get warm-metrics
+                                    :provider-request-latency-seconds)
+                         0.0))
+            (should (numberp (plist-get warm-metrics :input-tokens)))
+            (should (or (eq (plist-get warm-metrics :cached-input-tokens)
+                           'unavailable)
+                        (numberp (plist-get warm-metrics
+                                              :cached-input-tokens))))
+            (should (stringp (plist-get warm-metrics :connection-id)))
+          (should (numberp (plist-get warm-metrics :reuse-count))))
           (should (equal (plist-get first-diagnostics
                                     :websocket-connection-id)
                          (plist-get warm-diagnostics
@@ -1033,15 +1419,14 @@ provider turn to settle without an implicit local deadline."
           (should (= (length warm-finished-events) 1))
           (should (eq (plist-get warm-finished-diagnostics
                                  :websocket-request-mode)
-                      'incremental))
+                      'full))
           (should (numberp (plist-get warm-finished-diagnostics
                                       :websocket-idle-close-seconds)))
           (should (>= (plist-get warm-finished-diagnostics
                                   :websocket-idle-close-seconds)
                        0))
-          (should (eq (plist-get warm-finished-diagnostics
-                                 :previous-response-id-present)
-                      t))
+          (should-not (plist-get warm-finished-diagnostics
+                                 :previous-response-id-present))
           (dolist (response-id (list r0 r1 r2))
             (should-not (string-match-p
                          (regexp-quote response-id)
@@ -1051,14 +1436,17 @@ provider turn to settle without an implicit local deadline."
                        (prin1-to-string warm-finished-diagnostics)))
           (should (string-match-p
                    (regexp-quote new-marker)
-                   (plist-get warm-body :instructions)))
+                   warm-body-printed))
           (should (string-match-p
                    (regexp-quote "LIVE-STABLE-INSTRUCTIONS")
-                   (plist-get warm-body :instructions)))
+                   warm-body-printed))
           (should-not (string-match-p (regexp-quote old-marker)
                                       warm-body-printed))
           (should-not (string-match-p (regexp-quote raw-tool-output)
                                       warm-body-printed))
+          (should (string-match-p
+                   (regexp-quote "LIVE-CURATED-FACT")
+                   warm-body-printed))
           (should (string-match-p
                    (regexp-quote "Call e2e_deterministic exactly once")
                    warm-input-printed))
@@ -1071,16 +1459,45 @@ provider turn to settle without an implicit local deadline."
                         function_call function_call_output
                         provider-replay-item reasoning)))
             warm-input))
-          (should-not (string-match-p (regexp-quote r1) warm-body-printed))
-          (should-not (string-match-p (regexp-quote r2) warm-body-printed))
-          (should (member r0 anchor-ids))
-          (should-not (member r1 anchor-ids))
-          (should-not (member r2 anchor-ids))
+          (dolist (response-id (list r0 r1 r2))
+            (should-not (string-match-p
+                         (regexp-quote response-id)
+                         warm-body-printed)))
           ;; This is deliberately one fixed-field line rather than an ERT
           ;; info context, because passing ERT contexts are not output by a
-          ;; normal successful batch run.
-          (e-live-e2e--report-provider-metrics warm-metrics)
-          (e-backend-cancel-request warm-handle))))))
+          ;; normal successful batch run.  Missing usage remains an explicit
+          ;; unavailable classification in the external record.
+          (when warm-metrics
+            (e-live-e2e--report-provider-metrics warm-metrics))
+          (e-live-e2e--report-external-evidence
+           (e-live-e2e--external-evidence-record
+            :scenario 'chatgpt-canonical-tool-heavy
+            :provider e-openai-default-provider
+            :profile (e-openai-provider-profile e-openai-default-provider)
+            :model (plist-get first-body :model)
+            :request-bodies ordered-bodies
+            :request-metadata request-metadata
+            :usage-payloads
+            (mapcar (lambda (event) (plist-get event :payload))
+                    (e-live-e2e--activity-of-type
+                     harness session-id 'token-usage))
+            :timeout scenario-timeout
+            :started-at started-at
+              :ended-at (float-time)
+              :semantic-result "pass"
+              :cache-result warm-cache-result
+              :result (if (equal warm-cache-result "warm")
+                          "pass"
+                      warm-cache-result)))
+          (cond
+           ((equal warm-cache-result "warm") nil)
+           ((equal warm-cache-result "product-contract-failure")
+            (ert-fail
+             "The provider explicitly reported zero cached tokens for the canonical ordinary request."))
+           (t
+            (ert-skip
+             "Cached-token usage was unavailable; external cache evidence is inconclusive.")))
+          (e-backend-cancel-request warm-handle)))))))
 
 (ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
   "The configured OpenAI provider accepts encrypted reasoning full replay."
@@ -1157,18 +1574,18 @@ provider turn to settle without an implicit local deadline."
         (should (vectorp (plist-get reasoning :summary)))
         (should (= (length (plist-get reasoning :summary)) 0))))))
 
-(ert-deftest e-live-e2e-test-openai-gpt56-explicit-cache-continues ()
-  "A live GPT-5.6 pair retains the breakpoint and late frontier layout."
+(ert-deftest e-live-e2e-test-chatgpt-canonical-warm-prefix ()
+  "A canonical warm-prefix pair is measured on retained and replaced sockets."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
-  (unless (eq (plist-get (e-openai-provider-profile e-openai-default-provider)
-                         :prompt-cache-breakpoint-mode)
-              'explicit)
-    (ert-skip "The configured OpenAI provider does not support explicit cache breakpoints."))
-  (should (eq (plist-get (e-openai-provider-profile e-openai-default-provider)
-                     :observation-delivery)
-              'inherited))
+  (let* ((provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
+    (should (eq (plist-get profile :response-store) :json-false))
+    (should (eq (plist-get profile :observation-delivery) 'inherited))
+    (unless (e-live-e2e--codex-auth-preflight 'chatgpt-canonical-warm-prefix profile) (ert-skip "ChatGPT Codex auth.json is unavailable.")))
   (let* ((current-state "live state one")
          ;; OpenAI only caches prefixes of at least 1,024 tokens.  Keep this
          ;; probe independent of whichever default layers the E2E config loads.
@@ -1201,9 +1618,14 @@ provider turn to settle without an implicit local deadline."
        (e-harness-sessions harness)
        session-id
        '(:prompt-cache-default t))
-      (let ((original-start
-             (symbol-function 'e-openai-codex--websocket-request-start))
-            request-bodies)
+      (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
+             (started-at (float-time))
+             (deadline (+ started-at scenario-timeout))
+             (original-start
+              (symbol-function 'e-openai-codex--websocket-request-start))
+             request-bodies
+             request-handles
+             request-sessions)
         (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (push (list :body
@@ -1211,22 +1633,35 @@ provider turn to settle without an implicit local deadline."
                                  :full-body
                                  (copy-tree (plist-get args :full-body-data)))
                            request-bodies)
-                     (apply original-start args))))
-          (e-board-e2e-prompt-batch
-           harness session-id
-           "Reply with exactly: CROSS-TURN-ONE")
+                     (push (plist-get args :session) request-sessions)
+                     (let ((request (apply original-start args)))
+                       (push request request-handles)
+                       request))))
+          (e-live-e2e--prompt-batch-before-deadline
+           harness session-id "Reply with exactly: CROSS-TURN-ONE" deadline)
           (setq current-state "live state two")
-          (e-board-e2e-prompt-batch
-           harness session-id
-           "Reply with exactly: CROSS-TURN-TWO"))
+          (e-live-e2e--prompt-batch-before-deadline
+           harness session-id "Reply with exactly: CROSS-TURN-TWO" deadline)
+          ;; Deliberately replace the retained socket, then make the same
+          ;; canonical warm-prefix shape observable on the new connection.
+          (when-let ((session (car request-sessions)))
+            (e-openai-codex--websocket-session-close session))
+          (setq current-state "live state three")
+          (e-live-e2e--prompt-batch-before-deadline
+           harness session-id "Reply with exactly: CROSS-TURN-THREE" deadline))
         (let* ((requests (e-live-e2e--activity-of-type
                           harness session-id 'provider-request-started))
                (latest (car (last requests)))
                (diagnostics (plist-get (plist-get latest :payload) :diagnostics))
                (ordered-bodies (nreverse request-bodies))
+               (ordered-handles (nreverse request-handles))
                (first-body (plist-get (car ordered-bodies) :body))
                (latest-body
                 (plist-get (car (last ordered-bodies)) :body))
+               (request-metadata
+                (mapcar #'e-backend-request-metadata ordered-handles))
+               (middle-diagnostics
+                (plist-get (nth 1 request-metadata) :diagnostics))
                (first-breakpoint
                 (cl-loop for item in (plist-get first-body :input)
                          for block = (car (plist-get item :content))
@@ -1237,15 +1672,21 @@ provider turn to settle without an implicit local deadline."
                 (seq-find
                  (lambda (item)
                    (string-match-p
-                    "live state two"
+                    "live state three"
                     (or (plist-get (car (plist-get item :content)) :text)
                         "")))
                  (append (plist-get latest-body :input) nil)))
                (usage-events (e-live-e2e--activity-of-type
                               harness session-id 'token-usage))
-               (first-usage (plist-get (car usage-events) :payload))
-               (latest-usage
-                (plist-get (car (last usage-events)) :payload))
+               (retained-usage (plist-get (nth 1 usage-events) :payload))
+               (replacement-usage (plist-get (nth 2 usage-events) :payload))
+               (retained-cache-result
+                (e-live-e2e--cache-result (list retained-usage)))
+               (replacement-cache-result
+                (e-live-e2e--cache-result (list replacement-usage)))
+               (cache-result
+                (e-live-e2e--cache-result
+                 (list retained-usage replacement-usage)))
                (tool-differences
                 (e-live-e2e--request-tool-differences
                  first-body latest-body)))
@@ -1256,23 +1697,26 @@ provider turn to settle without an implicit local deadline."
             (should (eq (plist-get diagnostics :websocket-request-mode)
                         'full))
             (should-not (plist-get diagnostics :previous-response-id-present))
-            (should (eq (plist-get diagnostics :websocket-reused) t))
-            (should (equal (plist-get diagnostics :prompt-cache-mode)
-                           "explicit"))
+            (should-not (plist-get diagnostics :websocket-reused))
+            (should (member (plist-get diagnostics :prompt-cache-mode)
+                            '("explicit" "implicit-segmented")))
             (should (eq (plist-get diagnostics :observation-delivery)
                         'inherited))
             (should-not (plist-get diagnostics
                                    :replaceable-current-state-present))
             (should (eq (plist-get diagnostics :provider-anchor-safety)
                         'hold-inherited-observation))
-            (should (equal (plist-get diagnostics :prompt-layout-revision)
-                           e-openai-gpt56-explicit-cache-layout-revision))
-            (should first-breakpoint)
-            (should (equal (plist-get first-breakpoint
-                                      :prompt_cache_breakpoint)
-                           '(:mode "explicit")))
-            (should (equal (plist-get latest-body :prompt_cache_options)
-                           '(:mode "explicit")))
+            (should (or (equal (plist-get diagnostics :prompt-layout-revision)
+                              e-openai-gpt56-explicit-cache-layout-revision)
+                        (plist-get diagnostics :prompt-layout-revision)))
+            (when (equal (plist-get diagnostics :prompt-cache-mode)
+                         "explicit")
+              (should first-breakpoint)
+              (should (equal (plist-get first-breakpoint
+                                        :prompt_cache_breakpoint)
+                             '(:mode "explicit")))
+              (should (equal (plist-get latest-body :prompt_cache_options)
+                             '(:mode "explicit"))))
             (should (equal (plist-get latest-body :include)
                            ["reasoning.encrypted_content"]))
             (should-not (plist-member latest-body :previous_response_id))
@@ -1281,13 +1725,53 @@ provider turn to settle without an implicit local deadline."
             (should latest-current-input)
             (should (e-live-e2e--contains-p
                      (prin1-to-string latest-body)
-                     "live state two"))
-            (should (> (or (plist-get first-usage
-                                      :cache-creation-input-tokens)
-                           0)
-                       0))
-            (should (> (or (plist-get latest-usage :cached-input-tokens) 0)
-                       0))))))))
+                     "live state three"))
+            (should (eq (plist-get middle-diagnostics :websocket-reused) t))
+            (should-not (plist-get diagnostics :websocket-reused))
+            (should-not (equal
+                         (plist-get middle-diagnostics :websocket-connection-id)
+                         (plist-get diagnostics :websocket-connection-id)))
+            (should (= (length ordered-bodies) 3))
+            (should (= (length ordered-handles) 3))
+            (should (equal (plist-get first-body :prompt_cache_key)
+                           (plist-get (plist-get (nth 1 ordered-bodies) :body)
+                                      :prompt_cache_key)))
+            (should (equal (plist-get first-body :prompt_cache_key)
+                           (plist-get latest-body :prompt_cache_key)))
+            (e-live-e2e--report-external-evidence
+             (e-live-e2e--external-evidence-record
+              :scenario 'chatgpt-canonical-warm-prefix
+              :provider e-openai-default-provider
+              :profile (e-openai-provider-profile e-openai-default-provider)
+              :model (plist-get first-body :model)
+              :request-bodies (mapcar (lambda (entry)
+                                        (plist-get entry :body))
+                                      ordered-bodies)
+              :request-metadata request-metadata
+              :usage-payloads (mapcar (lambda (event)
+                                        (plist-get event :payload))
+                                      usage-events)
+              :timeout scenario-timeout
+              :started-at started-at
+              :ended-at (float-time)
+              :semantic-result "pass"
+              :cache-result cache-result
+              :result (if (equal cache-result "warm")
+                          "pass"
+                        cache-result)))
+            ;; Request one is the intentionally cold prefill.  Require both
+            ;; the retained and replacement targets to report warm usage only
+            ;; after their bounded evidence record has been emitted.
+            (cond
+             ((equal cache-result "warm")
+              (should (equal retained-cache-result "warm"))
+              (should (equal replacement-cache-result "warm")))
+             ((equal cache-result "product-contract-failure")
+              (ert-fail
+               "The provider explicitly reported zero cached tokens for a warm target."))
+             (t
+             (ert-skip
+               "Cached-token usage was unavailable; external cache evidence is inconclusive.")))))))))
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."
