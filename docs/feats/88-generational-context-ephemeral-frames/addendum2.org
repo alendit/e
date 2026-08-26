@@ -1,0 +1,507 @@
+#+title: Addendum 2: Clean-Anchor Branching and Connection-Local Retention
+#+date: 2026-08-25
+#+startup: overview
+
+* Status
+
+Planned.
+This addendum addresses the two highest-priority continuation limits recorded in =limitations.org=.
+It preserves the Feature 88 lifetime model and adds the adapter behavior needed to use that model on the ChatGPT Codex Responses WebSocket.
+Design review reached a fixed point in =addendum2-review-04.org= with zero P0--P3 findings.
+Implementation has not started.
+The operator must mark this addendum ready before implementation begins.
+The Feature 88 entry in =docs/feats/index.org= is =Planned= while this addendum awaits readiness.
+Change it to =Ready=, =In-progress=, =In-review=, and =Done= through the repository status workflow for this package.
+
+The parent Feature 88 design, its first addendum, and their accepted implementation remain authoritative except where this document changes WebSocket response compatibility and connection retention.
+The first addendum's request-local observation-delivery contract remains unchanged.
+
+* Goal
+
+Make warm continuation useful in ordinary tool-heavy and pause-prone sessions without retaining expired tool observations or depending on stored provider responses.
+
+The completed behavior is:
+
+#+begin_example
+clean response R0
+  → tool-producing response R1
+  → tool-result descendant R2
+  → later ordinary turn branches from R0 on the same socket
+  → current request-local observations replace their prior values
+  → only the durable post-R0 delta is sent as input
+#+end_example
+
+The built-in ChatGPT Codex socket remains available for 600 seconds after a completed request instead of the current 300 seconds.
+A healthy socket can therefore cross a pause longer than five minutes but shorter than ten minutes.
+Provider close, transport failure, request cancellation, explicit socket close, or the finite idle timer discards its connection-local response lineage.
+An incompatible request identity sends full reconstruction without =previous_response_id=, but does not by itself close a healthy socket or clear other connection-local ledger entries.
+
+* Decisions
+
+Keep =tool-result= ephemeral and =inherited=.
+A function-call output is causal provider state for its matching follow-up.
+The Responses continuation interface does not provide a request-local replacement channel for that bundle.
+The tool-producing response and its descendant therefore remain ineligible as durable cross-turn anchors.
+
+Permit a later request to reference any known compatible response ID that remains available on the same WebSocket, not only the immediately preceding response ID.
+The adapter must validate the requested response against connection identity and the request properties recorded for that response.
+It must not infer compatibility from the socket's latest response alone.
+
+Give the exact built-in ChatGPT Codex WebSocket an explicit 600-second idle-close policy.
+This doubles the current local idle window while preserving a finite adapter-owned lifetime.
+Provider close, transport failure, request cancellation, explicit socket close, or expiry of that timer still closes it.
+Keep the existing global idle-close policy unchanged as the fallback for profiles that do not declare a policy.
+
+Do not use =store=true= as the ChatGPT Codex remediation.
+The built-in profile remains =store=false=.
+Cross-connection recovery is not part of this addendum.
+Stored canonical OpenAI responses require a separate decision about retention, privacy, deletion, and cost.
+
+Do not seed or rebase a clean anchor with a hidden model request.
+A session whose first useful turn calls a tool still performs full reconstruction until it produces a clean response.
+This bootstrap cost remains an explicit limitation unless later measurements justify a separate rebase design.
+
+* Scope
+
+This addendum changes only the OpenAI adapter's Responses WebSocket behavior, its profile-owned idle-retention policy, diagnostics, tests, and Feature 88 documentation.
+
+It covers:
+
+- branching from an older clean response ID after one complete tool-call and tool-result chain on the same socket;
+- preserving the current request-local =instructions= replacement behavior on that branch;
+- sending the durable or promoted post-anchor delta without the consumed function call, replay item, or result;
+- retaining the built-in ChatGPT Codex socket for an explicit 600-second local idle window;
+- rejecting response IDs that belong to another socket, were never observed on the current socket, or were recorded under incompatible request properties;
+- safe full reconstruction after provider close, transport failure, explicit close, or unavailable response rejection; and
+- distinct diagnostics for older-anchor branching, local retention policy, and full fallback.
+
+It does not cover:
+
+- changing the lifetime or delivery classification of =tool-result=;
+- making =process_marker= or another tool semantically exempt from the tool bundle;
+- persisting provider response IDs as recoverable remote state;
+- enabling =store=true= for ChatGPT Codex;
+- adding a generic provider response graph to core;
+- changing session durable-message ownership;
+- adding a hidden model call to manufacture a clean anchor;
+- changing prompt-cache accounting or promising cached-input pricing;
+- adding a new backend teardown contract only for this optimization; or
+- adding persistence, transactions, or recovery machinery ahead of Feature 87.
+
+* Evidence baseline
+
+The current source and accepted Feature 88 evidence establish these facts:
+
+1. =e-harness--provider-anchor-selection-allowed-p= permits anchor selection for =request-local-replaceable= observations under either supported continuation mode.
+2. =e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor= proves that a later request selects =resp-clean= for =linear= plus =request-local-replaceable= delivery while rejecting =resp-A= and =resp-B= from the tool chain.
+3. The provider-neutral test also proves that the consumed tool call, replay item, and result disappear from later semantic context while a selected promotion remains durable.
+4. =e-openai-codex--websocket-request-start= currently accepts an incremental request only when its =previous_response_id= equals the socket session's single =last-response-id=.
+5. After a tool chain, the single =last-response-id= is the contaminated descendant even when the harness correctly selects an older clean anchor.
+6. The adapter therefore reports =previous-response-mismatch= and sends =full-body-data= instead of attempting the valid older-anchor branch.
+7. The WebSocket session records only =last-response-id= and =last-request-properties=, so it cannot validate an older response against the properties that produced that response.
+8. =e-openai-websocket-connection-idle-seconds= currently defaults to 300 seconds.
+9. =e-openai-codex--websocket-schedule-idle-close= applies that global value after each completed request.
+10. The built-in ChatGPT Codex profile is normalized to WebSocket Responses transport, =store=false=, request-local observation replacement, encrypted reasoning, and linear continuation.
+11. =e-openai-test-websocket-reconnects-with-full-request= and the unavailable-response retry coverage already prove safe fallback for a lost or rejected connection-local lineage.
+12. =e-live-e2e-test-openai-codex-store-false-continues= proves changed request-local instructions with =previous_response_id= on one retained socket, but it covers only a clean two-turn warm path.
+13. =limitations.org= records live full reconstruction after the local idle close and separates transport continuation from provider prompt-cache accounting.
+
+The provider-neutral branch proof is necessary but not sufficient.
+Completion requires adapter-level and credentialed evidence that the real WebSocket accepts an older known response ID after a complete tool chain.
+If the live endpoint rejects that branch, implementation must retain full reconstruction and return to design rather than weakening the lifetime model.
+
+* Semantic and transport protocol
+
+Let =R0= be a clean response, =R1= a tool-producing response, and =R2= the final response descending from the tool result.
+Let =D1= and =D2= be durable user or promoted deltas, and let =E3= be the complete current request-local observation.
+
+The required request sequence is:
+
+#+begin_example
+request 0:
+  input = durable prefix
+  previous_response_id absent
+                         → clean response R0
+
+request 1:
+  input = D1
+  previous_response_id = R0
+                         → tool call in R1
+
+matching follow-up:
+  input = function call output and required replay items
+  previous_response_id = R1
+                         → contaminated descendant R2
+
+request 3:
+  input = durable or promoted delta after R0, including D1 and D2 as required
+  instructions = E3
+  previous_response_id = R0
+                         → clean response R3
+#+end_example
+
+=R1= remains available only for its matching tool-result follow-up.
+Neither =R1= nor =R2= is admitted as a durable session anchor.
+The later request must not send their raw function call, replay item, function-call output, or response IDs.
+
+The adapter may send request 3 incrementally only when all of these conditions hold:
+
+- the current WebSocket is the connection on which =R0= completed;
+- =R0= is present in the adapter's connection-local response ledger;
+- the continuation-invariant request properties for request 3 equal the properties recorded for =R0=;
+- the harness supplied =R0= as its selected compatible anchor; and
+- no active request already owns the socket.
+
+Changed =instructions= remain compatible because they are request-local under the accepted first-addendum contract.
+Changed =input= and =previous_response_id= remain excluded from the continuation-invariant property identity.
+Model, tools, response shape, storage behavior, and other existing invariant fields remain part of that identity.
+
+If any condition fails, the adapter sends =full-body-data= without =previous_response_id=.
+An unavailable-response error still triggers at most one full retry through the existing fallback path.
+
+* Connection-local response ledger
+
+The OpenAI adapter owns a small connection-local ledger for completed response IDs.
+Core, the harness, and the durable session store must not learn its representation.
+
+Each ledger entry contains:
+
+- the completed response ID;
+- the connection ID that observed it implicitly through ledger ownership; and
+- the continuation-invariant request properties that produced it.
+
+The ledger lives only as long as the WebSocket session.
+Opening a replacement socket, provider close, transport error, explicit socket close, or cancellation that closes the socket clears it with the existing connection-local state.
+The ledger is not serialized to JSONL or checkpoints.
+
+The adapter records a response only after a completed terminal event.
+It does not record failed, partial, cancelled, or unconfirmed response IDs.
+A retry that falls back to full input records only the completed response from the actual full request.
+When the endpoint rejects =previous_response_id= as unavailable, the adapter removes only that requested response ID and its recorded properties from the live ledger before sending the one full retry.
+It preserves the healthy socket and every other ledger entry.
+A later request for the removed ID selects the initial full path without =previous_response_id= instead of repeating the rejected incremental branch.
+
+Use a direct adapter-private representation.
+Do not add a generic graph abstraction.
+Bound the ledger to 256 completed response entries per connection with an adapter-private constant rather than a new public setting.
+Track insertion order alongside the response-ID lookup so insertion beyond the cap evicts the oldest entry deterministically.
+Keep the newest completed response entry, including the response needed for an immediate tool-result follow-up.
+Track recently evicted response IDs with a second adapter-private lookup and FIFO insertion order capped at 256 entries so diagnostics can distinguish eviction from an ID that was never observed.
+Each new historical ID beyond the cap retires the oldest historical ID deterministically.
+An evicted requested anchor selects full reconstruction with the bounded =response-evicted= fallback reason.
+Connection close clears the lookup, insertion order, and eviction history in one owning operation.
+
+The existing =last-response-id= field may remain as a fast path for immediate tool follow-up only when it does not remain a second compatibility authority.
+Compatibility must have one owner.
+Prefer replacing the scalar compatibility check with ledger lookup and removing obsolete scalar state when the ledger subsumes it cleanly.
+
+* Profile-owned socket retention
+
+Add an adapter-private Responses WebSocket idle-close field to provider profiles.
+When present, its value is a non-negative number of seconds.
+When absent, resolve =e-openai-websocket-connection-idle-seconds= unchanged.
+Its existing =nil= value means retain until cancellation, failure, or backend replacement.
+The exact built-in ChatGPT Codex profile must normalize to an explicit 600-second policy even when host configuration reconstructs the canonical profile.
+
+Do not change every custom or canonical profile merely to fix ChatGPT Codex.
+The request context resolves the effective value once and passes it to the WebSocket request path.
+The scheduler uses that request's resolved value instead of reading the global variable directly.
+
+A completed built-in Codex socket remains reusable until its 600-second idle timer expires.
+Provider close, network failure, process exit, request cancellation, explicit close, and the finite timer still end the capability window and clear the response ledger.
+The provider response remains connection-local and =store=false=.
+
+Do not add a core backend lifecycle API in this package.
+The built-in profile's finite timer supplies the adapter-owned bound that the current backend contract lacks.
+
+* Ownership and material entities
+
+| Entity | Owner | Representation | Lifetime | Mutation boundary | Public surface | Required evidence |
+|--------+-------+----------------+----------+-------------------+----------------+-------------------|
+| Tool observation lifetime | Feature 88 core and harness policy | existing =tool-result= inherited frontier | matching follow-up only unless promoted | context projection and anchor admission | existing lifetime interfaces | existing mixed-frontier and promotion tests |
+| Durable clean anchor | session and harness | existing provider-anchor record | session optimization record while compatible | admitted only after a clean completed response | existing provider-anchor surfaces | provider-neutral older-clean-anchor test |
+| Connection response ledger | OpenAI adapter | capped response-ID lookup, insertion order, and bounded eviction history | one WebSocket connection and at most 256 live plus 256 eviction entries | insert after completed terminal event; evict oldest above cap; clear all parts on close | none | adapter cap, eviction, close, and socket integration tests |
+| Incremental branch decision | OpenAI adapter | ledger membership plus property equality | one request | before selecting incremental or full body | bounded request diagnostics | older-anchor, unknown-ID, and mismatch tests |
+| Idle-close policy | OpenAI adapter profile and request context | =nil= or non-negative seconds | effective provider request configuration | profile normalization and request-context resolution | existing provider profile data and defcustom fallback | profile normalization and timer tests |
+| WebSocket connection | OpenAI adapter backend instance | existing WebSocket session | provider or adapter lifecycle | open, reuse, close, failure, cancellation | existing backend start/cancel contract | deterministic lifecycle tests and credentialed retention E2E |
+| Full reconstruction | harness plus OpenAI adapter | existing =full-body-data= request | one fallback request | new connection, incompatible branch, or rejected response ID | existing request path | reconnect and unavailable-ID tests |
+
+No new durable state is introduced.
+The harness remains the semantic authority for choosing a clean anchor.
+The adapter remains the transport authority for deciding whether that response ID is still usable on the current socket.
+
+* Implementation slices
+
+Implement the package in ordered slices.
+Each slice must leave the repository coherent and must pass its focused exit condition before the next begins.
+
+** Slice 1: Connection-local response compatibility
+
+In =lisp/adapters/openai/e-openai.el=, replace the latest-response-only compatibility rule with adapter-private lookup of any completed response ID known on the current socket.
+Record the invariant request properties per response.
+Cap the live ledger at 256 entries, evict the oldest entry on overflow, and retain at most 256 evicted IDs for bounded =response-evicted= diagnostics.
+Clear every ledger component through every existing socket-close path.
+Keep the immediate tool follow-up incremental.
+Keep unknown, cross-connection, evicted, and property-incompatible IDs on the full path.
+
+Update =test/e-openai-test.el= with focused cases for:
+
+- latest-response continuation;
+- older-known-response continuation after one newer completed response;
+- unknown response ID;
+- response ID from a closed or replacement socket;
+- older response whose recorded properties differ;
+- property-incompatible full fallback that preserves a separately compatible older ledger entry for a later same-socket request;
+- failed, cancelled, and partial responses absent from the ledger;
+- deterministic oldest-entry eviction at the 256-entry cap;
+- preservation of the newest entry for immediate tool follow-up;
+- distinct =response-evicted= fallback while an ID remains in the bounded eviction history;
+- safe full fallback after the oldest of 257 historical evictions leaves the eviction history while the newest 256 IDs still report =response-evicted=;
+- clearing of the live ledger, insertion order, and eviction history on close and transport failure;
+- unavailable-response rejection followed by one safe full retry;
+- removal of only the rejected response ID before that retry;
+- a later selection of the rejected clean anchor taking the initial full path without repeating the unavailable incremental request; and
+- preservation of a different compatible ledger entry after the rejected ID is removed.
+
+Exit condition: focused adapter tests prove that only known property-compatible IDs on the current socket use incremental mode.
+
+** Slice 2: Harness-to-adapter tool-chain composition
+
+Extend =test/e-provider-continuation-integration-test.el= at the OpenAI WebSocket boundary.
+Use the real harness, session, context assembly, tool execution, anchor selection, OpenAI request renderer, and fake socket transport.
+Do not replace the accepted provider-neutral test.
+
+The scenario must create =R0=, run =R1 → tool result → R2=, then start a later ordinary turn.
+It must assert that the harness selects =R0=, the adapter sends =previous_response_id= =R0=, the request mode is incremental, and the literal request contains only the durable or promoted post-=R0= delta plus current =instructions=.
+It must prove that raw tool-call, replay, result, =R1=, and =R2= material is absent.
+It must also force socket loss before the later turn and prove full reconstruction without =previous_response_id=.
+
+Exit condition: one composed deterministic test proves both the older-clean-anchor warm branch and the cold full fallback.
+
+** Slice 3: Built-in Codex connection retention
+
+In =lisp/adapters/openai/e-openai.el=, add the profile-owned idle-close policy and normalize the exact built-in Codex profile to an explicit 600-second value.
+Resolve that value through =e-openai--request-context= and pass it to =e-openai-codex--websocket-request-start=.
+Pass the resolved effective policy to the scheduler once per request.
+It is either a non-negative number or =nil=.
+A =nil= value preserves the existing no-idle-timer fallback for an undeclared custom profile.
+Preserve the global defcustom as the fallback for profiles without an explicit field.
+
+Update =test/e-openai-test.el= with focused profile, context, timer, close, and override cases.
+Cover the current Doom-style reconstructed canonical Codex profile so lookup-time normalization restores the 600-second policy.
+Cover a custom profile with no declaration using a numeric global fallback.
+Cover a custom profile with no declaration and a global =nil= fallback, proving that no idle timer is scheduled.
+Cover a custom profile with an explicit finite override.
+Prove that the built-in timer does not fire before 600 seconds and closes the socket at 600 seconds.
+
+Exit condition: deterministic tests prove that built-in Codex uses a 600-second local idle close while fallback and explicit custom policies preserve their configured timer behavior, including no idle timer for =nil=.
+
+** Slice 4: Diagnostics and live acceptance
+
+Define two bounded scalar diagnostics: =:websocket-anchor-position= with value =latest= or =older=, and =:websocket-idle-close-seconds= with the resolved =nil= or non-negative policy.
+In =lisp/adapters/openai/e-openai.el=, set them in =e-openai-codex--websocket-actual-metadata=.
+In =lisp/core/e-harness.el=, add both keys to =e-harness--provider-diagnostics-activity-projection= so the existing =provider-request-finished= public surface carries them.
+Keep the actual WebSocket request mode, fallback reason, connection ID, and reuse count already present.
+Add one deterministic integration assertion and one live assertion that the completed =provider-request-finished= payload contains both new keys.
+
+Do not expose response IDs, ledger entries, request bodies, or tool results.
+
+Extend =e2e/e-live-e2e-test.el= with one credentialed built-in Codex scenario that:
+
+1. creates a clean response =R0=;
+2. performs a substantive deterministic tool call and completes =R2=;
+3. starts a later user turn on the same socket;
+4. captures the literal request and completion diagnostics;
+5. proves that =previous_response_id= equals =R0= rather than =R1= or =R2=;
+6. proves incremental mode and current changed observation =instructions=;
+7. proves absence of the raw function call, replay item, function output, and prior observation marker;
+8. proves the model-visible result uses the current observation; and
+9. proves neither contaminated response became the durable session anchor.
+
+Add a separate explicitly gated long-idle acceptance mode that waits longer than 300 seconds and less than 600 seconds before the next request.
+It must prove socket reuse, incremental continuation, a still-pending 600-second local idle timer, and correct changed observation replacement.
+Keep this slow credentialed mode outside default repository gates.
+Record its command and exact delay in the implementation review.
+Rely on deterministic timer coverage to prove closure at the 600-second boundary.
+
+Exit condition: credentialed ChatGPT Codex evidence proves the older clean branch and one pause beyond five minutes but within the finite ten-minute retention window.
+
+** Slice 5: Documentation and final gates
+
+Update =limitations.org= with the implemented disposition and residual bootstrap and connection-loss limits.
+Update this addendum with exact changed symbols, tests, commands, and measured live results.
+Create or update the implementation review under the Feature 88 directory.
+Update =docs/feats/index.org= according to the repository status workflow.
+
+Exit condition: repository gates pass on the exact reviewed revision, documentation matches source, and a fresh independent implementation Tick reports no P0--P3 finding.
+
+* Acceptance criteria
+
+** Semantic safety
+
+- =tool-result= remains =inherited=.
+- Tool-producing and tool-descended response IDs never become durable clean anchors.
+- A selected promotion survives through the existing durable promotion path.
+- A later warm request contains no consumed function call, replay item, or function-call output.
+- A session without a prior clean anchor reconstructs fully rather than manufacturing an anchor.
+
+** Connection-local branching
+
+- The latest compatible response ID continues incrementally.
+- An older known compatible response ID continues incrementally on the same socket.
+- Compatibility is checked against properties recorded for the requested response.
+- An unknown, stale, cross-connection, evicted, or property-incompatible response ID selects full reconstruction.
+- A property-incompatible request sends full reconstruction without clearing a healthy connection's unrelated ledger entries.
+- A later request may use an entry whose recorded properties are compatible.
+- The live ledger retains no more than 256 completed response entries and evicts the oldest entry deterministically.
+- The bounded eviction history retains no more than 256 IDs and enables a distinct =response-evicted= fallback reason.
+- Eviction history retires its oldest ID deterministically when a 257th historical ID is inserted.
+- Eviction never removes the newest completed response needed for immediate tool follow-up.
+- Socket close clears the live ledger, insertion order, and eviction history.
+- Failed, cancelled, and partial responses are never admitted to the ledger.
+- An unavailable-response rejection removes only the rejected ID from the live ledger before performing at most one full retry.
+- A later selection of that removed ID starts with full reconstruction while unrelated compatible ledger entries remain usable.
+
+** Request shape
+
+- The older clean anchor is sent as =previous_response_id=.
+- Current =current-state= and =dynamic-context= values appear only in current top-level =instructions= under the accepted request-local contract.
+- Prior request-local observations are absent from the complete literal request.
+- The =input= contains only the durable or promoted delta not already owned by the selected clean anchor.
+- ChatGPT Codex remains =store=false= and keeps its existing encrypted-reasoning and prompt-cache shape.
+
+** Retention and fallback
+
+- The exact built-in Codex profile resolves to a 600-second local idle close.
+- An undeclared profile uses the current global policy unchanged, including its documented =nil= no-idle-timer setting.
+- Explicit finite profile policies remain supported.
+- A pause longer than 300 seconds and shorter than 600 seconds can reuse the same healthy Codex socket.
+- Timer expiry at 600 seconds closes the socket and forces full reconstruction on the next request.
+- Provider close, transport failure, cancellation, or replacement socket forces full reconstruction.
+- A locally persisted anchor never authorizes cross-connection use for =store=false=.
+
+** Observability
+
+- Diagnostics distinguish latest-response continuation, older-known-response continuation, new-connection fallback, unknown response, bounded =response-evicted= fallback, property mismatch, and unavailable-response retry.
+- =provider-request-finished= records =:websocket-anchor-position= and =:websocket-idle-close-seconds= without exposing the response ledger.
+- Measurements report transport input count, provider input tokens, cached input tokens, request latency, connection ID, reuse count, and fallback reason as separate values.
+- No acceptance claim equates =previous_response_id= use with cached-input pricing.
+
+* Verification commands
+
+Run focused tests after each slice and the full repository gate before review.
+Use the repository's current Eldev commands and filesets rather than inventing a second test runner.
+At minimum, verification must include:
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el
+eldev test -f test/e-provider-continuation-integration-test.el
+eldev test
+eldev lint
+eldev compile --warnings-as-errors
+#+end_src
+
+Run whitespace and changed-file checks on the exact candidate revision.
+Run the credentialed live tests only with explicit =E_E2E=1= configuration.
+Record skipped canonical-provider coverage as unavailable evidence, not as a pass.
+
+Do not reload the user's running Emacs for repository-side verification.
+This adapter runtime change requires a full Emacs restart to affect the running process because it changes loaded adapter functions and connection record shape.
+Offer that restart after implementation rather than performing it automatically.
+
+* Performance contract
+
+The warm branch must avoid full request reconstruction on the wire after an ordinary tool turn when a compatible clean anchor exists on the same socket.
+Measure request-body input item count and serialized request bytes in deterministic acceptance.
+Measure provider-reported input tokens, cached input tokens, and request latency separately in live acceptance.
+
+The response ledger retains at most 256 completed response entries and at most 256 evicted-ID diagnostic entries during one connection lifetime.
+Both bounded collections have deterministic FIFO retirement order.
+Lookup must be constant-time or otherwise independent of durable session length.
+Insertion-order maintenance and eviction must have cost bounded by the fixed cap rather than session length.
+Closing a connection must clear the live lookup, insertion order, and eviction history in one owning operation.
+
+A longer socket lifetime may retain network and adapter objects longer than today.
+The explicit 600-second idle timer remains the local bound when the provider does not close first.
+Implementation review must prove that replacement, cancellation, transport failure, and timer expiry all close the socket and clear the ledger.
+
+* Compatibility and migration
+
+No session schema or persisted record migration is required.
+Existing provider anchors remain opaque session optimization records.
+A running process with an old WebSocket session record must be restarted before using the new adapter shape.
+
+Custom profiles without the new idle-close field retain the global defcustom behavior.
+Explicit finite policies remain valid.
+The built-in Codex normalizer supplies its explicit 600-second policy to stale reconstructed canonical profiles.
+Noncanonical profiles are not rewritten merely because their URL resembles the Codex endpoint.
+
+The implementation should remove scalar compatibility state that becomes obsolete.
+Do not keep dual latest-only and ledger authorities for compatibility.
+
+* Risks and responses
+
+- The private ChatGPT endpoint may reject branching from an older response ID even on the same socket.
+  In that case, retain safe full reconstruction and return to design with the captured provider error.
+- The provider may evict older response IDs before closing the socket.
+  Remove only the rejected ID from the live ledger, preserve other entries on the healthy socket, and record the unavailable-response fallback.
+- Longer retention may expose abandoned-socket cleanup gaps.
+  Keep the 600-second adapter timer as the local bound and verify cancellation, explicit close, provider error, replacement, and timer expiry.
+- A per-response property ledger may duplicate or drift from latest-request property logic.
+  Make ledger lookup the single compatibility authority and delete obsolete scalar checks.
+- A busy socket may outlive every idle timer and otherwise grow its ledger without bound.
+  Cap both live entries and eviction diagnostics at 256, evict oldest entries deterministically, and fall back fully when a selected anchor is no longer retained.
+- A live long-idle test is slow and provider-dependent.
+  Keep deterministic timer coverage in normal gates and run the credentialed delay only as explicit acceptance evidence.
+- Prompt-cache savings may remain weak even when transport continuation succeeds.
+  Report cache accounting separately and do not broaden this package into cache-layout redesign.
+
+* Fixed-point review protocol
+
+Design and implementation require separate evidence-efficient review loops.
+
+For design:
+
+1. Review this addendum against =plan.org=, =addendum.org=, =limitations.org=, current source, current tests, and repository architecture guidance.
+2. Use the specification chain =owner → representation → lifetime → mutation boundary → public surface → named evidence= for every material entity.
+3. Record each P0--P3 finding in a numbered =addendum2-review-NN.org= file.
+4. Remediate every actionable finding in this document.
+5. Run a fresh independent review after remediation.
+6. Stop only when a fresh review reports zero P0--P3 findings.
+
+For implementation:
+
+1. Review the exact candidate revision against this accepted addendum and all preceding Feature 88 contracts.
+2. Audit promised closure for older-clean-anchor branching and long-idle retention before searching for new defects.
+3. Verify source ownership and ordered state transitions, not only test names.
+4. Record each implementation Tick in a durable numbered review artifact.
+5. Remediate at the owning adapter boundary and run a fresh independent Tick.
+6. Mark the package Done only after a fresh Tick reports zero P0--P3 findings and the exact reviewed revision passes its gates.
+
+Design fixed point does not authorize implementation by itself.
+The operator must still mark the Planned package Ready.
+
+* Architecture self-check
+
+1. If this package stopped after deterministic older-anchor branching, the project would avoid full wire reconstruction after ordinary tool turns on a healthy socket while preserving semantic safety.
+2. The final direction is provider-neutral semantic lifetime policy with adapter-owned transport reuse and safe stateless fallback.
+3. Tool-result lifetime is stable.
+   Older-response support on the private endpoint is uncertain, so it remains adapter-local and is guarded by live evidence.
+   The 600-second policy bounds socket cleanup without adding a new lifecycle contract.
+4. Core owns semantic lifetime, the harness owns clean-anchor selection, the session owns durable semantic records, and the OpenAI adapter owns connection-local response availability and socket policy.
+5. The change reduces the mismatch between harness selection and adapter transport without widening a public interface.
+6. Stable policy does not depend on WebSocket details.
+   Only the adapter depends on its connection ledger and profile policy.
+7. Socket mutation, timers, retries, and close operations remain in the adapter.
+8. The new ledger is disposable connection-local state.
+   It is rebuilt from completed responses, capped at 256 live and 256 evicted-ID entries, and cleared with the socket.
+9. Warm requests perform one bounded hash lookup.
+   Insertion order and eviction work remain bounded by the fixed adapter-private cap.
+   The 600-second idle window trades a bounded live connection cost for fewer full requests.
+10. The response ledger represents a real endpoint variation: response IDs can remain usable on one connection after newer descendants complete.
+11. Existing session and provider contracts remain compatible.
+   Obsolete latest-only compatibility state should be removed.
+12. The single latest-response compatibility rule can be removed once the ledger owns compatibility.
+13. Expected response unavailability selects one safe full retry.
+   Unexpected configuration and transport errors remain visible.
+14. Adapter tests prove the transport state machine, composed integration proves the harness join, and credentialed E2E proves the private endpoint behavior.

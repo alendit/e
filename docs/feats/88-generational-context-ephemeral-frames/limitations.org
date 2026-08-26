@@ -205,7 +205,7 @@ Later remediation must preserve these working properties:
 9. The canvas avoids the large read/discovery tool loop observed without an
    attached document.
 
-* Limitation: ordinary tool use removes the cross-turn anchor
+* Limitation: tool descendants cannot advance the cross-turn anchor
 
 The dominant limitation is not an exceptional lifecycle.  Useful agent turns
 normally call tools.
@@ -218,15 +218,15 @@ after the raw bundle disappears from the next local semantic projection.
 Neither response can safely become a durable anchor because ordinary causal
 transformer state cannot remove the inherited observation.
 
-The resulting normal path is:
+The resulting bootstrap path, when no earlier compatible clean anchor exists, is:
 
 #+begin_example
-clean anchor A
-  → model emits tool call
-  → immediate follow-up uses tool-producing response ID
-  → tool result enters provider chain
-  → final assistant response descends from tool result
-  → no durable anchor after the turn
+full request R
+  → model emits a tool call in response A
+  → immediate follow-up uses A
+  → tool result enters the A → B provider chain
+  → final assistant response B descends from the tool result
+  → neither A nor B becomes a durable anchor
   → next user turn performs full reconstruction
 #+end_example
 
@@ -235,14 +235,54 @@ call is sufficient.  Its result was only =ok=, but its presence made the final
 descendant ineligible.  The edit turn demonstrates the same behavior for
 substantive tools.
 
-Thus the local ephemeral projection works while provider continuation is lost
-at the user-turn boundary.  Calling this merely a cache miss understates the
-mechanism: tool use removes durable anchor eligibility, which then forces the
-next turn onto full replay and ordinary prompt caching.
+Thus the local ephemeral projection works while the tool-descended provider responses remain ineligible as new anchors.
+Calling this merely a cache miss understates the mechanism because the harness cannot advance through the tool chain.
+The experiment does not prove that every tool-bearing turn forces full reconstruction.
 
-For a tool-heavy harness, clean tool-free boundaries are uncommon.  The live
-sixth-turn success required deliberately constructed tool-free turns three,
-four, and five before the incremental turn.
+The harness already retains an older compatible clean anchor and can send the durable transcript delta from that anchor after the tool frame is consumed.
+The provider-neutral integration test =e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor= covers this path for =linear= plus =request-local-replaceable= delivery: the later request selects =resp-clean= and rejects the tool-producing =resp-A= and its descendant =resp-B=.
+The six-turn live experiment did not exercise that path because its tool-bearing turns occurred before the first clean anchor was created.
+
+For a tool-heavy harness, reaching the first clean anchor can still be uncommon.
+The live sixth-turn success required deliberately constructed tool-free turns three, four, and five before the incremental turn.
+
+** Remediation direction
+
+Keep =tool-result= ephemeral and =inherited=.
+A function-call output is causal provider state required by its matching follow-up, and the Responses continuation interface does not provide a request-local replacement channel for that bundle.
+Classifying the bundle as replaceable would permit an anchor whose effective provider context still contains a tool observation that the local semantic projection has removed.
+
+Use the last compatible clean anchor as the recovery point after a tool-bearing turn.
+The next request should reference that clean response ID and send only the durable messages, promotions, and current request-local observations added since its covered session entry.
+The contaminated tool-producing response and its final descendant must remain immediate-follow-up artifacts and must not be persisted as anchors.
+
+Do not special-case =process_marker= merely because its result is =ok=.
+Its function-call arguments and replay item still belong to the provider tool bundle, so retaining its descendant would make provider context differ from the local semantic projection.
+A later tool-level =retention-safe= distinction may be useful for effects proven to add no future semantic state, but it should remain separate from the observation's ephemeral lifetime and should not be introduced without endpoint evidence and measured need.
+
+Before changing policy, prove this path against the real ChatGPT Codex WebSocket:
+
+1. Create a clean =resp-clean= anchor.
+2. Run a substantive tool turn through =resp-A → tool result → resp-B=.
+3. Confirm that neither =resp-A= nor =resp-B= is persisted.
+4. On the next turn over the same socket, require =previous_response_id= to equal =resp-clean=.
+5. Require incremental request mode, the changed canvas in current =instructions=, and only the durable or promoted delta in =input=.
+6. Require the raw function call, replay item, and result to be absent from the literal request.
+7. Force socket loss and require safe full reconstruction instead of reuse of an unavailable clean response ID.
+
+This acceptance test separates two cases that the current document combines.
+An existing clean anchor can bypass the contaminated descendant if the real endpoint accepts that branch on the retained socket.
+A session whose first useful turn calls a tool still has no clean response to branch from and needs full reconstruction until a clean anchor is created.
+Do not add a hidden model call merely to seed or rebase an anchor unless measurements show that this bootstrap case justifies the extra latency, token cost, and semantic risk.
+
+** Priority assessment
+
+High-priority acceptance gap, but not release-blocking.
+The provider-neutral recovery path already exists, so do not begin by changing the lifetime classification.
+First prove or disprove older-clean-anchor reuse on the real retained ChatGPT Codex socket after a complete tool chain.
+If it succeeds, the remaining ordinary costs are the no-clean-anchor bootstrap case and connection loss.
+If it fails, retain correct full reconstruction while evaluating an explicit rebase mechanism.
+Escalate rebase work only if measured replay latency, cost, or context pressure justifies its extra provider request and semantic risk.
 
 * Limitation: the ChatGPT continuation is connection-local
 
@@ -278,10 +318,27 @@ clean tool-free anchor
   = request-local incremental continuation
 #+end_example
 
-Network failure, backend replacement, Emacs restart, or the provider's own
-connection limit can end that window earlier or later than the local idle
-timer.  A durable local anchor record does not make the remote response state
-durable.
+Network failure, backend replacement, Emacs restart, or the provider's own connection limit can end that window earlier or later than the local idle timer.
+A durable local anchor record does not make the remote response state durable.
+
+** Remediation direction
+
+Retain the ChatGPT Codex WebSocket beyond the current five-minute idle window.
+Prefer keeping it until provider close, transport failure, backend replacement, explicit session teardown, or another bounded resource policy requires eviction.
+This improves the common pause-prone workflow without treating connection-local response state as durable.
+
+Keep full reconstruction as the required fallback after any connection loss or rejected =previous_response_id=.
+A locally persisted clean anchor may guide selection while its socket remains alive, but it must not authorize reuse on a different ChatGPT Codex connection.
+The adapter should record why continuation was unavailable and discard or bypass the unusable remote anchor without changing the session's durable semantic state.
+
+Do not make =store=true= the primary remediation for the ChatGPT Codex profile.
+Its current =store=false= contract makes continuation connection-local, so the adapter must remain correct without cross-connection response recovery.
+Evaluate stored responses separately for canonical OpenAI profiles that support them, with explicit review of retention policy, privacy, cost, and response-deletion requirements.
+That profile-specific option must not weaken the full-reconstruction fallback or be represented as a shared semantic capability.
+
+Measure the longer retention policy before adding a rebase call or stored-response dependency.
+Track socket lifetime, idle duration before reuse, continuation success, full-fallback frequency, request latency, and transport failures.
+Add acceptance coverage for reuse after more than five idle minutes, provider-forced socket loss, explicit teardown, and a new connection that cannot resolve the old response ID.
 
 * Limitation: continuation and prompt-cache savings are different
 

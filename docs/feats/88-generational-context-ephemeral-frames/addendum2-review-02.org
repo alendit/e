@@ -1,0 +1,65 @@
+#+title: Feature 88 Addendum 2 Design Review 02
+#+date: 2026-08-25
+#+startup: overview
+
+* Result
+
+Three actionable findings remain: two P2 findings and one P3 finding.
+No P0 or P1 finding remains.
+
+* Reviewed scope and baseline
+
+This incremental review audits =addendum2.org= after the first remediation pass.
+The reviewed repository revision is =0c229e1481aa036d579efdfe166e1684c23bd713= with the proposed Feature 88 documents present as worktree changes.
+No Addendum 2 implementation exists at this revision.
+The addendum is therefore a specification, not evidence that the required adapter behavior works.
+
+The review checked =addendum2.org=, =addendum2-review-01.org=, =addendum.org=, =limitations.org=, the Feature 87 persistence plan, the dev-work status rules, the OpenAI adapter, the harness diagnostics projection, and the named tests.
+No repository gate was run because this pass reviews a planned document and changes no source or test code.
+
+* Prior-finding dispositions
+
+** DONE P1-01: Nil retention creates an unowned socket lifetime
+
+The exact built-in ChatGPT Codex profile now has a finite 600-second adapter-owned idle timer.
+The package does not add a backend lifecycle API.
+
+** DONE P2-02: Requested diagnostics cannot reach completion evidence
+
+Slice 4 now names the adapter metadata writer and the harness diagnostics projection.
+It requires deterministic and live assertions against the completed =provider-request-finished= activity.
+
+* Findings
+
+** DONE P2-03: Preserve the supported =nil= fallback policy
+
+The baseline defcustom permits =nil=, which retains an idle socket until cancellation, failure, or backend replacement.
+The planned profile field must therefore accept a non-negative number when present and must preserve the global value unchanged when absent.
+The built-in Codex profile must still normalize to exactly 600 seconds.
+The implementation tests must cover an undeclared custom profile with a global =nil= fallback and prove that no idle timer is scheduled.
+
+** DONE P3-04: Define the ledger outcome for incompatible request properties
+
+A property mismatch must send full reconstruction without =previous_response_id=.
+It must not close a healthy socket or clear unrelated compatible ledger entries.
+A later request may still use an entry whose recorded properties match that request.
+Close paths remain the only wholesale ledger-clear boundary.
+
+** DONE P2-05: Reflect the planned package in the feature index
+
+The Feature 88 index row must be =Planned= while this addendum awaits operator readiness.
+The title must identify Addendum 2 so coding agents do not treat the new package as completed Feature 88 work.
+The addendum must state that the index advances through =Ready=, =In-progress=, =In-review=, and =Done= under the normal status workflow.
+
+* Coverage summary
+
+The adapter and harness anchor split remains sound.
+The response ledger remains bounded, adapter-private, connection-local, and non-serialized.
+The built-in profile has a finite local close boundary while custom profiles preserve the existing fallback contract.
+Full fallback on property mismatch no longer has two contradictory ledger outcomes.
+The dev-work index now exposes the planned package.
+
+* Final result
+
+The addendum is not yet at a design fixed point in this review.
+Apply P2-03, P3-04, and P2-05, then run a fresh independent review of the revised document and index.

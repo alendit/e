@@ -1,0 +1,55 @@
+#+title: Feature 88 Addendum 2 Design Review 01
+#+date: 2026-08-25
+
+* Result
+
+Two actionable findings remain: one P1 and one P2.
+
+* P1-01 Nil retention creates an unowned, unbounded socket lifetime
+
+** Entity normalization
+
+- Owner: the OpenAI adapter backend owns =websocket-sessions= and each =e-openai-codex--websocket-session=.
+- Representation: a backend-closure hash table keyed by session ID, with a live WebSocket and idle timer in each session.
+- Lifetime: the proposed built-in Codex =nil= policy makes a completed socket live until an external event occurs.
+- Mutation boundary: only =e-openai-codex--websocket-session-close= closes the socket and clears connection-local state.
+- Public surface: =e-backend= exposes =:stream= and =:start= only.
+  It exposes no close, dispose, or session-finalization operation.
+- Named evidence: =lisp/core/e-backend.el:33-40= defines no lifecycle hook.
+  =lisp/adapters/openai/e-openai.el:3450-3510= retains the session hash in the backend closure.
+  =e-openai-codex--websocket-schedule-idle-close= is the only completed-request cleanup path.
+  The addendum requires =nil= retention while declining a lifecycle API.
+
+The proposed lifecycle has no owner that can close an idle socket when a harness session ends or when its backend becomes unreachable.
+The document recognizes this only as a post-implementation risk.
+That makes the required =nil= behavior infeasible as a bounded work package and violates the architecture rule that live state use the smallest owning scope and bounded lifetime.
+
+** Required remediation
+
+Use an explicit finite built-in Codex policy of 600 seconds.
+Keep custom-profile fallback and finite overrides.
+Require a long-idle acceptance delay greater than 300 and less than 600 seconds, plus deterministic closure evidence at 600 seconds.
+Do not add a backend lifecycle API in this package.
+
+* P2-02 The requested diagnostics cannot reach the stated completion evidence
+
+** Entity normalization
+
+- Owner: the OpenAI adapter creates request diagnostics, while the harness owns the durable =provider-request-finished= activity projection.
+- Representation: adapter request metadata contains =:diagnostics=; the harness copies only an allowlisted scalar subset into completion activity.
+- Lifetime: request metadata lasts for the request; the activity projection is the test-visible completed-turn record.
+- Mutation boundary: =e-openai-codex--websocket-actual-metadata= updates adapter metadata, then =e-harness--provider-diagnostics-activity-projection= filters it.
+- Public surface: bounded diagnostics in request metadata and =provider-request-finished= activity.
+- Named evidence: =e-openai-codex--websocket-actual-metadata= writes diagnostics at =lisp/adapters/openai/e-openai.el:2162-2207=.
+  The harness allowlist at =lisp/core/e-harness.el:1325-1338= lacks anchor-position and effective-idle-policy keys.
+  The current live test reads completion diagnostics from =provider-request-finished= at =e2e/e-live-e2e-test.el:649-675=.
+
+Adding adapter keys alone would leave them visible on the in-memory request handle but omit them from the completion activity used by the proposed live evidence.
+The slice does not name this harness boundary or require a test for it.
+
+** Required remediation
+
+Define =:websocket-anchor-position= and =:websocket-idle-close-seconds= as bounded scalar diagnostics.
+Set them in =e-openai-codex--websocket-actual-metadata=.
+Add both keys to =e-harness--provider-diagnostics-activity-projection=.
+Require deterministic and live assertions against =provider-request-finished=.

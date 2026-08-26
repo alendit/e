@@ -1,0 +1,75 @@
+#+title: Feature 88 Addendum 2 Design Review 04
+#+date: 2026-08-25
+#+startup: overview
+
+* Result
+
+This fresh independent incremental specification review found zero actionable P0--P3 findings.
+The design reached a fixed point and remains =Planned= pending operator readiness.
+
+* Reviewed scope, revision, and worktree posture
+
+This review covers only =docs/feats/88-generational-context-ephemeral-frames/addendum2.org= after the Review 03 remediation.
+The reviewed Git revision is =b7a2b72aa70d26f3b7bf73e5959027009ff07614= on =main=.
+The worktree has modified tracked files =docs/feats/88-generational-context-ephemeral-frames/limitations.org= and =docs/feats/index.org=.
+The worktree has untracked =addendum2.org=, =addendum2-review-01.org=, =addendum2-review-02.org=, and =addendum2-review-03.org= in the Feature 88 directory.
+No OpenAI adapter, harness, deterministic-test, or live-test source file is modified or untracked in this worktree.
+The proposed addendum and its review chain are therefore worktree documents rather than content in the reviewed Git revision.
+=git diff --check= reports no whitespace error for the tracked worktree changes.
+No repository gate was run because this pass reviews a planned specification and changes no repository file.
+
+* Review authorities
+
+The target authority is the proposed =addendum2.org= document.
+The accepted Feature 88 contract authorities are =plan.org= and =addendum.org=.
+The current limitation authority is =limitations.org=.
+The status authority is =docs/references/dev_work.org= with the Feature 88 row in =docs/feats/index.org=.
+The implementation authorities are =lisp/adapters/openai/e-openai.el= and =lisp/core/e-harness.el=.
+The named current evidence includes =e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor=, =e-openai-test-websocket-unresolved-anchor-retries-full-request=, =e-openai-test-websocket-reconnects-with-full-request=, and =e-live-e2e-test-openai-codex-store-false-continues=.
+This review treats the addendum as a contract for future implementation and not as proof that the private endpoint accepts an older response ID.
+
+* Prior-finding dispositions
+
+** DONE P2-06: An endpoint-rejected response remains eligible in the proposed live ledger
+
+The remediation now requires removal of only the endpoint-rejected requested ID and its properties before the one full retry at =addendum2.org:179=.
+The remediation preserves the healthy socket and all unrelated ledger entries at =addendum2.org:180=.
+The remediation requires later selection of the removed ID to start on the full path without =previous_response_id= at =addendum2.org:181=.
+Slice 1 requires deterministic proof of the retry, single-ID removal, repeated-request convergence, and survival of another compatible entry at =addendum2.org:260-263=.
+The acceptance criteria repeat the externally visible convergence and unrelated-entry requirements at =addendum2.org:361-362=.
+The current scalar implementation clears its only response state before the full retry at =lisp/adapters/openai/e-openai.el:2381-2393=.
+The current named test proves the existing one-retry shape at =test/e-openai-test.el:3465-3560=.
+The revised contract replaces the scalar clear with the necessary narrower mutation boundary and names the evidence needed to prove it.
+Disposition: closed.
+
+** DONE P3-07: The eviction-history cap has no deterministic retirement representation
+
+The remediation defines a separate eviction-history lookup and FIFO insertion order capped at 256 entries at =addendum2.org:188=.
+The remediation requires each 257th historical insertion to retire the oldest historical ID deterministically at =addendum2.org:189=.
+The live ledger independently has a 256-entry FIFO cap at =addendum2.org:185-187=.
+Slice 1 names deterministic cases for live oldest-entry eviction, newest-entry preservation, live eviction diagnostics, and retirement after 257 historical evictions at =addendum2.org:255-258=.
+The acceptance criteria repeat both cap limits and deterministic retirement requirements at =addendum2.org:355-358=.
+The performance contract bounds both collections, lookup, insertion maintenance, eviction, and close cleanup at =addendum2.org:417-421=.
+The revised representation now makes the diagnostic outcome deterministic and testable without exposing ledger state.
+Disposition: closed.
+
+* Findings
+
+No actionable P0, P1, P2, or P3 finding remains.
+
+* Coverage summary
+
+The unavailable-response contract now orders removal before the single full retry and makes repeated selection of the rejected anchor converge to the initial full path.
+The contract preserves a healthy socket and unrelated compatible entries across both unavailable-response and request-property-mismatch fallback paths.
+The request-property rule validates the requested response's recorded invariant properties rather than the latest response's properties at =addendum2.org:146-156=.
+The live and eviction-history ledgers each have a private 256-entry deterministic FIFO contract with named deterministic evidence and fixed-cap performance bounds.
+The close contract clears live lookup, insertion order, and eviction history together for replacement, provider close, transport failure, explicit close, cancellation, and timer expiry at =addendum2.org:172-191=.
+The slices and acceptance criteria require named deterministic coverage for close, transport failure, property mismatch, rejected-anchor convergence, FIFO retirement, and immediate tool-follow-up preservation at =addendum2.org:246-265= and =addendum2.org:347-362=.
+The composed deterministic test and credentialed acceptance remain correctly separated because only the latter can establish private-endpoint acceptance of older-clean-anchor branching at =addendum2.org:267-326=.
+The 600-second built-in retention policy remains bounded while undeclared custom profiles retain the documented global numeric or =nil= fallback behavior at =addendum2.org:197-214= and =addendum2.org:280-296=.
+The specification preserves the existing semantic boundary because the harness selects clean anchors and the adapter alone decides same-socket transport usability.
+
+* Final result
+
+The design reached a fixed point with zero actionable P0--P3 findings.
+The package remains =Planned= because design fixed point does not replace the required operator readiness decision.

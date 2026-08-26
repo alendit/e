@@ -1,0 +1,115 @@
+#+title: Feature 88 Addendum 2 Design Review 03
+#+date: 2026-08-25
+#+startup: overview
+
+* Result
+
+Two actionable findings remain: one P2 finding and one P3 finding.
+No P0 or P1 finding remains.
+
+* Reviewed scope and worktree posture
+
+This is a fresh independent incremental specification review of =docs/feats/88-generational-context-ephemeral-frames/addendum2.org=.
+The reviewed Git revision is =946cf4e241134fa57efdcf5e40857b051f8cd7af= on =main=.
+The worktree has modified =limitations.org= and =docs/feats/index.org=.
+The worktree has untracked =addendum2.org=, =addendum2-review-01.org=, and =addendum2-review-02.org=.
+No Addendum 2 implementation or named-test change exists in the worktree.
+The clean revision is therefore not a review baseline for the proposed documents.
+=git diff --check= reported no whitespace error for the tracked worktree changes.
+
+The target authority is =addendum2.org=.
+The accepted Feature 88 contract authorities are =plan.org= and =addendum.org=.
+The current limitation authority is =limitations.org=.
+The status authority is =docs/references/dev_work.org= with the current index row in =docs/feats/index.org=.
+The current implementation authorities are =lisp/adapters/openai/e-openai.el= and =lisp/core/e-harness.el=.
+The named evidence includes =e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor=, =e-openai-test-websocket-unresolved-anchor-retries-full-request=, =e-openai-test-websocket-reconnects-with-full-request=, and =e-live-e2e-test-openai-codex-store-false-continues=.
+The review treats the addendum as proposed behavior rather than proof that the real endpoint accepts older-anchor branching.
+
+* Prior-finding dispositions
+
+** DONE P2-03: Preserve the supported =nil= fallback policy
+
+Required boundary: an absent profile policy must preserve the global =nil= no-idle-timer fallback while the exact built-in Codex profile resolves to 600 seconds.
+Current proof: =addendum2.org:195-203= distinguishes an absent field from a present non-negative field, preserves =nil=, and passes one resolved policy to the scheduler.
+Current proof: Slice 3 requires separate undeclared numeric, undeclared =nil=, finite override, and exact-600-second tests.
+Current source proof: =e-openai-websocket-connection-idle-seconds= documents and implements =nil= as retain-until-teardown at =lisp/adapters/openai/e-openai.el:226-235=.
+Disposition: closed.
+
+** DONE P3-04: Define the ledger outcome for incompatible request properties
+
+Required boundary: a property mismatch must use full reconstruction without =previous_response_id= while preserving the healthy socket and unrelated compatible ledger entries.
+Current proof: =addendum2.org:36= and =addendum2.org:158= require full reconstruction without wholesale ledger clear.
+Current proof: =addendum2.org:248-250= requires a property-incompatible fallback that preserves a separately compatible entry for a later request.
+Current source proof: the existing latest-response implementation identifies =request-properties-changed= before selecting =full-body-data= at =lisp/adapters/openai/e-openai.el:2233-2257=.
+Disposition: closed.
+
+** DONE P2-05: Reflect the planned package in the feature index
+
+Required boundary: the index must identify Addendum 2 as =Planned= and the addendum must state the normal status sequence.
+Current proof: =docs/feats/index.org:101= lists Feature 88 as =Planned= with the Addendum 2 title.
+Current proof: =addendum2.org:7-13= states the planned posture and the =Ready= through =Done= progression.
+Current authority proof: =docs/references/dev_work.org:20-34= defines the same statuses and transitions.
+Disposition: closed.
+
+* Findings
+
+** P2-06: An endpoint-rejected response remains eligible in the proposed live ledger
+
+The adapter owns the connection-local response ledger.
+The representation is a lookup of completed response IDs with per-response invariant properties.
+The lifetime is one healthy WebSocket connection.
+The missing mutation boundary is the =previous_response_id= rejection that occurs before the one full retry.
+The public surface is a full request without =previous_response_id= and bounded fallback diagnostics.
+The named current evidence is =e-openai-test-websocket-unresolved-anchor-retries-full-request= at =test/e-openai-test.el:3465-3558=.
+
+The addendum records only completed responses and defines close as the ledger-clear boundary at =addendum2.org:172-187=.
+The addendum requires one full retry after an unavailable-response error at =addendum2.org:158-159=, but it does not remove or invalidate the rejected requested ID.
+The current scalar implementation clears its sole response ID before the full retry at =lisp/adapters/openai/e-openai.el:2381-2391=.
+The proposed ledger replaces that scalar with many eligible IDs, so retaining the rejected entry would change the recovery semantics.
+
+The failure sequence is =R0= in the ledger, an incremental request from =R0= rejected as unavailable, and a successful full retry that later produces a contaminated response without advancing the harness clean anchor.
+The harness may then select its still-clean =R0= again.
+The adapter would find =R0= in the ledger and repeat the rejected incremental request instead of converging to the initial full path.
+This violates the stated safe full-reconstruction recovery for unavailable response lineage and creates one endpoint failure plus one full retry on each such turn.
+
+Insert this paragraph after =addendum2.org:178=.
+
+#+begin_quote
+When the endpoint rejects =previous_response_id= as unavailable, the adapter must remove only that requested response ID and its recorded properties from the live ledger before it sends the one full retry.
+It must preserve the healthy socket and every other ledger entry.
+A later request for the removed ID must select the initial full path without =previous_response_id= rather than retrying the rejected incremental branch.
+The retry still records only the completed response from the actual full request.
+#+end_quote
+
+Add a focused adapter test that rejects a selected older entry, completes the full retry with a contaminated response, and proves that the next request selecting the retained clean anchor sends one initial full request without =previous_response_id=.
+Add a companion assertion that a different compatible ledger entry remains incremental after the rejected ID is removed.
+
+** P3-07: The eviction-history cap has no deterministic retirement representation
+
+The adapter owns eviction-history diagnostics.
+The representation is specified only as a bounded set of recently evicted IDs.
+The lifetime is one WebSocket connection.
+The mutation boundary is each live-ledger eviction and connection close.
+The public surface is the =response-evicted= fallback reason.
+The named evidence is the Slice 1 eviction and history-expiry test list at =addendum2.org:251-255=.
+
+The live ledger has insertion order, but the eviction history is only a bounded set at =addendum2.org:182-187=.
+A set cannot identify the oldest historical ID to retire when the 257th eviction occurs.
+The required safe fallback after eviction history expires is therefore not deterministically implementable or testable from this contract.
+This weakness does not expose semantic context, but it makes bounded diagnostic behavior depend on an unstated container policy.
+
+Replace the second sentence of =addendum2.org:185= with this text.
+
+#+begin_quote
+Track recently evicted response IDs with an adapter-private lookup and FIFO insertion order capped at 256 entries, so each new historical ID retires the oldest historical ID deterministically.
+#+end_quote
+
+Add Slice 1 evidence that the first of 257 historical evictions no longer yields =response-evicted=, while the newest 256 historical IDs still yield that reason.
+
+* Coverage summary
+
+The older-clean-anchor request shape remains coherent with the plan because the harness selects only clean semantic anchors and the adapter validates a connection-local transport ID.
+The request-property boundary now correctly preserves unrelated compatible entries after a property mismatch.
+The exact built-in idle policy and undeclared =nil= fallback are normali
+
+[Tool output truncated: showing first 8192 bytes / 113 lines of 9067 bytes / 123 lines. Full output: tmp://tool-results/01M0XF6BGWX13BRXJN1JH1B3VP/read-call_4FEwd6IbvQYgCITUZFETBX5K-nested-1.txt]
