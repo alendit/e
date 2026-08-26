@@ -133,7 +133,15 @@ Each record contains provider/profile ID, exact base-URL identity, Responses
 WebSocket transport, store mode, native requester identity, exact model ID,
 prompt-layout revision, prompt-cache-key derivation revision, material request
 shape, scenario name, timestamp, repository revision, total input tokens,
-cached input tokens, and result.
+cached input tokens, the scenario's predeclared total timeout, elapsed duration,
+and result.
+
+Each scenario runner declares its total timeout before sending the first
+request.  The timeout is private execution configuration rather than a durable
+F88A3 contract number: it bounds evidence collection but does not change the
+required provider outcome or capability identity.  A run that does not conclude
+before its declared bound is =inconclusive-timeout=.  Every other result retains
+the failure classification below.
 
 The freshness window is seven calendar days.  Reuse is allowed only when every
 identity field and material request shape match and no affected adapter,

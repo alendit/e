@@ -303,3 +303,10 @@ External status remains =capability-unconfirmed=.  That status is separate from
 this specification defect: after the design reaches a deterministic fixed
 point it need not block implementation, but it prevents =Done= until both
 external scenarios have current or reusable successful evidence.
+
+Remediation disposition at the subsequent specification Tock: the mandatory
+external record now includes a predeclared total timeout and elapsed duration;
+the scenario runner declares the bound before its first request; and an
+over-bound run without a conclusion is =inconclusive-timeout=.  The timeout is
+explicitly private execution configuration, so the F88A3 matrix and its durable
+limits remain unchanged.  P2-03 is implemented pending independent Review 03.
