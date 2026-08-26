@@ -17,6 +17,7 @@
 (require 'e)
 (require 'e-capabilities)
 (require 'e-context)
+(require 'e-context-lifetime)
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-session)
@@ -65,8 +66,9 @@ covered by the adapter tests below."
          (requests nil)
          (current-state nil)
          (harness-ref nil)
-         (promotion-input nil)
-         (promotions-at-later-request nil)
+         (curation-input nil)
+         (curations-at-later-request nil)
+         (captured-tool-frame nil)
          (replay-marker "REPLAY-EPHEMERAL")
          (raw-result
           (format "UNIQUE-%s-TOOL-RESULT"
@@ -124,28 +126,23 @@ covered by the adapter tests below."
                  (funcall on-item '(:type done :reason tool-use)))
                 (3
                  ;; B is the sole consumer of the paired call/result bundle.
-                 (should (plist-get options :context-promotion-frame-id))
-                 (let* ((observation-ids
-                         (plist-get options
-                                    :context-promotion-observation-ids))
-                        (tool-observation-id
+                 (let* ((source
                          (seq-find
-                          (lambda (observation-id)
-                            (string-prefix-p "observation:tool-bundle:"
-                                             observation-id))
-                          observation-ids)))
-                   (should tool-observation-id)
-                   (setq promotion-input
+                          (lambda (candidate)
+                            (equal (plist-get candidate :value) raw-result))
+                          (e-context-lifetime-frame-curation-sources
+                           captured-tool-frame)))
+                        (label (and source (plist-get source :label))))
+                   (should source)
+                   (setq curation-input
                          (list
-                          :type 'context-promote
-                          :schema-version 1
-                          :frame-id
-                          (plist-get options :context-promotion-frame-id)
-                          :source-observation-ids (list tool-observation-id)
-                          :facts
-                          '((:id "selected-tool-fact"
-                             :value "selected from tool result"))))
-                   (funcall on-item promotion-input))
+                          :type 'context-curate
+                          :arguments
+                          (list :summaries
+                                (list (list
+                                       :sources (list label)
+                                       :text "selected from tool result")))))
+                   (funcall on-item curation-input))
                  (funcall on-item
                           '(:type assistant-message :content "B"))
                  (funcall on-item
@@ -154,9 +151,9 @@ covered by the adapter tests below."
                             :metadata (:response-id "resp-B")))
                  (funcall on-item '(:type done :reason stop)))
                 (4
-                 ;; The durable promotion must already be committed before
+                 ;; The durable curation must already be committed before
                  ;; this real later provider request is admitted.
-                 (setq promotions-at-later-request
+                 (setq curations-at-later-request
                        (copy-tree
                         (mapcar
                          #'e-session--context-record
@@ -194,16 +191,24 @@ covered by the adapter tests below."
                  :provider-continuation t
                  :provider-anchor-provider-id 'fake))))
     (setq harness-ref harness)
-    (let ((e-context-lifetime-shadow-projection-enabled t))
-      (e-board-e2e-create-session harness :id "ephemeral-anchor-session")
-      (e-board-e2e-prompt-batch
-       harness "ephemeral-anchor-session" "seed prompt")
-      (setq current-state "STATE-ONE")
-      (e-board-e2e-prompt-batch
-       harness "ephemeral-anchor-session" "inspect prompt")
-      (setq current-state "STATE-TWO")
-      (e-board-e2e-prompt-batch
-       harness "ephemeral-anchor-session" "later prompt"))
+    (let ((e-context-lifetime-shadow-projection-enabled t)
+          (original-frame
+           (symbol-function 'e-harness--lifetime-tool-observation-frame)))
+      (cl-letf (((symbol-function
+                  'e-harness--lifetime-tool-observation-frame)
+                 (lambda (&rest args)
+                   (let ((frame (apply original-frame args)))
+                     (setq captured-tool-frame frame)
+                     frame))))
+        (e-board-e2e-create-session harness :id "ephemeral-anchor-session")
+        (e-board-e2e-prompt-batch
+         harness "ephemeral-anchor-session" "seed prompt")
+        (setq current-state "STATE-ONE")
+        (e-board-e2e-prompt-batch
+         harness "ephemeral-anchor-session" "inspect prompt")
+        (setq current-state "STATE-TWO")
+        (e-board-e2e-prompt-batch
+         harness "ephemeral-anchor-session" "later prompt")))
     (list :requests (nreverse requests)
           :anchors
           (mapcar (lambda (anchor)
@@ -211,8 +216,8 @@ covered by the adapter tests below."
                   (e-session-provider-anchors
                    (e-harness-sessions harness)
                    "ephemeral-anchor-session"))
-          :promotion-input promotion-input
-          :promotions-at-later-request promotions-at-later-request
+          :curation-input curation-input
+          :curations-at-later-request curations-at-later-request
           :replay-marker replay-marker
           :raw-result raw-result)))
 
@@ -235,9 +240,9 @@ covered by the adapter tests below."
            (later-messages (plist-get later :messages))
            (follow-up-printed (prin1-to-string follow-up-messages))
            (later-printed (prin1-to-string later-messages))
-           (promotion-input (plist-get result :promotion-input))
-           (promotions-at-later-request
-            (plist-get result :promotions-at-later-request)))
+           (curation-input (plist-get result :curation-input))
+           (curations-at-later-request
+            (plist-get result :curations-at-later-request)))
       (should (= (length requests) 4))
       ;; A is allowed only at the frontier that carries the matching result.
       (should (equal
@@ -251,19 +256,22 @@ covered by the adapter tests below."
       (should (string-match-p
                (regexp-quote (plist-get result :replay-marker))
                follow-up-printed))
-      ;; B selected the tool-result observation, and the promotion was
+      ;; B selected the tool-result source, and the curation was
       ;; durable before the separate later request began.
-      (should (= (length (plist-get promotion-input
-                                    :source-observation-ids))
-                 1))
-      (should (string-prefix-p
-               "observation:tool-bundle:"
-               (car (plist-get promotion-input
-                               :source-observation-ids))))
-      (should (equal
-               (plist-get (car promotions-at-later-request) :facts)
-               '((:id "selected-tool-fact"
-                  :value "selected from tool result"))))
+      (should (eq (plist-get curation-input :type) 'context-curate))
+      (let* ((summary (car (plist-get (plist-get curation-input :arguments)
+                                      :summaries)))
+             (label (car (plist-get summary :sources))))
+        (should (integerp label))
+        (should (> label 0))
+        (should (equal (plist-get summary :text)
+                       "selected from tool result")))
+      (let ((item (car (plist-get (car curations-at-later-request) :items))))
+        (should (eq (plist-get item :kind) 'summary))
+        (should (equal (plist-get item :text) "selected from tool result"))
+        (should (= (length (plist-get item :source-observation-ids)) 1))
+        (should (= (length (plist-get item :source-refs)) 1))
+        (should (= (length (plist-get item :source-fingerprints)) 1)))
       (should (string-match-p "selected from tool result" later-printed))
       ;; Later context is rebuilt from the durable session path and never
       ;; inherits the consumed call/result bundle or A/B response ids.
@@ -1015,8 +1023,8 @@ covered by the adapter tests below."
                              "explicit")))))))))
 
 
-(ert-deftest e-provider-continuation-integration-test-canonical-observe-promote-forget ()
-  "A streamed inherited tool turn promotes a fact and forgets its raw bundle.
+(ert-deftest e-provider-continuation-integration-test-canonical-observe-curate-forget ()
+  "A streamed inherited tool turn curates a fact and forgets its raw bundle.
 
 The OpenAI Responses adapter, harness, loop, session, semantic projection,
 and ordinary tool execution are real.  Only the request function supplies a
@@ -1030,9 +1038,9 @@ ordinary-turn anchor."
          (e-harness-auto-compaction-enabled nil)
          (e-context-lifetime-shadow-projection-enabled t)
          (e-openai-model-providers
-          '((canonical-observe-promote-e2e
-             :name "Canonical Observe Promote E2E"
-             :base-url "https://canonical-observe-promote.example.test/v1"
+          '((canonical-observe-curate-e2e
+             :name "Canonical Observe Curate E2E"
+             :base-url "https://canonical-observe-curate.example.test/v1"
              :auth bearer
              :env-key "OPENAI_API_KEY"
              :wire-api responses
@@ -1049,7 +1057,8 @@ ordinary-turn anchor."
          (request-projections nil)
          (request-count 0)
          (tool-count 0)
-         (promotions-at-next-request nil)
+         (curations-at-next-request nil)
+         (captured-tool-frame nil)
          (harness nil)
          (dynamic-provider
           (e-context-provider-create
@@ -1060,7 +1069,7 @@ ordinary-turn anchor."
                       (list (list :role 'system :content current-state))))))
          (capability
           (e-capability-create
-           :id 'canonical-observe-promote-capability
+           :id 'canonical-observe-curate-capability
            :instructions "STABLE-CANONICAL-INSTRUCTIONS"
            :context-providers (list dynamic-provider)
            :tools
@@ -1075,7 +1084,7 @@ ordinary-turn anchor."
                              :required ["target"])
                :work
                (e-tools-cheap-work
-                "integration.canonical-observe-promote.inspect"
+                "integration.canonical-observe-curate.inspect"
                 (lambda (_arguments)
                   (cl-incf tool-count)
                   raw-result)))))))
@@ -1115,57 +1124,50 @@ ordinary-turn anchor."
                    (response . ((id . "resp-r1")
                                 (status . "completed"))))))
                (3
-                ;; The promotion carrier is a real streamed Responses item.
-                ;; Its trusted frame/observation frontier comes from the
-                ;; harness projection captured immediately before this call.
-                (let* ((projection (car (last request-projections)))
-                       (options (plist-get projection :options))
-                       (frame-id
-                        (plist-get options :context-promotion-frame-id))
-                       (observation-id
+                ;; The curation carrier is a real streamed Responses item.
+                ;; Its source label is selected from the core-produced live
+                ;; frame; no frame or observation identity crosses the wire.
+                (let* ((source
                         (seq-find
-                         (lambda (value)
-                           (string-prefix-p "observation:tool-bundle:" value))
-                         (plist-get options
-                                    :context-promotion-observation-ids)))
-                       (promotion-arguments
+                         (lambda (candidate)
+                           (equal (plist-get candidate :value) raw-result))
+                         (e-context-lifetime-frame-curation-sources
+                          captured-tool-frame)))
+                       (label (and source (plist-get source :label)))
+                       (curation-arguments
                         (json-encode
                          (list
-                          :schema-version 1
-                          :frame-id frame-id
-                          :source-observation-ids (vector observation-id)
-                          :facts
+                          :summaries
                           (vector
-                           (list :id "canonical-fact"
-                                 :value "PROMOTED-CANONICAL-FACT"))))))
-                  (unless (and frame-id observation-id)
-                    (error "Missing canonical promotion frontier: %S"
-                           projection))
+                           (list :sources (vector label)
+                                 :text "PROMOTED-CANONICAL-FACT"))))))
+                  (unless (and source label)
+                    (error "Missing canonical curation frontier"))
                   (let ((response
                          (e-provider-continuation-integration--sse
                           (list (cons 'type "response.output_item.done")
                                 (cons 'item
                                       (list (cons 'type "function_call")
                                             (cons 'call_id
-                                                  "call-context-promote")
-                                            (cons 'name "context-promote")
+                                                  "call-context-curate")
+                                            (cons 'name "context-curate")
                                             (cons 'arguments
-                                                  promotion-arguments))))
+                                                  curation-arguments))))
                           '((type . "response.output_text.done")
-                            (text . "D1 promoted answer"))
+                            (text . "D1 curated answer"))
                           '((type . "response.completed")
                             (response . ((id . "resp-r2")
                                          (status . "completed")))))))
                     response)))
                (4
                 ;; This read happens at provider dispatch time, before the
-                ;; ordinary request can be sent, and proves promotion commit
+                ;; ordinary request can be sent, and proves curation commit
                 ;; ordering independently of the resulting request body.
-                (setq promotions-at-next-request
+                (setq curations-at-next-request
                       (copy-tree
                        (e-session-context-promotions
                         (e-harness-sessions harness)
-                        "canonical-observe-promote")))
+                        "canonical-observe-curate")))
                 (e-provider-continuation-integration--sse
                  '((type . "response.output_text.done")
                    (text . "D2 canonical answer"))
@@ -1176,11 +1178,13 @@ ordinary-turn anchor."
                 (error "Unexpected canonical request %S" request-count)))))))
     (setq harness
           (e-openai-create-harness
-           :provider 'canonical-observe-promote-e2e
+           :provider 'canonical-observe-curate-e2e
            :model "gpt-5.6-sol"
            :request-function request-function))
     (e-harness-activate-capability harness capability)
-    (let ((original-body (symbol-function 'e-openai-codex-request-body)))
+    (let ((original-body (symbol-function 'e-openai-codex-request-body))
+          (original-frame
+           (symbol-function 'e-harness--lifetime-tool-observation-frame)))
       (cl-letf (((symbol-function 'e-openai-codex-request-body)
                  (lambda (&rest args)
                    (let ((body (apply original-body args)))
@@ -1193,17 +1197,23 @@ ordinary-turn anchor."
                                                (copy-tree (plist-get args
                                                                       :options))
                                                :body body))))
-                     body))))
+                     body)))
+                ((symbol-function
+                  'e-harness--lifetime-tool-observation-frame)
+                 (lambda (&rest args)
+                   (let ((frame (apply original-frame args)))
+                     (setq captured-tool-frame frame)
+                     frame))))
         (e-board-e2e-create-session
-         harness :id "canonical-observe-promote")
+         harness :id "canonical-observe-curate")
         (e-board-e2e-prompt-batch
-         harness "canonical-observe-promote" "D0 durable seed")
+         harness "canonical-observe-curate" "D0 durable seed")
         (setq current-state "CURRENT-CANONICAL-FRONTIER-ONE")
         (e-board-e2e-prompt-batch
-         harness "canonical-observe-promote" "D1 inspect durable state")
+         harness "canonical-observe-curate" "D1 inspect durable state")
         (setq current-state "CURRENT-CANONICAL-FRONTIER-TWO")
         (e-board-e2e-prompt-batch
-         harness "canonical-observe-promote" "D2 later ordinary turn")
+         harness "canonical-observe-curate" "D2 later ordinary turn")
         (let* ((ordered requests)
                (d0 (nth 0 ordered))
                (tool-followup (nth 2 ordered))
@@ -1217,14 +1227,14 @@ ordinary-turn anchor."
                (anchors
                 (e-session-provider-anchors
                  (e-harness-sessions harness)
-                 "canonical-observe-promote"))
+                 "canonical-observe-curate"))
                (anchor-ids
                 (mapcar
                  (lambda (anchor)
                    (plist-get (plist-get anchor :metadata) :response-id))
                  anchors))
-               (promotion-record
-                (plist-get (car promotions-at-next-request)
+               (curation-record
+                (plist-get (car curations-at-next-request)
                            :context-record)))
           (should (= request-count 4))
           (should (= (length ordered) 4))
@@ -1269,11 +1279,14 @@ ordinary-turn anchor."
                    (string-match-p "CURRENT-CANONICAL-FRONTIER-TWO"
                                    (json-encode item))))
             d2-input))
-          (should (= (length promotions-at-next-request) 1))
-          (should (equal
-                   (plist-get promotion-record :facts)
-                   '((:id "canonical-fact"
-                      :value "PROMOTED-CANONICAL-FACT"))))
+          (should (= (length curations-at-next-request) 1))
+          (let ((item (car (plist-get curation-record :items))))
+            (should (eq (plist-get item :kind) 'summary))
+            (should (equal (plist-get item :text)
+                           "PROMOTED-CANONICAL-FACT"))
+            (should (= (length (plist-get item :source-observation-ids)) 1))
+            (should (= (length (plist-get item :source-refs)) 1))
+            (should (= (length (plist-get item :source-fingerprints)) 1)))
           (should-not (member "resp-r1" anchor-ids))
           (should-not (member "resp-r2" anchor-ids)))))))
 

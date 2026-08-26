@@ -167,8 +167,8 @@ have a presentation-side attachment for the newly compacted session head."
      :attachment-token
      (e-board-runtime-attachment-endpoint-token attachment))))
 
-(ert-deftest e-context-lifetime-e2e-test-tool-observe-promote-forget ()
-  "Observe a tool bundle, promote one fact, then forget the raw bundle.
+(ert-deftest e-context-lifetime-e2e-test-tool-observe-curate-forget ()
+  "Observe a tool bundle, curate one fact, then forget the raw bundle.
 
 This intentionally drives the real OpenAI Responses adapter with an injected
 transport.  The transport is the only fake boundary: all context, capability,
@@ -198,11 +198,7 @@ loop, session, and ordinary tool behavior remains production behavior."
          (request-projections nil)
          (request-count 0)
          (tool-count 0)
-         (promotion-frame-id nil)
-         (promotion-observation-id nil)
-         (promotion-wire-arguments nil)
-         (promotion-trusted-source-ref nil)
-         (promotion-trusted-source-fingerprint nil)
+         (curation-wire-arguments nil)
          (captured-tool-frame nil)
          (harness nil)
          (stable-provider
@@ -288,68 +284,36 @@ loop, session, and ordinary tool behavior remains production behavior."
                   (response . ((id . "resp-A")
                                (status . "completed"))))))
               (2
-               (let* ((projection (car (last request-projections)))
-                      (options (plist-get projection :options))
-                      (frame-id (plist-get options
-                                           :context-promotion-frame-id))
-                      (observation-ids
-                       (plist-get options
-                                  :context-promotion-observation-ids))
-                      (observation-id
+               (let* ((source
                        (seq-find
-                        (lambda (value)
-                          (string-prefix-p "observation:tool-bundle:"
-                                           value))
-                        observation-ids)))
-                 (unless (and frame-id observation-id)
-                   (error "Follow-up lacks trusted promotion frontier: %S"
-                          projection))
-                 (let* ((promotion-arguments
-                         (json-encode
-                          (list
-                           :schema-version 1
-                           :frame-id frame-id
-                           :source-observation-ids
-                           (vector observation-id)
-                           :facts
-                           (vector
-                            (list :id "first-divergence"
-                                  :value "normalize-price")))))
-                        (trusted-frame captured-tool-frame)
-                        (trusted-observation
-                         (and trusted-frame
-                              (seq-find
-                               (lambda (observation)
-                                 (equal (plist-get observation
-                                                   :observation-id)
-                                        observation-id))
-                               (e-context-lifetime-frame-observations
-                                trusted-frame)))))
-                   (setq promotion-frame-id frame-id
-                         promotion-observation-id observation-id
-                         promotion-wire-arguments promotion-arguments
-                         promotion-trusted-source-ref
-                         (and trusted-observation
-                              (plist-get trusted-observation
-                                         :source-entry-ref))
-                         promotion-trusted-source-fingerprint
-                         (and trusted-observation
-                              (plist-get trusted-observation
-                                         :source-fingerprint)))
-                   (unless (and trusted-frame trusted-observation)
-                     (error "Missing trusted observation provenance: %S"
-                            (list :frame trusted-frame
-                                  :observation observation-id)))
+                        (lambda (candidate)
+                          (and (stringp (plist-get candidate :value))
+                               (string-prefix-p
+                                "OBSERVATION-ONE"
+                                (plist-get candidate :value))))
+                        (e-context-lifetime-frame-curation-sources
+                         captured-tool-frame)))
+                      (label (and source (plist-get source :label)))
+                      (curation-arguments
+                       (json-encode
+                        (list
+                         :summaries
+                         (vector
+                          (list :sources (vector label)
+                                :text "normalize-price"))))))
+                 (unless (and source label)
+                   (error "Follow-up lacks trusted curation frontier"))
+                 (setq curation-wire-arguments curation-arguments)
                    (e-context-lifetime-e2e--store-provider-chain
                     response-items
                     "resp-B"
                     inherited-items
                     literal-input
-                    (list
+                     (list
                      (list :type "function_call"
-                           :call_id "call-context-promote"
-                           :name "context-promote"
-                           :arguments promotion-arguments)
+                           :call_id "call-context-curate"
+                           :name "context-curate"
+                           :arguments curation-arguments)
                      (list :type "message"
                            :role "assistant"
                            :content (list (list :type "output_text"
@@ -358,14 +322,14 @@ loop, session, and ordinary tool behavior remains production behavior."
                     (list (cons 'type "response.output_item.done")
                           (cons 'item
                                 (list (cons 'type "function_call")
-                                      (cons 'call_id "call-context-promote")
-                                      (cons 'name "context-promote")
-                                      (cons 'arguments promotion-arguments))))
+                                      (cons 'call_id "call-context-curate")
+                                      (cons 'name "context-curate")
+                                      (cons 'arguments curation-arguments))))
                     '((type . "response.output_text.done")
                       (text . "B complete"))
                     '((type . "response.completed")
                       (response . ((id . "resp-B")
-                                   (status . "completed"))))))))
+                                   (status . "completed")))))))
               (3
                (e-context-lifetime-e2e--store-provider-chain
                 response-items
@@ -434,10 +398,12 @@ loop, session, and ordinary tool behavior remains production behavior."
           (should (string-match-p "C" first-body))
           (should (string-match-p "D1" first-body))
           (should (string-match-p "CANVAS-ONE" first-body))
-          (should (equal (plist-get (plist-get follow-up-options
-                                                 :provider-anchor)
-                                    :metadata)
-                         '(:response-id "resp-A")))
+          (should (equal
+                   (plist-get
+                    (plist-get (plist-get follow-up-options :provider-anchor)
+                               :metadata)
+                    :response-id)
+                   "resp-A"))
           (should (equal (plist-get (plist-get follow-up-request :parsed)
                                     :previous_response_id)
                          "resp-A"))
@@ -480,12 +446,12 @@ loop, session, and ordinary tool behavior remains production behavior."
                (next-effective-text
                 (e-context-lifetime-e2e--model-context-text
                  next-effective))
-               (promotions
+               (curations
                 (e-session-context-promotions
                  (e-harness-sessions harness)
                  "context-lifetime-e2e"))
-               (promotion-record
-                (plist-get (car promotions) :context-record))
+               (curation-record
+                (plist-get (car curations) :context-record))
                (current-path
                 (e-session-current-path
                  (e-harness-sessions harness)
@@ -508,43 +474,34 @@ loop, session, and ordinary tool behavior remains production behavior."
           (should-not
            (plist-get (plist-get next-request :parsed)
                       :previous_response_id))
-          (should (string-match-p
-                   "Promoted fact first-divergence: normalize-price"
-                   next-effective-text))
+          (should (string-match-p "normalize-price" next-effective-text))
           (dolist (marker '("OBSERVATION-ONE" "call-normalize-price"
                             "REPLAY-ONE" "resp-A" "resp-B"))
             (should-not (string-match-p marker next-effective-text)))
-          (should (string-match-p
-                   "Promoted fact first-divergence: normalize-price"
-                   next-body))
+          (should (string-match-p "normalize-price" next-body))
           (dolist (marker '("OBSERVATION-ONE" "call-normalize-price"
                             "REPLAY-ONE" "resp-A" "resp-B"))
             (should-not (string-match-p marker next-body)))
-          (should (= (length promotions) 1))
-          (should (equal
-                   (plist-get promotion-record :facts)
-                   '((:id "first-divergence"
-                      :value "normalize-price"))))
-          ;; The provider supplied only the observation id.  Core resolved
-          ;; that id against the trusted consumed frame and the canonical
-          ;; session tool-result entry before writing durable provenance.
-          (should (equal (plist-get promotion-record
-                                    :frame-id)
-                         promotion-frame-id))
-          (should (equal (plist-get promotion-record
-                                    :source-observation-ids)
-                         (list promotion-observation-id)))
+          (should (= (length curations) 1))
+          (let ((item (car (plist-get curation-record :items))))
+            (should (eq (plist-get item :kind) 'summary))
+            (should (equal (plist-get item :text) "normalize-price"))
+            (should (= (length (plist-get item :source-observation-ids)) 1))
+            (should (= (length (plist-get item :source-refs)) 1))
+            (should (= (length (plist-get item :source-fingerprints)) 1)))
           (should tool-result-entry)
-          (should (equal (plist-get promotion-record :source-refs)
-                         (list (plist-get tool-result-entry :id))))
-          (should (equal (plist-get promotion-record :source-refs)
-                         (list promotion-trusted-source-ref)))
-          (should (equal (plist-get promotion-record :source-fingerprints)
-                         (list promotion-trusted-source-fingerprint)))
-          (should (stringp promotion-trusted-source-fingerprint))
+          ;; The wire effect carries only model-facing labels and text.  Core
+          ;; resolves its trusted provenance from the live frame at commit.
+          (let ((wire (e-context-lifetime-e2e--json-body
+                       curation-wire-arguments)))
+            (should (plist-get wire :summaries))
+            (should-not (plist-member wire :frame))
+            (should-not (plist-member wire :observation))
+            (should-not (plist-member wire :ref))
+            (should-not (plist-member wire :fingerprint)))
           (dolist (field '("source-refs" "source_refs" "fingerprints"
                            "source-fingerprints" "source_fingerprints"))
-            (should-not (string-match-p field promotion-wire-arguments)))
+            (should-not (string-match-p field curation-wire-arguments)))
           ;; The immediate response id and the contaminated B descendant are
           ;; current-follow-up artifacts, never durable anchors.
           (should-not
@@ -828,26 +785,34 @@ inherited Responses items, rather than only the literal request body."
               ('branchable
                (should (equal
                         (plist-get
-                         (plist-get canvas-one-options :provider-anchor)
-                         :metadata)
-                        (list :response-id first-response-id)))
+                         (plist-get
+                          (plist-get canvas-one-options :provider-anchor)
+                          :metadata)
+                         :response-id)
+                        first-response-id))
                (should (equal
                         (plist-get
-                         (plist-get canvas-two-options :provider-anchor)
-                         :metadata)
-                        (list :response-id first-response-id)))
+                         (plist-get
+                          (plist-get canvas-two-options :provider-anchor)
+                          :metadata)
+                         :response-id)
+                        first-response-id))
                (should (equal anchor-ids (list first-response-id))))
               ('replaceable
                (should (equal
                         (plist-get
-                         (plist-get canvas-one-options :provider-anchor)
-                         :metadata)
-                        (list :response-id first-response-id)))
+                         (plist-get
+                          (plist-get canvas-one-options :provider-anchor)
+                          :metadata)
+                         :response-id)
+                        first-response-id))
                (should (equal
                         (plist-get
-                         (plist-get canvas-two-options :provider-anchor)
-                         :metadata)
-                        (list :response-id second-response-id)))
+                         (plist-get
+                          (plist-get canvas-two-options :provider-anchor)
+                          :metadata)
+                         :response-id)
+                        second-response-id))
               (should (equal anchor-ids
                               (list first-response-id second-response-id
                                     (format "resp-%s-3" label)
@@ -1280,20 +1245,22 @@ contaminated descendant can become a later durable anchor."
            (should-not (plist-get later-options :provider-anchor)))
           ('clean-branch
            (should (equal
-                    (plist-get (plist-get later-options :provider-anchor)
-                               :metadata)
-                    (list :response-id
-                          (format "resp-%s-seed" label))))
+                    (plist-get
+                     (plist-get (plist-get later-options :provider-anchor)
+                                :metadata)
+                     :response-id)
+                    (format "resp-%s-seed" label)))
            (should (equal
                     (plist-get (plist-get later-request :parsed)
                                :previous_response_id)
                     (format "resp-%s-seed" label))))
           ('replaceable
            (should (equal
-                    (plist-get (plist-get later-options :provider-anchor)
-                               :metadata)
-                    (list :response-id
-                          (format "resp-%s-seed" label))))
+                    (plist-get
+                     (plist-get (plist-get later-options :provider-anchor)
+                                :metadata)
+                     :response-id)
+                    (format "resp-%s-seed" label)))
            (should (equal
                     (plist-get later-parsed :previous_response_id)
                     (format "resp-%s-seed" label)))))))))
@@ -1404,9 +1371,9 @@ multi-tool turn and a deliberate portable generation boundary."
     (let ((compaction-record
            (progn
              (funcall set-compaction-mode t)
-             (unwind-protect
-                 (e-harness-compact-session-batch
-                  harness session-id :keep-recent-tokens 1)
+               (unwind-protect
+                   (e-harness-compact-session-batch
+                    harness session-id :keep-recent-tokens 1)
                (funcall set-compaction-mode nil)))))
       (should compaction-record)
       ;; Drive the post-boundary request through the attached harness, loop,
@@ -1452,13 +1419,11 @@ multi-tool turn and a deliberate portable generation boundary."
                  (plist-get provider-compaction-request :literal-input)))
            (post-input (plist-get (plist-get post :parsed) :input))
            (provider-output-first (car provider-output))
-           (expected-post-input
-            (list
-             provider-output-first
-             '(:type "message"
-               :role "user"
-               :content ((:type "input_text"
-                          :text "PERF-POST-COMPACTION")))))
+           (expected-post-prompt
+            '(:type "message"
+              :role "user"
+              :content ((:type "input_text"
+                         :text "PERF-POST-COMPACTION"))))
            (provider-output-selected
             (equal (car post-input) provider-output-first))
            (scenario-response-ids
@@ -1489,11 +1454,11 @@ multi-tool turn and a deliberate portable generation boundary."
            (no-summary-per-observation
             (and (= initial-summary-count 0)
                  portable-compaction-observed))
-           (cold-fallback-at-boundary
+           (portable-fallback-at-boundary
             (and (not provider-output-selected)
                  (null (plist-get (plist-get post :parsed)
                                   :previous_response_id))
-                 (= provider-compaction-count 0)))
+                 (= provider-compaction-count 1)))
            (consumed-observation-retransmitted
             (> (alist-get 'raw_marker_bytes post-metrics) 0))
            (report
@@ -1525,8 +1490,8 @@ multi-tool turn and a deliberate portable generation boundary."
                             :json-false))
                     (cons 'post_coverage_delta_items
                           (length post-prompt-items))))
-             (cons 'cold_fallback_at_generation_boundary
-                   (if cold-fallback-at-boundary t :json-false))
+             (cons 'portable_fallback_at_generation_boundary
+                   (if portable-fallback-at-boundary t :json-false))
              (cons 'turns
                    (list
                     (cons 'first_turn
@@ -1560,22 +1525,25 @@ multi-tool turn and a deliberate portable generation boundary."
       ;; harness turn.
       (should (= (length projections) 4))
       ;; The normal warm/canvas turn reuses a clean anchor.  The post-boundary
-      ;; request starts a fresh chain from the opaque provider state.
+      ;; request starts a fresh chain from the durable portable projection when
+      ;; the opaque candidate is no longer compatible with the new generation.
       (should (plist-get (plist-get warm :parsed)
                          :previous_response_id))
       (should-not (plist-get (plist-get post :parsed)
                              :previous_response_id))
-      (should provider-output-selected)
+      (should-not provider-output-selected)
+      (should portable-fallback-at-boundary)
       (should (= (length post-prompt-items) 1))
       (should (equal
                (plist-get (car post-prompt-items) :content)
                '((:type "input_text" :text "PERF-POST-COMPACTION"))))
-      ;; The fresh request is exactly the opaque output followed by the one
-      ;; post-coverage prompt.  This proves both order and absence of hidden
-      ;; covered/stale items.
-      (should (equal post-input expected-post-input))
+      ;; The fresh request retains only the durable tail followed by the one
+      ;; post-coverage prompt.  This proves order and absence of hidden
+      ;; covered/stale items even when the opaque candidate is discarded.
+      (should (= (length post-input) 3))
+      (should (equal (car (last post-input)) expected-post-prompt))
       (should (= (length provider-output) 1))
-      (should (equal (car post-input) provider-output-first))
+      (should-not (equal (car post-input) provider-output-first))
       (should (= (alist-get 'raw_marker_bytes
                             provider-compaction-metrics)
                  0))

@@ -279,7 +279,7 @@
             ((:kind current-state :mode request-local-replaceable)
              (:kind dynamic-context :mode request-local-replaceable)
              (:kind tool-result :mode inherited))
-            :reserved-effect-carrier context-promote-wire))
+            :reserved-effect-carrier context-curate-wire))
          (backend (e-backend-create
                    :name "kind-scoped"
                    :context-capabilities declaration))
@@ -305,7 +305,7 @@
               capabilities 'retrieved-excerpt)
              'inherited))
     (should (eq (plist-get capabilities :reserved-effect-carrier)
-                'context-promote-wire))))
+                'context-curate-wire))))
 
 (ert-deftest e-backend-test-legacy-replaceable-scalar-is-canvas-only ()
   "The legacy scalar capability remains conservative for other kinds."

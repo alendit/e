@@ -1333,8 +1333,7 @@ board activity message unpublishable."
                    :responses-transport :max-tokens :prompt-cache
                    :websocket-connection-id :websocket-reused
                    :websocket-reuse-count :websocket-request-mode
-                   :websocket-fallback-reason :websocket-changed-properties
-                   :websocket-anchor-position :websocket-idle-close-seconds
+                   :websocket-idle-close-seconds
                    :anthropic-cache-mode :anthropic-cache-breakpoint
                    :anthropic-cache-ttl :anthropic-container-id-present))
       (when (and (listp diagnostics) (plist-member diagnostics key))
@@ -2272,8 +2271,10 @@ the live dynamic providers needed for the model-facing request."
                     harness session-id generation))
          (projection (e-session-context-lifetime-projection
                       (e-harness-sessions harness) session-id))
-         (frontier (mapcar #'e-context-lifetime-promotion-id
-                           (plist-get projection :promotions)))
+         ;; The projection's ordered frontier covers both read-only v2
+         ;; records and active v3 curations.  Do not discard v3 record ids by
+         ;; deriving the frontier from the legacy promotion view.
+         (frontier (copy-sequence (plist-get projection :promotion-frontier)))
          (source-entry-id
           (e-harness--provider-compaction-candidate-source-entry-id
            harness session-id)))
@@ -3490,10 +3491,6 @@ provided the carrier option itself."
            (copy-tree delivery-map)
            :reserved-effect-carrier
            (plist-get capabilities :reserved-effect-carrier)
-           :reserved-effect-schema-version
-           (when (eq (plist-get capabilities :reserved-effect-carrier)
-                     'context-promote-wire)
-             e-context-lifetime-promotion-schema-version)
            :lifetime-observation-safety
            (if (plist-get options :lifetime-ephemerals-clean-p)
                'clean
@@ -3756,11 +3753,10 @@ No session record is touched.  The candidate is fenced by GENERATION, the
           (e-session-context-lifetime-current-generation
            (e-harness-sessions harness) session-id))
          (current-frontier
-          (mapcar #'e-context-lifetime-promotion-id
-                  (plist-get
-                   (e-session-context-lifetime-projection
-                    (e-harness-sessions harness) session-id)
-                   :promotions)))
+          (plist-get
+           (e-session-context-lifetime-projection
+            (e-harness-sessions harness) session-id)
+           :promotion-frontier))
          (source-on-path
           (seq-some (lambda (entry)
                       (equal (plist-get entry :id) source-entry-id))
@@ -3811,11 +3807,10 @@ No session record is touched.  The candidate is fenced by GENERATION, the
                      (equal (plist-get entry :id) source-entry-id))
                    path)
          (equal (plist-get candidate :promotion-frontier)
-                (mapcar #'e-context-lifetime-promotion-id
-                        (plist-get
-                         (e-session-context-lifetime-projection
-                          (e-harness-sessions harness) session-id)
-                         :promotions)))
+                (plist-get
+                 (e-session-context-lifetime-projection
+                  (e-harness-sessions harness) session-id)
+                 :promotion-frontier))
          ;; Opaque compaction contains only durable context.  It cannot safely
          ;; replace an inherited observation frontier.
          (or (not (plist-member options :lifetime-ephemerals-clean-p))

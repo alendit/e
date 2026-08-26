@@ -4721,8 +4721,8 @@ Return request options, persisted anchors, and the final context."
         (should-not (equal key other-model-key))
         (should-not (equal key other-tools-key))))))
 
-(ert-deftest e-harness-test-provider-diagnostics-retain-websocket-routing ()
-  "Durable provider diagnostics explain WebSocket continuation routing."
+(ert-deftest e-harness-test-provider-diagnostics-retain-websocket-lifecycle ()
+  "Durable provider diagnostics retain bounded WebSocket lifecycle state."
   (let ((projected
          (e-harness--provider-diagnostics-activity-projection
           '(:provider-continuation full
@@ -4731,20 +4731,11 @@ Return request options, persisted anchors, and the final context."
             :websocket-reused t
             :websocket-reuse-count 3
             :websocket-request-mode full
-            :websocket-fallback-reason request-properties-changed
-            :websocket-changed-properties ":tools"
-            :websocket-anchor-position older
             :websocket-idle-close-seconds 600))))
     (should (equal (plist-get projected :websocket-connection-id) "e-ws-7"))
     (should (eq (plist-get projected :websocket-reused) t))
     (should (= (plist-get projected :websocket-reuse-count) 3))
     (should (eq (plist-get projected :websocket-request-mode) 'full))
-    (should (eq (plist-get projected :websocket-fallback-reason)
-                'request-properties-changed))
-    (should (equal (plist-get projected :websocket-changed-properties)
-                   ":tools"))
-    (should (eq (plist-get projected :websocket-anchor-position)
-                'older))
     (should (= (plist-get projected :websocket-idle-close-seconds)
                600))))
 
@@ -4893,7 +4884,7 @@ Return request options, persisted anchors, and the final context."
         (e-session-activity-events store "session-1"))))))
 
 (ert-deftest e-harness-test-enabled-compaction-summarizes-portable-context-only ()
-  "Enabled compaction sends C0/D0/facts, never a raw consumed observation."
+  "Enabled compaction sends C0/D0/curation, never a raw observation."
   (let* ((captured-messages nil)
         (backend
          (e-backend-create
@@ -4926,28 +4917,21 @@ Return request options, persisted anchors, and the final context."
       (let* ((generation
               (e-session-context-lifetime-current-generation store "session-1"))
              (frame
-              (e-context-lifetime-frame-create
-               :id "frame-portable-summary"
-               :generation-id
+              (e-harness-test--curation-frame
                (e-context-lifetime-generation-id generation)
-               :consumer-request-id "consumer-portable-summary"
-               :observations
-               '((:observation-id "observation-portable-summary"
-                  :kind "tool-result"
-                  :source-entry-ref "external:portable-summary"
-                  :source-fingerprint "portable-summary-fingerprint"
-                  :effective-delivery "inherited"
-                  :body (:content "RAW-E-MUST-NOT-ESCAPE")))))
-             (promotion
-              (e-context-lifetime-promotion-from-effect
-               (e-context-lifetime-frame-complete-for-consumer
-                frame "consumer-portable-summary" "response-portable-summary")
-               '(:type context-promote :schema-version 1
-                 :frame-id "frame-portable-summary"
-                 :source-observation-ids ("observation-portable-summary")
-                 :facts ((:id "portable-selected-fact"
-                           :value "selected durable fact"))))))
-        (e-session-append-context-promotion store "session-1" promotion))
+               "frame-portable-summary"
+               "RAW-E-MUST-NOT-ESCAPE"
+               "observation-portable-summary"
+               "external:portable-summary"
+               "portable-summary-fingerprint"))
+             (curation
+              (e-context-lifetime-prepare-curation
+               frame
+               '(:summaries ((:sources (1)
+                              :text "selected durable fact")))
+               "response-portable-summary"
+               1.0)))
+        (e-session-append-context-curation store "session-1" curation))
       (e-harness-compact-session-batch harness "session-1"
                                        :keep-recent-tokens 1)
       (let* ((prompt (prin1-to-string captured-messages))
@@ -4975,46 +4959,32 @@ Return request options, persisted anchors, and the final context."
                           :durable-tail))
                  '("kept intent" "kept answer")))))))
 
-(defun e-harness-test--append-compaction-promotion
+(defun e-harness-test--append-compaction-curation
     (store session-id generation-id suffix)
-  "Append one valid selected fact for GENERATION-ID to SESSION-ID.
+  "Append one valid curation for GENERATION-ID to SESSION-ID.
 SUFFIX makes the runtime identities and fact unique to the owning test."
   (let* ((frame-id (format "frame-compaction-%s" suffix))
          (consumer-id (format "consumer-compaction-%s" suffix))
          (response-id (format "response-compaction-%s" suffix))
          (observation-id (format "observation-compaction-%s" suffix))
          (frame
-          (e-context-lifetime-frame-create
-           :id frame-id
-           :generation-id generation-id
-           :consumer-request-id consumer-id
-           :observations
-           (list
-            (list :observation-id observation-id
-                  :kind "tool-result"
-                  :source-entry-ref
-                  (format "external:compaction-%s" suffix)
-                  :source-fingerprint
-                  (format "compaction-fingerprint-%s" suffix)
-                  :effective-delivery "inherited"
-                  :body (list :content
-                              (format "RAW-COMPACTION-%s" suffix))))))
-         (consumed
-          (e-context-lifetime-frame-complete-for-consumer
-           frame consumer-id response-id))
-         (promotion
-          (e-context-lifetime-promotion-from-effect
-           consumed
-           (list :type 'context-promote
-                 :schema-version 1
-                 :frame-id frame-id
-                 :source-observation-ids (list observation-id)
-                 :facts (list (list :id (format "fact-%s" suffix)
-                                    :value
-                                    (format "selected-%s" suffix)))))))
-    (e-session-append-context-promotion store session-id promotion)))
+          (e-harness-test--curation-frame
+           generation-id frame-id
+           (format "RAW-COMPACTION-%s" suffix)
+           observation-id
+           (format "external:compaction-%s" suffix)
+           (format "compaction-fingerprint-%s" suffix)))
+         (curation
+          (e-context-lifetime-prepare-curation
+           frame
+           (list :summaries
+                 (list (list :sources '(1)
+                             :text (format "selected-%s" suffix))))
+           response-id
+           1.0)))
+    (e-session-append-context-curation store session-id curation)))
 
-(ert-deftest e-harness-test-enabled-async-compaction-absorbs-promotion-and-filters-provider-state ()
+(ert-deftest e-harness-test-enabled-async-compaction-absorbs-curation-and-filters-provider-state ()
   "Async enabled compaction absorbs facts and excludes runtime/provider state."
   (let* ((store (e-session-store-create))
          (session-id "enabled-async-compaction")
@@ -5075,7 +5045,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
               (e-session-context-lifetime-current-generation store session-id))
              (generations-before
               (length (e-session-context-generations store session-id))))
-        (e-harness-test--append-compaction-promotion
+        (e-harness-test--append-compaction-curation
          store session-id
          (e-context-lifetime-generation-id generation)
          "async")
@@ -5121,8 +5091,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                                tail-contents :test #'equal)
                      1)))))))
 
-(ert-deftest e-harness-test-enabled-async-compaction-rejects-stale-promotion-without-mutation ()
-  "A promotion appended during async summary rejects without partial append."
+(ert-deftest e-harness-test-enabled-async-compaction-rejects-stale-curation-without-mutation ()
+  "A curation appended during async summary rejects without partial append."
   (let* ((store (e-session-store-create))
          (session-id "enabled-async-stale-promotion")
          (captured-messages nil)
@@ -5139,7 +5109,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
               (run-at-time
                0.01 nil
                (lambda ()
-                 (e-harness-test--append-compaction-promotion
+                 (e-harness-test--append-compaction-curation
                   store session-id
                   (e-context-lifetime-generation-id
                    (e-session-context-lifetime-current-generation
@@ -6781,7 +6751,7 @@ an empty summary\"."
       (clrhash (e-harness-provider-compaction-candidates harness))
       (let ((promotion-generation
              (e-context-lifetime-generation-id generation)))
-        (e-harness-test--append-compaction-promotion
+        (e-harness-test--append-compaction-curation
          (e-harness-sessions harness) session-id promotion-generation "late"))
       (let* ((latest-input (e-harness--provider-compaction-input
                             harness session-id generation)))

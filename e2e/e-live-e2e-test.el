@@ -172,20 +172,17 @@ status is intentionally not part of this measurement record."
           :connection-id
           (plist-get diagnostics :websocket-connection-id)
           :reuse-count
-          (plist-get diagnostics :websocket-reuse-count)
-          :fallback-reason
-          (plist-get diagnostics :websocket-fallback-reason))))
+          (plist-get diagnostics :websocket-reuse-count))))
 
 (defun e-live-e2e--report-provider-metrics (metrics)
   "Emit one bounded explicit success-path record for METRICS."
   (message
-   "E2E provider metrics: provider-request-latency-seconds=%s input-tokens=%s cached-input-tokens=%s connection-id=%s reuse-count=%s fallback-reason=%s"
+   "E2E provider metrics: provider-request-latency-seconds=%s input-tokens=%s cached-input-tokens=%s connection-id=%s reuse-count=%s"
    (plist-get metrics :provider-request-latency-seconds)
    (plist-get metrics :input-tokens)
    (plist-get metrics :cached-input-tokens)
    (plist-get metrics :connection-id)
-   (plist-get metrics :reuse-count)
-   (plist-get metrics :fallback-reason)))
+   (plist-get metrics :reuse-count)))
 
 (ert-deftest e-live-e2e-test-provider-metrics-record-reports-bounded-scalars ()
   "Metric extraction preserves unavailable cache fields and reports once."
@@ -198,8 +195,7 @@ status is intentionally not part of this measurement record."
               '(:status done
                 :elapsed-seconds 0.417
                 :diagnostics (:websocket-connection-id "conn-1"
-                              :websocket-reuse-count 2
-                              :websocket-fallback-reason nil))
+                              :websocket-reuse-count 2))
               '(:input-tokens 321))))
         (should (= (plist-get metrics :provider-request-latency-seconds)
                    0.417))
@@ -207,7 +203,6 @@ status is intentionally not part of this measurement record."
         (should (eq (plist-get metrics :cached-input-tokens) 'unavailable))
         (should (equal (plist-get metrics :connection-id) "conn-1"))
         (should (= (plist-get metrics :reuse-count) 2))
-        (should (plist-member metrics :fallback-reason))
         (should-not (plist-member metrics :status))
         (e-live-e2e--report-provider-metrics metrics)
         ;; An explicit provider-reported zero remains a numeric measurement.
@@ -227,7 +222,6 @@ status is intentionally not part of this measurement record."
                            (car messages)))
     (should (string-match-p "connection-id=conn-1" (car messages)))
     (should (string-match-p "reuse-count=2" (car messages)))
-    (should (string-match-p "fallback-reason=nil" (car messages)))
     (should-not (string-match-p "status=" (car messages)))))
 
 (defun e-live-e2e--request-tool-differences (first second)
@@ -825,13 +819,10 @@ provider turn to settle without an implicit local deadline."
                         'hold-inherited-observation))
             (should (eq (plist-get diagnostics :websocket-request-mode)
                         'full))
-            (should (plist-member diagnostics :websocket-fallback-reason))
-            (should-not (plist-get diagnostics :websocket-fallback-reason))
             (should-not (plist-get diagnostics :previous-response-id-present))
             (should (eq (plist-get diagnostics :websocket-reused) t))
             (should (= (plist-get diagnostics :websocket-reuse-count) 1))
             (dolist (key '(:websocket-request-mode
-                           :websocket-fallback-reason
                            :previous-response-id-present
                            :websocket-reused
                            :websocket-reuse-count))
@@ -850,7 +841,9 @@ provider turn to settle without an implicit local deadline."
     (unless (e-openai--builtin-codex-profile-p provider-id profile)
       (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
     (should (eq (plist-get profile :response-store) :json-false))
-    (should (= (plist-get profile :websocket-idle-close-seconds) 600)))
+    ;; The built-in profile uses the general configurable socket policy; it
+    ;; does not carry a Codex-specific timeout override.
+    (should-not (plist-member profile :websocket-idle-close-seconds)))
   (let* ((old-marker "LIVE-OLDER-OBSERVATION")
          (new-marker "LIVE-CURRENT-OBSERVATION")
          (current-state old-marker)
@@ -1003,12 +996,11 @@ provider turn to settle without an implicit local deadline."
                               (list r1 r2)))
           (should (eq (plist-get warm-diagnostics :websocket-request-mode)
                       'incremental))
-          (should (eq (plist-get warm-diagnostics
-                                 :websocket-anchor-position)
-                      'older))
-          (should (= (plist-get warm-diagnostics
-                                :websocket-idle-close-seconds)
-                     600))
+          (should (numberp (plist-get warm-diagnostics
+                                      :websocket-idle-close-seconds)))
+          (should (>= (plist-get warm-diagnostics
+                                  :websocket-idle-close-seconds)
+                       0))
           (should (eq (plist-get warm-diagnostics :websocket-reused) t))
           (should warm-finished-event)
           (should (= (length warm-finished-events) 1))
@@ -1033,9 +1025,6 @@ provider turn to settle without an implicit local deadline."
                                             :cached-input-tokens))))
           (should (stringp (plist-get warm-metrics :connection-id)))
           (should (numberp (plist-get warm-metrics :reuse-count)))
-          (should (or (null (plist-get warm-metrics :fallback-reason))
-                      (symbolp (plist-get warm-metrics :fallback-reason))
-                      (stringp (plist-get warm-metrics :fallback-reason))))
           (should (equal (plist-get first-diagnostics
                                     :websocket-connection-id)
                          (plist-get warm-diagnostics
@@ -1043,14 +1032,13 @@ provider turn to settle without an implicit local deadline."
           (should warm-finished-event)
           (should (= (length warm-finished-events) 1))
           (should (eq (plist-get warm-finished-diagnostics
-                                 :websocket-anchor-position)
-                      'older))
-          (should (= (plist-get warm-finished-diagnostics
-                                :websocket-idle-close-seconds)
-                     600))
-          (should (eq (plist-get warm-finished-diagnostics
                                  :websocket-request-mode)
                       'incremental))
+          (should (numberp (plist-get warm-finished-diagnostics
+                                      :websocket-idle-close-seconds)))
+          (should (>= (plist-get warm-finished-diagnostics
+                                  :websocket-idle-close-seconds)
+                       0))
           (should (eq (plist-get warm-finished-diagnostics
                                  :previous-response-id-present)
                       t))
