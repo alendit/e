@@ -1,0 +1,305 @@
+#+title: Feature 88 Addendum 3 Specification Review 02
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This independent incremental specification Tick reviewed exact revision
+=e62b8c30f19e0b0c5c5646263349fee019950d1a=.
+
+The remediation closes P1-01 and P2-02.  P2-03 is substantially corrected but
+remains incomplete: external evidence now has identity, freshness, failure, and
+telemetry rules, yet =inconclusive-timeout= depends on a “bounded timeout” whose
+declared bound is absent from both the scenario definition and mandatory
+evidence record.
+
+Findings:
+
+- P0: none.
+- P1: none.
+- P2: one.
+- P3: none.
+
+Every F88A3 semantic row is coherent and feasible against current ownership.
+The only uncleared required specification cell is exact-limit handling for the
+external scenario timeout.  Addendum 3 is therefore not yet at a specification
+fixed point or implementation-ready.
+
+External capability status remains =capability-unconfirmed=.  No valid external
+run was performed, and there is no =product-contract-failure=.
+
+* Reviewed revision and mode
+
+Review mode: incremental specification review.
+
+Reviewed target:
+
+- =docs/feats/88-generational-context-ephemeral-frames/addendum3.org=
+- exact revision =e62b8c30f19e0b0c5c5646263349fee019950d1a=
+
+The remediation delta from Review 01 changes only =addendum3.org= and adds
+=addendum3-review-01.org=.  Current source and tests are unchanged, so
+unaffected source evidence from Review 01 was carried forward and affected
+delivery, projection, continuation, retry, and cleanup owners were reread.
+
+The reviewer changed no file, created no commit, contacted no running Emacs,
+and made no credentialed provider request.
+
+* Review 01 finding dispositions
+
+** DONE P1-01: late-input delivery truth and anchor safety now agree
+
+=F88A3-DELIVERY= states that current-state and dynamic-context input is
+=inherited= for profiles adopting =F88A3-LAYOUT=.  The status and delivery
+sections explicitly supersede the first addendum’s replacement claim only for
+those profiles and prohibit observation-bearing responses and descendants from
+becoming durable cross-turn anchors.
+
+This is feasible through existing owners:
+
+- profile capability resolution already supports conservative =inherited=
+  delivery at =lisp/adapters/openai/e-openai.el:760-849=;
+- the harness rejects linear anchor selection for inherited observations at
+  =lisp/core/e-harness.el:3539-3595=;
+- inherited observation candidates are rejected for persistence at
+  =lisp/core/e-harness.el:3910-3946=; and
+- the loop separately admits an immediate-followup-only candidate for the
+  matching in-turn tool result at =lisp/core/e-loop.el:80-158,420-537=.
+
+The correction therefore changes capability truth and adapter projection
+without requiring a provider-specific harness switch or falsely clean durable
+anchor.
+
+** DONE P2-02: one contract authority and conditional mechanism appendix exist
+
+=F88A3-SEM= through =F88A3-COMPAT= form one declared normative matrix.  Later
+sections reference those IDs and keep current fields, helper shapes, deletion
+inventory, test names, and likely scalar state in a conditional implementation
+appendix.
+
+The document now includes:
+
+- stable IDs, owner, public composition, slice, and evidence for every
+  requirement;
+- explicit non-goals and compatibility boundaries;
+- a justified one-retry record;
+- =retain=, =strengthen=, =replace=, and =delete= test dispositions; and
+- no copied Tick/Tock numbering, commit, reviewer-selection, or stop procedure.
+
+No contradictory or unassigned durable requirement was found.
+
+** INCOMPLETE P2-03: external timeout classification has no declared bound
+
+The remediation correctly adds:
+
+- separately reportable minimal and tool-heavy external scenarios;
+- provider, endpoint, transport, model, profile, layout, cache-key derivation,
+  request-shape, timestamp, and revision identity;
+- seven-day freshness and immediate invalidation rules;
+- distinct availability and product-failure statuses; and
+- observational classification for ratio, latency, and warm/cold frequency.
+
+However, =addendum3.org:148= classifies a “bounded timeout,” while the mandatory
+record at =:132-136= contains neither the predeclared timeout nor elapsed
+duration.  No scenario definition supplies the bound.
+
+Consequently, two executions can apply =inconclusive-timeout= at different
+unstated boundaries, and a later reviewer cannot reproduce or audit that
+status.  This is an incomplete closure of P2-03, not an external product
+failure.
+
+*** Exact correction
+
+Replace the paragraph beginning “Each record contains” with:
+
+#+begin_example
+Each record contains provider/profile ID, exact base-URL identity, Responses
+WebSocket transport, store mode, native requester identity, exact model ID,
+prompt-layout revision, prompt-cache-key derivation revision, material request
+shape, scenario name, timestamp, repository revision, total input tokens,
+cached input tokens, the scenario's predeclared total timeout, elapsed duration,
+and result.
+
+Each scenario runner declares its total timeout before sending the first
+request.  The timeout is private execution configuration rather than a durable
+F88A3 contract number: it bounds evidence collection but does not change the
+required provider outcome or capability identity.  A run that does not conclude
+before its declared bound is inconclusive-timeout.  Every other result retains
+the failure classification below.
+#+end_example
+
+This keeps the timeout local and revisable while making the external result
+auditable.  It does not require adding another normative numeric limit to the
+matrix.
+
+* Contract-and-evidence matrix disposition
+
+No semantic row needs replacement.
+
+| Contract | Incremental disposition | Status |
+|----------+-------------------------+--------|
+| =F88A3-SEM= | Canonical next-turn reconstruction and raw-bundle/lineage exclusion remain coherent with the accepted Feature 88 lifetime owner. | cleared |
+| =F88A3-LAYOUT= | Stable instructions, ordered stable prefix, developer-role frontier, and supported breakpoint are one adapter-owned observable contract.  Current segment identity permits the required projection. | cleared |
+| =F88A3-DELIVERY= | Inherited late input, immediate-only contaminated lineage, and unchanged older-profile behavior close P1-01. | cleared |
+| =F88A3-TOOL= | Matching immediate continuation, complete canonical recovery, both error forms, zero/one retry, and next-turn exclusion are bounded and feasible. | cleared |
+| =F88A3-PROMOTION= | Existing core provenance, commit-before-dispatch, and invalid-promotion failure contract remains accepted. | cleared |
+| =F88A3-CACHE= | Semantic row and evidence topology are sound; the execution record remains incomplete for timeout classification. | candidate: P2-03 |
+| =F88A3-CLEANUP= | Historical ledger, eviction, older-anchor diagnostics, Codex idle override, and wire-size acceptance are explicitly removed while immediate state/general socket policy remain. | cleared |
+| =F88A3-COMPAT= | Generic anchors, independent compaction/continuation consumers, persisted audit data, unrelated transports, and explicit non-goals remain bounded. | cleared |
+
+* Required specification-cell ledger
+
+| Cell | Evidence and disposition | Status |
+|------+--------------------------+--------|
+| Single normative authority | The matrix is sole authority; subsequent sections use IDs and purpose-specific detail. | cleared |
+| Durable contract boundary | Private state shapes, current helper/test names, and deletion inventory are conditional implementation material. | cleared |
+| Scenario diagnosability | Semantic, layout, immediate-tool, rejected-continuation, minimal cache, tool-heavy, and cleanup scenarios have distinct observable invariants and localization signals. | cleared |
+| Evidence topology | Repository-controlled semantics remain deterministic; provider cache behavior is external; ratio, latency, and frequency remain observational. | cleared |
+| External freshness | Identity, seven-day age rule, owner-change invalidation, and reuse status are explicit. | cleared |
+| Telemetry decision power | Every named metric without a threshold is explicitly observational. | cleared |
+| Exact-limit justification | One retry and seven-day freshness have complete records.  The external “bounded timeout” is neither predeclared nor recorded. | candidate: P2-03 |
+| Workflow boundary | Feature targets and evidence are present without copied fixpoint mechanics. | cleared |
+
+No required cell was silently accepted.  No architectural follow-up was
+created, updated, activated, closed, or used to defer current scope.
+
+* Exact bounds audit
+
+| Bound | Disposition |
+|-------+-------------|
+| one canonical retry | Correctness role, workload, additional-request cost, zero/one-over behavior, and revision trigger are explicit; cleared |
+| seven calendar days | Drift role, bounded workload, execution cost, exact/one-over freshness behavior, and revision trigger are explicit; cleared |
+| external scenario timeout | Mentioned as bounded but absent from scenario and record; P2-03 |
+| 4,864/5,450 historical tokens | Correctly observational and stale for acceptance; not normative |
+| removed 256-entry ledgers and 600-second override | Historical mechanism limits to delete, not new Addendum 3 bounds |
+
+* Test-disposition audit
+
+| Disposition | Review result |
+|-------------+---------------|
+| retain | Core observe/promote/forget, multi-tool one-shot, generic branchable, compaction, disabled-feature, session-load, and transport contracts remain stable. |
+| strengthen | Inherited-frontier contamination, actual stable-prefix breakpoint, both rejection forms, and exact one-retry boundaries match the new contracts. |
+| replace | Top-level replacement, explicit-cache/older-clean-anchor, live older-anchor, and changed-instructions continuation tests encode superseded behavior. |
+| delete | Historical-response, eviction, branch-position, Codex idle override, fake-time retention, and wire-size/count assertions are obsolete mechanism evidence. |
+| replace rather than delete wholesale | Terminal and transport lifecycle contracts remain useful after ledger-specific assertions are removed. |
+
+A simpler implementation can satisfy the retained tests without recreating the
+Addendum 2 response graph.
+
+* Current implementation feasibility
+
+Current source does not implement Addendum 3, but its ownership boundaries can
+support it without speculative architecture:
+
+- the adapter already consumes semantic segment identity, renders system
+  messages as developer-role Responses input, and owns breakpoint placement;
+- changing affected profile delivery to =inherited= naturally leaves
+  current/dynamic segments in explicit input;
+- harness selection and persistence already treat inherited observations as
+  contaminated;
+- loop ownership already distinguishes immediate tool continuation from
+  durable candidate acceptance;
+- the WebSocket owner already has a complete-body recovery path and one-retry
+  state that can be narrowed from historical ledgers to latest causal state;
+- both =response.failed= and top-level =error= can be normalized at the adapter
+  boundary without changing core policy; and
+- the historical ledger, eviction, branch-position, and Codex-specific idle
+  cluster is localized in the OpenAI adapter and its tests.
+
+The intended frontier reorder may be implemented from harness-owned segments;
+it does not require changing durable session order or teaching core about
+OpenAI fields.
+
+* Scenario coverage
+
+| Scenario | Disposition |
+|----------+-------------|
+| =canonical-observe-promote-forget= | cleared |
+| =stable-prefix-frontier-pair= | cleared |
+| =latest-matching-tool-follow-up= | cleared |
+| =rejected-latest-continuation= | cleared |
+| =chatgpt-canonical-warm-prefix= | specification invariant cleared; execution timeout record pending P2-03; capability unconfirmed |
+| =chatgpt-canonical-tool-heavy= | specification invariant cleared; execution timeout record pending P2-03; capability unconfirmed |
+| =obsolete-cluster-absent= | cleared |
+
+* Verification
+
+Fresh focused baseline checks at the reviewed revision:
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el \
+  e-openai-test-request-local-current-state-replaces-instructions \
+  e-openai-test-websocket-profile-idle-close-boundary-clears-ledger
+#+end_src
+
+Result: 2/2 expected, zero unexpected.
+
+#+begin_src sh
+eldev test -f test/e-provider-continuation-integration-test.el \
+  e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor
+#+end_src
+
+Result: 1/1 expected, zero unexpected.
+
+The first concurrent Eldev invocation encountered its batch lock while the
+second suite was running; the lock-conflicted command was rerun sequentially
+and passed.  This was runner contention, not a product failure.
+
+Other checks:
+
+- =git rev-parse HEAD= matched
+  =e62b8c30f19e0b0c5c5646263349fee019950d1a=.
+- =git diff --check a21ad9b8..HEAD= passed.
+- The credential file remained absent.
+- Final shared-worktree read-back showed an unrelated unstaged change to
+  =docs/feats/87-sqlite-session-board-persistence/plan.org=; it was neither
+  inspected nor modified by this review.
+- No full implementation gate was run because the reviewed target remains a
+  specification and current tests intentionally prove the superseded baseline.
+
+* Architecture self-check
+
+1. After P2-03 closes, the package is a useful stopping point with simpler
+   canonical semantics and measurable warm-prefix reuse.
+2. It moves toward provider-neutral lifetime ownership with adapter-local
+   layout, transport, and cache behavior.
+3. Stable lifetime and promotion decisions are direct; external cache behavior
+   remains renewable evidence.
+4. Core, session, harness, loop, and adapter responsibilities each remain
+   cohesive.
+5. Removing historical response machinery reduces coupling.
+6. Stable policy does not depend on concrete ChatGPT transport state.
+7. Network, socket, retry, cache, and evidence side effects remain outward.
+8. No durable state is added; immediate response state has the smallest useful
+   lifetime.
+9. Increased canonical wire bytes are explicit and do not masquerade as the
+   performance objective.
+10. Delivery capability values remain substitutable because they describe real
+    inherited versus replaceable semantics.
+11. Historical persisted records remain readable and safely ineligible without
+    a compatibility shim.
+12. The obsolete ledger/eviction/older-anchor/idle-override cluster is
+    removable now.
+13. Expected continuation loss has one bounded recovery; unexpected failures
+    surface.
+14. Contract tests remain stable while obsolete mechanism tests are replaced or
+    deleted.
+
+* Implementation readiness
+
+Not ready.
+
+Required next action:
+
+1. apply the exact P2-03 evidence-record correction;
+2. keep =F88A3-SEM= through =F88A3-COMPAT= unchanged unless that correction
+   reveals a contradiction;
+3. keep Feature 88 =Planned=;
+4. run another fresh independent specification Tick; and
+5. begin implementation only after every required specification cell is
+   cleared or not applicable.
+
+External status remains =capability-unconfirmed=.  That status is separate from
+this specification defect: after the design reaches a deterministic fixed
+point it need not block implementation, but it prevents =Done= until both
+external scenarios have current or reusable successful evidence.
