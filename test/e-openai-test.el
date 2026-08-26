@@ -248,43 +248,86 @@
       :prompt_cache_retention "24h"))))
 
 (ert-deftest e-openai-test-gpt56-marks-stable-context-cache-boundary ()
-  "GPT-5.6 caches only the stable system prefix in explicit mode."
-  (let* ((body
+  "GPT-5.6 keeps the stable prefix before an inherited late frontier."
+  (let* ((options
+          '(:model "gpt-5.6-sol"
+            :instructions "Base instructions."
+            :prompt-cache-key "cache-key"
+            :observation-delivery inherited))
+         (first-messages
+          '((:role system :content "Static instructions.")
+            (:role system :content "Stable project guidance.")
+            (:role user :content "hello C")
+            (:role system :content "Current buffer state C.")))
+         (second-messages
+          '((:role system :content "Static instructions.")
+            (:role system :content "Stable project guidance.")
+            (:role user :content "hello D")
+            (:role system :content "Current buffer state D.")))
+         (segments
+          '((:kind static-prefix
+             :id static
+             :messages ((:role system :content "Static instructions.")))
+            (:kind stable-context
+             :id stable
+             :messages ((:role system :content "Stable project guidance.")))
+            (:kind history
+             :id history
+             :messages ((:role user :content "hello C")))
+            (:kind current-state
+             :id dynamic
+             :messages ((:role system :content "Current buffer state C.")))))
+         (first
           (e-openai-codex-request-body
-           :messages '((:role system :content "Static instructions.")
-                       (:role system :content "Stable project guidance.")
-                       (:role system :content "Current buffer state.")
-                       (:role user :content "hello"))
-           :options
-           '(:model "gpt-5.6-sol"
-             :instructions "Base instructions."
-             :prompt-cache-key "cache-key"
-             :segments ((:kind static-prefix
-                         :id static
-                         :messages ((:role system
-                                     :content "Static instructions.")))
-                        (:kind stable-context
-                         :id stable
-                         :messages ((:role system
-                                     :content "Stable project guidance.")))
-                        (:kind current-state
-                         :id dynamic
-                         :messages ((:role system
-                                     :content "Current buffer state.")))))))
-         (input (append (plist-get body :input) nil))
-         (static-block (aref (plist-get (nth 0 input) :content) 0))
-         (stable-block (aref (plist-get (nth 1 input) :content) 0))
-         (dynamic-block (aref (plist-get (nth 2 input) :content) 0)))
-    (should (equal (plist-get body :instructions) "Base instructions."))
-    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
-                   '("developer" "developer" "developer" "user")))
-    (should-not (plist-member static-block :prompt_cache_breakpoint))
-    (should (equal (plist-get stable-block :prompt_cache_breakpoint)
+           :messages first-messages
+           :options (plist-put (copy-tree options) :segments segments)))
+         (second-segments
+          (copy-tree segments))
+         (_ (plist-put
+             (car (plist-get (nth 2 second-segments) :messages))
+             :content "hello D"))
+         (_ (plist-put
+             (car (plist-get (nth 3 second-segments) :messages))
+             :content "Current buffer state D."))
+         (second
+          (e-openai-codex-request-body
+           :messages second-messages
+           :options (plist-put (copy-tree options)
+                               :segments second-segments)))
+         (first-input (append (plist-get first :input) nil))
+         (second-input (append (plist-get second :input) nil))
+         (first-static-block (aref (plist-get (nth 0 first-input) :content) 0))
+         (first-stable-block (aref (plist-get (nth 1 first-input) :content) 0))
+         (first-frontier-block
+          (aref (plist-get (nth 3 first-input) :content) 0)))
+    (should (equal (plist-get first :instructions) "Base instructions."))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) first-input)
+                   '("developer" "developer" "user" "developer")))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) second-input)
+                   '("developer" "developer" "user" "developer")))
+    ;; The stable prefix is byte/order-identical while only the late frontier
+    ;; changes.  The observation retains instruction authority as developer
+    ;; input and is not copied into top-level instructions.
+    (should (equal (cl-subseq first-input 0 2)
+                   (cl-subseq second-input 0 2)))
+    (should (equal (plist-get (aref (plist-get (nth 2 first-input) :content) 0)
+                             :text)
+                   "hello C"))
+    (should (equal (plist-get first-frontier-block :text)
+                   "Current buffer state C."))
+    (should-not (string-match-p "Current buffer state C."
+                                (prin1-to-string second)))
+    (should (equal (plist-get
+                    (aref (plist-get (nth 3 second-input) :content) 0)
+                    :text)
+                   "Current buffer state D."))
+    (should-not (plist-member first-static-block :prompt_cache_breakpoint))
+    (should (equal (plist-get first-stable-block :prompt_cache_breakpoint)
                    '(:mode "explicit")))
-    (should-not (plist-member dynamic-block :prompt_cache_breakpoint))
-    (should (equal (plist-get body :prompt_cache_options)
+    (should-not (plist-member first-frontier-block :prompt_cache_breakpoint))
+    (should (equal (plist-get first :prompt_cache_options)
                    '(:mode "explicit")))
-    (should (equal (plist-get body :prompt_cache_key) "cache-key"))))
+    (should (equal (plist-get first :prompt_cache_key) "cache-key"))))
 
 (ert-deftest e-openai-test-gpt55-keeps-flattened-cache-prefix-shape ()
   "Older models keep automatic caching and flattened system instructions."
@@ -308,25 +351,85 @@
     (should (equal (length (plist-get body :input)) 1))
     (should-not (plist-member body :prompt_cache_options))))
 
-(ert-deftest e-openai-test-gpt56-without-cache-key-keeps-flattened-shape ()
-  "GPT-5.6 does not select explicit mode without its stable routing key."
+(ert-deftest e-openai-test-gpt56-without-cache-key-direct-body-keeps-flattened-shape ()
+  "A direct GPT-5.6 body without segments keeps the legacy projection."
   (let ((body
          (e-openai-codex-request-body
           :messages '((:role system :content "Stable instructions.")
                       (:role system :content "Dynamic state.")
                       (:role user :content "hello"))
           :options
-          '(:model "gpt-5.6-sol"
-            :segments ((:kind static-prefix
-                        :messages ((:role system
-                                    :content "Stable instructions.")))
-                       (:kind current-state
-                        :messages ((:role system
-                                    :content "Dynamic state."))))))))
-    (should (string-match-p "Stable instructions"
-                            (plist-get body :instructions)))
+          '(:model "gpt-5.6-sol"))))
+    (should (equal (plist-get body :instructions)
+                   "You are a helpful assistant.\n\nStable instructions.\n\nDynamic state."))
     (should (equal (length (plist-get body :input)) 1))
     (should-not (plist-member body :prompt_cache_options))))
+
+(ert-deftest e-openai-test-inherited-frontier-without-cache-key-keeps-developer-input ()
+  "A developer-input profile keeps an inherited frontier without cache fields."
+  (let* ((messages
+          '((:role system :content "Static instructions.")
+            (:role system :content "Stable project guidance.")
+            (:role user :content "hello")
+            (:role system :content "Current buffer state.")))
+         (body
+          (e-openai-codex-request-body
+           :messages messages
+           :options
+           '(:model "gpt-5.5"
+             :responses-context-layout developer-input
+             :observation-delivery inherited
+             :segments ((:kind static-prefix
+                         :messages ((:role system
+                                     :content "Static instructions.")))
+                        (:kind stable-context
+                         :messages ((:role system
+                                     :content "Stable project guidance.")))
+                        (:kind history
+                         :messages ((:role user :content "hello")))
+                        (:kind current-state
+                         :messages ((:role system
+                                     :content "Current buffer state.")))))))
+         (input (append (plist-get body :input) nil)))
+    (should (equal (plist-get body :instructions)
+                   "You are a helpful assistant."))
+    (should-not (plist-member body :prompt_cache_key))
+    (should-not (plist-member body :prompt_cache_options))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                   '("developer" "developer" "user" "developer")))
+    (should (equal
+             (plist-get
+              (aref (plist-get (nth 0 input) :content) 0)
+              :text)
+             "Static instructions."))
+    (should (equal
+             (plist-get
+              (aref (plist-get (nth 3 input) :content) 0)
+              :text)
+             "Current buffer state."))
+    (should-not
+     (plist-member
+      (aref (plist-get (nth 1 input) :content) 0)
+      :prompt_cache_breakpoint))))
+
+(ert-deftest e-openai-test-inherited-frontier-rejects-mismatched-canonical-partition ()
+  "A canonical inherited frontier cannot silently accept a mismatched partition."
+  (should-error
+   (e-openai-codex-request-body
+    :messages '((:role system :content "Stable instructions.")
+                (:role user :content "hello")
+                (:role system :content "Current buffer state."))
+    :options
+    '(:model "gpt-5.5"
+      :responses-context-layout developer-input
+      :observation-delivery inherited
+      :segments ((:kind stable-context
+                  :messages ((:role system
+                              :content "Stable instructions.")))
+                 (:kind current-state
+                  :messages ((:role system
+                              :content "Current buffer state."))))))
+   :type 'e-openai-context-projection-invalid))
 
 (ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
   "A matching layout anchor sends dynamic context without stable duplication."
@@ -383,6 +486,7 @@
              :prompt-cache-key "cache-key"
              :prompt-cache-breakpoint-mode nil
              :responses-context-layout developer-input
+             :observation-delivery inherited
              :provider-continuation t
              :responses-transport websocket
              :response-store :json-false
@@ -692,8 +796,10 @@
                       :name "Custom Codex")
            nil :provider 'codex))
          (custom-profile
-          (plist-put (copy-sequence openai-profile)
-                     :base-url "https://custom.example.test/v1"))
+          (plist-put
+           (plist-put (copy-sequence openai-profile)
+                      :base-url "https://custom.example.test/v1")
+           :observation-delivery 'request-local-replaceable))
          (custom-proof (e-openai--profile-context-capabilities
                         custom-profile nil
                         :provider 'custom-proven
@@ -718,9 +824,9 @@
            :provider 'custom-proven
            :request-function #'ignore)))
     (dolist (capabilities (list canonical-openai canonical-codex))
-      (should (equal (plist-get capabilities :observation-delivery)
-                     e-openai--request-local-observation-delivery-map))
-      (e-openai-test--assert-observation-delivery capabilities t)
+      (should (eq (plist-get capabilities :observation-delivery)
+                  'inherited))
+      (e-openai-test--assert-observation-delivery capabilities nil)
       (should (eq (plist-get capabilities :continuation) 'linear)))
     (dolist (capabilities (list openai-endpoint-override
                                 codex-endpoint-override
@@ -1116,7 +1222,12 @@
                      :provider-compaction-source-entry-id nil
                      :input-message-count 1
                      :tool-count 1
-                     :responses-transport http)))))
+                     :responses-transport http
+                     :observation-delivery inherited
+                     :replaceable-current-state-present nil
+                     :current-state-fingerprint nil
+                     :context-rendering-strategy nil
+                     :provider-anchor-safety nil)))))
 
 (ert-deftest e-openai-test-profile-records-request-context-spans ()
   "Enabled dev profiling records OpenAI request construction subspans."
@@ -1590,7 +1701,7 @@
        :prompt-cache-breakpoint-mode nil
        :responses-context-layout developer-input
        :include-encrypted-reasoning t
-       :observation-delivery request-local-replaceable
+       :observation-delivery inherited
        :websocket-idle-close-seconds
        ,e-openai--builtin-codex-websocket-idle-close-seconds)
       (custom-codex
@@ -1609,7 +1720,7 @@
        :response-store :json-false
        :responses-context-layout developer-input
        :prompt-cache-breakpoint-mode explicit
-       :observation-delivery request-local-replaceable
+       :observation-delivery inherited
        :include-encrypted-reasoning t
        :continuation t
        :requires-openai-auth nil
@@ -1635,7 +1746,7 @@
                   'developer-input))
       (should (plist-get profile :include-encrypted-reasoning))
       (should (eq (plist-get profile :observation-delivery)
-                  'request-local-replaceable))
+                  'inherited))
       (should (= (plist-get profile :websocket-idle-close-seconds)
                  e-openai--builtin-codex-websocket-idle-close-seconds)))
     (let ((backend (e-openai-backend-create :provider 'codex)))
@@ -1655,11 +1766,11 @@
         (should (eq (plist-get profile :responses-context-layout)
                     'developer-input))
         (should (eq (plist-get profile :observation-delivery)
-                    'request-local-replaceable))
+                    'inherited))
         (should (= (plist-get profile :websocket-idle-close-seconds)
                    e-openai--builtin-codex-websocket-idle-close-seconds))
         (should (equal (plist-get capabilities :observation-delivery)
-                       e-openai--request-local-observation-delivery-map))))))
+                       'inherited))))))
 
 (ert-deftest e-openai-test-builtin-codex-normalization-preserves-opt-out ()
   "An explicit inherited Codex declaration remains conservative."
@@ -1782,13 +1893,13 @@
                 'developer-input))
     (should (eq (plist-get profile :prompt-cache-breakpoint-mode) 'explicit))
     (should (eq (plist-get profile :observation-delivery)
-                'request-local-replaceable))
+                'inherited))
     (should (plist-get profile :include-encrypted-reasoning))
     (should (plist-get profile :continuation))
     (should (equal (plist-get profile :default-model) "gpt-5.6"))
     (should (equal (plist-get capabilities :observation-delivery)
-                   e-openai--request-local-observation-delivery-map))
-    (e-openai-test--assert-observation-delivery capabilities t)))
+                   'inherited))
+    (e-openai-test--assert-observation-delivery capabilities nil)))
 
 (ert-deftest e-openai-test-codex-and-api-profiles-render-equivalent-common-body ()
   "Canonical providers share one body modulo explicit-cache capability."
@@ -1800,13 +1911,15 @@
                       (list :access_token (e-openai-test--jwt)
                             :refresh_token "refresh"))))
          (messages '((:role system :content "stable guidance")
-                     (:role system :content "dynamic state")
-                     (:role user :content "hello")))
+                     (:role user :content "hello")
+                     (:role system :content "dynamic state")))
          (options '(:model "gpt-5.6"
                     :prompt-cache-key "shared-key"
                     :segments
                     ((:kind stable-context
                       :messages ((:role system :content "stable guidance")))
+                     (:kind history
+                      :messages ((:role user :content "hello")))
                      (:kind current-state
                       :messages ((:role system :content "dynamic state")))))))
     (unwind-protect

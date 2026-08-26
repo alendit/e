@@ -824,7 +824,7 @@ covered by the adapter tests below."
                   'done)))))
 
 (ert-deftest e-provider-continuation-integration-test-websocket-gpt56-explicit-cache ()
-  "Built-in Codex and OpenAI replace current state on their native sockets."
+  "Built-in Codex and OpenAI use canonical late-frontier input on native sockets."
   (dolist (provider-id '(codex openai))
     (let* ((process-environment
             (cons "OPENAI_API_KEY=test-api-token" process-environment))
@@ -913,12 +913,9 @@ covered by the adapter tests below."
          "session-one"
          '(:prompt-cache-default t))
         (e-board-e2e-prompt-batch harness "session-one" "first prompt")
-        (let* ((anchors
-                (e-session-provider-anchors
-                 (e-harness-sessions harness) "session-one"))
-               (latest (car (last anchors))))
-          (should (equal (plist-get (plist-get latest :metadata) :response-id)
-                         "resp-1")))
+        (should-not
+         (e-session-provider-anchors
+          (e-harness-sessions harness) "session-one"))
         (setq current-state "OBSERVATION-NEW")
         (e-board-e2e-prompt-batch harness "session-one" "second prompt")
         (let* ((ordered (nreverse sends))
@@ -942,13 +939,13 @@ covered by the adapter tests below."
                    (plist-get (plist-get anchor :metadata) :response-id))
                  anchors)))
           (ert-info ((format "Built-in WebSocket provider: %S" provider-id))
-            (should (equal (plist-get capabilities :observation-delivery)
-                           e-openai--request-local-observation-delivery-map))
+            (should (eq (plist-get capabilities :observation-delivery)
+                        'inherited))
             (dolist (kind '(current-state dynamic-context))
               (should
                (eq (e-backend-observation-delivery-for-kind
                     capabilities kind)
-                   'request-local-replaceable)))
+                   'inherited)))
             (dolist (kind '(tool-result trace retrieved-excerpt))
               (should
                (eq (e-backend-observation-delivery-for-kind
@@ -962,47 +959,42 @@ covered by the adapter tests below."
                            '("reasoning.encrypted_content")))
             (should-not (plist-member first :previous_response_id))
             (should (equal (plist-get first :instructions)
-                           "You are a helpful assistant.\n\nOBSERVATION-OLD"))
-            (should-not (string-match-p
-                         "OBSERVATION-OLD"
-                         (prin1-to-string
-                          (let ((without-instructions (copy-sequence first)))
-                            (cl-remf without-instructions :instructions)
-                            without-instructions))))
+                           "You are a helpful assistant."))
+            (should (string-match-p "OBSERVATION-OLD"
+                                    (prin1-to-string first-input)))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    first-input)
-                           '("developer" "user")))
+                           '("developer" "user" "developer")))
             (should (equal (plist-get stable-block :text)
                            "stable instructions"))
             (should (eq (plist-get second :store) :json-false))
             (should (equal (plist-get second :include)
                            '("reasoning.encrypted_content")))
-            (should (equal (plist-get second :previous_response_id) "resp-1"))
+            (should-not (plist-member second :previous_response_id))
             (should (equal (plist-get second :instructions)
-                           "You are a helpful assistant.\n\nOBSERVATION-NEW"))
+                           "You are a helpful assistant."))
             (should-not (string-match-p "OBSERVATION-OLD" second-literal))
-            (should-not (string-match-p "OBSERVATION-NEW"
-                                        (prin1-to-string second-input)))
+            (should (string-match-p "OBSERVATION-NEW"
+                                    (prin1-to-string second-input)))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    second-input)
-                           '("user")))
+                           '("developer" "user" "assistant" "user"
+                             "developer")))
             (should (equal (plist-get
-                            (car (plist-get (car second-input) :content))
+                            (car (plist-get (nth 3 second-input) :content))
                             :text)
                            "second prompt"))
             (should (eq (plist-get diagnostics :websocket-request-mode)
-                        'incremental))
-            (should (eq (plist-get diagnostics :previous-response-id-present)
-                        t))
+                        'full))
+            (should-not (plist-get diagnostics :previous-response-id-present))
             (should (eq (plist-get diagnostics :websocket-reused) t))
             (should (eq (plist-get diagnostics :observation-delivery)
-                        'request-local-replaceable))
-            (should (eq (plist-get diagnostics
-                                   :replaceable-current-state-present)
-                        t))
+                        'inherited))
+            (should-not (plist-get diagnostics
+                                   :replaceable-current-state-present))
             (should (eq (plist-get diagnostics :provider-anchor-safety)
-                        'advance-eligible))
-            (should (equal anchor-ids '("resp-1" "resp-2")))
+                        'hold-inherited-observation))
+            (should-not anchor-ids)
             (if (eq provider-id 'codex)
                 (progn
                   (should-not (plist-member first :prompt_cache_options))

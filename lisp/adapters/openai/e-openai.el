@@ -448,12 +448,12 @@ Responses profiles.")
         :response-store :json-false
         :responses-context-layout 'developer-input
         :prompt-cache-breakpoint-mode 'explicit
-        ;; The first-party Responses API documents that top-level
-        ;; `instructions' are request-local when `previous_response_id' is
-        ;; supplied.  Gate this semantic claim per profile and effective wire
-        ;; identity; OpenAI-shaped gateways remain conservative unless they
-        ;; opt in explicitly.
-        :observation-delivery 'request-local-replaceable
+        ;; The canonical layout keeps the changing observation frontier in
+        ;; late developer-role input.  It is therefore inherited by a
+        ;; continuation; only profiles that deliberately retain the complete
+        ;; observation in top-level `instructions' may opt into the older
+        ;; request-local replacement contract.
+        :observation-delivery 'inherited
         :include-encrypted-reasoning t
         :continuation t
         :requires-openai-auth nil
@@ -500,7 +500,7 @@ including its nil no-timer behavior."
                                    (plist-put
                                     normalized
                                     :observation-delivery
-                                    'request-local-replaceable)))
+                                    'inherited)))
                            (setq normalized
                                  (plist-put
                                   normalized
@@ -523,7 +523,7 @@ including its nil no-timer behavior."
      :response-store :json-false
      :prompt-cache-breakpoint-mode nil
      :responses-context-layout developer-input
-     :observation-delivery request-local-replaceable
+     :observation-delivery inherited
      :websocket-idle-close-seconds
      ,e-openai--builtin-codex-websocket-idle-close-seconds
      :include-encrypted-reasoning t
@@ -537,7 +537,7 @@ including its nil no-timer behavior."
      :response-store :json-false
      :responses-context-layout developer-input
      :prompt-cache-breakpoint-mode explicit
-     :observation-delivery request-local-replaceable
+     :observation-delivery inherited
      :include-encrypted-reasoning t
      :continuation t
      :requires-openai-auth nil
@@ -709,9 +709,24 @@ provider requests always materialize this option from the provider profile."
                 (plist-get segment :messages))))
 
 (defun e-openai-codex--segmented-prompt-layout-p (options)
-  "Return non-nil when OPTIONS request distinct system input segments."
-  (or (eq (e-openai-codex--prompt-cache-breakpoint-mode options) 'explicit)
-      (eq (plist-get options :responses-context-layout) 'developer-input)))
+  "Return non-nil when OPTIONS use the semantic segmented input layout.
+
+This is a wire-layout decision, not a cache-breakpoint decision.  The
+developer-input profile declaration keeps stable and changing system messages
+in input even when no prompt-cache key is available when the profile declares
+the inherited delivery contract.  An explicit GPT-5.6 breakpoint declaration
+with a key retains the direct renderer's segmented shape for legacy/direct
+callers."
+  (or (and (eq (e-openai-codex--observation-delivery options)
+              'inherited)
+           (eq (plist-get options :responses-context-layout)
+               'developer-input))
+      (and (e-openai--gpt56-or-later-p (plist-get options :model))
+           (eq (e-openai-codex--prompt-cache-breakpoint-mode options)
+               'explicit)
+           (let ((key (plist-get options :prompt-cache-key)))
+             (and (stringp key)
+                  (not (string-empty-p key)))))))
 
 (defun e-openai-codex--prompt-layout-revision (options)
   "Return the provider-supported prompt layout revision for OPTIONS, or nil."
@@ -1190,7 +1205,7 @@ escape."
           (and provider-compaction-p
                (e-openai-codex--provider-compaction-stable-messages
                 options)))
-         (layout (e-openai-codex--prompt-layout-revision options)))
+         (layout (e-openai-codex--segmented-prompt-layout-p options)))
     ;; Validate the semantic partition even when the segmented instruction
     ;; branch can otherwise derive stable system text without filtering input.
     ;; This prevents an absent/partial segment list from silently duplicating a
@@ -1198,7 +1213,7 @@ escape."
     (when current
       (e-openai-codex--remove-replaceable-current-state messages options))
     (cond
-     ;; In segmented GPT-5.6 layouts stable system guidance remains a
+     ;; In segmented Responses layouts stable system guidance remains a
      ;; developer-input prefix.  The current value is the only changing
      ;; request-local part and is resent in full here.
      ((and current layout)
@@ -1272,6 +1287,70 @@ escape."
                         (e-openai-codex--prompt-layout-revision options)))
         response-id))))
 
+(defun e-openai-codex--move-inherited-frontier-to-end (messages options)
+  "Move inherited observation segments after the canonical durable prefix.
+
+The harness supplies semantic segments for a complete canonical request.  When
+those segments cover MESSAGES exactly, current-state and dynamic-context
+messages are emitted after every other message, preserving the order within
+each group.  A canonical request may carry a harness-owned segment-message
+count when same-turn messages follow that semantic prefix; that exact prefix
+is accepted and the suffix is retained.  A continuation delta,
+provider-compaction projection, or direct caller without segments is already
+owned by another projection and is returned unchanged.  A canonical semantic
+segment list that names a frontier but matches neither the full request nor
+its explicitly counted prefix is invalid and signals instead of silently
+guessing from message shape."
+  (let ((segments (plist-get options :segments))
+        (segment-message-count
+         (plist-get options :context-segment-message-count))
+        (continuation-delta-p
+         (and (e-openai-codex--continuation-response-id options)
+              (plist-member options :provider-anchor-delta-messages)
+              (listp (plist-get options :provider-anchor-delta-messages))))
+        (provider-compaction-p
+         (plist-member options :provider-compaction-output)))
+    (if (or (not (eq (e-openai-codex--observation-delivery options)
+                     'inherited))
+            (not (e-openai-codex--segmented-prompt-layout-p options))
+            (null segments)
+            continuation-delta-p
+            provider-compaction-p)
+        messages
+      (let ((index 0)
+            (frontier-indices nil)
+            (segment-messages nil))
+        (dolist (segment segments)
+          (dolist (message (plist-get segment :messages))
+            (push message segment-messages)
+            (when (memq (plist-get segment :kind)
+                        '(current-state dynamic-context))
+              (push index frontier-indices))
+            (setq index (1+ index))))
+        (setq segment-messages (nreverse segment-messages)
+              frontier-indices (nreverse frontier-indices))
+        (cond
+         ((null frontier-indices)
+          messages)
+         ((not (or (equal segment-messages messages)
+                   (and (integerp segment-message-count)
+                        (= index segment-message-count)
+                        (<= index (length messages))
+                        (equal segment-messages
+                               (cl-subseq messages 0 index)))))
+          (signal
+           'e-openai-context-projection-invalid
+           '("Inherited frontier segments do not cover the canonical request")))
+         (t
+          (append
+           (cl-loop for message in messages
+                    for message-index from 0
+                    unless (memq message-index frontier-indices)
+                    collect message)
+           (mapcar (lambda (message-index)
+                     (nth message-index messages))
+                   frontier-indices))))))))
+
 (defun e-openai-codex--request-input-messages (messages options)
   "Return Responses input messages from MESSAGES and OPTIONS."
   (let* ((provider-compaction-p
@@ -1308,9 +1387,11 @@ escape."
                          (and response-id (listp delta-messages)))
                      source
                    (e-openai-codex--remove-replaceable-current-state
-                    source options))))
+                    source options)))
+         (source (e-openai-codex--move-inherited-frontier-to-end
+                  source options)))
     (if (or provider-compaction-p
-            (e-openai-codex--prompt-layout-revision options))
+            (e-openai-codex--segmented-prompt-layout-p options))
         source
       (seq-remove #'e-openai-codex--system-message-p source))))
 
@@ -1344,7 +1425,7 @@ retained response already carries the stable segment and its earlier marker."
       (let* ((output (plist-get options :provider-compaction-output))
              (output (if (vectorp output) (append output nil) output))
              (stable-messages
-              (if (e-openai-codex--prompt-layout-revision options)
+              (if (e-openai-codex--segmented-prompt-layout-p options)
                   (e-openai-codex--provider-compaction-stable-messages
                    options)))
              (stable-items
@@ -3291,6 +3372,18 @@ OpenAI request and backend-neutral context."
                         effective-options
                         :responses-context-layout
                         (plist-get profile :responses-context-layout)))
+                 ;; Direct adapter callers do not pass through the harness
+                 ;; capability projection.  Materialize the profile's
+                 ;; semantic delivery contract here so the input layout is
+                 ;; stable with or without a prompt-cache key.  Preserve an
+                 ;; explicit harness value when one is already present.
+                 (unless (plist-member effective-options
+                                        :observation-delivery)
+                   (setq effective-options
+                         (plist-put
+                          effective-options
+                          :observation-delivery
+                          (e-openai--profile-observation-delivery profile))))
                  (setq effective-options
                        (plist-put
                         effective-options

@@ -645,7 +645,7 @@ provider turn to settle without an implicit local deadline."
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
 (ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
-  "ChatGPT Codex replaces current state on its proved native continuation."
+  "ChatGPT Codex sends the inherited observation as a late developer frontier."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
@@ -678,7 +678,6 @@ provider turn to settle without an implicit local deadline."
             (symbol-function 'e-openai-codex--websocket-request-start))
             request-bodies
             request-handles
-            first-response-id
             first-assistant
             first-durable-assistant
             second-assistant
@@ -713,16 +712,9 @@ provider turn to settle without an implicit local deadline."
              (e-live-e2e--contains-p
               (plist-get first-durable-assistant :content)
               old-marker))
-            (setq first-response-id
-                  (plist-get
-                   (plist-get
-                    (car
-                     (last
-                      (e-session-provider-anchors
-                       (e-harness-sessions harness) session-id)))
-                    :metadata)
-                   :response-id))
-            (should (stringp first-response-id)))
+            (should-not
+             (e-session-provider-anchors
+              (e-harness-sessions harness) session-id)))
           (setq current-state new-marker)
           (let ((second-result
                  (e-board-e2e-prompt-batch
@@ -759,9 +751,7 @@ provider turn to settle without an implicit local deadline."
                (anchors
                 (e-session-provider-anchors
                  (e-harness-sessions harness) session-id))
-               (newest-anchor (car (last anchors)))
-               (newest-response-id
-                (plist-get (plist-get newest-anchor :metadata) :response-id)))
+               (newest-anchor (car (last anchors))))
           (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
             (should (equal
                      (plist-get
@@ -769,7 +759,7 @@ provider turn to settle without an implicit local deadline."
                        (e-harness-backend harness)
                        nil)
                      :observation-delivery)
-                     e-openai--request-local-observation-delivery-map))
+                     'inherited))
             (should (= (length ordered-bodies) 2))
             (should (= (length ordered-handles) 2))
             (should (e-backend-request-p second-request-handle))
@@ -788,8 +778,7 @@ provider turn to settle without an implicit local deadline."
             (should (eq (plist-get second-body :store) :json-false))
             (should (equal (plist-get second-body :include)
                            ["reasoning.encrypted_content"]))
-            (should (equal (plist-get second-body :previous_response_id)
-                           first-response-id))
+            (should-not (plist-member second-body :previous_response_id))
             (dolist (body (list first-body second-body))
               (should-not (plist-member body :prompt_cache_options))
               (should-not
@@ -798,13 +787,14 @@ provider turn to settle without an implicit local deadline."
                 "prompt_cache_breakpoint")))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    first-input)
-                           '("developer" "user")))
+                           '("developer" "user" "developer")))
             (should-not
              (e-live-e2e--contains-p (prin1-to-string first-input)
                                      old-marker))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    second-input)
-                           '("user")))
+                           '("developer" "user" "assistant" "user"
+                             "developer")))
             (should
              (seq-find
               (lambda (item)
@@ -813,13 +803,11 @@ provider turn to settle without an implicit local deadline."
                  (or (plist-get (aref (plist-get item :content) 0) :text) "")))
               first-input))
             (should (equal (plist-get first-body :instructions)
-                           (concat "You are a helpful assistant.\n\n"
-                                   old-marker)))
+                           "You are a helpful assistant."))
             (should (equal (plist-get second-body :instructions)
-                           (concat "You are a helpful assistant.\n\n"
-                                   new-marker)))
+                           "You are a helpful assistant."))
             (should (e-live-e2e--contains-p
-                     (plist-get second-body :instructions)
+                     (prin1-to-string second-input)
                      new-marker))
             (should-not (e-live-e2e--contains-p
                          second-literal-request
@@ -830,18 +818,16 @@ provider turn to settle without an implicit local deadline."
             (should (equal (plist-get diagnostics :prompt-cache-mode)
                            "implicit-segmented"))
             (should (eq (plist-get diagnostics :observation-delivery)
-                        'request-local-replaceable))
-            (should (eq (plist-get diagnostics
-                                   :replaceable-current-state-present)
-                        t))
+                        'inherited))
+            (should-not (plist-get diagnostics
+                                   :replaceable-current-state-present))
             (should (eq (plist-get diagnostics :provider-anchor-safety)
-                        'advance-eligible))
+                        'hold-inherited-observation))
             (should (eq (plist-get diagnostics :websocket-request-mode)
-                        'incremental))
+                        'full))
             (should (plist-member diagnostics :websocket-fallback-reason))
             (should-not (plist-get diagnostics :websocket-fallback-reason))
-            (should (eq (plist-get diagnostics :previous-response-id-present)
-                        t))
+            (should-not (plist-get diagnostics :previous-response-id-present))
             (should (eq (plist-get diagnostics :websocket-reused) t))
             (should (= (plist-get diagnostics :websocket-reuse-count) 1))
             (dolist (key '(:websocket-request-mode
@@ -851,9 +837,8 @@ provider turn to settle without an implicit local deadline."
                            :websocket-reuse-count))
               (should (equal (plist-get finished-diagnostics key)
                              (plist-get diagnostics key))))
-            (should (= (length anchors) 2))
-            (should (stringp newest-response-id))
-            (should-not (equal newest-response-id first-response-id))))))))
+            (should-not newest-anchor)
+            (should-not anchors)))))))
 
 (ert-deftest e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain ()
   "ChatGPT Codex branches from a clean anchor after a contaminated tool turn."
@@ -1185,7 +1170,7 @@ provider turn to settle without an implicit local deadline."
         (should (= (length (plist-get reasoning :summary)) 0))))))
 
 (ert-deftest e-live-e2e-test-openai-gpt56-explicit-cache-continues ()
-  "A live GPT-5.6 follow-up retains the breakpoint and replaces instructions."
+  "A live GPT-5.6 pair retains the breakpoint and late frontier layout."
   (unless (fboundp 'e-openai-codex--websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
@@ -1193,6 +1178,9 @@ provider turn to settle without an implicit local deadline."
                          :prompt-cache-breakpoint-mode)
               'explicit)
     (ert-skip "The configured OpenAI provider does not support explicit cache breakpoints."))
+  (should (eq (plist-get (e-openai-provider-profile e-openai-default-provider)
+                     :observation-delivery)
+              'inherited))
   (let* ((current-state "live state one")
          ;; OpenAI only caches prefixes of at least 1,024 tokens.  Keep this
          ;; probe independent of whichever default layers the E2E config loads.
@@ -1239,10 +1227,6 @@ provider turn to settle without an implicit local deadline."
           (e-board-e2e-prompt-batch
            harness session-id
            "Reply with exactly: CROSS-TURN-ONE")
-          (unless (e-session-provider-anchors
-                   (e-harness-sessions harness) session-id)
-            (ert-skip
-             "The configured live backend does not record continuation anchors."))
           (setq current-state "live state two")
           (e-board-e2e-prompt-batch
            harness session-id
@@ -1282,18 +1266,17 @@ provider turn to settle without an implicit local deadline."
           (ert-info ((format "WebSocket diagnostics: %S; tool differences: %S"
                              diagnostics tool-differences))
             (should (eq (plist-get diagnostics :websocket-request-mode)
-                        'incremental))
-            (should (eq (plist-get diagnostics :previous-response-id-present) t))
+                        'full))
+            (should-not (plist-get diagnostics :previous-response-id-present))
             (should (eq (plist-get diagnostics :websocket-reused) t))
             (should (equal (plist-get diagnostics :prompt-cache-mode)
                            "explicit"))
             (should (eq (plist-get diagnostics :observation-delivery)
-                        'request-local-replaceable))
-            (should (eq (plist-get diagnostics
-                                   :replaceable-current-state-present)
-                        t))
+                        'inherited))
+            (should-not (plist-get diagnostics
+                                   :replaceable-current-state-present))
             (should (eq (plist-get diagnostics :provider-anchor-safety)
-                        'advance-eligible))
+                        'hold-inherited-observation))
             (should (equal (plist-get diagnostics :prompt-layout-revision)
                            e-openai-gpt56-explicit-cache-layout-revision))
             (should first-breakpoint)
@@ -1304,20 +1287,13 @@ provider turn to settle without an implicit local deadline."
                            '(:mode "explicit")))
             (should (equal (plist-get latest-body :include)
                            ["reasoning.encrypted_content"]))
-            (should (stringp (plist-get latest-body :previous_response_id)))
-            (should
-             (equal
-              (plist-get
-               (plist-get
-                (car (last
-                      (e-session-provider-anchors
-                       (e-harness-sessions harness) session-id)))
-                :metadata)
-               :prompt-layout-revision)
-              e-openai-gpt56-explicit-cache-layout-revision))
+            (should-not (plist-member latest-body :previous_response_id))
             (should (equal latest-instructions
-                           "You are a helpful assistant.\n\nlive state two"))
-            (should-not latest-current-input)
+                           "You are a helpful assistant."))
+            (should latest-current-input)
+            (should (e-live-e2e--contains-p
+                     (prin1-to-string latest-body)
+                     "live state two"))
             (should (> (or (plist-get first-usage
                                       :cache-creation-input-tokens)
                            0)
