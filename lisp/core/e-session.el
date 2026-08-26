@@ -1644,6 +1644,16 @@ bodies are reconstructed by the later context consumer from session entries."
      ((not (equal (plist-get anchor-fingerprints :lifetime-generation)
                   (plist-get fingerprints :lifetime-generation)))
       'context-generation-changed)
+     ((and (or (plist-member anchor-fingerprints
+                            :context-curation-revision-identity)
+               (plist-member fingerprints
+                            :context-curation-revision-identity))
+           (not (equal
+                 (plist-get anchor-fingerprints
+                            :context-curation-revision-identity)
+                 (plist-get fingerprints
+                            :context-curation-revision-identity))))
+      'context-curation-revision-changed)
      ((and (not (or (plist-member anchor-fingerprints :segments)
                     (plist-member anchor-fingerprints :active-layer-ids)
                     (plist-member anchor-fingerprints :tools)

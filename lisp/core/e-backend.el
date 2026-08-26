@@ -50,7 +50,10 @@ before a runtime candidate can be installed."
     (:prefix-cache none implicit explicit)
     (:provider-compaction none opaque)
     (:reasoning-state none replayable)
-    (:reserved-effect-carrier none context-promote-wire))
+    ;; `context-promote-wire' remains accepted for old adapters while the
+    ;; runtime switches to the replacement curation carrier.  New providers
+    ;; must advertise only `context-curate-wire'.
+    (:reserved-effect-carrier none context-promote-wire context-curate-wire))
   "Provider-neutral values accepted by `e-backend-context-capabilities'.")
 
 (defconst e-backend--default-context-capabilities

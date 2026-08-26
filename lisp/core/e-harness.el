@@ -2970,25 +2970,19 @@ just because the global opt-in is enabled."
         (e-session-append-context-generation store session-id generation)
         generation)))
 
-(defun e-harness--context-lifetime-fact-messages (promotions)
-  "Return backend-facing durable messages for selected PROMOTIONS."
-  (cl-loop for promotion in promotions
-           append
-           (cl-loop for fact in (e-context-lifetime-promotion-facts promotion)
-                    collect
-                    (list :role 'system
-                          :content
-                          (format "Promoted fact %s: %s"
-                                  (plist-get fact :id)
-                                  (let ((value (plist-get fact :value)))
-                                    (if (stringp value)
-                                        value
-                                      (prin1-to-string value))))
-                          :metadata
-                          (list :context-lifetime 'promotion
-                                :promotion-id
-                                (e-context-lifetime-promotion-id promotion)
-                                :fact-id (plist-get fact :id))))))
+(defun e-harness--context-lifetime-curation-marker-messages (frame)
+  "Return provider-neutral marker messages for FRAME's curation sources.
+
+The source values remain in their original provider-neutral messages so
+ordinary tool-call/result envelopes retain their transport meaning.  The
+additional late system messages contain only the detached core-owned marker;
+trusted frame and provenance identities remain in FRAME for response-time
+binding and never cross the model-facing boundary."
+  (mapcar
+   (lambda (source)
+     (list :role 'system
+           :content (copy-sequence (plist-get source :marker))))
+   (e-context-lifetime-frame-curation-presentation frame)))
 
 (defun e-harness--context-lifetime-apply-projection
     (harness session-id turn-id context capabilities)
@@ -3009,6 +3003,11 @@ fingerprints happen to be unchanged."
                        (e-session-context-lifetime-projection
                         store session-id)))
          (promotions (plist-get projection :promotions))
+         ;; Session projection is the semantic authority for both the
+         ;; temporary v2 compatibility projection and the literal v3 curation
+         ;; messages.  Do not rebuild either representation in the harness.
+         (promotion-messages
+          (copy-tree (plist-get projection :promotion-messages)))
          (checkpoint
           (let ((value (and generation
                             (e-context-lifetime-generation-checkpoint
@@ -3022,7 +3021,7 @@ fingerprints happen to be unchanged."
              (t (list (copy-tree value))))))
          (durable-tail
           (append (copy-tree (plist-get projection :durable-tail))
-                  (e-harness--context-lifetime-fact-messages promotions)))
+                  promotion-messages))
          (segments (plist-get context :segments))
          (consumer-request-id (format "consumer:%s:%s"
                                       turn-id (e-session-generate-ulid)))
@@ -3035,14 +3034,63 @@ fingerprints happen to be unchanged."
            :segments segments
            :observation-delivery
            (plist-get capabilities :observation-delivery)))
+         ;; Capture the source markers before moving the raw observation
+         ;; messages to the late frontier.  Markers are deliberately separate
+         ;; system messages so tool/result envelopes remain intact and each
+         ;; semantic source occurs exactly once.
+         (curation-markers
+          (e-harness--context-lifetime-curation-marker-messages frame))
+         (observation-kinds e-context-lifetime-observation-kinds)
          (filtered-segments
-          (mapcar
-           (lambda (segment)
-             (if (eq (plist-get segment :kind) 'history)
-                 (plist-put (copy-tree segment) :messages
-                            (append checkpoint durable-tail))
-               segment))
-           segments))
+          (let ((marker-tail (copy-tree curation-markers))
+                (ordinary-segments nil)
+                (observation-segments nil)
+                (source-count 0))
+            (dolist (segment segments)
+              (let* ((kind (plist-get segment :kind))
+                     (copy (copy-tree segment)))
+                (cond
+                 ((eq kind 'history)
+                  ;; History remains in its canonical slot, with the accepted
+                  ;; durable projection substituted for its body.
+                  (plist-put copy :messages
+                             (append checkpoint durable-tail))
+                  (push copy ordinary-segments))
+                 ((and curation-markers
+                       (member (format "%s" kind) observation-kinds))
+                  ;; Keep the original observation segment as the ownership
+                  ;; boundary.  Only its model-facing message sequence is
+                  ;; transformed; kind, id, fingerprint, and any other fields
+                  ;; remain trusted segment metadata.  MARKER-TAIL is global so
+                  ;; labels stay in canonical segment/message order even when
+                  ;; observations span multiple segments.
+                  (let (messages)
+                    (dolist (source (plist-get segment :messages))
+                      (setq source-count (1+ source-count))
+                      (let ((marker (pop marker-tail)))
+                        (unless marker
+                          (signal 'e-context-lifetime-invalid-record
+                                  (list 'curation-source
+                                        :presentation-source-count-mismatch
+                                        (length curation-markers)
+                                        source-count)))
+                        (setq messages
+                              (append messages
+                                      (list marker (copy-tree source))))))
+                    (plist-put copy :messages messages)
+                    (push copy observation-segments)))
+                 (t
+                  (push copy ordinary-segments)))))
+            (unless (null marker-tail)
+              (signal 'e-context-lifetime-invalid-record
+                      (list 'curation-source
+                            :presentation-source-count-mismatch
+                            (length curation-markers)
+                            source-count)))
+            ;; Observation segments form one late frontier, but their original
+            ;; kind-scoped ownership and canonical metadata are preserved.
+            (append (nreverse ordinary-segments)
+                    (nreverse observation-segments))))
          (messages
           (cl-loop for segment in filtered-segments
                    append (copy-tree (plist-get segment :messages))))
@@ -3089,56 +3137,75 @@ returned no durable message; it remains an opaque runtime response identity."
 
 (defun e-harness--lifetime-commit-response
     (harness session-id turn-id active-entry payload)
-  "Complete the runtime frame in PAYLOAD and append valid promotions.
+  "Complete the runtime frame in PAYLOAD and append valid curation.
 
 The loop has already validated the effect shape while streaming.  This
-boundary resolves source observation IDs against the trusted consumed frame,
-derives provenance in core, and performs the ordinary session appends before
+boundary resolves presentation labels against the trusted still-live frame,
+prepares the version-3 record in core, and performs the session append before
 the next provider request is started."
   (when (and (e-context-lifetime-shadow-enabled-p)
              (e-harness--active-turn-running-p active-entry))
-    (let* ((frame (or (plist-get payload :frame)
-                      (plist-get active-entry :context-frame)))
-           (effects (plist-get payload :promotion-effects))
+    (let* ((payload-frame (plist-get payload :frame))
+           (active-frame (plist-get active-entry :context-frame))
+           (effects (plist-get payload :curation-effects))
+           ;; The provider-request frame in the response payload is the
+           ;; authority for both zero-effect consumption and curation labels.
+           ;; An active descendant may have been installed while an ordinary
+           ;; tool call from this response completed, but that descendant was
+           ;; not presented in this provider request and cannot be selected by
+           ;; its effect.  Synthetic callers without a payload frame use the
+           ;; active entry as the compatibility fallback.
+           (frame (or payload-frame active-frame))
            (response-id
             (e-harness--lifetime-response-entry-id
              harness session-id turn-id
              (plist-get payload :provider-request-id))))
-      (when (and frame (e-context-lifetime-frame-p frame))
-        (unless (e-context-lifetime-frame-consumed-p frame)
-          ;; Calculate deterministic ids against the trusted response-bound
-          ;; frame, then perform the one public completion operation with that
-          ;; exact ordered declaration.
-          (let* ((consumer-id
-                  (e-context-lifetime-frame-consumer-request-id frame))
-                 (candidate
-                  (e-context-lifetime-frame-complete-for-consumer
-                   frame consumer-id response-id))
-                 (promotion-ids
-                  (mapcar
-                   (lambda (effect)
-                     (e-context-lifetime-promotion-id-for candidate effect))
-                   effects))
-                 (consumed
-                  (e-context-lifetime-frame-complete-for-consumer
-                   frame consumer-id response-id promotion-ids))
-                 (promotions
-                  (mapcar
-                   (lambda (effect)
-                     (e-context-lifetime-promotion-from-effect
-                      consumed effect))
-                   effects)))
-            (dolist (promotion promotions)
-              (e-session-append-context-promotion
-               (e-harness-sessions harness) session-id promotion))
-            (plist-put active-entry :context-frame consumed)
-            (e-harness--emit-turn-event
-             harness session-id turn-id 'context-frame-consumed
-             (list :frame-id (e-context-lifetime-frame-id consumed)
-                   :consumer-request-id consumer-id
-                   :response-entry-id response-id
-                   :promotion-ids promotion-ids))
-            consumed))))))
+      (unless (or (null effects) (= (length effects) 1))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation :effect-count (length effects))))
+      (when (and effects
+                 (not (and (e-context-lifetime-frame-p frame)
+                           (not (e-context-lifetime-frame-consumed-p frame)))))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation :frame-not-live)))
+      (when (and frame (e-context-lifetime-frame-p frame)
+                 (not (e-context-lifetime-frame-consumed-p frame)))
+        (let* ((consumer-id
+                (e-context-lifetime-frame-consumer-request-id frame))
+               ;; Preparation is pure and happens before the frame body is
+               ;; dropped.  The session append validates the same record
+               ;; before mutating its transcript/index, so either operation
+               ;; failing leaves both frame and session untouched.
+               (record
+                (when (= (length effects) 1)
+                  (e-context-lifetime-prepare-curation
+                   frame
+                   (plist-get (car effects) :arguments)
+                   response-id)))
+               (curation-id (and record (plist-get record :id)))
+               (appended
+                (when record
+                  (e-session-append-context-curation
+                   (e-harness-sessions harness) session-id record)))
+               (consumed
+                (e-context-lifetime-frame-complete-for-consumer
+                 frame consumer-id response-id
+                 (and appended (list curation-id)))))
+          ;; Do not replace a newer descendant frame with the producer's
+          ;; consumed snapshot.  The loop will use the returned value for the
+          ;; provider request that completed, while the harness entry retains
+          ;; the descendant for a tool-result follow-up.
+          (when (or (null active-frame)
+                    (equal (e-context-lifetime-frame-id active-frame)
+                           (e-context-lifetime-frame-id frame)))
+            (plist-put active-entry :context-frame consumed))
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'context-frame-consumed
+           (list :frame-id (e-context-lifetime-frame-id consumed)
+                 :consumer-request-id consumer-id
+                 :response-entry-id response-id
+                 :curation-ids (and appended (list curation-id))))
+          consumed)))))
 
 (defun e-harness--lifetime-tool-observation-frame
     (harness session-id turn-id active-entry payload)
@@ -3206,8 +3273,6 @@ the next provider request is started."
   '(:context-segment-message-count
     :replaceable-current-state-partitioned
     :context-lifetime-enabled
-    :context-promotion-observation-ids
-    :context-promotion-frame-id
     :provider-anchor
     :provider-anchor-delta-messages
     :provider-anchor-source-message-count
@@ -3289,18 +3354,6 @@ canvas never authorizes dropping an inherited tool result or trace."
     (setq options (plist-put options :lifetime-ephemerals-clean-p clean-p))
     (when (plist-get context :context-lifetime-enabled)
       (setq options (plist-put options :context-lifetime-enabled t)))
-    (when frame
-      (setq options
-            (plist-put
-             options
-             :context-promotion-frame-id
-             (e-context-lifetime-frame-id frame)))
-      (setq options
-            (plist-put
-             options
-             :context-promotion-observation-ids
-             (copy-sequence
-              (e-context-lifetime-frame-observation-ids frame)))))
     (when (eq delivery 'request-local-replaceable)
       (setq options
             (plist-put options :replaceable-current-state
@@ -3340,17 +3393,6 @@ ambiguous and is rejected by the provider adapter."
     ;; adapter construction.
     (when (plist-get context :context-lifetime-enabled)
       (setq options (plist-put options :context-lifetime-enabled t)))
-    (when-let ((frame (plist-get context :lifetime-frame)))
-      (setq options
-            (plist-put options
-                       :context-promotion-frame-id
-                       (e-context-lifetime-frame-id frame)))
-      (setq options
-            (plist-put options
-                       :context-promotion-observation-ids
-                       (copy-sequence
-                        (e-context-lifetime-frame-observation-ids
-                         frame)))))
     (when exact-coverage-p
       (setq options
             (plist-put options
@@ -3358,6 +3400,22 @@ ambiguous and is rejected by the provider adapter."
                        segment-message-count)))
     (plist-put context :options options)
     context))
+
+(defun e-harness--context-curation-carrier-active-p (context)
+  "Return non-nil when CONTEXT uses the reserved curation carrier.
+
+The OpenAI capability advertises the reserved carrier even when the semantic
+lifetime projection is disabled.  Treat the carrier as active only when the
+trusted derived option enables the projection, unless a caller has explicitly
+provided the carrier option itself."
+  (let* ((options (plist-get context :options))
+         (capabilities (plist-get options :context-capabilities))
+         (carrier
+          (if (plist-member options :reserved-effect-carrier)
+              (plist-get options :reserved-effect-carrier)
+            (and (plist-get options :context-lifetime-enabled)
+                 (plist-get capabilities :reserved-effect-carrier)))))
+    (eq carrier 'context-curate-wire)))
 
 (defun e-harness--provider-anchor-fingerprints (context)
   "Return JSON-stable provider-relevant fingerprints from CONTEXT."
@@ -3440,6 +3498,12 @@ ambiguous and is rejected by the provider adapter."
            (if (plist-get options :lifetime-ephemerals-clean-p)
                'clean
              'contaminated))))
+    (when (e-harness--context-curation-carrier-active-p context)
+      (setq fingerprints
+            (plist-put
+             fingerprints
+             :context-curation-revision-identity
+             (e-context-lifetime-curation-revision-identity))))
     (when (and (not (eq delivery 'request-local-replaceable))
                (plist-get options :current-state-fingerprint))
       (setq fingerprints

@@ -426,7 +426,7 @@ settlement are callback-driven."
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
                   (response-complete-notified nil)
-                  (response-promotion-effects nil)
+                  (response-curation-effects nil)
                   (provider-request-causes next-request-causes)
                   (provider-request-lifetime-frame active-lifetime-frame)
                   (provider-request-projection-identity
@@ -510,8 +510,8 @@ settlement are callback-driven."
                               (list :frame provider-request-lifetime-frame
                                     :provider-request-id provider-request-id
                                     :provider-request-ordinal provider-request-ordinal
-                                    :promotion-effects
-                                    (copy-tree response-promotion-effects)
+                                    :curation-effects
+                                    (copy-tree response-curation-effects)
                                     :assistant-content (response-text)
                                     :tool-called tool-called
                                     :reason done-reason))))
@@ -725,23 +725,7 @@ settlement are callback-driven."
                           (setq turn-options (copy-sequence turn-options))
                           (setq turn-options
                                 (plist-put turn-options
-                                           :lifetime-ephemerals-clean-p nil))
-                          (setq turn-options
-                                (plist-put turn-options
-                                           :lifetime-frame-id
-                                           (e-context-lifetime-frame-id
-                                            active-lifetime-frame)))
-                          (setq turn-options
-                                (plist-put turn-options
-                                           :context-promotion-frame-id
-                                           (e-context-lifetime-frame-id
-                                            active-lifetime-frame)))
-                          (setq turn-options
-                                (plist-put turn-options
-                                           :context-promotion-observation-ids
-                                           (copy-sequence
-                                            (e-context-lifetime-frame-observation-ids
-                                             active-lifetime-frame))))))
+                                           :lifetime-ephemerals-clean-p nil))))
                       (setq next-request-causes
                             (append next-request-causes (list tool-call)))
                       (start-next-tool)
@@ -851,10 +835,10 @@ settlement are callback-driven."
                          (progn
                            (setq item (e-loop--normalized-backend-item item))
                            (pcase (plist-get item :type)
-                             ('context-promote
-                              (when response-promotion-effects
+                             ('context-curate
+                              (when response-curation-effects
                                 (signal 'e-context-lifetime-invalid-record
-                                        (list 'multiple-promotions
+                                        (list 'multiple-curations
                                               provider-request-id)))
                               ;; A provider adapter may attach one opaque
                               ;; acknowledgement item for its reserved
@@ -869,10 +853,14 @@ settlement are callback-driven."
                                               (list replay-item))))
                               (setq item (copy-sequence item))
                               (cl-remf item :provider-replay-item)
-                              (setq response-promotion-effects
-                                    (list
-                                     (e-context-lifetime-normalize-promotion-effect
-                                      item))))
+                              (let ((arguments (plist-get item :arguments)))
+                                (setq response-curation-effects
+                                      (list
+                                       (list
+                                        :type 'context-curate
+                                        :arguments
+                                        (e-context-lifetime-normalize-curation-arguments
+                                         arguments))))))
                              ('assistant-delta
                               (setq response-assistant-content
                                     (concat response-assistant-content
@@ -944,6 +932,15 @@ settlement are callback-driven."
                         (fail-provider err)))))
                   (enqueue-tool-call
                    (item)
+                   ;; A curation is the terminal semantic decision for this
+                   ;; provider response.  Ordinary calls already observed
+                   ;; before it retain their existing queued/executing
+                   ;; behavior, but a later call would make the response
+                   ;; ordering ambiguous and must fail before dispatch.
+                   (when response-curation-effects
+                     (signal 'e-context-lifetime-invalid-record
+                             (list 'curation-mixed-order
+                                   provider-request-id)))
                    (setq tool-called t)
                    (setq tool-queue
                          (append tool-queue

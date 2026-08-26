@@ -412,6 +412,99 @@
       (aref (plist-get (nth 1 input) :content) 0)
       :prompt_cache_breakpoint))))
 
+(ert-deftest e-openai-test-inherited-curation-frontier-keeps-markers-and-literals ()
+  "Inherited curation sources keep marker/source order and exact literals."
+  (let* ((source-one '(:kind "structured" :value 7 :items (alpha beta)))
+         (source-two '(:kind "structured" :value 9 :items (gamma delta)))
+         (segments-one
+          `((:kind static-prefix
+             :messages ((:role system :content "STATIC-POLICY")))
+            (:kind stable-context
+             :messages ((:role system :content "STABLE-GUIDANCE")))
+            (:kind history
+             :messages ((:role user :content "durable prompt")))
+            (:kind dynamic-context
+             :messages ((:role system :content "[1, ~2 tokens]")
+                        (:role system :content ,source-one)
+                        (:role system :content "[2, ~3 tokens]")
+                        (:role system :content "SOURCE-TWO")))))
+         (segments-two
+          `((:kind static-prefix
+             :messages ((:role system :content "STATIC-POLICY")))
+            (:kind stable-context
+             :messages ((:role system :content "STABLE-GUIDANCE")))
+            (:kind history
+             :messages ((:role user :content "durable prompt")))
+            (:kind dynamic-context
+             :messages ((:role system :content "[1, ~2 tokens]")
+                        (:role system :content ,source-two)
+                        (:role system :content "[2, ~3 tokens]")
+                        (:role system :content "SOURCE-TWO")))))
+         (messages-one
+          (append
+           '((:role system :content "STATIC-POLICY")
+             (:role system :content "STABLE-GUIDANCE")
+             (:role user :content "durable prompt"))
+           (plist-get (car (last segments-one)) :messages)))
+         (messages-two
+          (append
+           '((:role system :content "STATIC-POLICY")
+             (:role system :content "STABLE-GUIDANCE")
+             (:role user :content "durable prompt"))
+           (list (list :role 'system :content "[1, ~2 tokens]")
+                 (list :role 'system :content source-two)
+                 (list :role 'system :content "[2, ~3 tokens]")
+                 (list :role 'system :content "SOURCE-TWO"))))
+         (options-one
+          `(:model "gpt-5.5"
+            :responses-context-layout developer-input
+            :observation-delivery inherited
+            :segments ,segments-one))
+         (options-two
+          `(:model "gpt-5.5"
+            :responses-context-layout developer-input
+            :observation-delivery inherited
+            :segments ,segments-two))
+         (body-one (e-openai-codex-request-body
+                    :messages messages-one :options options-one))
+         (body-two (e-openai-codex-request-body
+                    :messages messages-two :options options-two))
+         (input-one (append (plist-get body-one :input) nil))
+         (input-two (append (plist-get body-two :input) nil))
+         (prefix-one (cl-subseq input-one 0 3))
+         (prefix-two (cl-subseq input-two 0 3))
+         (late-one (nthcdr 3 input-one))
+         (wire (json-encode body-one)))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) input-one)
+                   '("developer" "developer" "user"
+                     "developer" "developer" "developer" "developer")))
+    (should (equal (mapcar (lambda (item)
+                             (plist-get (aref (plist-get item :content) 0)
+                                        :text))
+                           late-one)
+                   (list "[1, ~2 tokens]"
+                         (json-encode source-one)
+                         "[2, ~3 tokens]"
+                         "SOURCE-TWO")))
+    (should (equal prefix-one prefix-two))
+    (should (equal (plist-get (aref (plist-get (nth 0 input-one) :content) 0)
+                             :text)
+                   "STATIC-POLICY"))
+    (should (equal (plist-get (aref (plist-get (nth 2 input-one) :content) 0)
+                             :text)
+                   "durable prompt"))
+    (should (= (cl-count "SOURCE-TWO"
+                         (mapcar (lambda (item)
+                                   (plist-get
+                                    (aref (plist-get item :content) 0)
+                                    :text))
+                                 input-one)
+                         :test #'equal)
+               1))
+    (should-not (string-match-p
+                 "frame\|generation\|observation\|fingerprint\|backing\|replay"
+                 wire))))
+
 (ert-deftest e-openai-test-inherited-frontier-rejects-mismatched-canonical-partition ()
   "A canonical inherited frontier cannot silently accept a mismatched partition."
   (should-error
@@ -430,6 +523,72 @@
                   :messages ((:role system
                               :content "Current buffer state."))))))
    :type 'e-openai-context-projection-invalid))
+
+(ert-deftest e-openai-test-context-curation-revision-fences-material-layout ()
+  "Curation revision fences continuation identity without source leakage."
+  (let* ((base-options
+          '(:model "gpt-5.6-sol"
+            :responses-context-layout developer-input
+            :observation-delivery inherited
+            :reserved-effect-carrier context-curate-wire
+            :provider-continuation t
+            :responses-transport websocket
+            :response-store :json-false))
+         (first-options
+          (append
+           base-options
+           '(:segments
+             ((:kind static-prefix
+               :messages ((:role system :content "stable policy")))
+              (:kind current-state
+               :messages ((:role system :content "SOURCE-ONE")))))))
+         (second-options
+          (append
+           base-options
+           '(:segments
+             ((:kind static-prefix
+               :messages ((:role system :content "stable policy")))
+              (:kind current-state
+               :messages ((:role system :content "SOURCE-TWO")))))))
+         (first (e-openai-codex--prompt-layout-revision first-options))
+         (second (e-openai-codex--prompt-layout-revision second-options)))
+    (should (equal first second))
+    (should (equal
+             (plist-get first :context-curation-revision-identity)
+             (e-context-lifetime-curation-revision-identity)))
+    (should-not (string-match-p
+                 "SOURCE-ONE\|SOURCE-TWO\|frame\|generation\|observation\|fingerprint"
+                 (prin1-to-string first)))
+    (should-not (plist-member
+                 (e-openai-codex-request-body
+                  :messages '((:role system :content "stable policy")
+                              (:role system :content "SOURCE-ONE"))
+                  :options first-options)
+                 :prompt_cache_options))
+    (let ((e-context-budget-estimate-bytes-per-token 2.0))
+      (should-not
+       (equal first
+              (e-openai-codex--prompt-layout-revision first-options))))
+    (let ((e-context-lifetime-curation-presentation-revision
+           "context-curation-presentation-test-v2"))
+      (should-not
+       (equal first
+              (e-openai-codex--prompt-layout-revision first-options))))
+    (let* ((anchor
+            (list :provider-id 'openai
+                  :metadata (list :response-id "response-curation"
+                                  :prompt-layout-revision first)))
+           (continuation-options
+            (plist-put (copy-sequence first-options)
+                       :provider-anchor anchor)))
+      (should (equal
+               (e-openai-codex--continuation-response-id
+                continuation-options)
+               "response-curation"))
+      (let ((e-context-budget-estimate-bytes-per-token 2.0))
+        (should-not
+         (e-openai-codex--continuation-response-id
+          continuation-options))))))
 
 (ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
   "A matching layout anchor sends dynamic context without stable duplication."
@@ -5131,29 +5290,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          "real-ish answer")))
       (delete-file auth-file))))
 
-(ert-deftest e-openai-test-context-promotion-is-a-reserved-backend-effect ()
-  "The Responses adapter decodes context-promote without making a tool call."
+(ert-deftest e-openai-test-context-curation-is-a-reserved-backend-effect ()
+  "The Responses adapter decodes context-curate without making a tool call."
   (let ((item
          (e-openai-codex--event-item
           '(:type "response.output_item.done"
             :item
             (:type "function_call"
-             :call_id "promotion-call"
-             :name "context-promote"
+             :call_id "curation-call"
+             :name "context-curate"
              :arguments
-             "{\"schema-version\":1,\"frame-id\":\"frame-1\",\
-\"source-observation-ids\":[\"observation-1\"],\
-\"facts\":[{\"id\":\"fact-1\",\"value\":\"selected\"}]}")))))
-    (should (eq (plist-get item :type) 'context-promote))
+             "{\"keep\":[1],\"summaries\":[{\"sources\":[2,3],\"text\":\"selected\"}]}")))))
+    (should (eq (plist-get item :type) 'context-curate))
     (should-not (plist-member item :name))
-    (should (equal (plist-get item :frame-id) "frame-1"))
-    (should (equal (plist-get item :source-observation-ids)
-                   '("observation-1")))
-    (should (equal (plist-get item :facts)
-                   '((:id "fact-1" :value "selected"))))))
+    (should (equal (plist-get item :arguments)
+                   '(:keep (1) :summaries
+                           ((:sources (2 3) :text "selected")))))
+    (should-not (string-match-p
+                 "frame\|observation\|fingerprint\|schema-version"
+                 (prin1-to-string (plist-get item :arguments))))))
 
-(ert-deftest e-openai-test-context-promotion-wire-is-opt-in ()
-  "The promotion carrier is present only in an opted-in Responses request."
+(ert-deftest e-openai-test-context-curation-wire-is-opt-in ()
+  "The curation carrier is present only in an opted-in Responses request."
   (let* ((messages '((:role user :content "prompt")))
          (enabled
           (e-openai-codex-request-body
@@ -5161,7 +5319,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
            :options
            `(:model "gpt-test"
              :context-lifetime-enabled t
-             :reserved-effect-carrier context-promote-wire)
+             :reserved-effect-carrier context-curate-wire)
            :tools nil))
          (disabled
           (e-openai-codex-request-body
@@ -5171,68 +5329,76 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (enabled-tools (plist-get enabled :tools)))
     (should (= (length enabled-tools) 1))
     (should (equal (plist-get (aref enabled-tools 0) :name)
-                   "context-promote"))
-    ;; The carrier is a real Responses function schema.  In particular, an
-    ;; empty plist would encode as JSON null and would not describe the fact
-    ;; value accepted by the provider.
+                   "context-curate"))
+    ;; The carrier is the exact optional keep/summaries shape.  Internal
+    ;; frame/source identities do not belong in the provider schema.
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
-           (fact-schema
-            (plist-get (plist-get parameters :properties) :facts))
-           (value-schema
-            (plist-get
-             (plist-get
-              (plist-get
-               (plist-get fact-schema :items) :properties)
-              :value)
-             :type)))
-      (should (equal value-schema
-                     ["string" "number" "boolean" "object" "array"
-                      "null"]))
+           (properties (plist-get parameters :properties))
+           (summary-schema (plist-get properties :summaries))
+           (summary-properties
+           (plist-get (plist-get summary-schema :items) :properties))
+           (source-schema (plist-get summary-properties :sources))
+           (text-schema (plist-get summary-properties :text)))
+      (should (equal (sort (copy-sequence
+                            (cl-loop for (key value) on properties by #'cddr
+                                     collect key))
+                           (lambda (left right)
+                             (string< (symbol-name left)
+                                      (symbol-name right))))
+                     '(:keep :summaries)))
+      (should-not (plist-member parameters :required))
+      (should (equal (plist-get (plist-get properties :keep) :type)
+                     "array"))
+      (should (equal (plist-get (plist-get properties :summaries) :type)
+                     "array"))
+      (should (equal (plist-get source-schema :minItems) 1))
+      (should (equal (plist-get source-schema :maxItems) 16))
+      (should (equal (plist-get text-schema :minLength) 1))
+      (should-not (plist-member properties :frame-id))
+      (should-not (plist-member properties :source-observation-ids))
       (should-not (string-match-p
-                   "\\\"value\\\":null"
+                   "frame-id\\|source-observation-ids\\|schema-version"
                    (json-encode enabled))))
     (should-not (plist-member disabled :tools))))
 
-(ert-deftest e-openai-test-context-promotion-carries-function-output-ack ()
-  "A reserved Responses promotion retains its opaque wire acknowledgement."
+(ert-deftest e-openai-test-context-curation-carries-function-output-ack ()
+  "A reserved Responses curation retains its opaque wire acknowledgement."
   (let* ((item
           (e-openai-codex--event-item
            '(:type "response.output_item.done"
              :item
              (:type "function_call"
-              :call_id "promotion-call"
-              :name "context-promote"
+              :call_id "curation-call"
+              :name "context-curate"
               :arguments
-              "{\"schema-version\":1,\"frame-id\":\"frame-1\",\
-\"source-observation-ids\":[\"observation-1\"],\
-\"facts\":[{\"id\":\"fact-1\",\"value\":\"selected\"}]}"))))
+              "{\"keep\":[1]}"))))
          (replay (plist-get item :provider-replay-item))
          (wire-item (plist-get replay :item)))
     (should (equal (plist-get replay :provider-id) 'openai))
     (should (equal (plist-get wire-item :type) "function_call_output"))
-    (should (equal (plist-get wire-item :call_id) "promotion-call"))
+    (should (equal (plist-get wire-item :call_id) "curation-call"))
     (should (equal (plist-get wire-item :output) ""))))
 
-(ert-deftest e-openai-test-context-promotion-stream-carries-function-output-ack ()
+(ert-deftest e-openai-test-context-curation-stream-carries-function-output-ack ()
   "The streaming Responses parser preserves the reserved call identity."
   (let* ((items
           (e-openai-codex-parse-stream
-           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"promotion-call\",\"name\":\"context-promote\",\"arguments\":\"{\\\"schema-version\\\":1,\\\"frame-id\\\":\\\"frame-1\\\",\\\"source-observation-ids\\\":[\\\"observation-1\\\"],\\\"facts\\\":[{\\\"id\\\":\\\"fact-1\\\",\\\"value\\\":\\\"selected\\\"}]}\"}}\n\n"))
+           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"curation-call\",\"name\":\"context-curate\",\"arguments\":\"{\\\"keep\\\":[1]}\"}}\n\n"))
          (item (car items))
          (replay (plist-get item :provider-replay-item)))
-    (should (eq (plist-get item :type) 'context-promote))
+    (should (eq (plist-get item :type) 'context-curate))
     (should (equal (plist-get (plist-get replay :item) :type)
                    "function_call_output"))
     (should (equal (plist-get (plist-get replay :item) :call_id)
-                   "promotion-call"))))
+                   "curation-call"))))
 
-(ert-deftest e-openai-test-context-promotion-request-emits-function-output ()
+(ert-deftest e-openai-test-context-curation-request-emits-function-output ()
   "The immediate continuation carries the reserved call acknowledgement."
   (let* ((replay
           '(:type provider-replay-item
             :provider-id openai
             :item (:type "function_call_output"
-                   :call_id "promotion-call"
+                   :call_id "curation-call"
                    :output "")))
          (body
           (e-openai-codex-request-body
@@ -5260,26 +5426,23 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (equal (plist-get body :previous_response_id)
                    "resp-promotion"))
     (should ack)
-    (should (equal (plist-get ack :call_id) "promotion-call"))
+    (should (equal (plist-get ack :call_id) "curation-call"))
     (should (equal (plist-get ack :output) ""))
     (should-not (seq-find (lambda (item)
                             (equal (plist-get item :name)
-                                   "context-promote"))
+                                   "context-curate"))
                           input))))
 
-(ert-deftest e-openai-test-loop-late-promotion-ack-joins-tool-followup ()
-  "A late reserved promotion ack joins the ordinary tool result on the wire."
+(ert-deftest e-openai-test-loop-late-curation-ack-joins-tool-followup ()
+  "A late reserved curation ack joins the ordinary tool result on the wire."
   (let* ((request-count 0)
          (requests nil)
          (durable-messages nil)
          (started-tools nil)
          (first-items nil)
-         (promotion-arguments
+         (curation-arguments
           (json-encode
-           '(:schema-version 1
-             :frame-id "frame-openai-late-ack"
-             :source-observation-ids ["observation-openai-late-ack"]
-             :facts [(:id "selected" :value "keep")])))
+           '(:keep [1])))
          (first-response
           (mapconcat
            (lambda (event)
@@ -5293,9 +5456,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                           '(:target "state"))))
             (list :type "response.output_item.done"
                   :item (list :type "function_call"
-                              :call_id "promotion-call"
-                              :name "context-promote"
-                              :arguments promotion-arguments))
+                              :call_id "curation-call"
+                              :name "context-curate"
+                              :arguments curation-arguments))
             (list :type "response.completed"
                   :response (list :id "resp-A" :status "completed")))
            ""))
@@ -5359,10 +5522,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             :context-capabilities
             (:continuation linear
              :observation-delivery request-local-replaceable
-             :reserved-effect-carrier context-promote-wire)
-            :context-promotion-frame-id "frame-openai-late-ack"
-            :context-promotion-observation-ids
-            ("observation-openai-late-ack"))))
+             :reserved-effect-carrier context-curate-wire))))
     (e-loop-run-turn-batch
      :session-id "session-openai-late-ack"
      :turn-id "turn-openai-late-ack"
@@ -5395,7 +5555,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       ;; The actual adapter stream order is ordinary call, reserved control,
       ;; then completion; the reserved control never enters ordinary tools.
       (should (< (cl-position 'tool-call first-types)
-                 (cl-position 'context-promote first-types)))
+                 (cl-position 'context-curate first-types)))
       (should (member 'done first-types))
       (should (equal started-tools '("inspect")))
       (should (= (length outputs) 2))
@@ -5407,13 +5567,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                         outputs))
       (should (seq-find (lambda (item)
                           (and (equal (plist-get item :call_id)
-                                      "promotion-call")
+                                      "curation-call")
                                (equal (plist-get item :output) "")))
                         outputs))
       (should (equal (plist-get body :previous_response_id) "resp-A"))
       (should-not (string-match-p "provider-replay-item"
                                   (prin1-to-string durable-messages)))
-      (should-not (string-match-p "promotion-call"
+      (should-not (string-match-p "curation-call"
                                   (prin1-to-string durable-messages))))))
 
 (ert-deftest e-openai-test-provider-compaction-capability-follows-effective-profile ()

@@ -728,8 +728,12 @@ callers."
              (and (stringp key)
                   (not (string-empty-p key)))))))
 
-(defun e-openai-codex--prompt-layout-revision (options)
-  "Return the provider-supported prompt layout revision for OPTIONS, or nil."
+(defun e-openai-codex--wire-prompt-layout-revision (options)
+  "Return the provider wire-layout revision for OPTIONS, or nil.
+
+This is deliberately separate from the material continuation identity below:
+the curation revision must fence anchors even when no prompt-cache key exists,
+while breakpoint emission remains key-dependent."
   (let ((key (plist-get options :prompt-cache-key))
         (mode (e-openai-codex--prompt-cache-breakpoint-mode options)))
     (when (and (e-openai--gpt56-or-later-p
@@ -741,6 +745,21 @@ callers."
       (if (eq mode 'explicit)
           e-openai-gpt56-explicit-cache-layout-revision
         e-openai-gpt56-segmented-context-layout-revision))))
+
+(defun e-openai-codex--prompt-layout-revision (options)
+  "Return the material prompt-layout identity for OPTIONS, or nil.
+
+The reserved curation carrier adds the complete provider-neutral curation
+revision identity.  Per-frame labels, estimates, values, and provenance are
+not options and therefore cannot enter this identity."
+  (let ((wire-revision
+         (e-openai-codex--wire-prompt-layout-revision options)))
+    (if (eq (plist-get options :reserved-effect-carrier)
+            'context-curate-wire)
+        (list :prompt-layout-revision wire-revision
+              :context-curation-revision-identity
+              (e-context-lifetime-curation-revision-identity))
+      wire-revision)))
 
 (defun e-openai-codex--prompt-cache-mode-label (options)
   "Return the diagnostic cache mode label for segmented OPTIONS."
@@ -870,7 +889,7 @@ injected requester for conformance tests."
             'none)
           :reserved-effect-carrier
           (if (eq wire-api 'responses)
-              'context-promote-wire
+              'context-curate-wire
             'none))))
 
 (defun e-openai--harness-default-options (profile model)
@@ -1021,11 +1040,20 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
     (role content &optional cache-breakpoint-p)
   "Return Responses content item for ROLE and CONTENT.
 When CACHE-BREAKPOINT-P is non-nil, mark the input block as the end of the
-explicitly cacheable stable prefix."
-  (let ((type (if (eq role 'assistant) "output_text" "input_text")))
+explicitly cacheable stable prefix.
+
+Provider-neutral context may carry a structured literal value (for example a
+curation source presentation).  Responses text blocks are strings, so encode
+such values as JSON at this wire boundary rather than using a Lisp printed
+representation or dropping their structure."
+  (let ((type (if (eq role 'assistant) "output_text" "input_text"))
+        (text (cond
+               ((null content) "")
+               ((stringp content) content)
+               (t (json-encode content)))))
     (vector
      (append
-      (list :type type :text (or content ""))
+      (list :type type :text text)
       (when cache-breakpoint-p
         (list :prompt_cache_breakpoint (list :mode "explicit")))))))
 
@@ -1401,7 +1429,7 @@ guessing from message shape."
 CONTINUATION-RESPONSE-ID suppresses a new explicit breakpoint because the
 retained response already carries the stable segment and its earlier marker."
   (let ((stable-left
-         (if (and (e-openai-codex--prompt-layout-revision options)
+         (if (and (e-openai-codex--wire-prompt-layout-revision options)
                   (eq (e-openai-codex--prompt-cache-breakpoint-mode options)
                       'explicit)
                   (null continuation-response-id))
@@ -1452,40 +1480,32 @@ retained response already carries the stable segment and its earlier marker."
       (cl-remf options key))
     options))
 
-(defun e-openai-codex--context-promotion-tool-definition ()
-  "Return the wire carrier for the core-owned promotion effect."
+(defun e-openai-codex--context-curation-tool-definition ()
+  "Return the wire carrier for the core-owned curation effect."
   (list :type "function"
-        :name "context-promote"
-        :description "Select bounded facts from the current ephemeral context."
+        :name "context-curate"
+        :description "Keep or summarize bounded values from ephemeral context."
         :parameters
         (list :type "object"
               :additionalProperties :json-false
-              :required ["schema-version" "frame-id"
-                         "source-observation-ids" "facts"]
               :properties
               (list
-               :schema-version (list :type "integer" :const 1)
-               :frame-id (list :type "string")
-               :source-observation-ids
-               (list :type "array" :minItems 1
-                     :items (list :type "string"))
-               :facts
-               (list :type "array" :minItems 1 :maxItems 16
+               :keep
+               (list :type "array" :maxItems 16
+                     :items (list :type "integer" :minimum 1))
+               :summaries
+               (list :type "array" :maxItems 16
                      :items
                      (list :type "object"
                            :additionalProperties :json-false
-                           :required ["id" "value"]
+                           :required ["sources" "text"]
                            :properties
-                           (list :id (list :type "string")
-                                 ;; The fact value is JSON-like rather than
-                                 ;; an unconstrained JSON null.  An empty
-                                 ;; plist serializes as null and is not a
-                                 ;; schema, so describe the complete allowed
-                                 ;; scalar/container union explicitly.
-                                 :value
-                                 (list :type
-                                       ["string" "number" "boolean"
-                                        "object" "array" "null"]))))))))
+                           (list :sources
+                                 (list :type "array" :minItems 1 :maxItems 16
+                                       :items
+                                       (list :type "integer" :minimum 1))
+                                 :text (list :type "string"
+                                              :minLength 1))))))))
 
 (defun e-openai-codex--text-verbosity (model options)
   "Return Responses text verbosity for MODEL under OPTIONS."
@@ -1524,7 +1544,7 @@ retained response already carries the stable segment and its earlier marker."
                       :parallel_tool_calls t))))
     (when (or tools
               (eq (plist-get options :reserved-effect-carrier)
-                  'context-promote-wire))
+                  'context-curate-wire))
       (setq body
             (append body
                     (list :tools
@@ -1532,9 +1552,9 @@ retained response already carries the stable segment and its earlier marker."
                            (append (copy-tree tools)
                                    (when (eq (plist-get options
                                                        :reserved-effect-carrier)
-                                             'context-promote-wire)
+                                             'context-curate-wire)
                                      (list
-                                      (e-openai-codex--context-promotion-tool-definition)))))))))
+                                      (e-openai-codex--context-curation-tool-definition)))))))))
     (when text-verbosity
       (setq body (append body (list :text (list :verbosity text-verbosity)))))
     (when reasoning
@@ -1553,7 +1573,7 @@ retained response already carries the stable segment and its earlier marker."
             (append body
                     (list :prompt_cache_key
                           (plist-get options :prompt-cache-key)))))
-    (when (and (e-openai-codex--prompt-layout-revision options)
+    (when (and (e-openai-codex--wire-prompt-layout-revision options)
                (eq (e-openai-codex--prompt-cache-breakpoint-mode options)
                    'explicit))
       (setq body
@@ -1600,15 +1620,14 @@ retained response already carries the stable segment and its earlier marker."
                   :provider-compaction-source-entry-id
                   (plist-get options :provider-compaction-source-entry-id)
                   :input-message-count (length (plist-get body :input))
-                  ;; The reserved promotion carrier is an adapter wire
+                  ;; The reserved curation carrier is an adapter wire
                   ;; detail, not a user-dispatchable tool.  Keep diagnostics
                   ;; compatible with the ordinary tool count.
                   :tool-count
                   (cl-count-if
                    (lambda (tool)
                      (not (member (plist-get tool :name)
-                                  '("context-promote" "context_promote"
-                                    context-promote context_promote))))
+                                  '("context-curate" context-curate))))
                    (plist-get body :tools))
                   :responses-transport responses-transport))
            (metadata (list :provider-continuation continuation-state
@@ -2784,10 +2803,9 @@ list.  Return a cancellable `e-backend-request' handle."
        (member (plist-get item :type)
                '("function_call" "tool_call" function_call tool_call))))
 
-(defun e-openai-codex--context-promotion-name-p (name)
-  "Return non-nil when NAME is the reserved promotion carrier."
-  (member name '("context-promote" "context_promote" context-promote
-                context_promote)))
+(defun e-openai-codex--context-curation-name-p (name)
+  "Return non-nil when NAME is the reserved curation carrier."
+  (member name '("context-curate" context-curate)))
 
 (defun e-openai-codex--encrypted-reasoning-item-p (item)
   "Return non-nil when ITEM is replayable encrypted OpenAI reasoning."
@@ -2803,24 +2821,18 @@ list.  Return a cancellable `e-backend-request' handle."
    ((listp arguments) arguments)
    (t nil)))
 
-(defun e-openai-codex--context-promotion-effect (arguments &optional call-id)
-  "Return the core-owned promotion effect decoded from wire ARGUMENTS."
+(defun e-openai-codex--context-curation-effect (arguments &optional call-id)
+  "Return the core-owned curation effect decoded from wire ARGUMENTS.
+
+The wire object is deliberately passed through without adding frame or
+provider identity.  Core binds its labels to the live frame at completion."
   (let* ((arguments (e-openai-codex--parse-function-arguments arguments))
-         (effect (list :type 'context-promote
-                       :schema-version
-                       (or (plist-get arguments :schema-version)
-                           (plist-get arguments :schema_version))
-                       :frame-id
-                       (or (plist-get arguments :frame-id)
-                           (plist-get arguments :frame_id))
-                       :source-observation-ids
-                       (or (plist-get arguments :source-observation-ids)
-                           (plist-get arguments :source_observation_ids))
-                       :facts (plist-get arguments :facts))))
+         (effect (list :type 'context-curate
+                       :arguments arguments)))
     ;; Responses requires a function_call_output for every function_call when
     ;; a subsequent request continues from its response id.  Keep that wire
     ;; acknowledgement opaque and paired with the in-memory response; the
-    ;; core promotion effect remains exact and provider-neutral, while the
+    ;; core curation effect remains exact and provider-neutral, while the
     ;; session projection removes this replay metadata from later durable
     ;; context.
     (when (and (stringp call-id) (not (string-empty-p call-id)))
@@ -3056,9 +3068,9 @@ WIRE-API identifies the expected OpenAI streaming protocol."
      ((and (equal type "response.output_item.done")
            (e-openai-codex--function-call-item-p (plist-get event :item)))
       (let ((item (plist-get event :item)))
-        (if (e-openai-codex--context-promotion-name-p
+        (if (e-openai-codex--context-curation-name-p
              (plist-get item :name))
-            (e-openai-codex--context-promotion-effect
+            (e-openai-codex--context-curation-effect
              (plist-get item :arguments)
              (or (plist-get item :call_id)
                  (plist-get item :call-id)))
@@ -3266,9 +3278,9 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
                    (arguments (plist-get acc :arguments)))
               (when (and (plist-get acc :id)
                          (plist-get acc :name))
-                (if (e-openai-codex--context-promotion-name-p
+                (if (e-openai-codex--context-curation-name-p
                      (plist-get acc :name))
-                    (push (e-openai-codex--context-promotion-effect
+                    (push (e-openai-codex--context-curation-effect
                            arguments
                            (plist-get acc :id))
                           items)
@@ -3400,7 +3412,7 @@ OpenAI request and backend-neutral context."
                      (setq effective-options
                            (plist-put effective-options
                                       :reserved-effect-carrier
-                                      'context-promote-wire))
+                                      'context-curate-wire))
                    (cl-remf effective-options :reserved-effect-carrier))
                  (when (plist-member profile :response-store)
                    (setq effective-options

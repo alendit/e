@@ -1830,8 +1830,8 @@
       (should (eq (plist-get (plist-get finished :payload) :status)
                   'error)))))
 
-(ert-deftest e-loop-test-context-promotion-stays-out-of-tool-queue ()
-  "The reserved promotion carrier is consumed by the loop, not dispatched."
+(ert-deftest e-loop-test-context-curation-stays-out-of-tool-queue ()
+  "The reserved curation carrier is consumed by the loop, not dispatched."
   (let* ((frame
           (e-context-lifetime-frame-create
            :id "frame-loop"
@@ -1846,22 +1846,19 @@
               :body (:content "canvas")))))
          (backend
           (e-backend-create
-           :name "promotion-carrier"
+           :name "curation-carrier"
            :stream
            (cl-function
             (lambda (&key on-item &allow-other-keys)
               (funcall
                on-item
-               '(:type context-promote
-                 :schema-version 1
-                 :frame-id "frame-loop"
-                 :source-observation-ids ("observation-loop")
-                 :facts ((:id "selected" :value "keep this"))))
+               '(:type context-curate
+                 :arguments (:keep (1))))
               (funcall on-item
                        '(:type assistant-message :content "answer"))
               (funcall on-item '(:type done :reason stop))))))
          (messages nil)
-         (promotion-effects nil))
+         (curation-effects nil))
     (e-loop-run-turn-batch
      :session-id "session-loop"
      :turn-id "turn-loop"
@@ -1874,21 +1871,17 @@
        :context-capabilities
        (:continuation none
         :observation-delivery request-local-replaceable
-        :reserved-effect-carrier context-promote-wire)
-       :context-promotion-frame-id "frame-loop"
-       :context-promotion-observation-ids ("observation-loop"))
+        :reserved-effect-carrier context-curate-wire))
      :lifetime-frame frame
      :on-response-complete
      (lambda (payload)
-       (setq promotion-effects (plist-get payload :promotion-effects)))
+       (setq curation-effects (plist-get payload :curation-effects)))
      :on-event #'ignore
      :append-message (lambda (message)
                        (setq messages (append messages (list message)))))
-    (should (= (length promotion-effects) 1))
-    (should (equal (plist-get (car promotion-effects) :frame-id)
-                   "frame-loop"))
-    (should (equal (plist-get (car promotion-effects) :facts)
-                   '((:id "selected" :value "keep this"))))
+    (should (= (length curation-effects) 1))
+    (should (equal (plist-get (car curation-effects) :arguments)
+                   '(:keep (1) :summaries nil)))
     (should-not (seq-find (lambda (message)
                             (eq (plist-get message :role) 'tool-call))
                           messages))
@@ -1965,9 +1958,7 @@
               :context-lifetime-enabled t
               :context-capabilities
               (:continuation none
-               :observation-delivery request-local-replaceable)
-              :context-promotion-frame-id "frame-A"
-              :context-promotion-observation-ids ("observation-A"))))
+               :observation-delivery request-local-replaceable))))
       (e-loop-start-turn
        :session-id "session-race"
        :turn-id "turn-race"
@@ -2017,12 +2008,6 @@
       (should (equal (e-context-lifetime-frame-id tool-frame)
                      (format "frame-B-%s"
                              (if provider-first "first" "last"))))
-      (should (equal (plist-get
-                      (plist-get
-                       (car captured-requests)
-                       :options)
-                      :context-promotion-frame-id)
-                     (e-context-lifetime-frame-id tool-frame)))
       (let ((follow-up-messages
              (plist-get (car captured-requests) :messages)))
         ;; The descendant frame is not merely metadata: the actual follow-up
@@ -2042,11 +2027,11 @@
                          :status ok
                          :content "BUNDLE-RESULT")))))))
 
-(ert-deftest e-loop-test-invalid-promotion-stops-later-tool-calls ()
+(ert-deftest e-loop-test-invalid-curation-stops-later-tool-calls ()
   "An invalid reserved control stops later calls without semantic mutation."
   (let* ((started nil)
          (messages nil)
-         (promotion-effects nil)
+         (curation-effects nil)
          (frame
           (e-context-lifetime-frame-create
            :id "frame-invalid-control"
@@ -2075,7 +2060,7 @@
               nil))))
          (backend
           (e-backend-create
-           :name "invalid-promotion-order"
+           :name "invalid-curation-order"
            :stream
            (cl-function
             (lambda (&key on-item &allow-other-keys)
@@ -2084,14 +2069,11 @@
                          :id "call-before-invalid"
                          :name "before-invalid"
                          :arguments nil))
-              ;; Missing facts is a malformed reserved control.  The later
+              ;; An empty disposition is a malformed reserved control.  The later
               ;; ordinary call must not be dispatched after this point.
               (funcall on-item
-                       '(:type context-promote
-                         :schema-version 1
-                         :frame-id "frame-invalid-control"
-                         :source-observation-ids
-                         ("observation-invalid-control")))
+                       '(:type context-curate
+                         :arguments (:keep ())))
               (funcall on-item
                        '(:type tool-call
                          :id "call-after-invalid"
@@ -2113,18 +2095,18 @@
         :context-capabilities
         (:continuation none
          :observation-delivery request-local-replaceable
-         :reserved-effect-carrier context-promote-wire))
+         :reserved-effect-carrier context-curate-wire))
       :lifetime-frame frame
       :on-response-complete
       (lambda (payload)
-        (setq promotion-effects (plist-get payload :promotion-effects)))
+        (setq curation-effects (plist-get payload :curation-effects)))
       :on-event #'ignore
       :append-message
       (lambda (message)
         (setq messages (append messages (list message)))))
      :type 'e-context-lifetime-invalid-record)
     (should (equal started '("before-invalid")))
-    (should-not promotion-effects)
+    (should-not curation-effects)
     (should-not
      (seq-find (lambda (message)
                  (equal (plist-get (plist-get message :content) :name)
@@ -2135,6 +2117,122 @@
     (should-not (seq-find (lambda (message)
                             (eq (plist-get message :role) 'assistant))
                           messages))))
+
+(ert-deftest e-loop-test-curation-before-later-tool-call-fails-atomically ()
+  "A tool call after a valid curation is rejected before it is queued."
+  (let* ((started nil)
+         (curation-effects nil)
+         (messages nil)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-mixed-curation"
+           :generation-id "generation-mixed-curation"
+           :consumer-request-id "consumer-mixed-curation"
+           :observations
+           '((:observation-id "observation-mixed-curation"
+              :kind "current-state"
+              :source-entry-ref "external:canvas:mixed-curation"
+              :source-fingerprint "mixed-curation"
+              :effective-delivery "inherited"
+              :body (:content "canvas")))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (push (plist-get tool-call :name) started)
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name (plist-get tool-call :name)
+                             :status 'ok :content "unexpected"))
+              nil))))
+         (backend
+          (e-backend-create
+           :name "mixed-curation-order"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type context-curate :arguments (:keep (1))))
+              (funcall on-item
+                       '(:type tool-call :id "call-after-curation"
+                         :name "after-curation" :arguments nil)))))))
+    (should-error
+     (e-loop-run-turn-batch
+      :session-id "session-mixed-curation"
+      :turn-id "turn-mixed-curation"
+      :messages '((:role user :content "prompt"))
+      :backend backend
+      :tools (e-tools-registry-create)
+      :tool-lifecycle tool-lifecycle
+      :options '(:model "fake" :context-lifetime-enabled t
+                 :context-capabilities (:continuation none
+                                        :observation-delivery inherited
+                                        :reserved-effect-carrier
+                                        context-curate-wire))
+      :lifetime-frame frame
+      :on-response-complete
+      (lambda (payload)
+        (setq curation-effects (plist-get payload :curation-effects)))
+      :on-event #'ignore
+      :append-message
+      (lambda (message)
+        (setq messages (append messages (list message)))))
+     :type 'e-context-lifetime-invalid-record)
+    (should-not started)
+    (should-not curation-effects)
+    (should-not (seq-find
+                 (lambda (message)
+                   (equal (plist-get (plist-get message :content) :name)
+                          "after-curation"))
+                 messages))))
+
+(ert-deftest e-loop-test-multiple-curations-fail-before-completion ()
+  "A second reserved curation invalidates the complete response."
+  (let* ((curation-effects nil)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-multiple-curations"
+           :generation-id "generation-multiple-curations"
+           :consumer-request-id "consumer-multiple-curations"
+           :observations
+           '((:observation-id "observation-multiple-curations"
+              :kind "current-state"
+              :source-entry-ref "external:canvas:multiple-curations"
+              :source-fingerprint "multiple-curations"
+              :effective-delivery "inherited"
+              :body (:content "canvas")))))
+         (backend
+          (e-backend-create
+           :name "multiple-curations"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type context-curate :arguments (:keep (1))))
+              (funcall on-item
+                       '(:type context-curate :arguments (:keep (1)))))))))
+    (should-error
+     (e-loop-run-turn-batch
+      :session-id "session-multiple-curations"
+      :turn-id "turn-multiple-curations"
+      :messages '((:role user :content "prompt"))
+      :backend backend
+      :tools (e-tools-registry-create)
+      :options '(:model "fake"
+                 :context-lifetime-enabled t
+                 :context-capabilities (:continuation none
+                                        :observation-delivery inherited
+                                        :reserved-effect-carrier
+                                        context-curate-wire))
+      :lifetime-frame frame
+      :on-response-complete
+      (lambda (payload)
+        (setq curation-effects (plist-get payload :curation-effects)))
+      :on-event #'ignore
+      :append-message #'ignore)
+     :type 'e-context-lifetime-invalid-record)
+    (should-not curation-effects)))
 
 (ert-deftest e-loop-test-provider-compaction-clears-before-tool-follow-up ()
   "A compact request uses opaque output once, then sends ordinary tool input.
