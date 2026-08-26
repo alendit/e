@@ -32,7 +32,7 @@ invalidates earlier =F88A3-CACHE= evidence by request-shape identity.
 | =F88A4-CURATE= | replaces =F88A3-PROMOTION= | One =context-curate= effect can keep exact source values, replace one or more sources with each submitted summary, and drop every omitted source without model-supplied runtime identities. | core schema and provenance; loop carrier; harness/session application; adapter wire codec | =curate-keep-summary-drop= | not applicable | proposed |
 | =F88A4-ATOMIC= | joins inherited =F88A3-TOOL= | Zero or one effect is accepted per complete response.  All preparation precedes mutation; a valid record commits before later provider dispatch; invalid or multiple effects use the existing response-failure boundary. | loop and harness response-completion boundary | =curate-invalid-atomic= and =curate-wire-follow-up= | not applicable | proposed |
 | =F88A4-BOUNDS= | replaces original promotion limits | A curation has 1--16 disposed sources and a prepared durable record of at most 8,192 canonical UTF-8 bytes; exact-bound values pass and one-over values fail before mutation. | pure core validation before session append | =curate-exact-boundaries= and =curate-large-handle= | not applicable | proposed |
-| =F88A4-DURABLE= | joins inherited =F88A3-COMPAT= | New version-3 =context-promotion= records hold ordered exact/summary items with per-item core-derived provenance.  V2 remains read-only compatible; presentation and backing objects are absent. | core codec and session append/projection/reopen/branch/compaction | =curate-persistence-compat= | not applicable | proposed |
+| =F88A4-DURABLE= | joins inherited =F88A3-COMPAT= | New version-3 =context-promotion= records hold ordered exact/summary items with per-item core-derived provenance and project one portable system message per item.  V2 remains read-only compatible; presentation and backing objects are absent. | core codec and session append/projection/reopen/branch/compaction | =curate-persistence-compat= with literal role/content before and after compaction | not applicable | proposed |
 | =F88A4-COST= | new guidance | Per-source estimates are deterministic and informational.  Optional monetary guidance is outer-owned and never changes semantic acceptance. | core neutral estimator; outer adapter or presentation owns pricing | estimator owner tests | not applicable | proposed |
 | =F88A3-SEM= | inherited with terminology substitution | The next ordinary request is canonical durable state plus successful curation items and the new frontier; consumed raw values and contaminated lineage are absent. | unchanged session/harness composition | revised canonical observe-curate-forget composition | not applicable | accepted inherited contract |
 | =F88A3-LAYOUT= | inherited | Curation source presentation is late-frontier input.  Stable policy and reserved schema remain stable-prefix-compatible; presentation/schema revisions fence anchors and cache evidence. | unchanged harness/OpenAI layout owners | literal request order, prefix, and fingerprint tests | not applicable | accepted inherited contract |
@@ -203,9 +203,24 @@ before its label and approximate-size annotation were added.
 
 The durable record contains no frame-local labels, token hints, provider
 acknowledgements, raw backing object, transport envelope, open-frame body,
-settlement state, or retry state.  Projection renders only the exact value or
-summary text as durable semantic content, preserving item order; provenance is
-audit and validation data rather than model-visible content.
+settlement state, or retry state.
+
+Projection maps every version-3 item to exactly one provider-neutral portable
+message in record order:
+
+#+begin_src emacs-lisp
+exact item   -> (:role system :content EXACT-CANONICAL-SOURCE-VALUE)
+summary item -> (:role system :content MODEL-AUTHORED-TEXT)
+#+end_src
+
+Core inserts the stored content without a frame label, token count, internal
+identifier, =Promoted fact= prefix, or =prin1= stringification.  The content
+must already be a canonical model-facing content value accepted by the
+portable-message codec.  Compaction consumes these same portable messages, so
+a version-3 item has identical role and content before and after a generation
+boundary.  Version-2 records retain their existing projection behavior solely
+for compatibility.  Provenance remains audit and validation data rather than
+model-visible content.
 
 Version-2 =context-promotion= records remain readable.  A v2 record on the
 active generation remains model-visible exactly as before; older-generation v2
@@ -272,9 +287,9 @@ vocabulary while keeping separate owners and transaction boundaries.
 | =curate-invalid-atomic= | deterministic | unknown, duplicate, malformed, over-limit, and multiple effects commit nothing while preserving the inherited streamed-tool boundary |
 | =curate-exact-boundaries= | deterministic | exact 16-source/8,192-byte boundaries and 17-source/8,193-byte rejection before mutation |
 | =curate-wire-follow-up= | deterministic | the carrier stays outside ordinary tools and its opaque acknowledgement joins only the matching immediate continuation |
-| =curate-persistence-compat= | deterministic | v2/v3 reopen, mixed active projection, branches, and compaction |
+| =curate-persistence-compat= | deterministic | v2/v3 reopen, mixed active projection, branches, and literal v3 portable role/content preserved through compaction |
 | =curate-large-handle= | deterministic | only a presented preview becomes durable; its backing value remains external |
-| =canonical-observe-curate-forget= | deterministic composition | core/session/harness/OpenAI path retains chosen items and excludes consumed values, presentation metadata, acknowledgement, and contaminated response IDs |
+| =canonical-observe-curate-forget= | deterministic composition | core/session/harness/OpenAI path emits the literal ordered durable system messages and excludes consumed values, presentation metadata, acknowledgement, and contaminated response IDs |
 | =chatgpt-canonical-warm-prefix= | external compatibility | inherited =F88A3-CACHE= minimal scenario rerun after material request-shape change |
 | =chatgpt-canonical-tool-heavy= | external compatibility | inherited tool-heavy scenario rerun with the curation carrier |
 
@@ -310,18 +325,22 @@ Establish =F88A4-PRESENT=, =F88A4-CURATE=, and =F88A4-BOUNDS= in core.  The
 slice stops at a pure, fully validated version-3 prepared record while the
 consumer-bound frame is still live.
 
-** Slice 2: Atomic response commit and OpenAI carrier
+** Slice 2: Durable versioned codec and session compatibility
 
-Establish =F88A4-ATOMIC= and its =F88A3-TOOL= join.  Replace the reserved wire
-schema and decoder, preserve the immediate opaque acknowledgement, and commit
-the prepared record before frame consumption and later provider dispatch.
+Establish =F88A4-DURABLE=, including the portable message mapping, before any
+model-facing path can write v3.  Add strict v3 record validation, v3
+append/replay/projection, the read-only v2 dispatch, mixed-version reopen,
+branch, and compaction evidence.  The slice stops with a tested session
+boundary that accepts a pure prepared v3 record; no provider carrier emits one
+yet.
 
-** Slice 3: Durable compatibility and composed semantics
+** Slice 3: Atomic response commit and OpenAI carrier
 
-Establish =F88A4-DURABLE= and the =F88A3-SEM=/=F88A3-COMPAT= joins.  Add the
-v3 codec/projection, retain the v2 reader only, cover reopen/branch/compaction,
-and replace the canonical observe-promote-forget composition with
-observe-curate-forget.
+Establish =F88A4-ATOMIC= and its =F88A3-TOOL=/=F88A3-SEM= joins using Slice 2's
+accepted session boundary.  Replace the reserved wire schema and decoder,
+preserve the immediate opaque acknowledgement, prepare against the live frame,
+append the v3 record, consume the frame, and prove the complete
+observe-curate-forget composition before later provider dispatch.
 
 ** Slice 4: Combined Addendum 3 cleanup and acceptance
 
