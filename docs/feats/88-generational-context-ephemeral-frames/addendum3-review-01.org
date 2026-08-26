@@ -1,0 +1,476 @@
+#+title: Feature 88 Addendum 3 Specification Review 01
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This independent rebaseline specification Tick reviewed exact revision
+=a21ad9b8fb5392c165819c6e0e7c625b119c98c5=.
+
+Addendum 3 has the right architectural direction—canonical semantic replay,
+late changing context, provider-cache evidence, and deletion of machinery whose
+only value was smaller wire requests—but it is not implementation-ready.
+
+Findings:
+
+- P0: none.
+- P1: one.
+- P2: two.
+- P3: none.
+
+The P1 is a semantic capability/anchor contradiction.  The proposal moves
+=current-state= and =dynamic-context= from request-local top-level
+=instructions= into ordinary provider =input= while leaving the accepted
+=request-local-replaceable= capability consequence unspecified.  Ordinary
+input is inherited by a =previous_response_id= continuation.  If the wire move
+were implemented without changing that capability claim, the harness could
+admit or select a provider anchor whose causal context still contains the
+expired observation.
+
+The two P2 findings are specification-boundary defects: no single normalized
+contract authority exists, and the external cache evidence lacks the identity,
+freshness, failure, and telemetry rules required to decide acceptance.
+
+The current external status is =capability-unconfirmed=.  The historical
+2026-08-26 results support the design hypothesis, but the document omits enough
+identity and freshness metadata that they cannot be reused as initial
+acceptance evidence.  The configured credential file is currently absent, so
+this Tick made no provider request.  There is no
+=product-contract-failure=.
+
+The index correctly keeps Feature 88 =Planned=.  Remediate this specification,
+then run a fresh design Tick before implementation.
+
+* Reviewed revision and scope
+
+Review mode: rebaseline specification review.
+
+Reviewed target:
+
+- =docs/feats/88-generational-context-ephemeral-frames/addendum3.org=
+- exact revision =a21ad9b8fb5392c165819c6e0e7c625b119c98c5=
+
+Accepted authorities inspected:
+
+- =plan.org=;
+- =addendum.org=;
+- =addendum2.org=;
+- =addendum2-review-07.org=;
+- =docs/architecture.md=;
+- =docs/references/runtime_concepts.org=;
+- =docs/feats/index.org=;
+- =docs/agents/review.org=; and
+- current source, owner tests, composed integration tests, and credentialed E2E
+  definitions.
+
+The current official Responses WebSocket guide was also checked.  It documents
+that =previous_response_id= inherits the parent response context, that a
+=function_call_output= is supplied against that response lineage, that a
+missing response can recover by omitting =previous_response_id= and replaying
+full context, and that branching from an older response uses a different
+=stream_id=.  That public contract does not prove the private ChatGPT endpoint.
+
+This Tick changed no file, created no commit, contacted no running Emacs, and
+made no credentialed provider request.
+
+* Addendum 2 Review 07 dispositions
+
+| Prior item | Addendum 3 disposition |
+|------------+-------------------------|
+| P1-08 detached request-property identity | Closed historical evidence.  The historical ledger mechanism is intentionally removed; its mutable-identity regression need not survive after that authority disappears. |
+| P1-09 older-clean-anchor private capability | Superseded, not carried.  Addendum 3 no longer requires this capability.  The replacement external requirement is canonical warm-prefix reuse. |
+| P2-10 incomplete terminal settlement | Retain the backend-neutral exactly-once terminal lifecycle and non-admission behavior; replace ledger-specific assertions. |
+| P2-11 deterministic 600-second retention proof | Superseded.  Delete the Codex-specific policy and mechanism evidence; retain the general WebSocket resource-policy regressions. |
+| P2-12 bounded provider metrics | Retain bounded extraction and reporting.  Reclassify cache success as external compatibility evidence and latency/ratios/frequency as observational telemetry. |
+
+The Addendum 2 deterministic fixed point remains a valid historical statement
+about its reviewed revision.  It does not make its superseded optimization the
+Addendum 3 target.
+
+* Proposed normalized contract-and-evidence matrix
+
+This matrix should become the sole normative authority in =addendum3.org=.
+Other sections may give rationale, scenarios, risks, and implementation notes,
+but should reference these IDs instead of restating their outcomes.
+
+| Contract ID | Observable contract | Semantic owner | Public composition | Slice | Deterministic evidence | External compatibility evidence | Telemetry | Status |
+|-------------+---------------------+----------------+--------------------+-------+------------------------+---------------------------------+-----------+--------|
+| =F88A3-SEM= | After a consumed observation, the next ordinary request is rebuilt from the session-owned durable body, committed promotions, and the new runtime frontier; the prior raw observation, call, replay item, result marker, and contaminated response IDs are absent. | core lifetime policy plus session/harness composition | ordinary turn following an observed/promoted tool turn | 2 | =canonical-observe-promote-forget= owner and composed scenarios | not applicable; repository-controlled | not applicable | proposed |
+| =F88A3-LAYOUT= | An affected OpenAI Responses request keeps top-level instructions stable, renders the unchanged semantic prefix before the changing user/observation frontier, preserves observation instruction authority with developer-role input, and places an explicit breakpoint at the stable-prefix boundary where supported. | OpenAI adapter consuming harness-owned segment identity | literal built-in Codex and canonical OpenAI request bodies | 1 | two canonical =[A B C] → [A B D]= projections with byte/order prefix comparison, raw =C= exclusion, authority check, and breakpoint check | not applicable; repository-controlled | not applicable | proposed |
+| =F88A3-DELIVERY= | For a profile adopting late-input frontier layout, current-state and dynamic-context input is =inherited= under continuation.  An observation-bearing response or descendant is not a durable cross-turn anchor.  Profiles that retain top-level instruction replacement remain under the first addendum instead. | backend capability contract and OpenAI profile resolver | harness anchor selection/persistence joined to the affected profile | 1 and 2 | capability-map, anchor-safety, no-persistence, and canonical-next-turn scenarios | not applicable | not applicable | unknown pending P1-01 |
+| =F88A3-TOOL= | The latest tool-producing response is usable only by its matching in-memory function-call-output follow-up.  A =previous_response_not_found= rejection performs at most one complete canonical retry containing the required call/replay/result bundle; neither response lineage authorizes the next ordinary turn. | loop for causal follow-up; OpenAI adapter for response availability/retry | streamed tool response, tool execution, matching follow-up, then next ordinary turn | 2 and 3 | both provider-done/tool-result orderings; top-level =error= and =response.failed=; exact zero/one retry; next-turn exclusion | tool-heavy credentialed scenario reports this separately from cache status | retry reason/count may be bounded diagnostics; otherwise not applicable | proposed |
+| =F88A3-PROMOTION= | Core validates promotion provenance against the consumed frame and commits valid facts to the session before any subsequent provider request; invalid promotion follows the existing failure path without later dispatch or semantic mutation. | core and harness/session append boundary | observed tool turn followed by promoted ordinary turn | 2 | existing owner tests plus public valid/invalid promotion composition | not applicable | not applicable | accepted inherited contract |
+| =F88A3-CACHE= | With unchanged capability identity and cache key, canonical retained-socket and replacement-socket request pairs report a warm prefix on request 2; missing usage is unavailable, explicit zero on a valid run is a product-contract failure, and semantic correctness remains independent of cache availability. | OpenAI adapter profile/evidence boundary | minimal canonical pair and tool-heavy canonical composition | 4 | stable key, literal prefix, and replacement-socket request identity | separately reportable minimal pair and tool-heavy scenario | cached ratio, latency, and warm/cold frequency are observational | unknown pending P2-03 |
+| =F88A3-CLEANUP= | The ChatGPT optimization path retains no historical response ledger, eviction history, older-anchor diagnostics, Codex-specific idle override, or wire-size acceptance; only immediate causal response state and the general socket policy remain, and no new durable state or compatibility shim is introduced. | OpenAI adapter | adapter state across response completion, follow-up, rejection, close, and replacement | 3 | negative source/test searches plus latest-follow-up, retry, general idle-close, and cleanup tests | not applicable | not applicable | proposed |
+| =F88A3-COMPAT= | Provider-neutral anchors, canonical OpenAI compaction/continuation with an independent semantic consumer, persisted historical audit records, and unrelated transports remain unchanged; named streams, generalized graphs, crash recovery, compaction redesign, and presentation are outside this package. | existing owning modules | unaffected-profile and disabled-feature regressions | 3 and 4 | existing generic branchable, compaction, disabled, session-load, and transport suites | public named-stream documentation is context, not acceptance | not applicable | proposed |
+
+* Findings ordered P0--P3
+
+** TODO P1-01: late input is inherited but the proposal does not revise the replacement capability
+
+*** Proof
+
+Addendum 3 requires changing current-state/dynamic observations to become late
+provider =input= items while top-level =instructions= remains stable
+(=addendum3.org:179-197=).  It still calls this “late-frontier projection for
+replaceable current-state and dynamic context” at =:276=.
+
+The accepted parent contract says the opposite wire fact is what justifies
+=request-local-replaceable=: the complete observation is top-level
+=instructions=, and appending a developer/system input item is not replacement
+(=plan.org:247-275= and =addendum.org:21-57,131-165=).
+
+Current source implements that contract:
+
+- =e-openai--request-local-observation-delivery-map= reports current/dynamic as
+  replaceable at =e-openai.el:433-440=;
+- =e-openai--profile-context-capabilities= exposes that map at =:782-849=;
+- =e-openai-codex--instructions= places the current observation in top-level
+  instructions at =:1181-1205=;
+- =e-harness--provider-anchor-selection-allowed-p= allows a linear anchor when
+  delivery is replaceable at =e-harness.el:3539-3560=; and
+- =e-harness--provider-anchor-candidate-persistable-p= treats a replaceable
+  observation as non-inherited at =:3910-3946=.
+
+The official WebSocket contract says =previous_response_id= inherits the prior
+response context.  Therefore an observation sent as ordinary developer input
+is intentionally inherited by its matching tool follow-up.
+
+Impact: implementing only the requested wire move leaves a false semantic
+capability claim.  The harness may persist or select a response as clean even
+though its provider lineage still contains the expired observation, violating
+Feature 88’s central lifetime invariant.
+
+History: specification regression introduced by Addendum 3’s new layout, not an
+inherited implementation defect.
+
+*** Owning correction
+
+Replace the first paragraph of “Put changing context at the frontier” with:
+
+#+begin_example
+For every Responses profile adopting F88A3-LAYOUT, current-state and
+dynamic-context observations are rendered as late developer-role input and are
+therefore inherited under previous_response_id continuation.  The adapter must
+resolve those kinds to inherited for that effective profile identity.
+The request-local-replaceable claim remains valid only for a profile that keeps
+the complete current observation in top-level instructions.
+
+An observation-bearing response and every contaminated descendant are
+immediate-followup-only and must not become durable cross-turn anchors.  The
+existing linear continuation path remains available for the latest
+tool-producing response and its matching function-call output, because
+inheritance is required within that one successful turn.  A later ordinary
+request uses canonical reconstruction unless a semantically exact clean
+continuation with no inherited ephemeral frontier is independently eligible.
+No new core capability, provider predicate, or profile-specific harness switch
+is introduced.
+#+end_example
+
+In =Status=, replace the first-addendum supersession sentence with:
+
+#+begin_example
+For every profile adopting F88A3-LAYOUT, this addendum supersedes the first
+addendum's current-state/dynamic-context request-local-replaceable claim and its
+top-level-instructions wire contract.  Profiles that retain that proven wire
+contract remain governed by the first addendum.
+#+end_example
+
+Replace “late-frontier projection for replaceable current-state and dynamic
+context” with:
+
+#+begin_example
+late-frontier projection for ephemeral current-state and dynamic-context input,
+with delivery truth recorded by F88A3-DELIVERY;
+#+end_example
+
+Do not plaster this with adapter-only suppression of =previous_response_id=,
+continued persistence of falsely clean anchors, or a new profile-specific core
+switch.  Capability truth, anchor selection, persistence, and wire projection
+must agree at their existing owners.
+
+Architectural-scope signal: moving bytes without changing semantic delivery
+would create duplicated authority between the adapter wire path and the
+backend/harness capability path.  The proper correction is bounded to affected
+profile resolution, existing anchor policy, adapter projection, and their
+tests.  No durable follow-up exists, and this current violation is not eligible
+for follow-up deferral.
+
+** TODO P2-02: normative requirements are duplicated and mechanism-coupled
+
+*** Proof
+
+The document has no stable contract IDs or authoritative contract matrix.
+Equivalent requirements are repeated, sometimes with different scope, across
+=Goal=, =Decisions=, =Required protocol=, =Scope=, =Ownership and state
+lifetime=, =Targeted cleanup=, four slice exits, three acceptance groups,
+=Performance contract=, =Compatibility and migration=, risks, and the
+architecture self-check.
+
+The durable outcome is mixed with private prescriptions such as one latest
+scalar, ordered provider fields, concrete diagnostic fields, and the current
+transaction decomposition.  The changed test population is described by
+themes but is not classified =retain=, =strengthen=, =replace=, or =delete=.
+The exact one-retry bound also lacks its required correctness/resource/boundary
+record.
+
+Impact: two correct implementers can derive different profile scope,
+capability behavior, and required tests.  Subsequent reviews have no stable IDs
+against which to audit closure.
+
+*** Owning correction
+
+Insert the matrix above after =Goal= and declare it the sole normative
+authority.  Keep later prose only as rationale, scenario detail, or a
+conditional implementation appendix.
+
+Replace repeated normative sentences with these references:
+
+| Existing sections | Owning row |
+|-------------------+------------|
+| canonical next-turn/literal exclusion text | =F88A3-SEM= |
+| stable/frontier order and breakpoint text | =F88A3-LAYOUT= |
+| replacement/anchor-cleanliness consequences | =F88A3-DELIVERY= |
+| immediate response ID and retry text | =F88A3-TOOL= |
+| promotion order/provenance text | =F88A3-PROMOTION= |
+| cache-key, external warm pair, and cache status | =F88A3-CACHE= |
+| ledger/socket/wire-test deletion | =F88A3-CLEANUP= |
+| retained infrastructure and non-goals | =F88A3-COMPAT= |
+
+Move helper names, record fields, scalar representation, current diagnostics,
+and concrete deletion inventory under:
+
+#+begin_example
+* Conditional implementation appendix
+
+The following names describe the implementation at the reviewed baseline and
+may change under an equivalent design.  They are not additional contracts.
+All implementation choices must establish F88A3-SEM through F88A3-COMPAT.
+#+end_example
+
+Add the numeric-bound record:
+
+| Limit | Correctness role | Workload basis | Resource estimate | Exact/one-over consequence | Revision trigger |
+|-------+------------------+----------------+-------------------+----------------------------+------------------|
+| one canonical retry | recover one unavailable immediate continuation without an unbounded or duplicate retry loop | one matching tool follow-up whose latest response disappeared | at most one additional complete provider request | zero loses the documented recovery path; two repeats the same causal bundle without new compatibility evidence | provider introduces a distinct recoverable identity or error class requiring a new bounded policy |
+
+Add the test-disposition table under the appendix:
+
+| Disposition | Current evidence |
+|-------------+------------------|
+| retain | =e-context-lifetime-e2e-test-tool-observe-promote-forget=; =e-context-lifetime-e2e-test-multi-tool-bundle-is-one-shot=; generic branchable/compaction/disabled-feature tests |
+| strengthen | =e-provider-continuation-integration-test-ephemeral-bundle-does-not-contaminate-anchor= for inherited late input; =e-openai-test-gpt56-marks-stable-context-cache-boundary= for the actual frontier boundary; reconnect/full-replay and unavailable-response tests for both error forms and one retry |
+| replace | =e-openai-test-request-local-current-state-replaces-instructions=; =e-provider-continuation-integration-test-websocket-gpt56-explicit-cache=; =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=; =e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain=; affected built-in changed-instructions continuation evidence |
+| delete | older-known-response, 256-entry ledger, eviction-history, branch-position, Codex profile idle override, 301/600 fake-time, and wire-byte/input-count mechanism evidence |
+| replace rather than delete wholesale | terminal/transport cleanup tests that currently mix durable lifecycle behavior with ledger assertions; retain lifecycle and latest-state cleanup while removing historical-ledger assertions |
+
+A simpler correct implementation that preserves these rows must be able to pass
+the retained contract tests without reproducing Addendum 2’s private
+decomposition.
+
+** TODO P2-03: external cache evidence has no reusable identity or decision model
+
+*** Proof
+
+The 2026-08-26 baseline records token counts and socket replacement but not the
+exact model, endpoint identity, profile identity, prompt-layout revision,
+cache-key derivation revision, executable scenario, reviewed code revision, or
+freshness window.
+
+The acceptance sections require =cached_input_tokens > 0=, while
+=Performance contract= also calls ratios “deterministic fixtures,” calls
+latency supporting evidence, and declares repeated cold prefill a regression
+without defining a deterministic threshold or external failure
+classification.
+
+Impact: stale or identity-mismatched evidence could be credited as acceptance;
+missing provider data could be confused with failure; and observational
+latency/ratio values could accidentally gate deterministic acceptance.
+
+*** Owning correction
+
+Replace =Evidence baseline= and the evidence part of =Performance contract=
+with:
+
+#+begin_example
+* Evidence classification and freshness
+
+F88A3-CACHE has two separately reportable external scenarios:
+
+1. =chatgpt-canonical-warm-prefix=: the smallest canonical [A B C] → [A B D]
+   pair, run once on a retained socket and once after a deliberate replacement
+   socket; and
+2. =chatgpt-canonical-tool-heavy=: one real tool-producing response, its
+   matching immediate function-call-output continuation, and the following
+   canonical ordinary request.
+
+Each record must contain provider/profile id, exact base URL identity, Responses
+WebSocket transport, store mode, native requester identity, exact model id,
+prompt-layout revision, prompt-cache-key derivation revision, material request
+shape, scenario name, timestamp, repository revision, total input tokens,
+cached input tokens, and result.
+
+The freshness window is seven calendar days.  Reuse is allowed only when every
+identity field and the material request shape match and no affected adapter,
+projection, capability, cache-key, or scenario owner changed.  Evidence older
+than seven days is stale.  Any endpoint/model/protocol/layout change makes it
+stale immediately.
+
+A valid second request with cached_input_tokens > 0 is current or reusable
+external success.  A valid result with explicit zero and no identity change,
+expiry, or declared invalidation is product-contract-failure.  A missing usage
+field is unavailable.  Authentication/configuration failure,
+provider/infrastructure failure, and bounded timeout retain their distinct
+statuses and do not become product findings.
+
+Deterministic release gates prove literal canonical context, stable-prefix
+byte/order equality, authority-preserving frontier role, stable cache identity,
+breakpoint placement, semantic disappearance, promotion, continuation
+lifetime, retry convergence, and targeted cleanup.  They do not require
+credentials.
+
+Cached-input ratio, provider request latency, and live warm/cold frequency are
+observational telemetry.  The historical 4,864/5,450 result is an observational
+baseline, not a percentage gate.
+
+The historical 2026-08-26 probe in the preceding text lacks the complete
+identity record and is therefore stale for acceptance.  It remains design
+evidence until reproduced by one of the named scenarios.
+
+The package may reach deterministic-fixed-point while external execution is
+unavailable, but remains capability-unconfirmed and is not Done until both
+initial external scenarios are current or reusable.  A valid
+product-contract-failure returns F88A3-CACHE to design/remediation.
+#+end_example
+
+Freshness-limit justification:
+
+| Field | Record |
+|-------+--------|
+| correctness role | private endpoint/cache behavior can drift independently of repository code |
+| workload basis | two fast bounded scenario pairs per review window; no long-idle wait |
+| resource estimate | a small fixed number of credentialed requests |
+| boundary consequence | age <= seven days with matching identity may be reused; age > seven days is stale |
+| revision trigger | measured endpoint stability or materially changed execution cost may justify revising the window |
+
+Define =warm prefill= as =cached_input_tokens > 0= for the declared fixture.
+Do not reintroduce an arbitrary permanent percentage threshold.  Ratios remain
+observational.
+
+* Required specification-cell ledger
+
+| Cell | Evidence and disposition | Status |
+|------+--------------------------+--------|
+| Single normative authority | no contract matrix; requirements duplicated across sections | candidate: P2-02 |
+| Durable contract boundary | observable outcomes mixed with scalar/ledger/diagnostic/test decomposition | candidate: P2-02 |
+| Scenario diagnosability | semantic, layout, minimal cache, replacement-socket, and tool-heavy scenarios are separable and localizable after normalization | cleared subject to matrix insertion |
+| Evidence topology | deterministic layout/semantics, external cache behavior, and telemetry currently overlap | candidate: P2-03 |
+| External freshness | identity and freshness rule absent | candidate: P2-03 |
+| Telemetry decision power | latency/ratio/frequency have no threshold but are cited under performance acceptance | candidate: P2-03 |
+| Exact-limit justification | one retry lacks a record; historical token counts are correctly non-normative; the removed 600-second override is not a new limit | candidate: P2-02 |
+| Workflow boundary | artifact states target/status and requires independent review without copying numbering, commit, reviewer-selection, repetition, or stop mechanics | cleared |
+
+No required cell is silently treated as passed.  No architectural follow-up
+record was created, updated, closed, or marked stale.  The P1 capability defect
+is current scope, not a non-gating improvement.
+
+* Scenario portfolio
+
+| Scenario | Contracts | Observable invariant | Evidence class | Capture/localization |
+|----------+-----------+----------------------+----------------+----------------------|
+| canonical observe/promote/forget | =SEM,PROMOTION= | consuming request sees paired bundle; next request contains selected fact but no raw bundle | deterministic gate | semantic projection and literal request capture localize core/session versus adapter |
+| stable-prefix frontier pair | =LAYOUT,DELIVERY,CACHE= | both canonical bodies have identical prefix, different late frontier, correct roles, and no false clean anchor | deterministic gate | segment IDs, literal body, capability map, anchor activity |
+| latest matching tool follow-up | =TOOL= | R1 is used by exactly its matching output; next ordinary request omits R1/R2 | deterministic gate | response ID and request-ordinal capture |
+| rejected latest continuation | =TOOL= | both error forms cause exactly one full replay with the complete bundle and no second retry | deterministic gate | request count, mode, error form |
+| minimal retained/replacement warm pair | =CACHE= | second canonical request reports nonzero cached input on each socket condition | external compatibility | request/key/connection/usage capture isolates provider cache |
+| tool-heavy warm composition | =SEM,TOOL,CACHE= | semantics pass independently; subsequent canonical request reports cache status independently | external compatibility | shared request/usage capture separates product owner from provider cache |
+| obsolete cluster absent | =CLEANUP,COMPAT= | no historical ledger/eviction/Codex idle override/wire-size assertion remains; generic consumers still pass | deterministic gate | negative source/test search plus focused generic regressions |
+
+* Verification and evidence
+
+Focused current-baseline checks:
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el \
+  e-openai-test-request-local-current-state-replaces-instructions \
+  e-openai-test-websocket-profile-idle-close-boundary-clears-ledger
+#+end_src
+
+Result: 2/2 expected, zero unexpected.  This confirms that the current
+implementation still embodies the Addendum 1 top-level-instructions contract
+and Addendum 2 profile-retention mechanism that Addendum 3 proposes to replace.
+
+#+begin_src sh
+eldev test -f test/e-provider-continuation-integration-test.el \
+  e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor
+#+end_src
+
+Result: 1/1 expected, zero unexpected.  This confirms the obsolete composed
+older-anchor/wire-reduction baseline and does not prove Addendum 3.
+
+Other checks:
+
+#+begin_src sh
+git rev-parse HEAD
+git status --short
+git diff --check
+test -f /Users/dvorona/.codex/auth.json
+#+end_src
+
+Results:
+
+- revision matched =a21ad9b8fb5392c165819c6e0e7c625b119c98c5=;
+- worktree remained clean;
+- whitespace check passed; and
+- the credential file was absent.
+
+No full repository gate was run: the target is an unimplemented specification,
+and current green tests cannot prove its future behavior.  No running Emacs was
+contacted or changed.
+
+* Architecture self-check
+
+1. Useful stopping point: yes after the findings are corrected; canonical
+   semantics plus simpler cache reuse is better than retaining the wire-only
+   optimization.
+2. Direction: provider-neutral lifetime with adapter-local projection/cache
+   mechanics.
+3. Stable versus uncertain: lifetime, promotion, and session ownership are
+   stable; private cache behavior stays external and renewable.
+4. Ownership: currently defective only at the delivery/anchor join identified
+   by P1-01; the proposed correction restores one semantic authority.
+5. Coupling: the intended deletion reduces coupling and state.
+6. Dependency direction: core need not learn OpenAI fields; adapter capability
+   truth must still flow into existing harness policy.
+7. Side effects: network, socket, retry, and cache controls remain adapter-owned.
+8. State: no new durable state; latest causal response state is turn/connection
+   local and historical graphs are removed.
+9. Performance: provider work, not wire bytes, is the goal; semantic gates stay
+   deterministic and provider measurements external/observational.
+10. Interface reality: =request-local-replaceable= is real only for top-level
+    instruction replacement; it must not describe inherited input.
+11. Compatibility: historical JSONL remains readable/ignored; no shim or
+    migration is needed.
+12. Removable legacy: ledger, eviction, older-anchor branches, Codex override,
+    and mechanism tests are correctly identified.
+13. Errors: one full retry is a bounded expected recovery; unexpected projection
+    and provider errors remain visible.
+14. Test stability: the proposed disposition preserves semantic contracts while
+    replacing/deleting mechanism evidence.
+
+* Implementation readiness
+
+Not ready.
+
+Required next action:
+
+1. remediate P1-01, P2-02, and P2-03 in =addendum3.org=;
+2. preserve the stable contract IDs above;
+3. keep the feature =Planned= during design remediation;
+4. run a fresh independent specification Tick; and
+5. only after a zero-finding design Tick move the package to the repository’s
+   implementation-ready state.
+
+External capability remains =capability-unconfirmed=.  That status does not
+prevent deterministic implementation work after design acceptance, but it
+prevents a =Done= claim.
