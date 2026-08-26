@@ -33,6 +33,8 @@ clean response R0
 
 The built-in ChatGPT Codex socket remains available for 600 seconds after a completed request instead of the current 300 seconds.
 A healthy socket can therefore cross a pause longer than five minutes but shorter than ten minutes.
+This is a bounded adapter policy; acceptance advances a deterministic fake
+clock rather than waiting in wall-clock time.
 Provider close, transport failure, request cancellation, explicit socket close, or the finite idle timer discards its connection-local response lineage.
 An incompatible request identity sends full reconstruction without =previous_response_id=, but does not by itself close a healthy socket or clear other connection-local ledger entries.
 
@@ -318,13 +320,16 @@ Extend =e2e/e-live-e2e-test.el= with one credentialed built-in Codex scenario th
 8. proves the model-visible result uses the current observation; and
 9. proves neither contaminated response became the durable session anchor.
 
-Add a separate explicitly gated long-idle acceptance mode that waits longer than 300 seconds and less than 600 seconds before the next request.
-It must prove socket reuse, incremental continuation, a still-pending 600-second local idle timer, and correct changed observation replacement.
-Keep this slow credentialed mode outside default repository gates.
-Record its command and exact delay in the implementation review.
-Rely on deterministic timer coverage to prove closure at the 600-second boundary.
+Do not add a wall-clock long-idle acceptance mode.  The adapter timer test must
+control scheduling in the test process and advance a fake clock to 301 and 600
+seconds: 301 must leave the socket, timer, and ledger intact, while 600 must
+close the socket and clear the ledger.  The fast credentialed older-clean-anchor
+scenario may assert the resolved 600-second policy and a pending timer while it
+proves same-socket incremental continuation, but it must not sleep.
 
-Exit condition: credentialed ChatGPT Codex evidence proves the older clean branch and one pause beyond five minutes but within the finite ten-minute retention window.
+Exit condition: deterministic fake-time evidence proves the retention boundary
+and the fast credentialed scenario, when configured, proves older-clean-anchor
+provider behavior.  No provider pause-duration claim is required.
 
 ** Slice 5: Documentation and final gates
 
@@ -357,23 +362,30 @@ The implementation is present in the following owners and symbols:
   =:websocket-idle-close-seconds= values into =provider-request-finished=.
   Response IDs, ledger entries, bodies, and tool results remain private.
 - =test/e-openai-test.el=: the older-compatible-response, ledger-cap/close,
-  profile-idle-boundary, nil-fallback, explicit-zero, eviction-diagnostic,
-  terminal/transport-cleanup, and unavailable-anchor retry tests cover the
+  profile-idle-boundary with fake-time advancement, nil-fallback, explicit-zero,
+  eviction-diagnostic, terminal/transport-cleanup, and unavailable-anchor retry
+  tests cover the
   adapter state machine.  The focused compatibility and cleanup selector is
   =e-openai-test-websocket-reuses-older-known-response=,
   =e-openai-test-websocket-ledger-cap-and-close-cleanup=,
+  =e-openai-test-websocket-profile-idle-close-boundary-clears-ledger=,
+  =e-openai-test-websocket-profile-idle-close-nil-does-not-schedule=,
+  =e-openai-test-websocket-profile-idle-close-explicit-zero-schedules-value=,
+  =e-openai-test-websocket-eviction-fallback-diagnostics=,
   =e-openai-test-websocket-terminal-and-transport-cleanup=, and
-  =e-openai-test-websocket-unresolved-anchor-retries-full-request=.
+  =e-openai-test-websocket-unresolved-anchor-retries-full-request=; the timer
+  boundary case advances fake time to 301 and 600 without sleeping.
 - =test/e-provider-continuation-integration-test.el=:
   =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
   composes the real harness, context, tool, anchor, renderer, and fake socket
   boundaries for warm older-anchor branching and cold full reconstruction.
 - =e2e/e-live-e2e-test.el=:
-  =e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain= and
-  =e-live-e2e-test-openai-codex-long-idle-retains-socket= are the explicitly
-  gated credentialed acceptance paths.  The former also asserts that the old
-  observation was present in the initial and tool-turn requests before
-  asserting its later replacement and absence.
+  =e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain= is the fast
+  credentialed acceptance path.  It asserts the resolved 600-second policy,
+  a pending timer, and same-socket incremental continuation.  It also asserts
+  that the old observation was present in the initial and tool-turn requests
+  before asserting its later replacement and absence.  There is no wall-clock
+  long-idle E2E.
 
 Deterministic repository validation on the implementation revision was:
 
@@ -387,9 +399,13 @@ eldev test -B -f test/e-provider-continuation-integration-test.el
 eldev test -B -f test/e-openai-test.el \
   e-openai-test-websocket-reuses-older-known-response \
   e-openai-test-websocket-ledger-cap-and-close-cleanup \
+  e-openai-test-websocket-profile-idle-close-boundary-clears-ledger \
+  e-openai-test-websocket-profile-idle-close-nil-does-not-schedule \
+  e-openai-test-websocket-profile-idle-close-explicit-zero-schedules-value \
+  e-openai-test-websocket-eviction-fallback-diagnostics \
   e-openai-test-websocket-terminal-and-transport-cleanup \
   e-openai-test-websocket-unresolved-anchor-retries-full-request
-  4/4 passed
+  8/8 passed; the timer case advanced fake time 301 then 600
 eldev exec -R '(dolist (file (quote ("e2e/e-live-e2e-test.el"
   "lisp/adapters/openai/e-openai.el" "lisp/core/e-harness.el"
   "test/e-harness-test.el" "test/e-openai-test.el"
@@ -412,13 +428,11 @@ The default-gated E2E selector was:
 
 #+begin_src sh
 E_E2E=1 eldev test -B -f e2e/e-live-e2e-test.el \
-  e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain \
-  e-live-e2e-test-openai-codex-long-idle-retains-socket
+  e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain
 #+end_src
 
-It produced two skips and zero unexpected results without a loaded
-credentialed harness configuration.  The configured older-clean-anchor
-command was:
+It produced one skip and zero unexpected results without a loaded credentialed
+harness configuration.  The configured older-clean-anchor command was:
 
 #+begin_src sh
 E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
@@ -429,9 +443,10 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 It reached provider
 initialization but could not run because =/Users/dvorona/.codex/auth.json= is
 absent.  Therefore the provider semantic scenario did not pass, and the
-separately gated 301-second (greater than 300 and less than 600) long-idle
-measurement was not run.  Both live claims remain unmeasured and blocked
-locally; neither skip nor the missing credential is treated as acceptance.
+fast credentialed semantic claim remains unmeasured and blocked locally.
+There is no wall-clock 301-second provider run to claim or require; the
+deterministic adapter test advances fake time to 301 and 600 instead.  Neither
+the skip nor the missing credential is treated as acceptance.
 
 No new numbered independent Tick artifact is created by this documentation
 slice.  The reused Sol reviewer supplies that review after the exact-revision
@@ -477,8 +492,8 @@ gates.
 - The exact built-in Codex profile resolves to a 600-second local idle close.
 - An undeclared profile uses the current global policy unchanged, including its documented =nil= no-idle-timer setting.
 - Explicit finite profile policies remain supported.
-- A pause longer than 300 seconds and shorter than 600 seconds can reuse the same healthy Codex socket.
-- Timer expiry at 600 seconds closes the socket and forces full reconstruction on the next request.
+- Advancing the deterministic scheduler to fake time 301 does not close the healthy Codex socket or clear its ledger.
+- Advancing it to fake time 600 closes the socket, clears its ledger, and forces full reconstruction on the next request.
 - Provider close, transport failure, cancellation, or replacement socket forces full reconstruction.
 - A locally persisted anchor never authorizes cross-connection use for =store=false=.
 
@@ -553,8 +568,10 @@ Do not keep dual latest-only and ledger authorities for compatibility.
   Make ledger lookup the single compatibility authority and delete obsolete scalar checks.
 - A busy socket may outlive every idle timer and otherwise grow its ledger without bound.
   Cap both live entries and eviction diagnostics at 256, evict oldest entries deterministically, and fall back fully when a selected anchor is no longer retained.
-- A live long-idle test is slow and provider-dependent.
-  Keep deterministic timer coverage in normal gates and run the credentialed delay only as explicit acceptance evidence.
+- Wall-clock long-idle tests are prohibited because they consume minutes without
+  strengthening the ownership proof.  Keep the fake-time 301/600 scheduler
+  coverage in normal gates and use the fast credentialed E2E only for provider
+  semantic older-anchor behavior.
 - Prompt-cache savings may remain weak even when transport continuation succeeds.
   Report cache accounting separately and do not broaden this package into cache-layout redesign.
 
@@ -574,7 +591,7 @@ For design:
 For implementation:
 
 1. Review the exact candidate revision against this accepted addendum and all preceding Feature 88 contracts.
-2. Audit promised closure for older-clean-anchor branching and long-idle retention before searching for new defects.
+2. Audit promised closure for older-clean-anchor branching and deterministic timer retention before searching for new defects.
 3. Verify source ownership and ordered state transitions, not only test names.
 4. Record each implementation Tick in a durable numbered review artifact.
 5. Remediate at the owning adapter boundary and run a fresh independent Tick.

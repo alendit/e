@@ -347,7 +347,7 @@ The deterministic composition test
 =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
 passed 11/11 for the complete warm tool-chain branch and cold socket-loss
 fallback.  The adapter and harness suites also passed their focused diagnostics,
-ledger, timer, cleanup, and projection assertions (4/4 focused OpenAI cases;
+ledger, timer, cleanup, and projection assertions (8/8 focused OpenAI cases;
 156/156 harness cases).  These results prove the local state machine and
 ownership boundaries, not private-provider acceptance.
 
@@ -361,11 +361,10 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 
 It reached provider initialization but could not run because
 =/Users/dvorona/.codex/auth.json= is absent.  Consequently the
-older-clean-anchor provider scenario did not pass,
-and the separately gated 301-second (greater than 300 and less than 600)
-long-idle measurement remains unmeasured and blocked locally.  The deterministic
-600-second timer boundary is covered; it is not a substitute for the missing
-credentialed semantic and pause measurements.
+fast older-clean-anchor provider scenario did not pass and remains unmeasured
+and blocked locally.  No wall-clock 301-second provider run is required or
+claimed.  The deterministic timer test advances fake time to 301 and 600; it
+is the acceptance evidence for the retention boundary.
 
 ** Remediation direction
 
@@ -383,12 +382,15 @@ Its current =store=false= contract makes continuation connection-local, so the a
 Evaluate stored responses separately for canonical OpenAI profiles that support them, with explicit review of retention policy, privacy, cost, and response-deletion requirements.
 That profile-specific option must not weaken the full-reconstruction fallback or be represented as a shared semantic capability.
 
-Measure the longer retention policy before adding a rebase call or stored-response dependency.
-Track socket lifetime, idle duration before reuse, continuation success, full-fallback frequency, request latency, and transport failures.
+Validate the longer retention policy deterministically before adding a rebase
+call or stored-response dependency.  Track socket lifetime, continuation
+success, full-fallback frequency, request latency, and transport failures when
+the fast credentialed semantic test is available; do not introduce a wall-clock
+idle-duration test.
 Deterministic coverage now covers the 600-second timer boundary, provider-forced
 socket loss, explicit teardown, and unavailable response IDs.  Credentialed
-reuse after more than five idle minutes remains an explicit acceptance gate,
-not a completed measurement.
+same-socket older-anchor reuse remains a fast explicit acceptance gate, not a
+completed measurement.  The package does not require a wall-clock pause test.
 
 * Limitation: continuation and prompt-cache savings are different
 
@@ -492,15 +494,16 @@ evidence and exposed the connection-lifetime boundary.
 * Remediation handoff requirements
 
 Remediation work should begin from the observed state above.  It must account
-for all of these ordinary paths rather than treating tool use or pauses as edge
-cases.
+for all of these ordinary paths rather than treating tool use as an edge case.
+Retention pauses are represented by deterministic scheduler advancement; no
+acceptance test waits in wall-clock time.
 
 At minimum, later acceptance evidence needs to distinguish and exercise:
 
 1. a clean turn followed immediately by a changed-canvas turn on the same
    socket;
-2. a clean turn followed by a changed-canvas turn after the configured idle
-   close;
+2. deterministic fake time at 301 seconds without close, followed by the
+   600-second boundary that closes the socket and clears its ledger;
 3. a substantive tool-bearing turn followed by another user turn;
 4. a =process_marker=-only turn followed by another user turn;
 5. a forced socket loss independent of the idle timer;

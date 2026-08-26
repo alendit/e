@@ -598,7 +598,9 @@ tests cover provider request/stream mapping, concrete side effects, the
 connection-local ledger, profile-owned timer resolution, close/retry cleanup,
 and bounded diagnostics. The provider-continuation integration test composes
 the real harness, context, tool, anchor, renderer, and fake socket boundaries;
-credentialed Codex E2E remains an explicit gate for private endpoint behavior.
+credentialed Codex E2E remains an explicit fast gate for private endpoint
+behavior, while timer-retention acceptance advances a test-local fake scheduler
+instead of waiting in wall-clock time.
 Shell tests should keep proving command wiring and rendering against harness
 events rather than reimplementing harness tests.
 

@@ -3568,7 +3568,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
   (let* ((session (e-openai-codex--websocket-session-create))
          (url "wss://gateway.example.test/v1/responses")
          (headers nil)
-         (scheduled-seconds nil)
+         (fake-now 0)
+         (scheduled-deadline nil)
          (scheduled-callback nil)
          (close-count 0))
     (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
@@ -3578,60 +3579,74 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (e-openai-codex--websocket-session-reuse-count session) 0
           (e-openai-codex--websocket-session-close-function session)
           (lambda (_websocket) (cl-incf close-count)))
-    (cl-letf (((symbol-function 'run-at-time)
-               (lambda (seconds _repeat callback)
-                 (setq scheduled-seconds seconds
-                       scheduled-callback callback)
-                 'fake-timer))
-              ((symbol-function 'timerp)
-               (lambda (timer) (eq timer 'fake-timer)))
-              ((symbol-function 'cancel-timer) #'ignore)
-              ((symbol-function 'websocket-send-text)
-               (lambda (websocket _text)
-                 (funcall
-                  (plist-get
-                   (e-openai-codex--websocket-session-active-request session)
-                   :on-message)
-                  websocket
-                  (json-encode
-                   '(:type "response.completed"
-                     :response (:id "response-at-expiry"
-                                :status "completed")))))))
-      (e-openai-codex--websocket-request-start
-       :session session
-       :url url
-       :headers headers
-       :body-data '(:model "gpt-test" :input nil)
-       :full-body-data '(:model "gpt-test" :input nil)
-       :request-metadata '(:diagnostics nil)
-       :idle-close-seconds 600
-       :on-item #'ignore
-       :on-complete #'ignore
-       :on-error #'signal)
-      ;; The scheduler receives the resolved request policy exactly, and no
-      ;; callback can close the socket before that 600-second boundary.
-      (should (= scheduled-seconds 600))
-      (should (= close-count 0))
-      (should (gethash
-               "response-at-expiry"
-               (e-openai-codex--websocket-session-response-ledger session)))
-      (should scheduled-callback)
-      ;; Firing the deterministic callback represents the boundary at 600.
-      (funcall scheduled-callback)
-      (should (= close-count 1))
-      (should-not
-       (e-openai-codex--websocket-session-websocket session))
-      (should (= (hash-table-count
-                  (e-openai-codex--websocket-session-response-ledger session))
-                 0))
-      (should (= (hash-table-count
-                  (e-openai-codex--websocket-session-evicted-response-ledger
-                   session))
-                 0))
-      (should-not
-       (e-openai-codex--websocket-session-response-order session))
-      (should-not
-       (e-openai-codex--websocket-session-evicted-response-order session)))))
+    (cl-labels
+        ((advance-fake-time (seconds)
+           (setq fake-now (+ fake-now seconds))
+           (when (and scheduled-deadline
+                      scheduled-callback
+                      (<= scheduled-deadline fake-now))
+             (let ((callback scheduled-callback))
+               (setq scheduled-callback nil)
+               (funcall callback)))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (seconds _repeat callback)
+                   (setq scheduled-deadline (+ fake-now seconds)
+                         scheduled-callback callback)
+                   'fake-timer))
+                ((symbol-function 'timerp)
+                 (lambda (timer) (eq timer 'fake-timer)))
+                ((symbol-function 'cancel-timer) #'ignore)
+                ((symbol-function 'websocket-send-text)
+                 (lambda (websocket _text)
+                   (funcall
+                    (plist-get
+                     (e-openai-codex--websocket-session-active-request session)
+                     :on-message)
+                    websocket
+                    (json-encode
+                     '(:type "response.completed"
+                       :response (:id "response-at-expiry"
+                                  :status "completed")))))))
+        (e-openai-codex--websocket-request-start
+         :session session
+         :url url
+         :headers headers
+         :body-data '(:model "gpt-test" :input nil)
+         :full-body-data '(:model "gpt-test" :input nil)
+         :request-metadata '(:diagnostics nil)
+         :idle-close-seconds 600
+         :on-item #'ignore
+         :on-complete #'ignore
+         :on-error #'signal)
+        ;; The scheduler receives the resolved policy as a relative deadline.
+        (should (= scheduled-deadline 600))
+        (should scheduled-callback)
+        (advance-fake-time 301)
+        ;; Crossing 300 seconds must not fire the 600-second timer.
+        (should (= fake-now 301))
+        (should (= close-count 0))
+        (should (e-openai-codex--websocket-session-websocket session))
+        (should (gethash
+                 "response-at-expiry"
+                 (e-openai-codex--websocket-session-response-ledger session)))
+        (advance-fake-time 299)
+        ;; The exact 600-second boundary closes the socket and clears all
+        ;; connection-local response state.
+        (should (= fake-now 600))
+        (should (= close-count 1))
+        (should-not
+         (e-openai-codex--websocket-session-websocket session))
+        (should (= (hash-table-count
+                    (e-openai-codex--websocket-session-response-ledger session))
+                   0))
+        (should (= (hash-table-count
+                    (e-openai-codex--websocket-session-evicted-response-ledger
+                     session))
+                   0))
+        (should-not
+         (e-openai-codex--websocket-session-response-order session))
+        (should-not
+         (e-openai-codex--websocket-session-evicted-response-order session))))))
 
 (ert-deftest e-openai-test-websocket-profile-idle-close-nil-does-not-schedule ()
   "A nil resolved idle policy retains the existing no-timer fallback."
