@@ -7,11 +7,11 @@ Planned.
 
 * Goal
 
-Make one SQLite database the durable authority for sessions and boards.
-Keep session and board semantics in the core runtime, keep presentation state out of persistence, and preserve asynchronous writes and bounded cooperative loads so storage work does not stall Emacs redisplay.
+Make one SQLite database the durable authority for sessions, boards, and session-owned lifecycle facts needed to recover interrupted tool follow-ups.
+Keep session, board, and tool-lifecycle semantics in the core runtime, keep live process and presentation state out of persistence, and preserve asynchronous writes and bounded cooperative loads so storage work does not stall Emacs redisplay.
 
 The completed feature replaces the JSONL journals, per-session resume checkpoints, and derived =index.json=.
-It does not place live harness, routing, subscription, focus, window, or rendering state in SQLite.
+It persists the state-machine facts needed to classify and resume an interrupted tool follow-up, but it does not persist live harness objects, callbacks, timers, processes, routing subscriptions, focus, windows, or rendering state.
 
 [[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] owns chat-visible board-run status, model-context projection, and quiescent completion handoff.
 This feature persists the board facts and delivery receipts that feature 89 needs for restart-safe behavior, but it does not own that user experience.
@@ -56,6 +56,9 @@ It removes the need to encode semantic correctness into checkpoint tails or to r
 - Durable values must round-trip with exact supported Lisp shape.
   Symbols, keywords, strings, lists, vectors, nil, and JSON false may not collapse into one another.
 - Durable board facts may not be lost because unrelated activity is noisy.
+- Tool admission, dispatch, result, follow-up, and settlement facts that cross a restart boundary are session-owned durable state.
+  Live tool handles, callbacks, timers, and provider requests remain process-local.
+  SQLite may make the local state transition atomic and idempotent, but it cannot claim that an arbitrary external effect ran exactly once without tool-specific reconciliation.
 - Unexpected corruption, unsupported values, schema mismatches, and revision conflicts must surface.
   Persistence must not guess or silently fall back.
 - Unit tests and explicitly ephemeral harnesses use disposable SQLite stores.
@@ -116,6 +119,12 @@ Neither peer uses the other as its communication or persistence path.
 Session mutations already have an independent path.
 =e-session--append-record= sends a session record to its persistence controller without board publication.
 See [[file:../../../lisp/core/e-session.el::(defun e-session--append-record][=e-session--append-record=]].
+
+The current tool-follow-up lifecycle is not restart-safe.
+=e-context-lifetime-frame= is runtime-only, and legacy =context-frame= and =context-frame-settlement= records are ignored on session replay.
+=e-tools-start= keeps settlement, the active request, and its deadline timer in local variables.
+=e-harness--lifetime-tool-observation-frame= creates the paired call/result observation frame in memory, while =e-harness--lifetime-commit-response= completes the frame and appends promotions through separate session operations.
+See [[file:../../../lisp/core/e-context-lifetime.el::(cl-defstruct (e-context-lifetime-frame][=e-context-lifetime-frame=]], [[file:../../../lisp/core/e-session.el::(defun e-session--replay-record][=e-session--replay-record=]], [[file:../../../lisp/core/e-tools.el::(cl-defun e-tools-start][=e-tools-start=]], [[file:../../../lisp/core/e-harness.el::(defun e-harness--lifetime-tool-observation-frame][=e-harness--lifetime-tool-observation-frame=]], and [[file:../../../lisp/core/e-harness.el::(defun e-harness--lifetime-commit-response][=e-harness--lifetime-commit-response=]].
 
 The target removes both the board-log-owner proxy and the combined chat/session binding from =e-chat-service=.
 It replaces the board notification callbacks with the =e-board-storage= commit boundary, keeps =e-chat= on board publication and observation APIs, and keeps the =e-session-storage= path private to each session participant.
@@ -227,6 +236,15 @@ It emits typed session mutations directly to =e-session-storage=.
 
 It does not publish private state through =e-board= and does not know table names, SQL, WAL settings, migration files, or worker protocol details.
 
+** =e-harness=, =e-loop=, and =e-context-lifetime=
+
+=e-harness= and =e-loop= own the live provider/tool follow-up lifecycle and decide how an interrupted transition may recover.
+=e-context-lifetime= owns generation, frame, observation-consumption, and promotion semantics.
+They submit typed session-lifecycle mutations through =e-session= and =e-session-storage=; they do not write SQL or persist callbacks, timers, requests, or tool handles.
+
+A local commit can prove which lifecycle facts are durable and which transition revision won.
+Only a tool-specific contract can reconcile an external effect that may have occurred before a crash.
+
 ** =e-board=
 
 Owns the central interaction aggregate: board identity, validation, ordered records, participants, subscriptions, pickups, processing, routing, source-key semantics, and the distinction between durable facts and transient routing state.
@@ -266,7 +284,7 @@ Defines the session-owned boundary:
 
 - submit one typed session commit with an expected session revision;
 - list bounded session headers;
-- read one paged session resume projection;
+- read one paged session resume projection, including incomplete tool-follow-up state;
 - finalize session commands submitted before a barrier;
 - expose bounded session persistence health.
 
@@ -310,6 +328,39 @@ The mixed boundary below avoids both errors.
 A retry with the same id and hash returns the stored result.
 Reusing an id with different bytes is a terminal protocol error.
 
+** Adjacent durability audit
+
+The repository has two other user-facing durable stores and several low-value file caches.
+The distinction matters because moving every mutable value into SQLite would persist process state that should instead be rebuilt.
+
+- The current session store is the primary migration target.
+  It spreads authority across the JSONL journal, resume checkpoint, and =index.json= in [[file:../../../lisp/core/e-session.el::(cl-defstruct (e-session-store][=e-session-store=]] and the Node writer.
+- The task queue persists selected task fields by replacing =records.eld= after a debounce.
+  It deliberately excludes live handles and normalizes restored =running= tasks back to =queued=.
+  See [[file:../../../lisp/core/e-task-queue.el::(cl-defstruct (e-task-queue][=e-task-queue=]], [[file:../../../lisp/core/e-task-queue.el::(defun e-task-queue--persistable-record][=e-task-queue--persistable-record=]], and [[file:../../../lisp/core/e-task-queue.el::(defun e-task-queue--start-async-write][=e-task-queue--start-async-write=]].
+  This is the strongest separate candidate for a later =e-task-queue-storage= port when queue mutations need exact crash semantics or multi-process writers.
+  Feature 87 does not combine board and queue mutations in one transaction; stable run, task, and attempt identities plus reconciliation remain the cross-domain contract.
+- Cron cadence state writes =:last-fire= and =:anchor= through atomic file replacement in [[file:../../../lisp/core/e-cron.el::(defun e-cron--state-write][=e-cron--state-write=]].
+  It does not need database transactions unless the product later requires multi-process exactly-once scheduling.
+- Voice-adjustment tells, Goodnite demand telemetry, raw tool results, temporary lineage resources, and developer performance artifacts are caches, telemetry, or disposable files.
+  Their loss, duplication, or last-writer-wins behavior does not justify coupling them to the session database.
+- Board registries, harness instances, active turns, tool handles, callbacks, timers, subscriptions, pickups, shell buffers, and presentation caches are live process state.
+  Their durable semantic effects belong in board or session records; the live objects do not.
+
+[[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]] is the important scope correction.
+It explicitly removed tool admission, dispatch, result, frame-settlement, recovery-state, and transactional-outbox work from that feature because the planned SQLite persistence and atomic-transition work would own it.
+The previous version of this plan excluded active turns and tool requests too broadly and therefore did not satisfy that dependency.
+
+This feature now persists only the lifecycle facts needed to classify and recover an interrupted follow-up.
+=e-harness= and =e-loop= keep ownership of tool execution and recovery policy.
+=e-context-lifetime= keeps ownership of frame and promotion semantics.
+=e-session-storage= commits the typed lifecycle records and current recovery projection as part of the session aggregate.
+No live process object moves into storage, and no generic external side effect gains an exactly-once guarantee merely because its local record committed.
+
+[[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] is already inside the board-storage scope.
+Its run facts, keyed completion inputs, publication claims, and consumption receipts are board records.
+Its queue assignments remain task-queue state and reconcile by stable identity after both stores restore.
+
 ** Sessions
 
 =sessions= stores the current durable session root and catalog projection:
@@ -340,6 +391,21 @@ Partial unique indexes enforce entry identity without inventing ids for records 
 =message_displays= is a rebuildable current projection keyed by session and message id.
 A display change appends its audit record and updates this row in the same transaction.
 Loading does not scan every historical display change.
+
+=tool_followups= is the current recovery projection keyed by session, turn, provider request, and tool-call identity.
+It records the latest durable lifecycle state, paired call/result message ids, frame and consumer identities, external idempotency key when the tool contract provides one, last session-record position, and error or reconciliation state.
+The immutable admission, dispatch-claim, result, follow-up, promotion, and settlement facts remain in =session_records=.
+
+=tool_dispatch_outbox= is the durable handoff from an admitted tool call to =e-tools-start=.
+It is keyed by the same session, turn, provider-request, and tool-call identity and references the immutable admission record plus the exact validated call payload.
+Admission creates the pending outbox row in the same session transaction.
+The runtime claims that row through another revision-checked session commit and starts the external tool only after the claim commits.
+Recording a result appends the result fact and retires the outbox row in one session transaction.
+
+This outbox closes the crash window in which an external effect could start before any durable dispatch evidence existed.
+It cannot close the window between starting the external effect and recording its result.
+A committed =dispatch-claimed= row without a result therefore means the effect may or may not have happened.
+Restore retries it only when the tool contract supplies a safe idempotency or reconciliation rule; otherwise the row becomes explicit attention state.
 
 The current model path is selected from =current_head_id= through indexed parent links.
 The current transcript epoch and explicit path eliminate full journal replay.
@@ -460,7 +526,14 @@ It reconstructs:
 - compatible provider anchors on that retained path;
 - the existing bounded activity and process-report resume projections;
 - current message display state;
-- the session-owned board association and participant recovery cursor.
+- the session-owned board association and participant recovery cursor;
+- incomplete tool-follow-up projections and the durable facts needed to classify them.
+
+The recovery owner handles each incomplete follow-up by durable state.
+An admitted tool with a pending outbox row may be claimed and then started after the claim commits.
+A dispatch claim without a durable result requires tool-specific reconciliation or explicit operator attention and is never blindly rerun.
+A durable result whose provider follow-up was not settled may resume the provider follow-up from the paired call/result evidence.
+A settled transition requires no recovery action.
 
 After session reconstruction, the attachment layer requests the referenced board from =e-board-storage=.
 The session projection does not contain or replay board records.
@@ -559,11 +632,16 @@ The SQLite backend remains opt-in until the migration and cutover gates pass.
    - Run the semantic contract suite against disposable SQLite stores.
    - Gate: create, metadata/config changes, branches, compactions, anchors, displays, transcript clear, list ordering, and finalization survive restart with exact values.
 
-4. *Cooperative session resume*
+4. *Cooperative session resume and tool-follow-up recovery*
    - Implement paged current-path and bounded auxiliary projection reads.
-   - Keep compaction and provider compatibility decisions in =e-session=.
+   - Add typed admission, dispatch-claim, result, follow-up, promotion, and settlement mutations plus the =tool_followups= recovery projection and =tool_dispatch_outbox=.
+   - Commit admission with its pending dispatch row, require the claim commit before =e-tools-start=, and retire the row with the durable result.
+   - Commit each local lifecycle transition atomically with its related session messages and projection update.
+   - Restore incomplete transitions without recreating live callbacks, timers, provider requests, or tool handles.
+   - Keep compaction and provider compatibility decisions in =e-session=, tool execution and recovery policy in =e-harness= and =e-loop=, and frame/promotion semantics in =e-context-lifetime=.
    - Replace checkpoint-based interactive loading in the SQLite path.
    - Gate: the 15,722-record/38 MB regression fixture resumes without a full record scan and is no slower than the approximately 0.07-second checkpoint baseline on the same machine, unless a measured, first-principles reason is recorded and approved.
+     Kill-before-claim, kill-after-claim-before-start, kill-after-start-before-result, kill-after-result, and kill-before-settlement tests restore to the correct classified state without blind replay of an uncertain external effect.
 
 5. *First-class board persistence*
    - Move board identity, messages, facts, processing chains, and processing results into board tables with generation and position semantics.
@@ -634,18 +712,25 @@ Include the known list/vector/symbol ambiguity, retained orchestration facts, ch
 
 One restart scenario must create a branched session, compact it, attach a board, publish ordinary and processing records plus orchestration facts, change a message display, clear and reuse a board id in a new generation, finalize, kill the worker, reopen, and prove exact session and board reconstruction.
 
+One tool-follow-up scenario must crash before dispatch claim, after claim but before tool start, after tool start but before durable result, after durable result, and after provider-follow-up settlement.
+It must prove that no tool starts before its claim commits, safe automatic continuation occurs where the durable state and tool contract permit it, and an uncertain external effect becomes explicit attention state when it cannot be reconciled safely.
+
 One load scenario must keep an interactive timer responsive while paging a large session and board.
 The existing graphical/current-config matrix must use temporary state and must never open or migrate the user's live database.
 
 * Acceptance criteria
 
-- =store.sqlite3= is the only ordinary persistent authority for sessions and boards.
+- =store.sqlite3= is the only ordinary persistent authority for sessions, boards, and recoverable session tool-follow-up facts.
 - Session headers are listed without transcript replay or a rebuilt index file.
 - Sessions resume from indexed records without checkpoint files or byte offsets.
+- An interrupted tool follow-up restores to a durable classified state: safe to start, requires reconciliation, ready for provider follow-up, settled, or explicit attention.
+- Each local tool-lifecycle transition commits its immutable facts and current recovery projection atomically with the related session records.
+- No external tool starts before its durable dispatch claim commits.
 - Board facts required by reducers survive regardless of unrelated activity volume.
 - Live board communication is decoded from committed SQLite rows rather than forwarded from submitted in-memory objects.
 - Session and board nested values round-trip with exact supported Lisp shape.
 - Board publications commit through =e-board-storage= before routing, while participant-owned state persists independently through =e-session-storage=.
+- Restore never blindly repeats a dispatched external effect whose outcome is unknown.
 - Duplicate delivery is idempotent; conflicting command ids, record ids, and aggregate revisions fail visibly.
 - Writes remain asynchronous and interactive loads remain bounded and cooperative.
 - Legacy migration is explicit, verified, atomic at cutover, and preserves the source files.
@@ -654,7 +739,10 @@ The existing graphical/current-config matrix must use temporary state and must n
 
 * Non-goals
 
-- Do not persist active turns, tool requests, timers, work handles, subscriptions, observers, pickups, focus, windows, overlays, render caches, or other process/presentation state.
+- Do not persist live active-turn objects, provider requests, callbacks, timers, work handles, subscriptions, observers, pickups, focus, windows, overlays, render caches, or other process/presentation state.
+  Persist only the immutable lifecycle facts and current recovery projection needed to classify an interrupted tool follow-up.
+- Do not promise exactly-once execution of arbitrary external tool effects.
+  Automatic retry requires a tool-specific idempotency or reconciliation contract.
 - Do not make SQLite a model-facing tool or capability action.
 - Do not expose generic SQL to agents, shells, capabilities, or resources.
 - Do not add full-text search, cloud sync, shared network storage, or a generic capability projection framework in this feature.
@@ -714,19 +802,19 @@ Keep the legacy decoder only under the offline migration entrypoint until a sepa
 
 1. *Useful stopping point*: The adapter and exact codec are useful before cutover; the opt-in SQLite backend can be proven independently; the importer and final cutover each leave a coherent system.
 2. *Final direction*: One physical SQLite authority replaces journals, checkpoints, and catalog files while =e-board-storage= and =e-session-storage= preserve separate domain boundaries.
-3. *Stable versus uncertain*: Session/board identity, ancestry, immutable facts, and exact value shape are stable.
-   Page sizes, WAL maintenance thresholds, and worker sharing are tunable adapter policy.
+3. *Stable versus uncertain*: Session/board identity, ancestry, immutable facts, lifecycle ordering, and exact value shape are stable.
+   Page sizes, WAL maintenance thresholds, worker sharing, and tool-specific reconciliation policy are tunable or contract-specific.
    Reducer-specific projections are deferred until a real schema exists.
-4. *Ownership*: Session semantics and participant-owned state stay in =e-session= behind =e-session-storage=; shared interaction stays in =e-board= behind =e-board-storage=; =e-chat-service= adapts only the chat presentation participant to board APIs; shared SQL mechanics stay in =e-storage-sqlite=.
+4. *Ownership*: Session semantics and participant-owned state stay in =e-session= behind =e-session-storage=; shared interaction stays in =e-board= behind =e-board-storage=; =e-chat-service= adapts only the chat presentation participant to board APIs; =e-harness= and =e-loop= own tool execution and recovery policy; =e-context-lifetime= owns frame and promotion semantics; shared SQL mechanics stay in =e-storage-sqlite=.
 5. *Coupling*: SQL is behind two narrow semantic ports that share one physical adapter.
    The design separates the current combined chat/session binding, removes the =e-chat-service= to =e-session= board-log proxy, and does not add a second ephemeral storage implementation.
 6. *Dependency direction*: The SQLite adapter depends on domain mutation/read contracts.
    Stable domain policy does not depend on SQL, the worker, presentation, or provider adapters.
 7. *Side effects*: Writable connections, migrations, backups, WAL maintenance, and filesystem changes live in the worker/adapter boundary.
    Shells only request application operations.
-8. *State lifetime*: Immutable session and board facts, user intent, stable references, and current durable roots persist.
-   Catalog/display rows are rebuildable projections.
-   Live routing, request, focus, and rendering state remain process- or presentation-local.
+8. *State lifetime*: Immutable session and board facts, user intent, stable references, lifecycle facts needed for restart classification, and current durable roots persist.
+   Catalog, display, and tool-follow-up rows are rebuildable projections.
+   Live routing, callbacks, timers, requests, tool handles, focus, and rendering state remain process- or presentation-local.
 9. *Performance*: Writes remain off-thread; reads are indexed and paged; startup no longer scans files; resume no longer materializes a checkpoint plus suffix.
    FULL durability cost is paid in the worker and measured explicitly.
 10. *Real interfaces*: =e-board-storage= and =e-session-storage= are separate, consumer-shaped contracts over the same SQLite adapter.
