@@ -2393,15 +2393,22 @@ ordered request plists in adapter-local request data."
 
 (defun e-openai-codex--websocket-unresolved-response-p (event)
   "Return non-nil when EVENT rejects an unavailable previous response id."
-  (when (equal (plist-get event :type) "response.failed")
+  ;; The Responses WebSocket protocol has emitted this rejection both as a
+  ;; response-scoped failure and as a top-level error event.  They have the
+  ;; same causal meaning: the immediate connection-local response cannot be
+  ;; continued, so the one bounded recovery is a complete canonical request.
+  (when (member (plist-get event :type) '("response.failed" "error"))
     (let* ((response (plist-get event :response))
            (error (or (plist-get response :error)
                       (plist-get event :error)))
-           (code (and (listp error) (plist-get error :code)))
-           (param (and (listp error) (plist-get error :param)))
+           (code (or (and (listp error) (plist-get error :code))
+                     (plist-get event :code)))
+           (param (or (and (listp error) (plist-get error :param))
+                      (plist-get event :param)))
            (message (downcase
                      (or (and (listp error) (plist-get error :message))
                          (and (stringp error) error)
+                         (plist-get event :message)
                          ""))))
       (or (equal param "previous_response_id")
           (member code '("previous_response_not_found"

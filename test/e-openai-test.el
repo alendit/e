@@ -4610,6 +4610,182 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                       'incremental)))
         (e-backend-cancel-request fourth-request)))))
 
+(ert-deftest e-openai-test-websocket-unresolved-anchor-retries-one-canonical-bundle-for-both-error-forms ()
+  "Both unavailable-response error forms get one complete canonical retry.
+
+The second request is the matching immediate continuation and therefore carries
+only its function-call output.  The adapter's one retry must remove the
+unavailable response id and reconstruct the call, opaque reasoning replay, and
+result from the canonical messages supplied by the caller."
+  (dolist (error-form '("error" "response.failed"))
+    (let* ((process-environment
+            (cons "OPENAI_API_KEY=test-gateway-token" process-environment))
+           (e-openai-model-providers
+            '((openai-websocket
+               :name "OpenAI WebSocket"
+               :base-url "https://gateway.example.test/v1"
+               :env-key "OPENAI_API_KEY"
+               :wire-api responses
+               :responses-transport websocket
+               :continuation t
+               :requires-openai-auth nil)))
+           (sends nil)
+           (on-message nil)
+           (done-count 0)
+           (failure nil)
+           recovery-request)
+      (cl-letf (((symbol-function 'websocket-open)
+                 (lambda (_url &rest args)
+                   (setq on-message (plist-get args :on-message))
+                   'fake-websocket))
+                ((symbol-function 'websocket-send-text)
+                 (lambda (websocket text)
+                   (let ((payload
+                          (json-parse-string
+                           text
+                           :object-type 'plist
+                           :array-type 'list
+                           :null-object nil
+                           :false-object :json-false)))
+                     (push payload sends)
+                     (pcase (length sends)
+                       (1
+                        (funcall on-message
+                                 websocket
+                                 (json-encode
+                                  '(:type "response.completed"
+                                    :response (:id "resp-latest"
+                                               :status "completed")))))
+                       (2
+                        (funcall on-message
+                                 websocket
+                                 (json-encode
+                                  (if (equal error-form "error")
+                                      '(:type "error"
+                                        :code "previous_response_not_found"
+                                        :param "previous_response_id"
+                                        :message "previous response not found")
+                                    '(:type "response.failed"
+                                      :response
+                                      (:error
+                                       (:code "previous_response_not_found"
+                                        :param "previous_response_id"
+                                        :message "previous response not found")))))))
+                       (3
+                        (funcall on-message
+                                 websocket
+                                 (json-encode
+                                  '(:type "response.completed"
+                                    :response (:id "resp-recovered"
+                                               :status "completed")))))
+                       (_ (error "Unexpected retry beyond one canonical recovery"))))))
+                ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+        (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+          ;; Prime the connection-local response state so the next request is
+          ;; a real immediate continuation rather than a new-connection full
+          ;; request.
+          (e-backend-start
+           backend
+           :messages '((:role user :content "seed"))
+           :options '(:model "gpt-test" :session-id "session-one")
+           :on-item #'ignore
+           :on-done (lambda (_status) (cl-incf done-count))
+           :on-error (lambda (err) (setq failure err)))
+          (should (e-openai-test--wait-until
+                   (lambda () (or failure (= done-count 1)))
+                   0.2))
+          (should-not failure)
+          (setq failure nil)
+          (setq recovery-request
+                (e-backend-start
+                 backend
+                 :messages
+                 '((:role user :content "request before tool")
+                     (:role tool-call
+                      :content (:id "call-latest"
+                                :name "inspect"
+                                :arguments (:target "raw")
+                                :provider-replay-items
+                                ((:provider-id openai
+                                  :item (:type "reasoning"
+                                         :id "replay-latest"
+                                         :encrypted_content "RAW-REPLAY"
+                                         :summary [])))))
+                     (:role tool
+                      :content (:tool-call-id "call-latest"
+                                :name "inspect"
+                                :content "RAW-RESULT")))
+                 :options
+                 '(:model "gpt-test"
+                   :session-id "session-one"
+                   :provider-continuation t
+                   :provider-anchor
+                   (:provider-id openai
+                    :metadata (:response-id "resp-latest"))
+                   :provider-anchor-delta-messages
+                   ((:role tool
+                     :content (:tool-call-id "call-latest"
+                               :name "inspect"
+                               :content "RAW-RESULT")))
+                   :provider-anchor-source-message-count 3)
+                 :on-item #'ignore
+                 :on-done (lambda (_status) (cl-incf done-count))
+                 :on-error (lambda (err) (setq failure err))))
+          (should (e-openai-test--wait-until
+                   (lambda () (or failure (= done-count 2)))
+                   0.2))
+          (let* ((chronological (reverse sends))
+                 (incremental (nth 1 chronological))
+                 (fallback (nth 2 chronological))
+                 (fallback-input (plist-get fallback :input))
+                 (replay
+                  (seq-find
+                   (lambda (item)
+                     (equal (plist-get item :type) "reasoning"))
+                   fallback-input))
+                 (call
+                  (seq-find
+                   (lambda (item)
+                     (and (equal (plist-get item :type) "function_call")
+                          (equal (plist-get item :call_id) "call-latest")))
+                   fallback-input))
+                 (result
+                  (seq-find
+                   (lambda (item)
+                     (and (equal (plist-get item :type)
+                                 "function_call_output")
+                          (equal (plist-get item :call_id) "call-latest")))
+                   fallback-input))
+                 (diagnostics
+                  (plist-get (e-backend-request-metadata recovery-request)
+                             :diagnostics)))
+            ;; The initial continuation is exactly the matching output delta.
+            (should (equal (plist-get incremental :previous_response_id)
+                           "resp-latest"))
+            (should (equal
+                     (mapcar (lambda (item) (plist-get item :type))
+                             (plist-get incremental :input))
+                     '("function_call_output")))
+            ;; The unavailable id is absent from the one complete canonical
+            ;; retry, which carries every protocol item needed for replay.
+            (should-not (plist-member fallback :previous_response_id))
+            (should call)
+            (should replay)
+            (should result)
+            (should (equal (plist-get replay :encrypted_content)
+                           "RAW-REPLAY"))
+            (should (equal (plist-get result :output) "RAW-RESULT"))
+            (should (= (length sends) 3))
+            (should-not failure)
+            ;; Keep the one-retry assertion tied to the request that was
+            ;; actually started; the separate request above must not affect
+            ;; the completed recovery count.
+            (should (= done-count 2))
+            (should (eq (plist-get diagnostics :websocket-request-mode)
+                        'full-retry))
+            (should (eq (plist-get diagnostics :websocket-fallback-reason)
+                        'previous-response-unresolved))))))))
+
 (ert-deftest e-openai-test-websocket-idle-timeout-settles-error ()
   "Responses WebSocket idle timeout settles stalled requests as errors."
   (let* ((e-openai-websocket-idle-timeout-seconds 0.01)

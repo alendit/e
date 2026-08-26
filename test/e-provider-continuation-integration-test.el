@@ -1014,489 +1014,268 @@ covered by the adapter tests below."
               (should (equal (plist-get diagnostics :prompt-cache-mode)
                              "explicit")))))))))
 
-(ert-deftest e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor ()
-  "A WebSocket tool chain branches from its older clean anchor.
 
-The harness, context-lifetime projection, ordinary tool lifecycle, OpenAI
-Responses renderer, and WebSocket continuation state all remain real.  Only
-the socket transport is deterministic fake state."
+(ert-deftest e-provider-continuation-integration-test-canonical-observe-promote-forget ()
+  "A streamed inherited tool turn promotes a fact and forgets its raw bundle.
+
+The OpenAI Responses adapter, harness, loop, session, semantic projection,
+and ordinary tool execution are real.  Only the request function supplies a
+deterministic streamed Responses transcript.  The inherited profile is
+linear: its changing frontier may continue the response that produced the
+tool call once, but cannot make that response or its descendant a later
+ordinary-turn anchor."
   (let* ((process-environment
-          (cons "OPENAI_API_KEY=credential-free-websocket-test"
+          (cons "OPENAI_API_KEY=credential-free-canonical-test"
                 process-environment))
          (e-harness-auto-compaction-enabled nil)
          (e-context-lifetime-shadow-projection-enabled t)
-         (e-openai-websocket-idle-timeout-seconds nil)
-         (e-openai-websocket-connection-idle-seconds nil)
          (e-openai-model-providers
-          '((websocket-composed-e2e
-             :name "WebSocket Composed E2E"
-             :base-url "https://websocket-composed.example.test/v1"
+          '((canonical-observe-promote-e2e
+             :name "Canonical Observe Promote E2E"
+             :base-url "https://canonical-observe-promote.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_API_KEY"
              :wire-api responses
-             :responses-transport websocket
-             :response-store :json-false
+             :responses-transport http
+             :response-store t
              :responses-context-layout developer-input
              :include-encrypted-reasoning t
-             :observation-delivery request-local-replaceable
+             :observation-delivery inherited
              :continuation t
-             :requires-openai-auth nil
-             :env-key "OPENAI_API_KEY")))
+             :requires-openai-auth nil)))
          (current-state nil)
-         (raw-tool-result "RAW-COMPOSED-TOOL-RESULT")
+         (raw-result "RAW-CANONICAL-TOOL-RESULT")
+         (requests nil)
          (request-projections nil)
-         (sent-requests nil)
-         (backend-requests nil)
-         (events nil)
-         (callbacks (make-hash-table :test #'eq))
-         (current-socket nil)
-         (open-count 0)
-         (send-count 0)
-         (harness
-          (e-openai-create-harness
-           :provider 'websocket-composed-e2e
-           :model "gpt-5.6-sol"))
+         (request-count 0)
+         (tool-count 0)
+         (promotions-at-next-request nil)
+         (harness nil)
          (dynamic-provider
           (e-context-provider-create
-           :name 'websocket-composed-current-state
+           :name 'canonical-current-state
            :cache-placement 'dynamic-context
            :build (lambda (&rest _)
                     (when current-state
-                      (list (list :role 'system
-                                  :content current-state))))))
+                      (list (list :role 'system :content current-state))))))
          (capability
           (e-capability-create
-           :id 'websocket-composed-capability
-           :instructions "STABLE-COMPOSED-INSTRUCTIONS"
+           :id 'canonical-observe-promote-capability
+           :instructions "STABLE-CANONICAL-INSTRUCTIONS"
            :context-providers (list dynamic-provider)
            :tools
            (list
             (lambda (registry)
               (e-tools-register
                registry
-               :name "inspect-composed"
-               :description "Return one deterministic composed-test result."
+               :name "inspect-canonical"
+               :description "Return one deterministic canonical-test result."
                :parameters '(:type "object"
                              :properties (:target (:type "string"))
                              :required ["target"])
                :work
                (e-tools-cheap-work
-                "integration.websocket-composed.inspect"
+                "integration.canonical-observe-promote.inspect"
                 (lambda (_arguments)
-                  raw-tool-result)))))))
-         (original-body (symbol-function 'e-openai-codex-request-body))
-         (original-websocket-start
-          (symbol-function 'e-openai-codex--websocket-request-start)))
+                  (cl-incf tool-count)
+                  raw-result)))))))
+         (request-function
+          (cl-function
+           (lambda (&key url headers body)
+             (ignore url headers)
+             (let ((parsed (json-read-from-string body)))
+               (setq requests
+                     (append requests
+                             (list (list :body body :parsed parsed)))))
+             (cl-incf request-count)
+             (pcase request-count
+               (1
+                (e-provider-continuation-integration--sse
+                 '((type . "response.output_text.done")
+                   (text . "D0 durable answer"))
+                 '((type . "response.completed")
+                   (response . ((id . "resp-d0")
+                                (status . "completed"))))))
+               (2
+                ;; R1 is the streamed tool-producing response.  Its response
+                ;; id is usable only by the matching function-call-output
+                ;; continuation below.
+                (e-provider-continuation-integration--sse
+                 '((type . "response.output_item.done")
+                   (item . ((type . "reasoning")
+                            (id . "reasoning-r1")
+                            (encrypted_content . "RAW-CANONICAL-REPLAY")
+                            (summary . []))))
+                 '((type . "response.output_item.done")
+                   (item . ((type . "function_call")
+                            (call_id . "call-canonical-inspect")
+                            (name . "inspect-canonical")
+                            (arguments . "{\"target\":\"raw\"}"))))
+                 '((type . "response.completed")
+                   (response . ((id . "resp-r1")
+                                (status . "completed"))))))
+               (3
+                ;; The promotion carrier is a real streamed Responses item.
+                ;; Its trusted frame/observation frontier comes from the
+                ;; harness projection captured immediately before this call.
+                (let* ((projection (car (last request-projections)))
+                       (options (plist-get projection :options))
+                       (frame-id
+                        (plist-get options :context-promotion-frame-id))
+                       (observation-id
+                        (seq-find
+                         (lambda (value)
+                           (string-prefix-p "observation:tool-bundle:" value))
+                         (plist-get options
+                                    :context-promotion-observation-ids)))
+                       (promotion-arguments
+                        (json-encode
+                         (list
+                          :schema-version 1
+                          :frame-id frame-id
+                          :source-observation-ids (vector observation-id)
+                          :facts
+                          (vector
+                           (list :id "canonical-fact"
+                                 :value "PROMOTED-CANONICAL-FACT"))))))
+                  (unless (and frame-id observation-id)
+                    (error "Missing canonical promotion frontier: %S"
+                           projection))
+                  (let ((response
+                         (e-provider-continuation-integration--sse
+                          (list (cons 'type "response.output_item.done")
+                                (cons 'item
+                                      (list (cons 'type "function_call")
+                                            (cons 'call_id
+                                                  "call-context-promote")
+                                            (cons 'name "context-promote")
+                                            (cons 'arguments
+                                                  promotion-arguments))))
+                          '((type . "response.output_text.done")
+                            (text . "D1 promoted answer"))
+                          '((type . "response.completed")
+                            (response . ((id . "resp-r2")
+                                         (status . "completed")))))))
+                    response)))
+               (4
+                ;; This read happens at provider dispatch time, before the
+                ;; ordinary request can be sent, and proves promotion commit
+                ;; ordering independently of the resulting request body.
+                (setq promotions-at-next-request
+                      (copy-tree
+                       (e-session-context-promotions
+                        (e-harness-sessions harness)
+                        "canonical-observe-promote")))
+                (e-provider-continuation-integration--sse
+                 '((type . "response.output_text.done")
+                   (text . "D2 canonical answer"))
+                 '((type . "response.completed")
+                   (response . ((id . "resp-r3")
+                                (status . "completed"))))))
+               (_
+                (error "Unexpected canonical request %S" request-count)))))))
+    (setq harness
+          (e-openai-create-harness
+           :provider 'canonical-observe-promote-e2e
+           :model "gpt-5.6-sol"
+           :request-function request-function))
     (e-harness-activate-capability harness capability)
-    (cl-letf (((symbol-function 'e-openai-codex-request-body)
-               (lambda (&rest args)
-                 (let ((body (apply original-body args)))
-                   (setq request-projections
-                         (append request-projections
-                                 (list (list :messages
-                                             (copy-tree (plist-get args
-                                                                    :messages))
-                                             :options
-                                             (copy-tree (plist-get args
-                                                                    :options))
-                                             :body body))))
-                   body)))
-              ((symbol-function 'e-openai-codex--websocket-request-start)
-               (lambda (&rest args)
-                 (let ((request (apply original-websocket-start args)))
-                   (setq backend-requests
-                         (append backend-requests (list request)))
-                   request)))
-              ((symbol-function 'websocket-open)
-               (lambda (_url &rest args)
-                 (let ((socket (make-symbol
-                                (format "fake-composed-websocket-%d"
-                                        (1+ open-count)))))
-                   (cl-incf open-count)
-                   (puthash socket
-                            (list :on-message (plist-get args :on-message)
-                                  :on-close (plist-get args :on-close))
-                            callbacks)
-                   (setq current-socket socket)
-                   socket)))
-              ((symbol-function 'websocket-send-text)
-               (lambda (websocket text)
-                 (let* ((payload
-                         (json-parse-string
-                          text
-                          :object-type 'plist
-                          :array-type 'list
-                          :null-object nil
-                          :false-object :json-false))
-                        (requested-response-id
-                         (plist-get payload :previous_response_id))
-                        (projection
-                         (seq-find
-                          (lambda (candidate)
-                            (equal
-                             (plist-get (plist-get candidate :body)
-                                        :previous_response_id)
-                             requested-response-id))
-                          (reverse request-projections)))
-                        (on-message
-                         (plist-get (gethash websocket callbacks)
-                                    :on-message)))
-                   (let ((callback on-message))
-                     (setq on-message
-                           (lambda (socket frame)
-                             (run-at-time
-                              0 nil
-                              (lambda ()
-                                (funcall callback socket frame))))))
-                   (cl-incf send-count)
-                   (setq sent-requests
-                         (append sent-requests
-                                 (list (list :ordinal send-count
-                                             :body payload
-                                             :projection projection
-                                             ;; Keep the serialized transport
-                                             ;; measurement beside its parsed
-                                             ;; request so dynamic response ids
-                                             ;; cannot change which request is
-                                             ;; being compared.
-                                             :wire-bytes (string-bytes text)
-                                             :input-item-count
-                                             (length (or (plist-get payload :input)
-                                                         nil))))))
-                   (pcase send-count
-                         (1
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.output_text.done"
-                                  :text "clean answer")))
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.completed"
-                                  :response (:id "resp-r0"
-                                             :status "completed")))))
-                     (2
-                      ;; R1 is the only response that carries the raw
-                      ;; provider replay and ordinary tool call.
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.output_item.done"
-                                  :item (:type "reasoning"
-                                         :id "reasoning-r1"
-                                         :encrypted_content
-                                         "RAW-COMPOSED-REPLAY"
-                                         :summary []))))
-                      (funcall on-message websocket
-                               (json-encode
-                                (list
-                                 :type "response.output_item.done"
-                                 :item
-                                 (list :type "function_call"
-                                       :call_id "call-composed-inspect"
-                                       :name "inspect-composed"
-                                       :arguments
-                                       (json-encode '(:target "raw"))))))
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.completed"
-                                  :response (:id "resp-r1"
-                                             :status "completed")))))
-                     (3
-                      ;; The real tool result is already in the harness's
-                      ;; consumed frame.  Return the reserved wire effect
-                      ;; using only the frame/observation ids supplied by
-                      ;; that projection.
-                      (let* ((options (plist-get projection :options))
-                             (frame-id
-                              (plist-get options
-                                         :context-promotion-frame-id))
-                             (observation-id
-                              (seq-find
-                               (lambda (value)
-                                 (string-prefix-p
-                                  "observation:tool-bundle:" value))
-                               (plist-get
-                                options
-                                :context-promotion-observation-ids)))
-                             (arguments
-                              (json-encode
-                               (list
-                                :schema-version 1
-                                :frame-id frame-id
-                                :source-observation-ids
-                                (vector observation-id)
-                                :facts
-                                (vector
-                                 (list :id "composed-fact"
-                                       :value "PROMOTED-COMPOSED-FACT"))))))
-                        (unless (and frame-id observation-id)
-                          (error "Missing composed promotion frontier: %S"
-                                 projection))
-                        (funcall on-message websocket
-                                 (json-encode
-                                  (list
-                                   :type "response.output_item.done"
-                                   :item
-                                   (list :type "function_call"
-                                         :call_id "call-context-promote"
-                                         :name "context-promote"
-                                         :arguments arguments))))
-                        (funcall on-message websocket
-                                 (json-encode
-                                  '(:type "response.output_text.done"
-                                    :text "final answer")))
-                        (funcall on-message websocket
-                                 (json-encode
-                                  '(:type "response.completed"
-                                    :response (:id "resp-r2"
-                                               :status "completed"))))))
-                     (4
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.output_text.done"
-                                  :text "warm ordinary answer")))
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.completed"
-                                  :response (:id "resp-warm"
-                                             :status "completed")))))
-                     (5
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.output_text.done"
-                                  :text "reconstructed ordinary answer")))
-                      (funcall on-message websocket
-                               (json-encode
-                                '(:type "response.completed"
-                                  :response (:id "resp-recovered"
-                                             :status "completed")))))
-                         (_ (error "Unexpected composed WebSocket request %S"
-                                   send-count)))
-                   t)))
-              ((symbol-function 'websocket-close)
-               (lambda (&rest _args) t)))
-      (e-board-e2e-reset-runtime)
-      (e-board-e2e-create-session harness :id "websocket-composed")
-      (e-harness--install-activity-sink
-       harness (lambda (event) (push event events))
-       :session-id "websocket-composed")
-      (e-board-e2e-prompt-batch
-       harness "websocket-composed" "D0 durable seed")
-      ;; This turn creates R1, executes the ordinary tool, and completes R2.
-      (e-board-e2e-prompt-batch
-       harness "websocket-composed" "D1 inspect durable state")
-      (setq current-state "CURRENT-COMPOSED-INSTRUCTIONS")
-      ;; The later ordinary turn must branch from the older R0 on the same
-      ;; socket, while carrying only portable post-R0 data and the promotion.
-      (e-board-e2e-prompt-batch
-       harness "websocket-composed" "D2 later ordinary turn")
-      (let* ((tool-followup (nth 2 sent-requests))
-             (tool-followup-body (plist-get tool-followup :body))
-             (tool-followup-input-printed
-              (prin1-to-string (plist-get tool-followup-body :input)))
-             (warm
-              (seq-find
-               (lambda (request)
-                 (let ((body (plist-get request :body)))
-                   (and (plist-get body :previous_response_id)
-                        (string-match-p
-                         "D2 later ordinary turn"
-                         (prin1-to-string (plist-get body :input))))))
-               sent-requests))
-             (warm-body (plist-get warm :body))
-             (warm-input (plist-get warm-body :input))
-             (warm-options (plist-get (plist-get warm :projection) :options))
-             (warm-input-printed (prin1-to-string warm-input))
-             (warm-body-printed (prin1-to-string warm-body))
-             (warm-wire-bytes (plist-get warm :wire-bytes))
-             (warm-input-item-count (plist-get warm :input-item-count))
-             (event-types
-              (mapcar (lambda (event) (plist-get event :type))
-                      (reverse events)))
-             (warm-diagnostics-request
-              (seq-find
-               (lambda (request)
-                 (let ((diagnostics
-                        (plist-get (e-backend-request-metadata request)
-                                   :diagnostics)))
-                   (and (eq (plist-get diagnostics
-                                      :websocket-request-mode)
-                            'incremental)
-                        (= (plist-get diagnostics
-                                      :websocket-reuse-count)
-                           3))))
-               backend-requests))
-             (warm-diagnostics
-              (plist-get (e-backend-request-metadata
-                          warm-diagnostics-request)
-                         :diagnostics))
-             (warm-finished-activity
-              (seq-find
-               (lambda (event)
-                 (and (eq (plist-get event :event-type)
-                          'provider-request-finished)
-                      (eq (plist-get
-                           (plist-get (plist-get event :payload)
-                                      :diagnostics)
-                           :websocket-anchor-position)
-                          'older)))
-               (reverse
-                (e-session-activity-events
-                 (e-harness-sessions harness) "websocket-composed"))))
-             (warm-finished-diagnostics
-              (plist-get (plist-get warm-finished-activity :payload)
-                         :diagnostics))
-             (anchor-ids
-              (mapcar
-               (lambda (anchor)
-                 (plist-get (plist-get anchor :metadata) :response-id))
-               (e-session-provider-anchors
-                (e-harness-sessions harness) "websocket-composed")))
-             (socket current-socket)
-             (on-close (plist-get (gethash socket callbacks) :on-close)))
-        (should (= send-count 4))
-        (should (= open-count 1))
-        (should (member 'tool-started event-types))
-        (should (member 'tool-finished event-types))
-        (should (equal (plist-get tool-followup-body :previous_response_id)
-                       "resp-r1"))
-        (dolist (marker '("call-composed-inspect"
-                          "RAW-COMPOSED-TOOL-RESULT"))
-          (should (string-match-p marker tool-followup-input-printed)))
-        (should (equal (plist-get warm-body :previous_response_id)
-                       "resp-r0"))
-        (should (equal (plist-get (plist-get warm-options :provider-anchor)
-                                  :metadata)
-                       '(:response-id "resp-r0")))
-        (should (eq (plist-get warm-diagnostics
-                               :websocket-request-mode)
-                    'incremental))
-        (should (eq (plist-get warm-diagnostics
-                               :websocket-anchor-position)
-                    'older))
-        (should (plist-member warm-diagnostics
-                              :websocket-idle-close-seconds))
-        (should-not (plist-get warm-diagnostics
-                               :websocket-idle-close-seconds))
-        (should (eq (plist-get warm-diagnostics
-                               :previous-response-id-present)
-                    t))
-        (should (eq (plist-get warm-diagnostics :websocket-reused) t))
-        (should (numberp warm-wire-bytes))
-        (should (numberp warm-input-item-count))
-        ;; The completed activity is the public projection boundary: both
-        ;; adapter-owned scalar diagnostics survive without any ledger data.
-        (should warm-finished-activity)
-        (should (eq (plist-get warm-finished-diagnostics
-                               :websocket-anchor-position)
-                    'older))
-        (should (plist-member warm-finished-diagnostics
-                              :websocket-idle-close-seconds))
-        (should-not (plist-get warm-finished-diagnostics
-                               :websocket-idle-close-seconds))
-        (should (eq (plist-get warm-finished-diagnostics
-                               :websocket-request-mode)
-                    'incremental))
-        (should (eq (plist-get warm-finished-diagnostics
-                               :previous-response-id-present)
-                    t))
-        (should-not (string-match-p "resp-r0"
-                                    (prin1-to-string warm-finished-diagnostics)))
-        (should-not (string-match-p "resp-r1"
-                                    (prin1-to-string warm-finished-diagnostics)))
-        (should-not (string-match-p "resp-r2"
-                                    (prin1-to-string warm-finished-diagnostics)))
-        (dolist (marker '("RAW-COMPOSED-TOOL-RESULT"
-                          "call-composed-inspect"))
-          (should-not (string-match-p
-                       marker
-                       (prin1-to-string warm-finished-diagnostics))))
-        (should (string-match-p "STABLE-COMPOSED-INSTRUCTIONS"
-                                (plist-get warm-body :instructions)))
-        (should (string-match-p "CURRENT-COMPOSED-INSTRUCTIONS"
-                                (plist-get warm-body :instructions)))
-        (should (string-match-p "PROMOTED-COMPOSED-FACT"
-                                warm-body-printed))
-        (dolist (marker '("D1 inspect durable state"
-                          "D2 later ordinary turn"))
-          (should (string-match-p marker warm-input-printed)))
-        (dolist (marker '("RAW-COMPOSED-REPLAY"
-                          "RAW-COMPOSED-TOOL-RESULT"
-                          "call-composed-inspect"
-                          "provider-replay-item"
-                          "resp-r1"
-                          "resp-r2"))
-          (should-not (string-match-p marker warm-body-printed)))
-        (should-not (string-match-p "CURRENT-COMPOSED-INSTRUCTIONS"
-                                    warm-input-printed))
-        (should-not (member "resp-r1" anchor-ids))
-        (should-not (member "resp-r2" anchor-ids))
-        (should (member "resp-r0" anchor-ids))
-        ;; Lose the socket before another ordinary turn.  The harness may
-        ;; still select R0, but the adapter must reconstruct without the
-        ;; connection-local response ledger.
-        (funcall on-close socket)
+    (let ((original-body (symbol-function 'e-openai-codex-request-body)))
+      (cl-letf (((symbol-function 'e-openai-codex-request-body)
+                 (lambda (&rest args)
+                   (let ((body (apply original-body args)))
+                     (setq request-projections
+                           (append request-projections
+                                   (list (list :messages
+                                               (copy-tree (plist-get args
+                                                                      :messages))
+                                               :options
+                                               (copy-tree (plist-get args
+                                                                      :options))
+                                               :body body))))
+                     body))))
+        (e-board-e2e-create-session
+         harness :id "canonical-observe-promote")
         (e-board-e2e-prompt-batch
-         harness "websocket-composed" "D3 after socket loss")
-        (let* ((recovered (car (last sent-requests)))
-               (recovered-body (plist-get recovered :body))
-               (recovered-input (plist-get recovered-body :input))
-               (recovered-input-printed (prin1-to-string recovered-input))
-               (recovered-body-printed (prin1-to-string recovered-body))
-               (recovered-wire-bytes (plist-get recovered :wire-bytes))
-               (recovered-input-item-count
-                (plist-get recovered :input-item-count))
-               (recovered-request
-                (seq-find
-                 (lambda (request)
-                   (let ((diagnostics
-                          (plist-get (e-backend-request-metadata request)
-                                     :diagnostics)))
-                     (and (eq (plist-get diagnostics
-                                        :websocket-request-mode)
-                              'full)
-                          (eq (plist-get diagnostics
-                                         :websocket-fallback-reason)
-                              'new-connection))))
-                 backend-requests))
-               (recovered-diagnostics
-                (plist-get (e-backend-request-metadata recovered-request)
-                           :diagnostics)))
-          (should (= send-count 5))
-          (should (= open-count 2))
-          (should-not (plist-member recovered-body
-                                     :previous_response_id))
-          (should (eq (plist-get recovered-diagnostics
-                                 :websocket-request-mode)
-                      'full))
-          (should (eq (plist-get recovered-diagnostics
-                                 :websocket-fallback-reason)
-                      'new-connection))
-          (should (eq (plist-get recovered-diagnostics
-                                 :previous-response-id-present)
-                      nil))
-          (should (string-match-p "PROMOTED-COMPOSED-FACT"
-                                  recovered-body-printed))
-          (should (string-match-p "CURRENT-COMPOSED-INSTRUCTIONS"
-                                  (plist-get recovered-body :instructions)))
-          (dolist (marker '("D0 durable seed"
-                            "D1 inspect durable state"
-                            "D2 later ordinary turn"
-                            "D3 after socket loss"))
-            (should (string-match-p marker recovered-input-printed)))
-          (dolist (marker '("RAW-COMPOSED-REPLAY"
-                            "RAW-COMPOSED-TOOL-RESULT"
-                            "call-composed-inspect"
+         harness "canonical-observe-promote" "D0 durable seed")
+        (setq current-state "CURRENT-CANONICAL-FRONTIER-ONE")
+        (e-board-e2e-prompt-batch
+         harness "canonical-observe-promote" "D1 inspect durable state")
+        (setq current-state "CURRENT-CANONICAL-FRONTIER-TWO")
+        (e-board-e2e-prompt-batch
+         harness "canonical-observe-promote" "D2 later ordinary turn")
+        (let* ((ordered requests)
+               (d0 (nth 0 ordered))
+               (tool-followup (nth 2 ordered))
+               (d2 (nth 3 ordered))
+               (d0-body (plist-get d0 :parsed))
+               (followup-body (plist-get tool-followup :parsed))
+               (followup-input (alist-get 'input followup-body))
+               (d2-body (plist-get d2 :parsed))
+               (d2-input (alist-get 'input d2-body))
+               (d2-printed (json-encode d2-body))
+               (anchors
+                (e-session-provider-anchors
+                 (e-harness-sessions harness)
+                 "canonical-observe-promote"))
+               (anchor-ids
+                (mapcar
+                 (lambda (anchor)
+                   (plist-get (plist-get anchor :metadata) :response-id))
+                 anchors))
+               (promotion-record
+                (plist-get (car promotions-at-next-request)
+                           :context-record)))
+          (should (= request-count 4))
+          (should (= (length ordered) 4))
+          (should (= tool-count 1))
+          (should-not (alist-get 'previous_response_id d0-body))
+          (should (equal (alist-get 'previous_response_id followup-body)
+                         "resp-r1"))
+          (should (equal
+                   (mapcar (lambda (item) (alist-get 'type item))
+                           followup-input)
+                   '("function_call_output")))
+          (let ((function-output (aref followup-input 0)))
+            (should (equal (alist-get 'call_id function-output)
+                           "call-canonical-inspect"))
+            (should (equal (alist-get 'output function-output)
+                           raw-result)))
+          ;; R1 is a one-shot causal continuation; R2 is its contaminated
+          ;; descendant.  Neither may authorize the ordinary D2 request.
+          (should-not (alist-get 'previous_response_id d2-body))
+          (should (string-match-p "D0 durable seed" d2-printed))
+          (should (string-match-p "D1 inspect durable state" d2-printed))
+          (should (string-match-p "D2 later ordinary turn" d2-printed))
+          (should (string-match-p "PROMOTED-CANONICAL-FACT" d2-printed))
+          (should (string-match-p "CURRENT-CANONICAL-FRONTIER-TWO"
+                                  d2-printed))
+          (should-not (string-match-p "CURRENT-CANONICAL-FRONTIER-ONE"
+                                      d2-printed))
+          (dolist (marker '("RAW-CANONICAL-REPLAY"
+                            "RAW-CANONICAL-TOOL-RESULT"
+                            "call-canonical-inspect"
                             "resp-r1"
-                            "resp-r2"
-                            "CURRENT-COMPOSED-INSTRUCTIONS"))
-            (should-not (string-match-p marker recovered-input-printed)))
-          (should (numberp recovered-wire-bytes))
-          (should (numberp recovered-input-item-count))
-          (ert-info
-              ((format
-                "Composed wire metrics: warm bytes=%d input-items=%d; cold bytes=%d input-items=%d"
-                warm-wire-bytes warm-input-item-count
-                recovered-wire-bytes recovered-input-item-count))
-            (should (< warm-wire-bytes recovered-wire-bytes))
-            (should (< warm-input-item-count recovered-input-item-count))))))))
+                            "resp-r2"))
+            (should-not (string-match-p marker d2-printed)))
+          ;; The late inherited frontier remains input-owned, while stable
+          ;; instructions stay separate from the changing current value.
+          (should-not (string-match-p "CURRENT-CANONICAL-FRONTIER-TWO"
+                                      (alist-get 'instructions d2-body)))
+          (should
+           (seq-some
+            (lambda (item)
+              (and (equal (alist-get 'role item) "developer")
+                   (string-match-p "CURRENT-CANONICAL-FRONTIER-TWO"
+                                   (json-encode item))))
+            d2-input))
+          (should (= (length promotions-at-next-request) 1))
+          (should (equal
+                   (plist-get promotion-record :facts)
+                   '((:id "canonical-fact"
+                      :value "PROMOTED-CANONICAL-FACT"))))
+          (should-not (member "resp-r1" anchor-ids))
+          (should-not (member "resp-r2" anchor-ids)))))))
 
 (ert-deftest e-provider-continuation-integration-test-branchable-inherited-reuses-clean-anchor ()
   "Branchable inherited observations reuse one clean anchor without promotion."
