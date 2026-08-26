@@ -6,17 +6,41 @@
 
 Planned.
 
-This addendum replaces only Feature 88's promotion contract.  The model must
-be able to keep an ephemeral input exactly, replace selected inputs with a
-smaller durable summary, or let them disappear.  It must not have to echo
-runtime bookkeeping to do so.
+This addendum replaces only Feature 88's promotion contract.  The model can
+keep an ephemeral input exactly, replace selected inputs with a smaller durable
+summary, or let them disappear without echoing runtime bookkeeping.
 
-Addendum 3's canonical reconstruction, stable-prefix, continuation, retry,
-cache-evidence, and cleanup contracts remain unchanged.  This addendum does
-not add a board storage class: ephemeral and durable still describe future
-model visibility, while session or board audit retention is an independent
-concern.  Where the documents conflict, this addendum supersedes
-=F88A3-PROMOTION= and the original plan's promotion schema.
+The matrix below is the sole normative authority for this addendum.  Rationale,
+examples, implementation slices, and named tests explain or verify its rows but
+do not create additional requirements.  Addendum 3's canonical reconstruction,
+stable-prefix, continuation, retry, cache-evidence, and cleanup contracts remain
+unchanged.  Where the documents conflict, this addendum supersedes only
+=F88A3-PROMOTION= and the original plan's model-facing promotion schema.
+
+This addendum does not add a board storage class.  Ephemeral and durable still
+describe future model visibility; session or board audit retention is an
+independent concern.  External provider capability is
+=capability-unconfirmed=.  Repository-controlled curation semantics do not
+depend on external evidence, while the material prompt and reserved-tool change
+invalidates earlier =F88A3-CACHE= evidence by request-shape identity.
+
+* Normative contract matrix
+
+| Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External status | Status |
+|-------------+--------------+---------------------+-----------------------+------------------------+-----------------+--------|
+| =F88A4-PRESENT= | new | Each independently curatable frame source has a deterministic one-based local label and approximate token count.  Presentation metadata and internal IDs are absent from retained semantic values and durable records. | core lifetime source preparation; harness and adapter consume the late frontier | source splitting, label order, estimate, fingerprint, and exact-value separation | not applicable | proposed |
+| =F88A4-CURATE= | replaces =F88A3-PROMOTION= | One =context-curate= effect can keep exact source values, replace one or more sources with each submitted summary, and drop every omitted source without model-supplied runtime identities. | core schema and provenance; loop carrier; harness/session application; adapter wire codec | =curate-keep-summary-drop= | not applicable | proposed |
+| =F88A4-ATOMIC= | joins inherited =F88A3-TOOL= | Zero or one effect is accepted per complete response.  All preparation precedes mutation; a valid record commits before later provider dispatch; invalid or multiple effects use the existing response-failure boundary. | loop and harness response-completion boundary | =curate-invalid-atomic= and =curate-wire-follow-up= | not applicable | proposed |
+| =F88A4-BOUNDS= | replaces original promotion limits | A curation has 1--16 disposed sources and a prepared durable record of at most 8,192 canonical UTF-8 bytes; exact-bound values pass and one-over values fail before mutation. | pure core validation before session append | =curate-exact-boundaries= and =curate-large-handle= | not applicable | proposed |
+| =F88A4-DURABLE= | joins inherited =F88A3-COMPAT= | New version-3 =context-promotion= records hold ordered exact/summary items with per-item core-derived provenance.  V2 remains read-only compatible; presentation and backing objects are absent. | core codec and session append/projection/reopen/branch/compaction | =curate-persistence-compat= | not applicable | proposed |
+| =F88A4-COST= | new guidance | Per-source estimates are deterministic and informational.  Optional monetary guidance is outer-owned and never changes semantic acceptance. | core neutral estimator; outer adapter or presentation owns pricing | estimator owner tests | not applicable | proposed |
+| =F88A3-SEM= | inherited with terminology substitution | The next ordinary request is canonical durable state plus successful curation items and the new frontier; consumed raw values and contaminated lineage are absent. | unchanged session/harness composition | revised canonical observe-curate-forget composition | not applicable | accepted inherited contract |
+| =F88A3-LAYOUT= | inherited | Curation source presentation is late-frontier input.  Stable policy and reserved schema remain stable-prefix-compatible; presentation/schema revisions fence anchors and cache evidence. | unchanged harness/OpenAI layout owners | literal request order, prefix, and fingerprint tests | not applicable | accepted inherited contract |
+| =F88A3-DELIVERY= | inherited | Affected frontier observations remain inherited under continuation and contaminated descendants remain immediate-followup-only. | unchanged capability/anchor owners | retained delivery and anchor-safety scenarios | not applicable | accepted inherited contract |
+| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | =chatgpt-canonical-tool-heavy= | accepted inherited contract |
+| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | both inherited scenarios =capability-unconfirmed= | accepted inherited specification |
+| =F88A3-CLEANUP= | inherited | No response graph or durable recovery machinery returns; the old model-facing =context-promote= carrier and writers are removed. | adapter/core/session negative inventory | negative source inventory and lifecycle tests | not applicable | accepted inherited contract |
+| =F88A3-COMPAT= | inherited | V2 durable context records, generic anchors/branches, compaction, and unrelated transports remain valid. | core/session plus unaffected adapters | mixed v2/v3 reopen and regressions | not applicable | accepted inherited contract |
 
 * Decision
 
@@ -49,10 +73,49 @@ The result is durable context containing the exact model-visible value of
 mentioned by a successful curation call is dropped.  If the model makes no
 call, the whole frame is dropped as it is today.
 
+The model-facing object has exactly the optional keys =keep= and =summaries=;
+unknown keys are invalid.  An omitted key is an empty list.  =keep= is an
+ordered array of positive integer frame labels.  =summaries= is an ordered
+array of objects having exactly =sources= and =text=; =sources= is a non-empty
+array of positive integer frame labels and =text= is a non-empty string.  Core
+does not coerce strings to labels, scalar values to arrays, or other malformed
+JSON shapes.  At least one source must receive a disposition after both lists
+are normalized.
+
 The labels are short references scoped to the active frame.  The runtime binds
 them to the real frame, observation, generation, request, and provenance
 identities.  It also generates durable entry IDs and the schema revision.  None
 of those values belongs in the model-facing arguments.
+
+* Frame-local source presentation
+
+One curation source is one independently rendered, model-visible ephemeral
+value.  Frame construction splits an ephemeral semantic segment into sources in
+canonical segment and message order.  Each source stores a detached canonical
+semantic value and trusted provenance.  Provider replay items, tool-call IDs,
+message IDs, wire acknowledgements, and external backing objects are not source
+values even when they are needed beside the value for immediate transport.
+For an ordinary tool result, the source value is the exact bounded result
+content shown to the model, not its paired call/replay envelope.  A multi-item
+segment creates one source per independently presented value.
+
+Core assigns decimal labels =1= through =N= in that source order.  Labels are
+deterministic only within the consumer-bound active frame and are never accepted
+outside it.  The model sees each source behind a marker such as
+=[1, ~120 tokens]=.  It does not see frame, generation, request, observation,
+entry, fingerprint, schema-version, or provider identities.
+
+For each source, core estimates the exact canonical source value before adding
+the label or annotation.  It uses the existing provider-neutral context-budget
+UTF-8-bytes-per-token configuration, rounds upward, and uses the existing
+=4.0= byte fallback when configuration is invalid.  Owner tests inject the
+ratio rather than depending on natural-language tokenization.
+
+The effective curation presentation revision, schema revision, and estimator
+ratio participate in the material prompt-layout identity used to validate
+anchors and cache evidence.  The per-frame labels and estimated counts are late
+frontier values, not stable instructions.  Neither is part of a retained exact
+value or durable record.
 
 * Semantics
 
@@ -62,15 +125,96 @@ of those values belongs in the model-facing arguments.
   provenance for all listed sources.  One summary may replace several inputs.
 - Omission means drop; a separate =drop= list would add tokens without adding
   meaning.
-- A source may have only one disposition.  Unknown labels, duplicate use, or
-  malformed summaries reject the whole call before durable context changes.
-- At most one successful curation call applies to a frame.  It commits before
-  the next provider request, and the next ordinary projection contains only
-  the selected exact values and summaries, not the consumed sources.
+- A source has at most one disposition across the entire call.  Unknown labels,
+  repeated labels within or across dispositions, a summary with no source,
+  empty summary text, an over-limit prepared record, or more than one
+  =context-curate= effect in one complete provider response rejects the entire
+  response curation before durable or frame mutation.  A second effect
+  invalidates the response even when both are individually valid.
+- The reserved effect never enters the ordinary tool registry.  Invalid
+  curation follows the existing provider-response failure path: ordinary calls
+  already streamed are not rolled back, no later calls from that response are
+  dispatched, and no curation record is appended.
+- At provider completion, core validates and prepares the complete curation
+  against the matching still-live consumer-bound frame.  Preparation copies
+  selected exact source values and derives all provenance before the frame body
+  is removed.  Harness/session append the prepared record and consume the frame
+  before any subsequent provider request.  Mutation occurs at most once in that
+  in-memory response path; no cross-restart exactly-once guarantee is added.
+- A backend may retain the provider-required function-call-output
+  acknowledgement only as opaque replay metadata for the matching immediate
+  continuation.  It is not durable semantic content.
+- With no valid curation effect, the frame is consumed and all its sources are
+  dropped.  After a successful effect, the next ordinary projection contains
+  only the selected exact values and summaries, not the consumed sources.
 
 This is an in-memory end-of-frame semantic decision, not the persistent frame
 settlement, acknowledgement, retry, or crash-recovery protocol removed by the
 original Feature 88 plan.
+
+** Exact curation bounds
+
+Core accepts a curation only when at least one source has a keep or summary
+disposition, no more than 16 distinct frame labels have dispositions, every
+summary has at least one source and non-empty string text, and the canonical
+prepared durable record is at most 8,192 UTF-8 bytes.  The prepared-record
+measurement includes selected exact values, summary text, and core-derived
+provenance; the compact label-only wire request is not the size authority.
+
+Exactly 16 labels and exactly 8,192 bytes are accepted.  Seventeen labels or
+8,193 bytes reject the whole effect before semantic mutation.  These values
+preserve Feature 88's accepted source-fan-out and normalized-payload ceilings
+while preventing exact retention from bypassing the durable bound.  Revise a
+limit only when representative bounded-input evidence justifies it and the
+contract, boundary tests, schema/presentation fingerprint, and cache-evidence
+identity change together.
+
+* Durable curation record and compatibility
+
+The persisted session entry family remains =context-promotion= solely as the
+existing compatibility family.  New writers emit a version-3 record:
+
+#+begin_src emacs-lisp
+(:record-version 3
+ :type context-promotion
+ :id ENTRY-ID
+ :frame-id FRAME-ID
+ :generation-id GENERATION-ID
+ :consumer-request-id CONSUMER-ID
+ :response-entry-id RESPONSE-ID
+ :items
+ ((:kind exact
+   :value EXACT-CANONICAL-SOURCE-VALUE
+   :source-observation-ids (OBS-ID)
+   :source-refs (SOURCE-REF)
+   :source-fingerprints (SOURCE-FINGERPRINT))
+  (:kind summary
+   :text MODEL-AUTHORED-TEXT
+   :source-observation-ids (OBS-ID ...)
+   :source-refs (SOURCE-REF ...)
+   :source-fingerprints (SOURCE-FINGERPRINT ...))))
+#+end_src
+
+Exact items occur in =keep= argument order, followed by summaries in submitted
+order.  Each exact item has one source; each summary has one or more sources.
+Parallel provenance arrays have equal lengths and are derived only by core.
+=EXACT-CANONICAL-SOURCE-VALUE= is the detached canonical source value captured
+before its label and approximate-size annotation were added.
+
+The durable record contains no frame-local labels, token hints, provider
+acknowledgements, raw backing object, transport envelope, open-frame body,
+settlement state, or retry state.  Projection renders only the exact value or
+summary text as durable semantic content, preserving item order; provenance is
+audit and validation data rather than model-visible content.
+
+Version-2 =context-promotion= records remain readable.  A v2 record on the
+active generation remains model-visible exactly as before; older-generation v2
+records remain audit-only after a checkpoint covers them.  V2 and v3 records
+may coexist on a branch and survive reopen, branch selection, and compaction.
+New code writes only v3.  The old model-facing =context-promote= tool, decoder,
+encoder, schema fingerprint, and v2 writer are removed rather than retained as
+aliases; the v2 reader is the only required compatibility path.  The
+version-2 generation codec remains version 2 and is not implicitly migrated.
 
 * Large results and progressive discovery
 
@@ -97,13 +241,14 @@ summary output cost + future summary input cost
   < future retained-source input cost
 #+end_example
 
-The frame presentation must include an approximate token count for each
-ephemeral input.  A numerical summary budget may also be shown when the runtime
-has enough information, but it must state its assumed reuse count, input/output
-prices, and cached-input treatment.  When those assumptions are unknown, show
-the source sizes and the qualitative warning instead.  Do not put provider
-pricing in core policy, automatically summarize, or reject a model choice on
-cost grounds.
+The mandatory approximate source counts use the provider-neutral rule in
+=F88A4-PRESENT=.  A numerical monetary summary budget is optional and is not an
+acceptance gate.  It belongs to an outer adapter or presentation owner and may
+be shown only with its assumed reuse count, input and output prices,
+cached-input treatment, currency, and pricing identity.  When any assumption is
+unknown, show source sizes and the qualitative warning instead.  Core contains
+no provider pricing, does not automatically summarize, and never rejects a
+semantically valid choice on cost grounds.
 
 * Future compaction seam
 
@@ -119,21 +264,90 @@ persist rewrite plans, or make frame curation wait for a compaction service.
 Frame curation and later compaction may share pure validation and rewrite
 vocabulary while keeping separate owners and transaction boundaries.
 
+* Evidence scenarios
+
+| Scenario | Class | Required proof |
+|----------+-------+----------------|
+| =curate-keep-summary-drop= | deterministic | keep one exact value, summarize multiple sources, omit another, and reconstruct the next ordinary request without raw inputs or internal metadata |
+| =curate-invalid-atomic= | deterministic | unknown, duplicate, malformed, over-limit, and multiple effects commit nothing while preserving the inherited streamed-tool boundary |
+| =curate-exact-boundaries= | deterministic | exact 16-source/8,192-byte boundaries and 17-source/8,193-byte rejection before mutation |
+| =curate-wire-follow-up= | deterministic | the carrier stays outside ordinary tools and its opaque acknowledgement joins only the matching immediate continuation |
+| =curate-persistence-compat= | deterministic | v2/v3 reopen, mixed active projection, branches, and compaction |
+| =curate-large-handle= | deterministic | only a presented preview becomes durable; its backing value remains external |
+| =canonical-observe-curate-forget= | deterministic composition | core/session/harness/OpenAI path retains chosen items and excludes consumed values, presentation metadata, acknowledgement, and contaminated response IDs |
+| =chatgpt-canonical-warm-prefix= | external compatibility | inherited =F88A3-CACHE= minimal scenario rerun after material request-shape change |
+| =chatgpt-canonical-tool-heavy= | external compatibility | inherited tool-heavy scenario rerun with the curation carrier |
+
+All curation semantics are repository-controlled deterministic gates.  External
+cache evidence cannot substitute for them or block their implementation.
+External status remains =capability-unconfirmed= until a fresh,
+identity-complete run satisfies =F88A3-CACHE=.  Live provider latency, ratios,
+and prices are observational telemetry rather than curation acceptance.
+
+* Test disposition
+
+- Retain one-shot frame and consumer binding, canonical reconstruction,
+  provenance, ordinary tool lifecycle, continuation recovery, cache identity,
+  branch, compaction, disabled-feature, session-load, and unrelated transport
+  tests.
+- Strengthen source splitting, exact copying, summary provenance, omission,
+  label/size presentation, aggregate bounds, multiple effects, mixed tool
+  ordering, v2/v3 coexistence, and cache-identity invalidation.
+- Replace =context-promote= core-effect, OpenAI schema/decoder/ack, loop
+  reserved-effect, fact-rendering, and promotion-writer tests with
+  =context-curate= behavior.
+- Delete model-facing frame/generation/observation/fact-ID arguments, the old
+  wire carrier and aliases, and tests whose only purpose is the superseded
+  model-facing schema.
+- Retain the v2 durable reader and its compatibility tests; do not retain a v2
+  writer.
+
+* Implementation slices
+
+** Slice 1: Provider-neutral source presentation and prepared curation
+
+Establish =F88A4-PRESENT=, =F88A4-CURATE=, and =F88A4-BOUNDS= in core.  The
+slice stops at a pure, fully validated version-3 prepared record while the
+consumer-bound frame is still live.
+
+** Slice 2: Atomic response commit and OpenAI carrier
+
+Establish =F88A4-ATOMIC= and its =F88A3-TOOL= join.  Replace the reserved wire
+schema and decoder, preserve the immediate opaque acknowledgement, and commit
+the prepared record before frame consumption and later provider dispatch.
+
+** Slice 3: Durable compatibility and composed semantics
+
+Establish =F88A4-DURABLE= and the =F88A3-SEM=/=F88A3-COMPAT= joins.  Add the
+v3 codec/projection, retain the v2 reader only, cover reopen/branch/compaction,
+and replace the canonical observe-promote-forget composition with
+observe-curate-forget.
+
+** Slice 4: Combined Addendum 3 cleanup and acceptance
+
+Complete Addendum 3's remaining cleanup and cache/documentation slices against
+the curation design.  Remove the old promotion carrier/writer together with the
+historical continuation machinery, run deterministic repository gates, and
+report the two inherited external cache scenarios separately.
+
 * Minimum acceptance
 
-1. Model-visible ephemeral inputs have compact frame-local references and
-   approximate token sizes; internal IDs are not exposed for the model to
-   echo.
-2. One call can keep one input exactly, summarize several others together, and
-   omit the rest.
-3. Exact retention copies the trusted bounded input rather than model-supplied
-   content or the full value behind an external handle.
-4. Summary provenance is derived by core, and an invalid mixed disposition
-   commits nothing.
-5. The next ordinary request contains the chosen durable replacements and no
-   consumed raw inputs.
-6. Existing audit records may retain source provenance without making raw
-   content model-visible, and no new board lifetime concept is introduced.
+Acceptance requires every proposed =F88A4-*= matrix row to be independently
+cleared, every inherited join to remain green, exact and one-over limit tests,
+and the complete deterministic scenario ledger.  In particular:
+
+1. Each independently curatable input has a local label and approximate size;
+   no internal identity is model-facing.
+2. One call keeps one exact value, summarizes several others together, and
+   omits the rest.
+3. Exact retention copies only the trusted bounded semantic value shown behind
+   the label, never model-supplied replacement content or a backing object.
+4. Core derives per-item provenance and invalid mixed/multiple effects commit
+   nothing.
+5. The next ordinary request contains the ordered durable replacements and no
+   consumed values, labels, sizes, replay metadata, or contaminated lineage.
+6. V2 audit/session compatibility survives without a v2 writer, dual carrier,
+   or new board lifetime concept.
 
 * Non-goals
 
