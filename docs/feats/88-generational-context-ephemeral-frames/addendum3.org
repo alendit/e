@@ -311,62 +311,41 @@ It does not cover:
 No new durable state is introduced.
 No provider response ledger is persisted or retained across a connection.
 
-* Cleanup ledger
+* Targeted cleanup
 
-Implementation must remove the following Addendum 2 machinery unless a current
-non-wire semantic consumer is demonstrated in the implementation review.
+This is not a request for a generalized continuation cleanup or a fresh
+abstraction.  Remove only the concrete Addendum 2 feature cluster whose sole
+purpose was reusing an older ChatGPT response to send a smaller request.
 
-** OpenAI adapter
+That cluster consists of:
 
-- Remove =response-ledger=, =response-order=, =evicted-response-ledger=, and
-  =evicted-response-order= from =e-openai-codex--websocket-session=.
-- Remove =e-openai--websocket-response-ledger-capacity= and
-  =e-openai--websocket-evicted-response-ledger-capacity=.
-- Remove the ledger ensure, clear, remove, record, eviction, and response-position
-  helpers.
-- Remove =e-openai-codex--json-value-copy= if the historical ledger remains its
-  only consumer.
-- Restore a single latest-response compatibility authority only if required by
-  immediate matching follow-up.
-- Remove =response-evicted=, =previous-response-unknown=, and older-anchor
-  request branches and diagnostics.
-- Keep one safe canonical retry for an actually rejected latest continuation,
-  including top-level =error= events carrying
-  =previous_response_not_found=.
-- Remove =e-openai--builtin-codex-websocket-idle-close-seconds=,
-  =e-openai--profile-websocket-idle-close-seconds=, the profile-private
-  =:websocket-idle-close-seconds= field, and its request plumbing.
-- Restore the general =e-openai-websocket-connection-idle-seconds= policy.
-- Remove =:websocket-anchor-position= and
-  =:websocket-idle-close-seconds= activity projection.
+1. the connection-local historical response ledger, its FIFO eviction history,
+   and the older/evicted response decision branches and diagnostics;
+2. the built-in-Codex-only 600-second socket-retention override and its profile,
+   request, diagnostic, and fake-time plumbing; and
+3. tests and E2E assertions whose success condition is older-anchor reuse,
+   fewer serialized bytes, or fewer transmitted input items.
 
-** Harness and session integration
+Remove helpers and fields that become dead as a direct consequence.  Restore
+or retain the pre-existing single latest-response compatibility state needed
+for the immediate matching tool follow-up, plus one safe canonical retry for
+=previous_response_not_found= in either top-level =error= or
+=response.failed= form.
 
-- Stop selecting an older durable clean anchor for the built-in ChatGPT Codex
-  profile.
-- Do not persist tool-producing or tool-descended response IDs.
-- Retain provider-neutral anchor infrastructure only where a current provider,
-  compaction path, or semantic continuation consumer still requires it.
-- Delete ChatGPT-specific selection, fingerprint, delta, or diagnostic paths
-  whose only remaining purpose is smaller wire input.
-- Do not broaden the provider-neutral capability vocabulary merely to describe
-  an optimization that this addendum removes.
+Stop selecting an older durable clean anchor for the built-in ChatGPT Codex
+profile.  Do not use this addendum to redesign or broadly delete the
+provider-neutral anchor infrastructure: retain any part with a current
+compaction, canonical OpenAI, or semantic continuation consumer.  Do not add a
+new capability taxonomy merely to describe the removed optimization.
 
-** Tests and E2E
+Replace the credentialed older-clean-anchor E2E with canonical warm-prefix
+acceptance, including the replacement-socket control.  Retain semantic frame,
+promotion, invalid-promotion, tool-follow-up, safe-retry, and cached-token
+reporting coverage.
 
-- Delete the 256-entry live/evicted ledger and FIFO eviction tests.
-- Delete older-known-response branch acceptance for ChatGPT.
-- Delete the 301/600 fake-time assertions that exist only for the Codex-specific
-  retention override.
-- Delete assertions that a warm request has fewer serialized bytes or fewer
-  input items than canonical reconstruction.
-- Replace the credentialed older-clean-anchor E2E with canonical warm-prefix
-  acceptance, including a forced socket close.
-- Retain semantic frame, promotion, invalid-promotion, tool-follow-up, safe
-  retry, and cached-token reporting coverage.
-
-The cleanup is incomplete while implementation or tests still treat request
-byte reduction as a success criterion.
+Cleanup is complete when this narrow Addendum 2 cluster is gone and no
+remaining acceptance assertion treats request-byte reduction as success.  It
+does not require unrelated refactoring.
 
 * Implementation slices
 
@@ -395,7 +374,7 @@ older provider anchor.
 
 ** Slice 3: Remove obsolete continuation machinery
 
-Apply the cleanup ledger at the owning boundaries.
+Apply the targeted cleanup at the owning boundaries.
 Prefer deleting state and branches over replacing them with new abstractions.
 Preserve only the minimum latest-response and safe-retry state needed by the
 existing streamed tool lifecycle.
@@ -473,14 +452,14 @@ The test must prove:
 1. both requests submit canonical context;
 2. request 2 contains no =C=;
 3. request 2 reports =cached_input_tokens > 0=;
-4. for the fixed fixture, cached input is at least 75 percent of total input;
-5. the same requirement passes after deliberately closing and reopening the
-   WebSocket between requests while keeping the cache identity stable; and
-6. missing cached-token usage is unavailable evidence, not a pass.
+4. the same nonzero-cache requirement passes after deliberately closing and
+   reopening the WebSocket between requests while keeping the cache identity
+   stable; and
+5. missing cached-token usage is unavailable evidence, not a pass.
 
 The historical probe result, 4,864 cached of 5,450 input tokens on both the
-retained and replacement socket, exceeds this threshold and is the baseline
-for the permanent E2E.
+retained and replacement socket, is recorded evidence rather than a permanent
+percentage threshold.
 
 ** Tool-heavy cache E2E
 
