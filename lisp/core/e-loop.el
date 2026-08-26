@@ -264,7 +264,8 @@ CAUSES lists every completed tool call that induced a follow-up request."
             append-message refresh-context refresh-messages on-request-start
             on-done on-error
             cancelled-p drain-pending-input segments turn-work-handle
-            board-enroll-work lifetime-frame on-response-complete
+            board-enroll-work lifetime-frame on-response-preflight
+            on-response-complete
             on-tool-observation)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
@@ -278,7 +279,9 @@ consistent with those options.  REFRESH-MESSAGES is retained as a legacy
 messages-only callback.  The provider request is started through
 `e-backend-start'.  Tool execution is started through TOOL-LIFECYCLE when
 supplied, otherwise through `e-tools-start'.  Provider I/O, tool I/O, and turn
-settlement are callback-driven."
+settlement are callback-driven.  ON-RESPONSE-PREFLIGHT, when supplied, runs
+before a non-tool assistant message is appended and returns a pure prepared
+completion value for ON-RESPONSE-COMPLETE."
   (let ((turn-messages (copy-sequence messages))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
@@ -426,6 +429,8 @@ settlement are callback-driven."
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
                   (response-complete-notified nil)
+                  (response-preflight-run nil)
+                  (response-preflight-result nil)
                   (response-curation-effects nil)
                   (provider-request-causes next-request-causes)
                   (provider-request-lifetime-frame active-lifetime-frame)
@@ -499,36 +504,63 @@ settlement are callback-driven."
                         provider-request-ordinal
                         tool-called))
                       t))
+                  (response-completion-payload
+                    ()
+                    (list :frame provider-request-lifetime-frame
+                          :provider-request-id provider-request-id
+                          :provider-request-ordinal provider-request-ordinal
+                          :curation-effects
+                          (copy-tree response-curation-effects)
+                          :assistant-content (response-text)
+                          :tool-called tool-called
+                          :reason done-reason))
+                  (run-response-preflight
+                    ()
+                    (when (and on-response-preflight
+                               (not response-preflight-run))
+                      ;; Set the guard before entering the callback so a
+                      ;; callback that observes completion cannot prepare the
+                      ;; same response twice.
+                      (setq response-preflight-run t
+                            response-preflight-result
+                            (funcall on-response-preflight
+                                     (response-completion-payload))))
+                    response-preflight-result)
                   (notify-response-complete
                     ()
-                    (when (and on-response-complete
+                    (when (and (or on-response-complete
+                                   on-response-preflight)
                                (not response-complete-notified))
+                      ;; Tool responses have no assistant append boundary, so
+                      ;; their preflight runs here.  Non-tool responses call
+                      ;; `run-response-preflight' before appending below.
+                      (run-response-preflight)
                       (setq response-complete-notified t)
-                      (let ((completed
-                             (funcall
-                              on-response-complete
-                              (list :frame provider-request-lifetime-frame
-                                    :provider-request-id provider-request-id
-                                    :provider-request-ordinal provider-request-ordinal
-                                    :curation-effects
-                                    (copy-tree response-curation-effects)
-                                    :assistant-content (response-text)
-                                    :tool-called tool-called
-                                    :reason done-reason))))
-                        ;; A tool may finish before the provider reports its
-                        ;; response complete.  In that ordering the tool
-                        ;; callback has already installed the descendant
-                        ;; bundle frame; completing the producer frame must
-                        ;; not roll the frontier back to that older frame.
-                        (when (and (e-context-lifetime-frame-p completed)
-                                   (or (null active-lifetime-frame)
-                                       (equal
-                                        (e-context-lifetime-frame-id
-                                         active-lifetime-frame)
-                                        (and provider-request-lifetime-frame
-                                             (e-context-lifetime-frame-id
-                                              provider-request-lifetime-frame)))))
-                          (setq active-lifetime-frame completed)))))
+                      (when on-response-complete
+                        (let* ((payload (response-completion-payload))
+                               (completed
+                                (funcall
+                                 on-response-complete
+                                 (if on-response-preflight
+                                     (append
+                                      payload
+                                      (list :curation-preflight
+                                            response-preflight-result))
+                                   payload))))
+                          ;; A tool may finish before the provider reports its
+                          ;; response complete.  In that ordering the tool
+                          ;; callback has already installed the descendant
+                          ;; bundle frame; completing the producer frame must
+                          ;; not roll the frontier back to that older frame.
+                          (when (and (e-context-lifetime-frame-p completed)
+                                     (or (null active-lifetime-frame)
+                                         (equal
+                                          (e-context-lifetime-frame-id
+                                           active-lifetime-frame)
+                                          (and provider-request-lifetime-frame
+                                               (e-context-lifetime-frame-id
+                                                provider-request-lifetime-frame)))))
+                            (setq active-lifetime-frame completed))))))
                    (attach-pending-provider-replay-items
                     ()
                     ;; A reserved provider effect may arrive after an
@@ -1014,12 +1046,22 @@ settlement are callback-driven."
                                                                    done-reason))
                                                    (fail '(e-loop-empty-output)))
                                                (let ((message
+                                                      (progn
+                                                        ;; Curation validation
+                                                        ;; must complete before
+                                                        ;; the assistant reaches
+                                                        ;; the session append
+                                                        ;; callback.  A signal
+                                                        ;; here is handled by
+                                                        ;; the existing provider
+                                                        ;; failure boundary.
+                                                        (run-response-preflight)
                                                       (e-loop--assistant-message
                                                        (response-text)
                                                        (when pending-provider-replay-items
                                                          (list
                                                           :provider-replay-items
-                                                          pending-provider-replay-items)))))
+                                                          pending-provider-replay-items))))))
                                                  (setq turn-messages
                                                        (append turn-messages
                                                                (list message)))
@@ -1059,7 +1101,8 @@ settlement are callback-driven."
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
             segments turn-work-handle
-            board-enroll-work lifetime-frame on-response-complete
+            board-enroll-work lifetime-frame on-response-preflight
+            on-response-complete
             on-tool-observation)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
@@ -1068,7 +1111,8 @@ REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context and output
 callbacks.  REFRESH-CONTEXT returns one atomic request projection; the
 messages-only callback remains for compatibility.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
-one."
+one.  ON-RESPONSE-PREFLIGHT, when supplied, runs before an assistant append
+and returns the pure completion value passed to ON-RESPONSE-COMPLETE."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error 'e-loop-run-turn-batch))
   (let ((done nil)
@@ -1091,6 +1135,7 @@ one."
      :refresh-messages refresh-messages
      :on-request-start on-request-start
      :lifetime-frame lifetime-frame
+     :on-response-preflight on-response-preflight
      :on-response-complete on-response-complete
      :on-tool-observation on-tool-observation
      :on-done (lambda (value)

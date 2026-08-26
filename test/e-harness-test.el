@@ -6207,6 +6207,106 @@ an empty summary\"."
                  (eq (plist-get message :role) 'assistant))
                  (e-harness-messages harness "invalid-promotion-session"))))))
 
+(ert-deftest e-harness-test-context-lifetime-preflights-before-assistant-append ()
+  "Completion-only curation failures do not append an assistant or consume its frame."
+  (e-harness-test--with-empty-layer-registry
+    (dolist (case '((unknown-label . (:keep (2)))
+                    (oversized-record . (:keep (1)))))
+      (let* ((request-count 0)
+             (source-value "PREFLIGHT-SOURCE")
+             (captured-frame nil)
+             (prepared-bytes nil)
+             (backend
+              (e-backend-create
+               :name "context-lifetime-completion-preflight"
+               :context-capabilities
+               '(:continuation none
+                 :observation-delivery request-local-replaceable
+                 :reserved-effect-carrier context-curate-wire)
+               :stream
+               (cl-function
+                (lambda (&key on-item &allow-other-keys)
+                  (cl-incf request-count)
+                  (let ((arguments
+                         (if (eq (car case) 'oversized-record)
+                             (let ((text "x")
+                                   (bytes 0)
+                                   (sources
+                                    (e-context-lifetime-frame-curation-sources
+                                     captured-frame)))
+                               ;; The provider request ID is a 26-character
+                               ;; ULID.  Hash output has fixed width, so this
+                               ;; computes the exact one-over prepared bound
+                               ;; before the real completion callback runs.
+                               (while (< bytes 8193)
+                                 (setq text (concat text "x")
+                                       bytes
+                                       (e-context-lifetime--bytes
+                                        (e-context-lifetime--curation-record
+                                         captured-frame
+                                         (list
+                                          :keep nil
+                                          :summaries
+                                          (list (list :sources '(1)
+                                                      :text text)))
+                                         (make-string 26 ?r)
+                                         sources))))
+                               (setq prepared-bytes bytes)
+                               (list :summaries
+                                     (list (list :sources '(1)
+                                                 :text text))))
+                           (cdr case))))
+                    (funcall on-item
+                             (list :type 'context-curate
+                                   :arguments arguments)))
+                  (funcall on-item
+                           '(:type assistant-message
+                             :content "MUST-NOT-PERSIST"))
+                  (funcall on-item '(:type done :reason stop))))))
+             (provider
+              (e-context-provider-create
+               :name 'completion-preflight-source
+               :cache-placement 'dynamic-context
+               :build (lambda (&rest _)
+                        (list (list :role 'system :content source-value)))))
+             (capability
+              (e-capability-create
+               :id 'completion-preflight-capability
+               :context-providers (list provider)))
+             (harness
+              (e-harness-create
+               :backend backend
+               :intrinsic-capabilities (list capability)))
+             (make-frame (symbol-function
+                          'e-context-lifetime-frame-create-from-segments)))
+        (cl-letf (((symbol-function
+                    'e-context-lifetime-frame-create-from-segments)
+                   (lambda (&rest arguments)
+                     (setq captured-frame (apply make-frame arguments))
+                     captured-frame)))
+          (let ((e-context-lifetime-shadow-projection-enabled t))
+            (e-harness-create-session harness :id "completion-preflight")
+            (should-error
+             (e-harness-test-prompt-batch
+              harness "completion-preflight" "trigger curation")
+             :type 'e-context-lifetime-invalid-record)))
+        (should (= request-count 1))
+        (when (eq (car case) 'oversized-record)
+          (should (= prepared-bytes 8193)))
+        (should (e-context-lifetime-frame-p captured-frame))
+        (should-not (e-context-lifetime-frame-consumed-p captured-frame))
+        (should (equal
+                 (plist-get
+                  (car (e-context-lifetime-frame-observations captured-frame))
+                  :body)
+                 (list :role 'system :content source-value)))
+        (should-not (e-session-context-curations
+                     (e-harness-sessions harness) "completion-preflight"))
+        (should-not
+         (seq-find (lambda (message)
+                     (eq (plist-get message :role) 'assistant))
+                   (e-harness-messages harness "completion-preflight")))))))
+
 (ert-deftest e-harness-test-context-lifetime-zero-curation-consumes-frame ()
   "A response with no curation drops its live frame without a durable record."
   (let* ((harness (e-harness-create

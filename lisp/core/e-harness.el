@@ -3136,26 +3136,23 @@ returned no durable message; it remains an opaque runtime response identity."
        :id)
       fallback))
 
-(defun e-harness--lifetime-commit-response
+(defun e-harness--lifetime-preflight-response
     (harness session-id turn-id active-entry payload)
-  "Complete the runtime frame in PAYLOAD and append valid curation.
+  "Return a pure curation completion value for PAYLOAD.
 
-The loop has already validated the effect shape while streaming.  This
-boundary resolves presentation labels against the trusted still-live frame,
-prepares the version-3 record in core, and performs the session append before
-the next provider request is started."
+Resolve the provider-request frame before any assistant message is appended.
+The returned value contains the trusted frame, response binding, and optional
+prepared version-3 record; it does not append to the session or consume the
+frame."
   (when (and (e-context-lifetime-shadow-enabled-p)
              (e-harness--active-turn-running-p active-entry))
     (let* ((payload-frame (plist-get payload :frame))
            (active-frame (plist-get active-entry :context-frame))
            (effects (plist-get payload :curation-effects))
-           ;; The provider-request frame in the response payload is the
-           ;; authority for both zero-effect consumption and curation labels.
-           ;; An active descendant may have been installed while an ordinary
-           ;; tool call from this response completed, but that descendant was
-           ;; not presented in this provider request and cannot be selected by
-           ;; its effect.  Synthetic callers without a payload frame use the
-           ;; active entry as the compatibility fallback.
+           ;; A present payload frame is authoritative: a newer descendant
+           ;; may have been installed by an ordinary tool call, but it was not
+           ;; presented in this provider request.  The active entry is only a
+           ;; fallback for synthetic callers that omit the payload frame.
            (frame (or payload-frame active-frame))
            (response-id
             (e-harness--lifetime-response-entry-id
@@ -3169,20 +3166,42 @@ the next provider request is started."
                            (not (e-context-lifetime-frame-consumed-p frame)))))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :frame-not-live)))
+      (list :frame frame
+            :consumer-request-id
+            (and (e-context-lifetime-frame-p frame)
+                 (e-context-lifetime-frame-consumer-request-id frame))
+            :response-id response-id
+            :record
+            (when (= (length effects) 1)
+              (e-context-lifetime-prepare-curation
+               frame
+               (plist-get (car effects) :arguments)
+               response-id))))))
+
+(defun e-harness--lifetime-commit-response
+    (harness session-id turn-id active-entry payload)
+  "Complete the runtime frame in PAYLOAD and append valid curation.
+
+The loop has already validated the effect shape while streaming.  A pure
+preflight value from `e-harness--lifetime-preflight-response' is consumed when
+present; direct synthetic callers without that value are preflighted here.
+The session append precedes frame consumption and the next provider request."
+  (when (and (e-context-lifetime-shadow-enabled-p)
+             (e-harness--active-turn-running-p active-entry))
+    (let* ((preflight
+            (if (plist-member payload :curation-preflight)
+                (plist-get payload :curation-preflight)
+              (e-harness--lifetime-preflight-response
+               harness session-id turn-id active-entry payload)))
+           (active-frame (plist-get active-entry :context-frame))
+           (frame (plist-get preflight :frame))
+           (response-id (plist-get preflight :response-id))
+           (record (plist-get preflight :record)))
       (when (and frame (e-context-lifetime-frame-p frame)
                  (not (e-context-lifetime-frame-consumed-p frame)))
         (let* ((consumer-id
-                (e-context-lifetime-frame-consumer-request-id frame))
-               ;; Preparation is pure and happens before the frame body is
-               ;; dropped.  The session append validates the same record
-               ;; before mutating its transcript/index, so either operation
-               ;; failing leaves both frame and session untouched.
-               (record
-                (when (= (length effects) 1)
-                  (e-context-lifetime-prepare-curation
-                   frame
-                   (plist-get (car effects) :arguments)
-                   response-id)))
+                (or (plist-get preflight :consumer-request-id)
+                    (e-context-lifetime-frame-consumer-request-id frame)))
                (curation-id (and record (plist-get record :id)))
                (appended
                 (when record
@@ -4058,7 +4077,8 @@ request emits no candidate at all."
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
              cancelled-p append-message on-event context drain-pending-input
-             on-context-refresh on-response-complete on-tool-observation)
+             on-context-refresh on-response-preflight on-response-complete
+             on-tool-observation)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -4077,6 +4097,7 @@ request emits no candidate at all."
         :options (plist-get context :options)
         :segments (plist-get context :segments)
         :lifetime-frame (plist-get context :lifetime-frame)
+        :on-response-preflight on-response-preflight
         :on-response-complete on-response-complete
         :on-tool-observation on-tool-observation
          :turn-work-handle (plist-get
@@ -4419,6 +4440,12 @@ cancellation.  SESSION-ID identifies the session."
                     (plist-put entry :lifetime-generation
                                (plist-get fresh-context
                                           :lifetime-generation))))
+                :on-response-preflight
+                (lambda (payload)
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (e-harness--lifetime-preflight-response
+                     harness session-id turn-id entry payload)))
                 :on-response-complete
                 (lambda (payload)
                   (when (and (active-entry-p)

@@ -1887,6 +1887,48 @@
                           messages))
     (should (equal (plist-get (car messages) :content) "answer"))))
 
+(ert-deftest e-loop-test-response-preflight-precedes-assistant-append ()
+  "A completion preflight runs before the assistant append callback."
+  (let* ((order nil)
+         (backend
+          (e-backend-create
+           :name "response-preflight-order"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (funcall on-item
+                       '(:type assistant-message :content "answer"))
+              (funcall on-item '(:type done :reason stop)))))))
+    (e-loop-run-turn-batch
+     :session-id "session-preflight-order"
+     :turn-id "turn-preflight-order"
+     :messages '((:role user :content "prompt"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "fake")
+     :on-response-preflight
+     (lambda (payload)
+       (setq order (append order
+                           (list (list 'preflight
+                                       (plist-get payload :assistant-content)))))
+       'prepared-completion)
+     :on-response-complete
+     (lambda (payload)
+       (setq order (append order
+                           (list (list 'complete
+                                       (plist-get payload
+                                                  :curation-preflight))))))
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq order (append order
+                           (list (list 'append
+                                       (plist-get message :content)))))))
+    (should (equal order
+                   '((preflight "answer")
+                     (append "answer")
+                     (complete prepared-completion))))))
+
 (ert-deftest e-loop-test-tool-descendant-frame-survives-response-race ()
   "A tool bundle frame remains current whichever completion callback wins."
   (dolist (provider-first '(t nil))
