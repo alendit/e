@@ -19,6 +19,16 @@
 (require 'e-harness)
 (require 'e-session)
 
+(ert-deftest e-context-budget-test-value-estimate-rounds-up-and-falls-back ()
+  "Value estimates use UTF-8 bytes, upward rounding, and the 4.0 fallback."
+  (let ((bytes (string-bytes (prin1-to-string "é"))))
+    (should (= (e-context-budget-value-token-estimate "é" 2.0)
+               (ceiling (/ bytes 2.0))))
+    (should (= (e-context-budget-value-token-estimate "é" 0)
+               (ceiling (/ bytes 4.0))))
+    (should (= (e-context-budget-value-token-estimate "é" "invalid")
+               (ceiling (/ bytes 4.0))))))
+
 (ert-deftest e-context-budget-test-model-window-uses-table ()
   "Model windows are read from the supplied or default budget table."
   (should (equal (e-context-budget-model-window "claude-sonnet-5") 364000))

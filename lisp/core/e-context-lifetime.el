@@ -15,6 +15,10 @@
 (require 'seq)
 (require 'subr-x)
 
+(declare-function e-context-budget-value-token-estimate
+                  "e-context-budget")
+(defvar e-context-budget-estimate-bytes-per-token)
+
 (define-error 'e-context-lifetime-error "Context lifetime error")
 (define-error 'e-context-lifetime-invalid-record
   "Invalid context lifetime record"
@@ -68,6 +72,25 @@ have a closed role vocabulary."
 
 (defconst e-context-lifetime-promotion-max-bytes 8192
   "Maximum normalized UTF-8 bytes accepted in one promotion effect.")
+
+(defconst e-context-lifetime-curation-record-version 3
+  "Version of prepared durable context-curation records.
+
+The session codec is introduced by a later Addendum 4 slice.  This core slice
+only prepares the exact record shape that codec will accept.")
+
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v1"
+  "Stable revision of the model-facing context-curate shape.")
+
+(defconst e-context-lifetime-curation-presentation-revision
+  "context-curation-presentation-v1"
+  "Stable revision of frame-local curation labels and size markers.")
+
+(defconst e-context-lifetime-curation-max-sources 16
+  "Maximum distinct frame-local sources disposed by one curation.")
+
+(defconst e-context-lifetime-curation-max-record-bytes 8192
+  "Maximum canonical UTF-8 bytes in one prepared curation record.")
 
 (defconst e-context-lifetime-observation-kinds
   '("current-state" "dynamic-context" "tool-result" "trace"
@@ -377,10 +400,11 @@ the initial identity generation may retain a nil checkpoint."
         :effective-delivery
         (e-context-lifetime--canonical-delivery-mode
          (plist-get observation :effective-delivery))
-        ;; Frame bodies are runtime-only.  Preserve them as detached values;
-        ;; the projection boundary canonicalizes them when they become model
-        ;; input, and no frame codec persists them.
-        :body (e-context-lifetime--copy (plist-get observation :body))))
+        ;; Frame bodies are runtime-only.  Preserve them as recursively
+        ;; detached values; the projection boundary canonicalizes them when
+        ;; they become model input, and no frame codec persists them.
+        :body (e-context-lifetime--detached-copy
+               (plist-get observation :body))))
 
 (defun e-context-lifetime--observation-items (observations)
   "Return OBSERVATIONS as a proper sequence or signal a shape error."
@@ -396,6 +420,27 @@ the initial identity generation may retain a nil checkpoint."
 (defun e-context-lifetime--copy (value)
   "Return a detached semantic copy of VALUE."
   (copy-tree value))
+
+(defun e-context-lifetime--detached-copy (value)
+  "Return a recursively detached copy of semantic VALUE.
+
+`copy-tree' does not copy strings or vector elements.  Curation exact values
+cross a runtime presentation boundary, so this narrower helper also detaches
+those leaves without changing the established copies used by the v2 path."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((vectorp value)
+    (vconcat
+     (mapcar #'e-context-lifetime--detached-copy (append value nil))))
+   ((consp value)
+    (cons (e-context-lifetime--detached-copy (car value))
+          (e-context-lifetime--detached-copy (cdr value))))
+   (t value)))
+
+(defun e-context-lifetime--detached-canonical (value)
+  "Return a detached canonical copy of semantic VALUE."
+  (e-context-lifetime--detached-copy
+   (e-context-lifetime-canonicalize value)))
 
 (cl-defun e-context-lifetime-generation-create
     (&key id checkpoint covered-session-boundary)
@@ -485,8 +530,78 @@ omitted mapping entry is conservatively inherited."
       (format "context-source:%s"
               (substring (secure-hash 'sha256 (prin1-to-string id)) 0 32)))))
 
+(defun e-context-lifetime--segment-source-items (value)
+  "Return raw independently rendered items from segment MESSAGES VALUE.
+
+Do not canonicalize the complete message envelope here.  Tool-result
+transport metadata can contain backing objects that must be discarded by the
+source projection before its semantic content is canonicalized."
+  (cond
+   ((null value) nil)
+   ((vectorp value) (append value nil))
+   ((and (proper-list-p value)
+         (not (e-context-lifetime--keyword-plist-p value)))
+    value)
+   (t (list value))))
+
+(defun e-context-lifetime--curation-tool-result-content (result item)
+  "Return semantic content from tool RESULT in ITEM or signal for an envelope.
+
+RESULT is allowed to be a bounded scalar/sequence value when a caller has
+already stripped the result envelope.  A keyword plist without `:content' is
+not accepted here, since retaining it would risk copying tool metadata or a
+backing object into the semantic source."
+  (cond
+   ((and (e-context-lifetime--keyword-plist-p result)
+         (plist-member result :content))
+    (plist-get result :content))
+   ((or (null result) (eq result t) (eq result :json-false)
+        (stringp result) (numberp result) (vectorp result)
+        (and (proper-list-p result)
+             (not (e-context-lifetime--keyword-plist-p result))))
+    result)
+   (t
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-source :tool-result-envelope item)))))
+
+(defun e-context-lifetime--curation-source-value (kind item)
+  "Extract the exact semantic source value from KIND and runtime ITEM.
+
+Ordinary message envelopes contribute only `:content'.  Tool-result envelopes
+contribute only bounded result `:content'; call/replay IDs, message IDs,
+acknowledgements, metadata, and backing objects never become source values."
+  (if (equal kind "tool-result")
+      (cond
+       ((and (e-context-lifetime--keyword-plist-p item)
+             (plist-member item :tool-result))
+        (e-context-lifetime--curation-tool-result-content
+         (plist-get item :tool-result) item))
+       ((and (e-context-lifetime--keyword-plist-p item)
+             (plist-member item :content))
+        (let ((content (plist-get item :content)))
+          (if (and (e-context-lifetime--keyword-plist-p content)
+                   (plist-member content :tool-call-id)
+                   (plist-member content :name)
+                   (plist-member content :status)
+                   (plist-member content :content))
+              (e-context-lifetime--curation-tool-result-content
+               content item)
+            content)))
+       (t
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-source :missing-tool-result-content item))))
+    (if (and (e-context-lifetime--keyword-plist-p item)
+             (plist-member item :content))
+        (plist-get item :content)
+      item)))
+
 (defun e-context-lifetime--segment-observations (segments delivery)
-  "Return validated runtime observations from semantic context SEGMENTS."
+  "Return one validated observation per semantic source from SEGMENTS and DELIVERY.
+
+Each message/value in an observation segment is independently curatable, so
+its observation identity and fingerprint include the canonical segment and
+message positions.  The segment source reference may remain shared because it
+identifies the external source that delivered the values."
   (let (observations)
     (cl-loop for segment in segments
              for index from 0
@@ -495,49 +610,425 @@ omitted mapping entry is conservatively inherited."
                           e-context-lifetime-observation-kinds)
              do (let* ((kind (e-context-lifetime--canonical-observation-kind
                               kind))
-                       (messages (copy-tree (plist-get segment :messages)))
-                       (fingerprint
-                        (or (plist-get segment :fingerprint)
-                            (secure-hash 'sha256
-                                         (prin1-to-string messages))))
-                       (observation-id
-                        (format "observation:%s:%s"
-                                (substring
-                                 (secure-hash 'sha256
-                                              (prin1-to-string
-                                               (list kind
-                                                     (plist-get segment :id)
-                                                     index)))
-                                 0 24)
-                                index)))
-                  (push
-                   (list :observation-id observation-id
-                         :kind kind
-                         :source-entry-ref
-                         (e-context-lifetime--segment-source-ref segment)
-                         :source-fingerprint
-                         (e-context-lifetime--require-id
-                          fingerprint 'source-fingerprint)
-                         :effective-delivery
-                         (e-context-lifetime--delivery-for-kind
-                          delivery kind)
-                         :body messages)
-                   observations)))
+                       (messages (e-context-lifetime--segment-source-items
+                                  (plist-get segment :messages)))
+                       (source-entry-ref
+                        (e-context-lifetime--segment-source-ref segment))
+                       (segment-fingerprint
+                        (and (plist-get segment :fingerprint)
+                             (e-context-lifetime--require-id
+                              (plist-get segment :fingerprint)
+                              'segment-fingerprint)))
+                       (semantic-values
+                        (mapcar
+                         (lambda (message)
+                           (e-context-lifetime--detached-canonical
+                            (e-context-lifetime--curation-source-value
+                             kind message)))
+                         messages)))
+                  (cl-loop for message in messages
+                           for semantic-value in semantic-values
+                           for message-index from 0
+                           for identity-inputs =
+                           (list :kind kind
+                                 :source-entry-ref source-entry-ref
+                                 :segment-index index
+                                 :message-index message-index
+                                 :source-value semantic-value
+                                 :segment-fingerprint segment-fingerprint)
+                           for observation-id =
+                           (format "observation:%s:%s"
+                                   (substring
+                                    (secure-hash 'sha256
+                                                 (prin1-to-string
+                                                  identity-inputs))
+                                    0 24)
+                                   message-index)
+                           for source-fingerprint =
+                           (secure-hash 'sha256
+                                        (prin1-to-string identity-inputs))
+                           do (push
+                               (list :observation-id observation-id
+                                     :kind kind
+                                     :source-entry-ref source-entry-ref
+                                     :source-fingerprint source-fingerprint
+                                     :effective-delivery
+                                     (e-context-lifetime--delivery-for-kind
+                                      delivery kind)
+                                     :body
+                                     (e-context-lifetime--detached-copy
+                                      message))
+                               observations))))
     (nreverse observations)))
 
 (cl-defun e-context-lifetime-frame-create-from-segments
     (&key id generation-id consumer-request-id segments observation-delivery)
   "Create a runtime FRAME from validated semantic context SEGMENTS.
 
-Only observation segments become frame items.  Source identities and
-fingerprints are derived here from the segment identity/value; callers cannot
-provide parallel provenance arrays that could drift from the body."
+Only observation segments become frame items, with one frame observation per
+independently rendered message/value.  Source identities and fingerprints are
+derived here from the segment identity/value and message position; callers
+cannot provide parallel provenance arrays that could drift from the body.  ID,
+GENERATION-ID, and CONSUMER-REQUEST-ID bind the resulting frame."
   (e-context-lifetime-frame-create
    :id id
    :generation-id generation-id
    :consumer-request-id consumer-request-id
    :observations
    (e-context-lifetime--segment-observations segments observation-delivery)))
+
+(defun e-context-lifetime--curation-estimator-ratio (&optional bytes-per-token)
+  "Return the effective curation estimator ratio.
+
+BYTES-PER-TOKEN overrides the configured ratio.
+
+Load the budget owner only when presentation is requested.  This keeps the
+existing `e-session' to `e-context-lifetime' load direction acyclic while
+sharing the established invalid-ratio fallback."
+  (require 'e-context-budget)
+  (let ((ratio (or bytes-per-token
+                   e-context-budget-estimate-bytes-per-token)))
+    (if (and (numberp ratio) (> ratio 0))
+        ratio
+      4.0)))
+
+(defun e-context-lifetime--curation-estimate (value bytes-per-token)
+  "Return the established approximate token estimate for source VALUE.
+BYTES-PER-TOKEN supplies the ratio."
+  (require 'e-context-budget)
+  (e-context-budget-value-token-estimate value bytes-per-token))
+
+(defun e-context-lifetime-curation-revision-identity
+    (&optional bytes-per-token)
+  "Return stable identity inputs for curation presentation and schema.
+
+BYTES-PER-TOKEN overrides the configured estimator ratio.
+
+Per-frame labels and estimates are intentionally absent.  The effective
+estimator ratio and the stable presentation/schema revisions are the inputs
+that an outer anchor or cache identity can fence later."
+  (list :presentation-revision
+        e-context-lifetime-curation-presentation-revision
+        :schema-revision e-context-lifetime-curation-schema-revision
+        :record-version e-context-lifetime-curation-record-version
+        :estimate-bytes-per-token
+        (e-context-lifetime--curation-estimator-ratio bytes-per-token)
+        :max-sources e-context-lifetime-curation-max-sources
+        :max-record-bytes e-context-lifetime-curation-max-record-bytes))
+
+(defun e-context-lifetime--curation-raw-items (value)
+  "Return runtime semantic items in VALUE's canonical sequence order.
+
+Do not canonicalize VALUE before this split: a tool-result item can contain
+provider replay metadata and backing objects that must be discarded before the
+semantic content is canonicalized."
+  (e-context-lifetime--segment-source-items value))
+
+(defun e-context-lifetime--curation-source-descriptors
+    (frame bytes-per-token)
+  "Return trusted, labeled source descriptors for live FRAME.
+
+BYTES-PER-TOKEN supplies the estimate ratio."
+  (unless (e-context-lifetime-frame-p frame)
+    (signal 'wrong-type-argument
+            (list 'e-context-lifetime-frame-p frame)))
+  (when (e-context-lifetime-frame-consumed-p frame)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation :frame-not-live
+                  (e-context-lifetime-frame-id frame))))
+  (let ((ratio (e-context-lifetime--curation-estimator-ratio
+                bytes-per-token))
+        (label 0)
+        result)
+    (dolist (observation (e-context-lifetime-frame-observations frame)
+                         (nreverse result))
+      (let ((kind (plist-get observation :kind))
+            (observation-id (plist-get observation :observation-id))
+            (source-entry-ref (plist-get observation :source-entry-ref))
+            (source-fingerprint (plist-get observation :source-fingerprint))
+            (items (e-context-lifetime--curation-raw-items
+                    (plist-get observation :body))))
+        (unless (= (length items) 1)
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-source :ambiguous-observation
+                        observation-id (length items))))
+        (let* ((value
+                (e-context-lifetime--detached-canonical
+                          (e-context-lifetime--curation-source-value
+                           kind (car items))))
+               (source-label (setq label (1+ label)))
+               (estimated-tokens
+                (e-context-lifetime--curation-estimate value ratio)))
+          (push
+           (list :label source-label
+                 :value value
+                 :estimated-tokens estimated-tokens
+                 :marker (format "[%d, ~%d tokens]"
+                                 source-label estimated-tokens)
+                 :kind kind
+                 :source-observation-id
+                 (e-context-lifetime--detached-copy observation-id)
+                 :source-entry-ref
+                 (e-context-lifetime--detached-copy source-entry-ref)
+                 :source-fingerprint
+                 (e-context-lifetime--detached-copy source-fingerprint))
+           result))))))
+
+(defun e-context-lifetime-frame-curation-sources
+    (frame &optional bytes-per-token)
+  "Return labeled trusted curation sources from still-live FRAME.
+
+BYTES-PER-TOKEN overrides the configured estimate ratio.
+
+The returned descriptors retain core-derived provenance for preparation.  Use
+`e-context-lifetime-frame-curation-presentation' for the model-facing subset
+without internal identities."
+  (e-context-lifetime--curation-source-descriptors frame bytes-per-token))
+
+(defun e-context-lifetime-curation-source-presentation (source)
+  "Return SOURCE's detached model-facing presentation subset.
+
+Only the local label, exact semantic value, and informational size marker are
+returned.  Frame and provenance identities remain in the trusted descriptor,
+never in this presentation shape."
+  (unless (and (e-context-lifetime--keyword-plist-p source)
+               (plist-member source :label)
+               (plist-member source :value)
+               (plist-member source :estimated-tokens)
+               (plist-member source :marker))
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-source :presentation source)))
+  (list :label (plist-get source :label)
+        :value (e-context-lifetime--detached-copy
+                (plist-get source :value))
+        :estimated-tokens (plist-get source :estimated-tokens)
+        :marker (copy-sequence (plist-get source :marker))))
+
+(defun e-context-lifetime-frame-curation-presentation
+    (frame &optional bytes-per-token)
+  "Return model-facing labeled source presentation for live FRAME.
+BYTES-PER-TOKEN overrides the configured estimate ratio."
+  (mapcar #'e-context-lifetime-curation-source-presentation
+          (e-context-lifetime-frame-curation-sources
+           frame bytes-per-token)))
+
+(defun e-context-lifetime--curation-sequence (value kind)
+  "Return VALUE as a strict list-shaped curation sequence of KIND."
+  (cond
+   ((null value) nil)
+   ((vectorp value) (append value nil))
+   ((and (proper-list-p value)
+         (not (e-context-lifetime--keyword-plist-p value)))
+    value)
+   (t
+    (signal 'e-context-lifetime-invalid-record
+            (list kind :not-array value)))))
+
+(defun e-context-lifetime--curation-positive-label (value kind)
+  "Validate one strict positive integer curation label VALUE for KIND."
+  (unless (and (integerp value) (> value 0))
+    (signal 'e-context-lifetime-invalid-record
+            (list kind :positive-integer-label value)))
+  value)
+
+(defun e-context-lifetime--curation-labels
+    (value kind &optional require-nonempty)
+  "Return strict positive integer labels from VALUE for KIND.
+REQUIRE-NONEMPTY rejects an empty sequence when non-nil."
+  (let ((items (e-context-lifetime--curation-sequence value kind)))
+    (when (and require-nonempty (null items))
+      (signal 'e-context-lifetime-invalid-record
+              (list kind :empty value)))
+    (mapcar (lambda (item)
+              (e-context-lifetime--curation-positive-label item kind))
+            items)))
+
+(defun e-context-lifetime-normalize-curation-arguments (arguments)
+  "Normalize strict model-facing context-curate ARGUMENTS.
+
+The model-facing shape has only optional `:keep' and `:summaries' keys.  The
+normal form uses empty lists for omitted keys and carries no frame or provider
+identity.  Core binds labels and derives provenance only during preparation."
+  (unless (e-context-lifetime--keyword-plist-p arguments)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-arguments :not-keyword-plist arguments)))
+  (let ((keys nil)
+        (tail arguments))
+    (while tail
+      (let ((key (pop tail)))
+        (pop tail)
+        (when (member key keys)
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-effect :duplicate-key key)))
+        (unless (memq key '(:keep :summaries))
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-effect :unknown-key key)))
+        (push key keys))))
+  (let* ((keep (e-context-lifetime--curation-labels
+                (if (plist-member arguments :keep)
+                    (plist-get arguments :keep)
+                  nil)
+                'curation-keep))
+         (raw-summaries (e-context-lifetime--curation-sequence
+                         (if (plist-member arguments :summaries)
+                             (plist-get arguments :summaries)
+                           nil)
+                         'curation-summaries))
+         summaries
+         seen)
+    (dolist (label keep)
+      (when (member label seen)
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation :duplicate-label label)))
+      (push label seen))
+    (dolist (summary raw-summaries)
+      (e-context-lifetime--validate-exact-plist
+       summary '(:sources :text) 'curation-summary)
+      (let ((sources
+             (e-context-lifetime--curation-labels
+              (plist-get summary :sources) 'curation-summary-sources t))
+            (text (plist-get summary :text)))
+        (unless (and (stringp text) (not (string-empty-p text)))
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-summary :non-empty-text text)))
+        (dolist (label sources)
+          (when (member label seen)
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'curation :duplicate-label label)))
+          (push label seen))
+        (push (list :sources sources
+                    :text (copy-sequence text))
+              summaries)))
+    (unless seen
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation :no-disposition)))
+    (when (> (length seen) e-context-lifetime-curation-max-sources)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation :source-count (length seen))))
+    (list :keep keep :summaries (nreverse summaries))))
+
+(defun e-context-lifetime--curation-source-for-label (sources label)
+  "Return trusted SOURCE from SOURCES matching positive local LABEL."
+  (let ((source (nth (1- label) sources)))
+    (unless (and source (= (plist-get source :label) label))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation :unknown-label label)))
+    source))
+
+(defun e-context-lifetime--curation-item-provenance (sources)
+  "Return core-derived provenance fields for SOURCE descriptors in SOURCES."
+  (list :source-observation-ids
+        (mapcar (lambda (source)
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-observation-id)))
+                sources)
+        :source-refs
+        (mapcar (lambda (source)
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-entry-ref)))
+                sources)
+        :source-fingerprints
+        (mapcar (lambda (source)
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-fingerprint)))
+                sources)))
+
+(defun e-context-lifetime--curation-entry-id
+    (frame normalized response-entry-id)
+  "Return deterministic prepared curation ENTRY ID.
+FRAME, NORMALIZED, and RESPONSE-ENTRY-ID supply its identity inputs."
+  (format "curation:%s"
+          (substring
+           (secure-hash
+            'sha256
+            (prin1-to-string
+             (list (e-context-lifetime-frame-id frame)
+                   (e-context-lifetime-frame-generation-id frame)
+                   (e-context-lifetime-frame-consumer-request-id frame)
+                   response-entry-id normalized)))
+           0 32)))
+
+(defun e-context-lifetime--curation-record
+    (frame normalized response-entry-id sources)
+  "Build a version-3 prepared curation record before byte validation.
+FRAME and SOURCES are bound using NORMALIZED and RESPONSE-ENTRY-ID."
+  (let (items)
+    ;; Exact items retain keep argument order.
+    (dolist (label (plist-get normalized :keep))
+      (let* ((source (e-context-lifetime--curation-source-for-label
+                      sources label))
+             (provenance
+              (e-context-lifetime--curation-item-provenance (list source))))
+        (push
+         (append (list :kind 'exact
+                       :value (e-context-lifetime--detached-copy
+                               (plist-get source :value)))
+                 provenance)
+         items)))
+    (setq items (nreverse items))
+    ;; Summary items retain summary submission order and source order.
+    (dolist (summary (plist-get normalized :summaries))
+      (let* ((summary-sources
+              (mapcar (lambda (label)
+                        (e-context-lifetime--curation-source-for-label
+                         sources label))
+                      (plist-get summary :sources)))
+             (provenance
+              (e-context-lifetime--curation-item-provenance summary-sources)))
+        (setq items
+              (append items
+                      (list
+                       (append
+                        (list :kind 'summary
+                              :text (copy-sequence
+                                     (plist-get summary :text)))
+                        provenance))))))
+    (list :record-version e-context-lifetime-curation-record-version
+          :type 'context-promotion
+          :id (e-context-lifetime--curation-entry-id
+               frame normalized response-entry-id)
+          :frame-id (e-context-lifetime--detached-copy
+                     (e-context-lifetime-frame-id frame))
+          :generation-id (e-context-lifetime--detached-copy
+                          (e-context-lifetime-frame-generation-id frame))
+          :consumer-request-id
+          (e-context-lifetime--detached-copy
+           (e-context-lifetime-frame-consumer-request-id frame))
+          :response-entry-id (e-context-lifetime--detached-copy
+                              response-entry-id)
+          :items items)))
+
+(defun e-context-lifetime-prepare-curation
+    (frame arguments response-entry-id &optional bytes-per-token)
+  "Prepare strict curation ARGUMENTS against live FRAME.
+
+RESPONSE-ENTRY-ID is the runtime response binding.  The returned record is a
+pure version-3 `context-promotion' shape ready for a later session codec.  No
+frame/session mutation occurs here; exact values and provenance are detached
+before the complete canonical record is measured against the 8,192-byte bound."
+  (unless (e-context-lifetime-frame-p frame)
+    (signal 'wrong-type-argument
+            (list 'e-context-lifetime-frame-p frame)))
+  (when (e-context-lifetime-frame-consumed-p frame)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation :frame-not-live
+                  (e-context-lifetime-frame-id frame))))
+  (let* ((response-entry-id
+          (e-context-lifetime--require-id response-entry-id
+                                           'response-entry))
+         (normalized
+          (e-context-lifetime-normalize-curation-arguments arguments))
+         (sources
+          (e-context-lifetime-frame-curation-sources
+           frame bytes-per-token))
+         (record
+          (e-context-lifetime--curation-record
+           frame normalized response-entry-id sources))
+         (bytes (e-context-lifetime--bytes record)))
+    (when (> bytes e-context-lifetime-curation-max-record-bytes)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation :bytes bytes)))
+    record))
 
 (defun e-context-lifetime--frame-retain-provenance
     (frame response-entry-id promotion-ids)

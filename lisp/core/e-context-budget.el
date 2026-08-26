@@ -54,6 +54,21 @@
   :type 'number
   :group 'e-context-budget)
 
+(defun e-context-budget-value-token-estimate
+    (value &optional bytes-per-token)
+  "Return approximate token count for canonical model-facing VALUE.
+BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'.
+Invalid or non-positive ratios use the established 4.0 fallback.  VALUE is
+already the semantic value being estimated; callers that add presentation
+markers must invoke this helper before doing so."
+  (let* ((bytes (string-bytes (prin1-to-string value)))
+         (per-token (or bytes-per-token
+                        e-context-budget-estimate-bytes-per-token))
+         (per-token (if (and (numberp per-token) (> per-token 0))
+                        per-token
+                      4.0)))
+    (ceiling (/ bytes (float per-token)))))
+
 (defun e-context-budget-options-effort (options)
   "Return the reasoning-effort recorded in turn OPTIONS, or nil.
 OpenAI-style harnesses store it under `:reasoning-effort'; the native Anthropic
@@ -78,13 +93,12 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
          (model-facing-context
           (list :messages (plist-get context :messages)
                 :tools (plist-get options :tools)))
-         (bytes (string-bytes (prin1-to-string model-facing-context)))
          (per-token (or bytes-per-token
                         e-context-budget-estimate-bytes-per-token))
          (per-token (if (and (numberp per-token) (> per-token 0))
                         per-token
                       4.0)))
-    (ceiling (/ bytes (float per-token)))))
+    (e-context-budget-value-token-estimate model-facing-context per-token)))
 
 (defun e-context-budget--token-usage-input-tokens (usage)
   "Return input token count from provider-neutral USAGE."

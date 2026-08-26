@@ -33,6 +33,23 @@
                :body (list :role "user"
                            :content (or content "OBSERVATION-ONE"))))))
 
+(defun e-context-lifetime-test--multi-source-frame (count)
+  "Return a live frame with COUNT independently presented sources."
+  (e-context-lifetime-frame-create
+   :id "multi-source-frame"
+   :generation-id "generation-1"
+   :consumer-request-id "consumer-1"
+   :observations
+   (cl-loop for index from 1 to count
+            collect (list
+                     :observation-id (format "observation-%d" index)
+                     :kind "current-state"
+                     :source-entry-ref (format "entry-%d" index)
+                     :source-fingerprint (format "fingerprint-%d" index)
+                     :effective-delivery "inherited"
+                     :body (list (list :role "user"
+                                       :content (format "source-%d" index)))))))
+
 (ert-deftest e-context-lifetime-test-shadow-projection-forgets-consumed-frame ()
   "Consumed observation bytes disappear from the next semantic projection."
   (let* ((generation (e-context-lifetime-test--generation))
@@ -454,6 +471,362 @@
                  '(:metadata (:enabled :json-false))))
          (metadata (plist-get value :metadata)))
     (should (eq (plist-get metadata :enabled) :json-false))))
+
+(ert-deftest e-context-lifetime-test-curation-sources-split-and-strip-envelopes ()
+  "Curation sources are ordered semantic values with trusted provenance."
+  (let* ((mutable (copy-sequence "first source"))
+         (backing-object (make-hash-table :test #'equal))
+         (frame
+          (let ((created
+                 (e-context-lifetime-frame-create-from-segments
+                  :id "curation-frame"
+                  :generation-id "generation-1"
+                  :consumer-request-id "consumer-1"
+                  :segments
+                  (list
+                   (list :kind "current-state"
+                         :id "current-source"
+                         :messages (list (list :role "user" :content mutable)
+                                         (list :role "assistant"
+                                               :content '(:nested "second source"))))
+                   (list :kind "tool-result"
+                         :id "tool-source"
+                         :messages
+                         (list
+                          (list :tool-call '(:id "call-1")
+                                :tool-result
+                                (list :tool-call-id "call-1"
+                                      :content "bounded result"
+                                      :metadata backing-object)
+                                :message-id "message-1")
+                          (list :role "tool"
+                                :content
+                                (list :tool-call-id "call-2"
+                                      :name "lookup"
+                                      :status 'ok
+                                      :content "message result"
+                                      :metadata backing-object))))))))
+            (aset mutable 0 ?X)
+            created))
+         (observations (e-context-lifetime-frame-observations frame))
+         (observation-ids
+          (mapcar (lambda (observation)
+                    (plist-get observation :observation-id))
+                  observations))
+         (fingerprints
+          (mapcar (lambda (observation)
+                    (plist-get observation :source-fingerprint))
+                  observations))
+         (sources (e-context-lifetime-frame-curation-sources frame 1.0))
+         (sources-again
+          (e-context-lifetime-frame-curation-sources frame 1.0))
+         (presentation
+          (e-context-lifetime-frame-curation-presentation frame 1.0))
+         (record
+          (e-context-lifetime-prepare-curation
+           frame '(:keep (1)) "response-curation" 1.0)))
+    (should (= (length observation-ids)
+               (length (delete-dups (copy-sequence observation-ids)))))
+    (should (= (length fingerprints)
+               (length (delete-dups (copy-sequence fingerprints)))))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :source-observation-id))
+                          sources)
+                   observation-ids))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :source-fingerprint))
+                          sources)
+                   fingerprints))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :source-observation-id))
+                          sources-again)
+                   observation-ids))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :source-fingerprint))
+                          sources-again)
+                   fingerprints))
+    (should (equal (mapcar (lambda (source) (plist-get source :label)) sources)
+                   '(1 2 3 4)))
+    (should (equal (mapcar (lambda (source) (plist-get source :value)) sources)
+                   (list "first source" '(:nested "second source")
+                         "bounded result" "message result")))
+    (should (equal (plist-get (nth 2 sources) :source-observation-id)
+                   (nth 2 observation-ids)))
+    (should (equal (plist-get (nth 0 sources) :marker)
+                   (format "[1, ~%d tokens]"
+                           (plist-get (nth 0 sources) :estimated-tokens))))
+    (should-not (string-match-p
+                 "call-1\|message-1\|metadata"
+                 (prin1-to-string (plist-get (nth 2 sources) :value))))
+    (should (equal (plist-get (nth 3 sources) :value) "message result"))
+    (should (equal (mapcar (lambda (source) (plist-get source :marker))
+                           presentation)
+                   (mapcar (lambda (source)
+                             (format "[%d, ~%d tokens]"
+                                     (plist-get source :label)
+                                     (plist-get source :estimated-tokens)))
+                           sources)))
+    (dolist (source presentation)
+      (should-not (plist-member source :source-observation-id))
+      (should-not (plist-member source :source-entry-ref))
+      (should-not (plist-member source :source-fingerprint)))
+    (should (equal (plist-get (car sources) :value) "first source"))
+    (should (equal (plist-get (car (plist-get record :items)) :value)
+                   "first source"))))
+
+(ert-deftest e-context-lifetime-test-curation-rejects-ambiguous-manual-observation ()
+  "Curation rejects a hand-built observation containing multiple sources."
+  (let ((frame
+         (e-context-lifetime-frame-create
+          :id "ambiguous-curation-frame"
+          :generation-id "generation-1"
+          :consumer-request-id "consumer-1"
+          :observations
+          '((:observation-id "ambiguous-observation"
+             :kind "current-state"
+             :source-entry-ref "entry-1"
+             :source-fingerprint "fingerprint-1"
+             :effective-delivery "inherited"
+             :body ((:role "user" :content "first")
+                    (:role "assistant" :content "second")))))))
+    (should-error
+     (e-context-lifetime-frame-curation-sources frame)
+     :type 'e-context-lifetime-invalid-record)
+    (should-error
+     (e-context-lifetime-prepare-curation
+      frame '(:keep (1)) "response-1")
+     :type 'e-context-lifetime-invalid-record)))
+
+(ert-deftest e-context-lifetime-test-segment-fingerprint-uses-semantic-tool-value ()
+  "Tool provenance metadata does not affect semantic source fingerprints."
+  (cl-labels
+      ((make-frame (call-id message-id backing content)
+         (e-context-lifetime-frame-create-from-segments
+          :id "semantic-fingerprint-frame"
+          :generation-id "generation-1"
+          :consumer-request-id "consumer-1"
+          :segments
+          (list
+           (list :kind "tool-result"
+                 :id "tool-source"
+                 :messages
+                 (list
+                  (list :tool-call (list :id call-id)
+                        :tool-result
+                        (list :tool-call-id call-id
+                              :content content
+                              :metadata backing)
+                        :message-id message-id)))))))
+    (let* ((first-frame
+            (make-frame "call-1" "message-1"
+                        (let ((table (make-hash-table :test #'equal)))
+                          (puthash "trace" "first" table)
+                          table)
+                        "same semantic value"))
+           (second-frame
+            (make-frame "call-2" "message-2"
+                        (let ((table (make-hash-table :test #'equal)))
+                          (puthash "trace" "second" table)
+                          table)
+                        "same semantic value"))
+           (different-frame
+            (make-frame "call-3" "message-3"
+                        (make-hash-table :test #'equal)
+                        "different semantic value"))
+           (first-source
+            (car (e-context-lifetime-frame-curation-sources
+                  first-frame 1.0)))
+           (second-source
+            (car (e-context-lifetime-frame-curation-sources
+                  second-frame 1.0)))
+           (different-source
+            (car (e-context-lifetime-frame-curation-sources
+                  different-frame 1.0))))
+      (should (equal (plist-get first-source :value)
+                     "same semantic value"))
+      (should (equal (plist-get first-source :value)
+                     (plist-get second-source :value)))
+      (should (equal (plist-get first-source :source-entry-ref)
+                     (plist-get second-source :source-entry-ref)))
+      (should (equal (plist-get first-source :source-observation-id)
+                     (plist-get second-source :source-observation-id)))
+      (should (= (plist-get first-source :label)
+                 (plist-get second-source :label)
+                 1))
+      (should (equal (plist-get first-source :source-fingerprint)
+                     (plist-get second-source :source-fingerprint)))
+      (should-not (equal (plist-get first-source :value)
+                         (plist-get different-source :value)))
+      (should-not (equal (plist-get first-source :source-fingerprint)
+                         (plist-get different-source :source-fingerprint))))))
+
+(ert-deftest e-context-lifetime-test-curation-estimate-uses-upward-fallback ()
+  "Source estimates use the existing ratio and its 4.0 fallback."
+  (let* ((frame (e-context-lifetime-test--frame
+                 nil "estimate-frame" "estimate-observation" "é"))
+         (bytes (string-bytes (prin1-to-string "é")))
+         (normal (car (e-context-lifetime-frame-curation-sources frame 2.0)))
+         (fallback (car (e-context-lifetime-frame-curation-sources frame 0))))
+    (should (= (plist-get normal :estimated-tokens)
+               (ceiling (/ bytes 2.0))))
+    (should (= (plist-get fallback :estimated-tokens)
+               (ceiling (/ bytes 4.0))))))
+
+(ert-deftest e-context-lifetime-test-curation-arguments-are-strict ()
+  "Curation arguments accept only optional keep and summary dispositions."
+  (let ((valid '(:keep (2)
+                 :summaries ((:sources (1 3) :text "combined fact")))))
+    (should (equal (e-context-lifetime-normalize-curation-arguments valid)
+                   valid))
+    (should (equal
+             (e-context-lifetime-normalize-curation-arguments
+              '(:summaries [(:sources [1] :text "one")] :keep nil))
+             '(:keep nil :summaries ((:sources (1) :text "one")))))
+    (dolist (bad
+             (list
+              '(:keep ("1"))
+              '(:keep 1)
+              '(:keep (1 1))
+              '(:keep (1) :summaries ((:sources (1) :text "duplicate")))
+              '(:summaries ((:sources nil :text "missing-source")))
+              '(:summaries ((:sources (1) :text "")))
+              '(:summaries ((:sources (1) :text "ok" :extra t)))
+              '(:unknown (1))
+              '()))
+      (should-error
+       (e-context-lifetime-normalize-curation-arguments bad)
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-curation-prepares-v3-record-with-provenance ()
+  "Preparation copies selected values and derives ordered provenance only."
+  (let* ((mutable (copy-sequence "exact-value"))
+         (frame
+          (e-context-lifetime-frame-create
+           :id "prepare-frame"
+           :generation-id "generation-1"
+           :consumer-request-id "consumer-1"
+           :observations
+           (cl-loop for index from 1 to 3
+                    collect (list
+                             :observation-id (format "obs-%d" index)
+                             :kind "current-state"
+                             :source-entry-ref (format "ref-%d" index)
+                             :source-fingerprint (format "fp-%d" index)
+                             :effective-delivery "inherited"
+                             :body
+                             (list (list :role "user"
+                                         :content
+                                         (if (= index 1)
+                                             mutable
+                                           (format "exact-%d" index))))))))
+         (record
+          (e-context-lifetime-prepare-curation
+           frame
+           '(:keep (1)
+             :summaries ((:sources (2 3) :text "durable replacement")))
+           "response-1"
+           1.0))
+         (items (plist-get record :items)))
+    (should (= (plist-get record :record-version) 3))
+    (should (eq (plist-get record :type) 'context-promotion))
+    (should (equal (mapcar (lambda (item) (plist-get item :kind)) items)
+                   '(exact summary)))
+    (should (equal (plist-get (car items) :value) "exact-value"))
+    (should (equal (plist-get (cadr items) :text) "durable replacement"))
+    (should (equal (plist-get (cadr items) :source-observation-ids)
+                   '("obs-2" "obs-3")))
+    (should (equal (plist-get (cadr items) :source-refs)
+                   '("ref-2" "ref-3")))
+    (should (equal (plist-get (car items) :source-fingerprints)
+                   '("fp-1")))
+    (should-not (plist-member (car items) :label))
+    (should-not (plist-member (car items) :estimated-tokens))
+    (should-not (plist-member (car items) :body))
+    (should-not (string-match-p "call-\|message-\|backing"
+                                (prin1-to-string record)))
+    (should-not (e-context-lifetime-frame-consumed-p frame))
+    (should (e-context-lifetime-frame-observations frame))
+    (aset mutable 0 ?X)
+    (should (equal (plist-get (cadr items) :source-observation-ids)
+                   '("obs-2" "obs-3")))
+    (should (equal (plist-get (car items) :value) "exact-value"))))
+
+(ert-deftest e-context-lifetime-test-curation-requires-live-frame-and-known-labels ()
+  "Prepared curation cannot use consumed frames or labels outside the frame."
+  (let ((frame (e-context-lifetime-test--frame)))
+    (should-error
+     (e-context-lifetime-prepare-curation
+      frame '(:keep (2)) "response-1")
+     :type 'e-context-lifetime-invalid-record)
+    (let ((consumed
+           (e-context-lifetime-frame-complete-for-consumer
+            frame "consumer-1" "response-1")))
+      (should-error
+       (e-context-lifetime-prepare-curation
+        consumed '(:keep (1)) "response-2")
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-curation-source-and-byte-bounds ()
+  "Curation accepts exact 16/8192 limits and rejects one-over values."
+  (let ((sixteen (e-context-lifetime-test--multi-source-frame 16))
+        (seventeen (e-context-lifetime-test--multi-source-frame 17)))
+    (should (= (length (plist-get
+                        (e-context-lifetime-prepare-curation
+                         sixteen
+                         (list :keep (number-sequence 1 16))
+                         "response-16")
+                        :items))
+               16))
+    (should-error
+     (e-context-lifetime-prepare-curation
+      seventeen (list :keep (number-sequence 1 17)) "response-17")
+     :type 'e-context-lifetime-invalid-record))
+  (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
+         (sources (e-context-lifetime-frame-curation-sources frame 1.0))
+         (length-at-limit
+          (cl-loop for length from 1 to 10000
+                   for normalized =
+                   (list :keep nil
+                         :summaries
+                         (list (list :sources '(1)
+                                     :text (make-string length ?x))))
+                   for candidate =
+                   (e-context-lifetime--curation-record
+                    frame normalized "response-bytes" sources)
+                   when (= (e-context-lifetime--bytes candidate) 8192)
+                   return length)))
+    (should length-at-limit)
+    (let ((effect (list :summaries
+                        (list (list :sources '(1)
+                                    :text (make-string length-at-limit ?x)))))
+          (too-large (list :summaries
+                           (list (list :sources '(1)
+                                       :text
+                                       (make-string (1+ length-at-limit)
+                                                    ?x))))))
+      (should (= (e-context-lifetime--bytes
+                  (e-context-lifetime-prepare-curation
+                   frame effect "response-bytes" 1.0))
+                 8192))
+      (should-error
+       (e-context-lifetime-prepare-curation
+        frame too-large "response-bytes" 1.0)
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-curation-revision-identity-is-stable ()
+  "Revision identity exposes schema, presentation, ratio, and bounds inputs."
+  (let ((first (e-context-lifetime-curation-revision-identity 2.0))
+        (same (e-context-lifetime-curation-revision-identity 2.0))
+        (different (e-context-lifetime-curation-revision-identity 3.0)))
+    (should (equal first same))
+    (should-not (equal first different))
+    (should (equal (plist-get first :schema-revision)
+                   "context-curate-v1"))
+    (should (equal (plist-get first :presentation-revision)
+                   "context-curation-presentation-v1"))
+    (should (= (plist-get first :estimate-bytes-per-token) 2.0))
+    (should (= (plist-get first :max-sources) 16))
+    (should (= (plist-get first :max-record-bytes) 8192))))
 
 (provide 'e-context-lifetime-test)
 
