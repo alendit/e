@@ -4,23 +4,25 @@
 
 * Status
 
-In-review.  This document records limitations observed after Feature 88 and
-its request-local observation-delivery addendum were enabled in the live
-ChatGPT Codex adapter, and the implemented disposition from Addendum 2.  It is
-an evidence handoff for the remaining review and live acceptance work, not a
-Done decision.
+In-review (deterministic-fixed-point; external capability-unconfirmed).  This
+document records the remaining external limitation after Addenda 3 and 4.  The
+repository-controlled implementation is accepted through =2118041f=, but the
+credentialed cache capability is not confirmed, so this is not a Done decision.
 
 * Purpose
 
-Feature 88 successfully separates durable context from one-transition
-observations and exposes request-local replacement of current-state and
-dynamic-context observations.  The live experiments below also exposed two
-limits that dominate ordinary use:
+Feature 88 now separates durable context from consumer-bound ephemeral frames.
+Addendum 3 uses canonical later-request reconstruction and immediate causal
+tool continuation; Addendum 4 adds provider-neutral source presentation,
+model-directed =context-curate=, and version-3 durable curation records while
+retaining read-only version-2 records.  The historical live experiments below
+remain useful background, but their old optimization mechanisms are not current
+acceptance requirements.  The remaining external limitation is:
 
-1. a turn that calls a tool does not leave a durable provider continuation
-   anchor; and
-2. a clean anchor in the ChatGPT Codex profile is useful only while its
-   connection-local WebSocket state remains alive.
+1. the private provider cache and response availability cannot be confirmed
+   without credentials; and
+2. a =store=false= response lineage remains connection-local, so canonical
+   replay is the correctness fallback after a socket or response loss.
 
 The experiments further distinguish provider continuation from provider
 prompt-cache accounting.  An incremental request can send only one new input
@@ -47,6 +49,38 @@ prompt-cache accounting
 response retention
   whether a response ID remains resolvable after connection loss
 #+end_example
+
+* Current implementation and external evidence
+
+The repository-controlled Addendum 3/4 implementation reached a deterministic
+fixed point in this dependency order:
+
+| Commit | Boundary |
+|--------+----------|
+| =159f4be4= | bounded frame source presentation and pure curation preparation |
+| =626919bc= | versioned durable curation codec and session projection |
+| =7bbbe09f= | atomic response commit and =context-curate= carrier |
+| =5983a612= | latest-response continuation state and general socket policy |
+| =77647733= | read-only legacy version-2 durable records |
+| =bec4c0d6= | obsolete promotion carrier/writer and diagnostic cleanup |
+| =2118041f= | bounded retained/replacement cache-evidence runners |
+
+The exact configured run on 2026-08-27 invoked both
+=e-live-e2e-test-chatgpt-canonical-warm-prefix= and
+=e-live-e2e-test-chatgpt-canonical-tool-heavy= with the exact built-in ChatGPT
+Codex profile, base URL =https://chatgpt.com/backend-api/codex=, Responses
+WebSocket transport, =store=false=, model =gpt-5.6-sol=, and a 120-second
+scenario timeout.  Both selectors reached the identity gate, found
+=/Users/dvorona/.codex/auth.json= unreadable/absent, emitted one
+identity-complete bounded record with an empty material request shape, no
+requests or token usage, semantic/cache results =unavailable=, and overall
+result =configuration-unavailable=, then skipped.  The records report
+=bec4c0d6= because the run preceded the =2118041f= commit; they are not current
+or reusable external acceptance evidence.
+
+Deterministic semantics remain accepted independently of this unavailable
+external run.  The cache specification and runners are accepted, while
+=F88A3-CACHE= remains =capability-unconfirmed=.
 
 * Systems and sessions inspected
 
@@ -206,7 +240,35 @@ Later remediation must preserve these working properties:
 9. The canvas avoids the large read/discovery tool loop observed without an
    attached document.
 
-* Limitation: tool descendants cannot advance the cross-turn anchor
+* Current tool-continuation boundary
+
+Tool-producing responses are used only for the matching function-call-output
+follow-up.  The inherited =tool-result= frame keeps the call, replay, and
+result bundle available for that causal request; the response ID and its
+descendant are not durable semantic anchors for the following ordinary turn.
+
+The accepted sequence is:
+
+#+begin_example
+ordinary request
+  → tool call and matching result
+  → immediate causal continuation
+  → curation, if requested, commits while the frame is live
+  → next ordinary request is canonical durable state plus new frontier
+#+end_example
+
+That ordinary request excludes the raw tool bundle, response lineage, replay
+metadata, and consumed source values.  Generic provider-neutral anchor
+infrastructure remains available to unaffected profiles, but this package no
+longer retains a historical ChatGPT response graph or older-anchor ledger.
+When no compatible remote response exists, one bounded canonical full replay is
+the correctness fallback.  Deterministic coverage is provided by
+=e-provider-continuation-integration-test-canonical-observe-curate-forget=
+and =e-context-lifetime-e2e-test-tool-observe-curate-forget=.  The named live
+tool-heavy selector remains unavailable locally because credentials are
+missing; that is an external-evidence limitation.
+
+* Historical experiment: tool descendants cannot advance the cross-turn anchor
 
 The dominant limitation is not an exceptional lifecycle.  Useful agent turns
 normally call tools.
@@ -247,7 +309,7 @@ The six-turn live experiment did not exercise that path because its tool-bearing
 For a tool-heavy harness, reaching the first clean anchor can still be uncommon.
 The live sixth-turn success required deliberately constructed tool-free turns three, four, and five before the incremental turn.
 
-** Remediation direction
+** Historical remediation direction
 
 Keep =tool-result= ephemeral and =inherited=.
 A function-call output is causal provider state required by its matching follow-up, and the Responses continuation interface does not provide a request-local replacement channel for that bundle.
@@ -276,7 +338,7 @@ An existing clean anchor can bypass the contaminated descendant if the real endp
 A session whose first useful turn calls a tool still has no clean response to branch from and needs full reconstruction until a clean anchor is created.
 Do not add a hidden model call merely to seed or rebase an anchor unless measurements show that this bootstrap case justifies the extra latency, token cost, and semantic risk.
 
-** Priority assessment
+** Historical priority assessment
 
 High-priority acceptance gap, but not release-blocking.
 The provider-neutral recovery path already exists, so do not begin by changing the lifetime classification.
@@ -285,7 +347,24 @@ If it succeeds, the remaining ordinary costs are the no-clean-anchor bootstrap c
 If it fails, retain correct full reconstruction while evaluating an explicit rebase mechanism.
 Escalate rebase work only if measured replay latency, cost, or context pressure justifies its extra provider request and semantic risk.
 
-* Limitation: the ChatGPT continuation is connection-local
+* Current ChatGPT continuation limitation
+
+The built-in ChatGPT Codex profile uses Responses WebSocket mode with
+=store=false=. Its latest response ID is retained only for the matching
+immediate continuation on that connection.  Connection close, transport
+failure, cancellation, or an unavailable response clears the usable lineage;
+the adapter then performs at most one canonical full retry.  General
+configurable socket idle policy remains, but the built-in profile has no
+private 600-second override and no response-ID ledger.
+
+The durable local session record does not make this provider lineage durable.
+The external endpoint and cache behavior remain unconfirmed: the exact
+2026-08-27 configured runs could not read =/Users/dvorona/.codex/auth.json=,
+so both named selectors emitted bounded =configuration-unavailable= records
+without requests or token usage.  The deterministic tests prove the fallback
+and ownership state machine, not private-provider retention.
+
+* Historical experiment: the ChatGPT continuation is connection-local
 
 The ChatGPT Codex profile uses Responses WebSocket mode with =store=false=.
 Its useful response lineage is held in the connection-local provider cache.
@@ -296,13 +375,12 @@ adapter policy:
 e-openai-websocket-connection-idle-seconds = 300
 #+end_example
 
-The current implementation keeps that global value as the fallback, but the
-exact built-in ChatGPT Codex profile now resolves an adapter-private
-=:websocket-idle-close-seconds= value of 600 through the request context.
-Profiles without that field retain the global behavior, including =nil= for no
-idle timer.  The adapter also owns a bounded connection-local ledger of up to
-256 completed response IDs plus 256 evicted IDs; neither collection is
-persisted or exposed through the harness.
+The implementation measured by this historical experiment kept that global
+value as the fallback and gave the exact built-in ChatGPT Codex profile an
+adapter-private 600-second value.  It also owned bounded completed-response and
+eviction ledgers.  Addendum 3 subsequently removed that profile override and
+both ledgers; the current implementation uses the general socket policy and
+retains only the latest response needed for an immediate causal follow-up.
 
 After five idle minutes, the adapter closes the socket.  Turns four and five
 show that a locally persisted anchor can still be selected after that close,
@@ -331,9 +409,9 @@ clean tool-free anchor
 Network failure, backend replacement, Emacs restart, or the provider's own connection limit can end that window earlier or later than the local idle timer.
 A durable local anchor record does not make the remote response state durable.
 
-** Implemented disposition and residual evidence
+** Historical implemented disposition and residual evidence
 
-Addendum 2 implements older-clean-anchor branching without changing Feature 88
+At the time, Addendum 2 implemented older-clean-anchor branching without changing Feature 88
 semantic lifetime.  =e-openai-codex--websocket-session-record-response= admits
 only completed terminal responses; compatibility uses the adapter ledger and
 recorded request properties; close, transport failure, cancellation, and timer
@@ -390,7 +468,11 @@ values, and success-path metrics line remain unavailable.  No wall-clock
 advances fake time to 301 and 600; it is the acceptance evidence for the
 retention boundary.
 
-** Remediation direction
+** Historical remediation direction
+
+This direction was superseded by Addendum 3's canonical reconstruction and
+general socket policy.  It is retained only to explain the experiment that led
+to that correction.
 
 Retain the exact built-in ChatGPT Codex WebSocket beyond the historical
 five-minute idle window using its implemented 600-second profile policy.
@@ -494,7 +576,28 @@ for ChatGPT Codex only while its connection-local response exists.  They do not
 establish substitutable continuation durability across the ChatGPT Codex and
 canonical OpenAI profiles.
 
-* Limitation: existing acceptance covered only the warm path
+* Current external acceptance limitation
+
+Repository-side semantics, compatibility, cleanup, and bounded evidence
+runners are accepted at the deterministic fixed point recorded above.  The
+remaining capability claim is external: a current credentialed run must
+exercise both retained and deliberately replaced sockets in the canonical
+warm-prefix scenario, and a real tool call, matching immediate continuation,
+=context-curate= commit, and canonical ordinary request in the tool-heavy
+scenario.  Cache results are reported separately from semantic results.
+
+On 2026-08-27 both exact built-in Codex selectors reached their identity gate
+but found the configured auth file unreadable/absent.  Each emitted one
+identity-complete bounded record with the endpoint, WebSocket transport,
+=store=false=, model, revision, timeout, empty request shape, and no request
+or token usage; semantic/cache were =unavailable= and the overall result was
+=configuration-unavailable=.  The records report =bec4c0d6= because the run
+preceded =2118041f=, so they are not reusable current capability evidence.
+Until that command is rerun with credentials and a clean matching revision,
+=F88A3-CACHE= remains capability-unconfirmed and this document remains
+In-review rather than Done.
+
+* Historical acceptance gap: the warm path only
 
 The credentialed addendum acceptance test proved changed instructions and
 =previous_response_id= on one retained native WebSocket.  That test was valid
@@ -515,7 +618,7 @@ creating its first clean durable anchor.  It did not send the following turn
 that would consume that anchor.  Turns four through six supplied that missing
 evidence and exposed the connection-lifetime boundary.
 
-* Remediation handoff requirements
+* Historical remediation handoff requirements
 
 Remediation work should begin from the observed state above.  It must account
 for all of these ordinary paths rather than treating tool use as an edge case.

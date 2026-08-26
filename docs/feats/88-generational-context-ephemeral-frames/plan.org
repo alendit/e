@@ -3,14 +3,22 @@
 
 * Status
 
-Done.
+In-review (deterministic-fixed-point; external capability-unconfirmed).
 
 This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
-semantic context visibility, explicit promotion, and cache-safe continuation
-on normal successful turns.  It does not make external tool follow-up a
+semantic context visibility, model-directed curation, and cache-safe canonical
+continuation on normal successful turns.  It does not make external tool follow-up a
 durable transaction system.  The earlier design mixed model-visible lifetime
 with recovery of interrupted side effects; the latter belongs with the planned
 SQLite persistence and atomic-transition work.
+
+Addenda 3 and 4 are the current implementation authorities for this feature.
+Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
+tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
+plan's model-facing promotion details with =context-curate= and version-3
+records; the persisted =context-promotion= family remains readable as version 2
+only.  The repository-controlled implementation is at deterministic fixed point
+through =2118041f=, while the external cache capability remains unconfirmed.
 
 * Goal
 
@@ -26,7 +34,7 @@ immutable checkpoint C
 The protocol is:
 
 #+begin_example
-observe -> consume -> promote selected information -> forget observation
+observe -> consume -> curate selected information -> forget observation
 #+end_example
 
 Large addressable data remains outside context behind existing resource and
@@ -275,68 +283,57 @@ the harness retains the prior clean anchor or uses stateless reconstruction.
 Adapters contribute only opaque provider IDs and wire encoding; they do not
 decide that a partial bundle is clean.
 
-* Promotion contract
+* Curation contract (Addendum 4 supersedes model-facing promotion)
 
-The durable result is a provider-neutral delta, not a provider summary format.
-Core owns the normalized reserved-effect schema and validation.  An adapter
-only decodes its provider wire item into this shape and encodes the shape when
-needed; syntax on the wire is not a second semantic contract.
+The durable result is a provider-neutral curation delta, not a provider summary
+format.  Core owns its strict normalized schema and validation.  An adapter
+decodes its wire carrier into this shape and returns an opaque acknowledgement;
+wire syntax is not a second semantic contract.
 
 #+begin_example
-(:type context-promote
- :schema-version 1
- :frame-id FRAME-ID
- :source-observation-ids (OBS-ID ...)
- :facts ((:id FACT-ID :value SEMANTIC-VALUE) ...))
+(:type context-curate
+ :arguments (:keep (1)
+              :summaries ((:sources (2 3)
+                            :text "The durable fact from sources 2 and 3."))))
 #+end_example
 
-The normalized value is a canonical JSON-like semantic value.  IDs are
-non-empty, provider-neutral, deterministic within the response, and unique;
-lists preserve declared order; unknown adapter/model-supplied provenance keys
-such as =:source-refs= or =:fingerprint= are rejected as unknown controls.  The
-core limits one effect per complete response, requires 1--16 facts, and limits
-the normalized UTF-8 payload to 8 KiB.  Every source observation must belong to
-the consumed frame.  Core resolves each submitted observation ID against that
-runtime frame and derives the durable v2 source ref/fingerprint: an existing
-session-backed transcript entry ID, or an existing external/context-source
-handle paired with its fingerprint.  The core never manufactures a transcript
-entry; an unresolvable source fails the existing response-error path.  These
-checks run before semantic mutation and are usable both by the normal response
-path and by pure projection tests.
+The model-facing arguments contain only optional =:keep= and =:summaries=.
+Keep labels are positive integers; every summary has non-empty positive integer
+source labels and non-empty text.  Unknown fields, coercion, duplicate
+dispositions, unknown labels, malformed values, multiple effects, or an empty
+disposition fail before mutation.  Core binds labels to the still-live
+consumer-bound frame and derives exact source values and provenance; no model or
+adapter-supplied frame, observation, reference, or fingerprint identity is
+trusted.
+
+The core accepts 1--16 disposed sources and a prepared record of at most 8,192
+canonical UTF-8 bytes.  Exact keep items precede summaries in their submitted
+orders.  New durable records use version 3 of the existing
+=context-promotion= family and contain detached exact/summary content plus
+core-derived provenance; version-2 records remain read-only compatible.  The
+old model-facing =context-promote= carrier and writer are removed.
 
 - User and ordinary assistant messages retain existing durable semantics.
-- Raw tool results, traces, large retrieved excerpts, and replace-current-state
+- Raw tool results, traces, large retrieved excerpts, and current-state
   snapshots are ephemeral by default in new projections.
-- The reserved effect is removed from the ordinary model-facing tool queue; it
-  is never dispatched through the ordinary tool registry.
-- Ordinary tool calls keep the existing streaming dispatch lifecycle.  Response
-  handling accumulates and validates reserved promotion controls in memory;
-  when the provider signals done, valid promotions are committed before the
-  next follow-up projection.  A valid promotion mutates semantic state at most
-  once within that in-memory response handling.  This is not a cross-restart
-  exactly-once guarantee.
-- An invalid reserved effect takes the existing provider-response failure path.
-  Calls already streamed are not rolled back, and no additional calls from the
-  invalid response are dispatched after the invalid control is detected.
-- A promotion stores only the explicitly submitted bounded fact and provenance;
-  the protocol never implicitly inserts source-observation or frame-payload
-  fields.  Explicitly selected verbatim content is durable by choice when it
-  fits the same size limit.  At the session boundary, source observation IDs
-  resolve to an existing transcript-entry reference or an existing
-  external/context-source handle plus fingerprint, together with the
-  consumer-request and generation identities; the durable promotion record
-  contains the explicitly submitted
-  bounded fact value, canonical source refs/fingerprints, frame/generation/
-  consumer/response identities, and no runtime observation body or
-  settlement/retry state.  The next request includes the promotion and omits
-  the consumed observation.
+- The reserved curation carrier is outside the ordinary model-facing tool queue
+  and is never dispatched through the ordinary tool registry.
+- Ordinary tool calls keep their existing streaming lifecycle.  Response
+  handling validates at most one curation effect in memory, prepares it before
+  append, and commits it before any subsequent provider request.  This is not a
+  cross-restart exactly-once guarantee.
+- Invalid curation follows the existing provider-response failure path.  Calls
+  already streamed are not rolled back, and later calls from that response are
+  not dispatched after invalidity is detected.
+- Omitted sources are forgotten.  A successful curation stores only selected
+  exact values or submitted summaries and derived provenance; the next request
+  omits all consumed raw observations, labels, estimates, and transport data.
 - No journal, barrier, outbox, recovery state machine, or automatic summarizer
-  is introduced.  A missing promotion intentionally forgets the observation.
+  is introduced for this normal-turn path.
 
-The core-generated reserved schema revision/content fingerprint participates in
-the tool-schema and anchor compatibility fingerprints.  A schema change
-therefore fences an old anchor rather than silently changing the meaning of a
-cached request.
+The core-generated curation schema/presentation revision participates in tool
+schema and anchor/cache compatibility identities.  A revision change therefore
+fences an old anchor instead of silently changing a cached request's meaning.
 
 * Successful-turn frame protocol
 
@@ -345,14 +342,14 @@ visible to which invocation.  The enabled normal path is:
 
 1. capture a provider-neutral observation identity and source fingerprint;
 2. expose it only at the current request frontier;
-3. accumulate and validate any reserved promotion control while the ordinary
-   response streams, then commit valid promotions when the provider signals
+3. accumulate and validate any reserved curation control while the ordinary
+   response streams, then commit valid curation when the provider signals
    done;
-4. append selected promotions to the durable semantic tail; and
+4. append selected curation items to the durable semantic tail; and
 5. build the next request without the consumed observation.
 
 The =e-harness-turn-context= projection receives core-derived canonical source
-provenance for the source frame and promotion: an existing transcript entry or
+provenance for the source frame and curation: an existing transcript entry or
 an existing external/context-source handle plus fingerprint.  Its in-memory
 state is not a promise that an interrupted tool can be resumed.  A context-only
 rebuild may reuse a frame only when its source fingerprint matches; otherwise
@@ -406,7 +403,7 @@ fields:
  :prefix-cache explicit
  :provider-compaction opaque
  :reasoning-state replayable
- :reserved-effect-carrier context-promote-wire)
+ :reserved-effect-carrier context-curate-wire)
 #+end_src
 
 | Capability | Values | Core consequence |
@@ -416,7 +413,7 @@ fields:
 | =prefix-cache= | =none=, =implicit=, =explicit= | acceleration only |
 | =provider-compaction= | =none=, =opaque= | optional provider checkpoint projection |
 | =reasoning-state= | =none=, =replayable= | ordinary replay treatment |
-| =reserved-effect-carrier= | =none= or =context-promote-wire= | adapter carrier support for the core schema |
+| =reserved-effect-carrier= | =none= or =context-curate-wire= | adapter carrier support for the core schema |
 
 Missing capabilities select stateless reconstruction.  Unknown values are
 configuration errors.  OpenAI alone maps proven replacement for
@@ -426,19 +423,17 @@ for its effective endpoint and transport.  No provider-owned reasoning-state
 capability is supported: only =none= and =replayable= are allowed.  If a
 provider requires an ordinary follow-up replay item, the semantic model gives
 it a local provider-neutral identity and the adapter owns only its wire
-encoding.  Core constructs the normalized =context-promote= schema, limits,
-and revision/content fingerprint.  If an ordinary normalized tool schema can
-carry that effect, the carrier entry is omitted; otherwise
-=context-promote-wire= only advertises that the adapter can encode/decode the
-exact core schema.  It never advertises =max-facts=, =max-bytes=, or alternate
-limits, so there is one semantic authority.
+encoding.  Core constructs the normalized =context-curate= schema, limits,
+and revision/content fingerprint.  The reserved =context-curate-wire= carrier
+only advertises that the adapter can encode/decode the exact core schema.  It
+never advertises alternate limits, so there is one semantic authority.
 
 * Ownership and dependency direction
 
 ** Core context policy
 
 Own =CHECKPOINT + DURABLE + EPHEMERAL= projection, frame visibility,
-promotion limits, and semantic fingerprints.  Never import provider request
+curation limits, and semantic fingerprints.  Never import provider request
 fields or tool transport objects.
 
 ** =e-session=
@@ -451,9 +446,9 @@ recovery.
 ** =e-harness= and =e-loop=
 
 Own normal-turn orchestration, streaming response handling, reserved-effect validation,
-promotion application, and anchor choice.  Keep ordinary tool lifecycle and
+curation application, and anchor choice.  Keep ordinary tool lifecycle and
 follow-up behavior intact.  =e-harness-turn-context= is the projection consumer
-that rebuilds eligible session entries/promotions through core projection.
+that rebuilds eligible session entries/curations through core projection.
 
 ** =e-compaction=
 
@@ -468,12 +463,12 @@ owns tool lifecycle.
 Render semantic segments/frontier into provider wire shapes, advertise proven
 capabilities, own provider ids/opaque items/cache controls/retries, and return
 bounded diagnostics and candidates.  They decode/encode the core-owned
-=context-promote= schema but do not define its limits or select promoted facts.
+=context-curate= schema but do not define its limits or select curation items.
 
 ** Presentation
 
 May show bounded generation/frame/cache diagnostics, but does not own lifetime
-or promotion policy.
+or curation policy.
 
 * Expected file surface
 
@@ -493,10 +488,14 @@ or promotion policy.
 
 * OpenAI projection and optional provider compaction
 
-For an eligible Responses profile, stable policy remains in stable developer
-input, current state is sent through request-local =instructions= on every
-request, and durable history continues with =previous_response_id= only for a
-clean compatible anchor.  Stateless replay is always the correctness fallback.
+For an eligible Responses profile, stable policy and the durable canonical
+projection remain before the changing frontier.  Addendum 3's affected layout
+places current-state and dynamic-context observations in late developer-role
+input with their inherited delivery truth; =context-curate= source labels and
+estimates remain late-frontier presentation only.  Ordinary post-response turns
+use canonical replay of session-owned durable state plus selected curation
+items; =previous_response_id= is retained only for a matching immediate tool
+follow-up.  Stateless replay is always the correctness fallback.
 
 The adapter must not assume every OpenAI-shaped endpoint behaves like the
 public API.  Profiles, gateways, HTTP, and WebSocket transports advertise and
@@ -509,10 +508,12 @@ boundary/layout/fingerprint, and never parsed by core.  A compaction request is
 constructed statelessly from portable checkpoint + durable tail, or from an
 anchor proven clean for every observation kind.  It must never reuse a
 contaminated continuation id merely because the new delta omits an observation.
-Consumed snapshots, tool output, and diagnostics are excluded from portable and
-provider checkpoint input.  Optional conformance/E2E evidence records the
-literal compaction input and effective model context and asserts consumed
-markers are absent from both; provider wire behavior remains externally gated.
+Consumed snapshots, tool output, acknowledgement, and diagnostics are excluded
+from portable and provider checkpoint input.  Optional conformance/E2E evidence
+records the literal compaction input and effective model context and asserts
+consumed markers are absent from both; provider wire behavior remains externally
+gated.  The curation presentation/schema revision and estimator ratio fence
+material anchor/cache identity, while per-frame values do not.
 
 Recheck these contracts before adapter work:
 
@@ -523,13 +524,13 @@ Recheck these contracts before adapter work:
 * Observability
 
 Add bounded diagnostics for generation/checkpoint boundary, normal frame
-visibility and promotion, observation/promoted size estimates, anchor held or
+visibility and curation, observation/curated size estimates, anchor held or
 advanced with reason, request/response observation classification, immediate-
 followup-only candidate status, rendering strategy, portable/provider
 compaction outcome, and provider cache counters when exposed.  Diagnostics
 never implicitly copy
-source-observation or frame-payload fields; any explicitly submitted fact is
-bounded by the promotion schema and existing diagnostic policy.
+source-observation or frame-payload fields; any explicitly submitted summary or
+exact value is bounded by the curation schema and existing diagnostic policy.
 
 Every request must make it possible to tell whether the observation was
 inherited or replaceable and why the selected anchor is safe.
@@ -817,17 +818,17 @@ and atomic transitions are the future owner of that concern.
   second durable source.
 - A marker present only in a consumed observation is present in exactly the
   consuming invocation and absent from the next request.
-- A selected promoted fact remains in the next durable projection; an
-  unselected fact does not.
+- A selected exact curation item or submitted summary remains in the next
+  durable projection; an omitted source does not.
 - =e-harness-turn-context= can identify source observation, frame identity, and
-  promotion provenance from the canonical session path without implicitly
-  adding source-observation or frame-payload fields to the durable projection.
-  An explicitly submitted verbatim fact is durable by choice within the
-  bounded promotion limit.
-- Promotion source selection resolves to an existing canonical transcript-entry
+  curation provenance from the canonical session path without implicitly adding
+  source-observation or frame-payload fields to the durable projection.  An
+  explicitly kept exact value or submitted summary is durable by choice within
+  the bounded curation limit.
+- Curation source selection resolves to an existing canonical transcript-entry
   ID when session-backed, or an existing external/context-source handle plus
   fingerprint otherwise.  Missing refs fail the response path; no transcript
-  entry is manufactured solely to support a promotion.
+  entry is manufactured solely to support curation.
 - Model/adapter-supplied provenance controls such as =:source-refs= and
   =:fingerprint= are rejected before semantic mutation; external provenance is
   derived by core from the consumed runtime frame and existing source handle.
@@ -835,11 +836,11 @@ and atomic transitions are the future owner of that concern.
   reuse is allowed only for that same not-yet-consumed consumer and matching
   source fingerprint.  Two successful invocations with unchanged current
   state therefore have two consumer-bound frames, and a consumed older frame
-  cannot accept a later promotion.
+  cannot accept a later curation.
 - A provider-neutral tool call identity/arguments, any locally identified
   replay item, and its result remain one paired ephemeral bundle.  The bundle
   is visible to exactly its consuming invocation and later projections contain
-  no orphan call, result, or replay item unless a selected fact was promoted.
+  no orphan call, result, or replay item unless a source was explicitly curated.
 - A changed canvas replaces the prior snapshot, does not create another durable
   transcript item, and does not invalidate an otherwise compatible stable
   prefix.
@@ -854,15 +855,20 @@ and atomic transitions are the future owner of that concern.
   contaminated descendant may replace the clean durable anchor.
 - Existing normal tool success, error, cancellation, timeout, and provider
   follow-up behavior remains unchanged outside observation visibility.
-- Promotion controls are accumulated in the existing in-memory response stream
-  and valid facts commit at provider-done before the next follow-up projection;
-  an invalid control follows the existing response error path, does not roll
-  back already-streamed calls, and dispatches no later calls from that invalid
-  response.
+- Curation controls are accumulated in the existing in-memory response stream
+  and a valid record commits at provider-done before the next follow-up
+  projection; an invalid control follows the existing response error path, does
+  not roll back already-streamed calls, and dispatches no later calls from that
+  invalid response.
 - Portable compaction starts a new generation from durable context only and
   remains correct when provider artifacts are discarded.
 
 ** Mandatory credential-free E2E
+
+This original baseline is completed by the Addendum 3/4 composition tests.  The
+current model-facing operation is =context-curate=, and the current external
+selectors and unavailable-auth result are recorded in those addenda; the steps
+below remain the provider-neutral semantic baseline.
 
 Add a real E2E with a stateful instrumented transport recording literal request,
 inherited continuation context, request-local replacement, and effective model
@@ -875,10 +881,10 @@ follow-up is explicitly out of scope and must not be required.  It must:
 
 1. start with stable prefix =C=, durable intent =D1=, and =CANVAS-ONE=;
 2. run an ordinary tool returning unique =OBSERVATION-ONE=;
-3. let the next invocation consume it and promote only
+3. let the next invocation consume it and curate only
    =first-divergence=normalize-price=;
 4. prove the consuming invocation sees the observation exactly once, the next
-   request omits it, and the promoted fact remains;
+   request omits it, and the selected curation item remains;
 5. replace the canvas with =CANVAS-TWO= and prove the old marker is absent;
 6. run =none=, =linear=, =branchable=, and a profile with proven
    per-kind replacement for =current-state= and =dynamic-context=, then
@@ -947,12 +953,12 @@ latency: that mechanism is outside this feature.
 
 - Existing journals load without rewriting; messages without lifetime metadata
   remain durable.
-- The narrowed generation/promotion record schema is version 2, distinct from
-  the =context-promote= wire schema version.  Legacy v1 Slice 1
-  =context-generation=, =context-frame=, =context-promotion=, and
-  =context-frame-settlement= entries remain readable for ordinary transcript
-  and audit loading, but are ignored by the narrowed semantic projection unless
-  a deliberate migration boundary explicitly converts them.  Reading them
+- The generation codec remains version 2.  New context curation records use
+  version 3 of the persisted =context-promotion= family; version-2 records
+  remain readable and project according to their compatibility rules, but no
+  version-2 writer or =context-promote= model-facing carrier remains.  Legacy
+  =context-generation=, =context-frame=, and =context-frame-settlement= entries
+  remain readable for ordinary transcript and audit loading, but reading them
   never recreates a runtime frame, recovery state, or resume-state projection.
 - Existing ordinary tool calls/follow-ups keep current behavior and are not
   silently reclassified.
@@ -960,7 +966,7 @@ latency: that mechanism is outside this feature.
   activates a changed classification at its next deliberate generation
   boundary; that boundary alone never enables the feature or reclassifies old
   results.
-- Old/incompatible provider anchors fall back to full replay once.
+- Old/incompatible provider anchors fall back to one complete canonical replay.
 - Backends ignoring new capabilities remain correct through flat stateless
   messages.
 - Prompt-cache placement, continuation, and logical lifetime remain separate.
@@ -989,7 +995,7 @@ latency: that mechanism is outside this feature.
 
 * Risks and mitigations
 
-- *A needed fact is not promoted.* Make the contract visible, expose the
+- *A needed fact is not curated.* Make the contract visible, expose the
   explicit operation, retain audit provenance, and test selected versus
   unselected facts.  Do not retain every observation as insurance.
 - *A provider falsely claims replacement.* Gate the claim per profile/transport,
@@ -1003,10 +1009,10 @@ latency: that mechanism is outside this feature.
   immediate-followup-only candidate as in-memory delivery for the matching
   result only; descendants inherit contamination unless an entire-bundle
   replacement capability is proven.
-- *Promotion provenance cannot resolve its source.* Require an existing
+- *Curation provenance cannot resolve its source.* Require an existing
   transcript-entry ID or external/context-source handle plus fingerprint and
-  fail the promotion path rather than manufacturing a transcript entry.
-- *A reserved promotion effect drifts between adapter and core.* Construct the
+  fail the curation path rather than manufacturing a transcript entry.
+- *A reserved curation effect drifts between adapter and core.* Construct the
   normalized schema, source identity, limits, and revision/content fingerprint
   once in core; the optional adapter carrier only encodes/decodes it and never
   supplies alternate limits.  The fingerprint fences incompatible tool-schema/
@@ -1018,8 +1024,8 @@ latency: that mechanism is outside this feature.
   state is accepted only at the same boundary/fingerprint and is disposable.
 - *A successful turn retains source fields accidentally.* Assert that the
   protocol does not implicitly add source-observation or frame-payload fields;
-  an explicitly submitted bounded fact, including verbatim content, is allowed
-  to become durable by choice.
+  an explicitly kept exact value or submitted summary is allowed to become
+  durable by choice.
 - *Provider compaction reuses contaminated state.* Build its input statelessly
   or from an anchor clean for every observation kind, and compare literal input
   with effective context while keeping provider wire proof externally gated.
@@ -1040,7 +1046,7 @@ latency: that mechanism is outside this feature.
    portable checkpoints are stable.  Promotion wire realization and
    entire-bundle provider conformance remain local and reversible, while
    normalized schema, limits, and canonical source resolution are core-owned.
-4. *Owner?* Core owns visibility/limits, normalized promotion, and source-ref
+4. *Owner?* Core owns visibility/limits, normalized curation, and source-ref
    validation; session owns the canonical transcript/audit; =e-harness-turn-context=
    owns later-request projection; harness/loop own successful-turn orchestration;
    =e-compaction= owns deliberate generation transitions; adapters own opaque
@@ -1060,7 +1066,7 @@ latency: that mechanism is outside this feature.
 10. *Real abstractions?* Each capability corresponds to a request strategy;
     missing capabilities select valid stateless behavior.  The only reasoning
     modes are =none= and =replayable=.  Core is the sole authority for the
-    reserved promotion schema, limits, and revision/content fingerprint; an
+    reserved curation schema, limits, and revision/content fingerprint; an
     optional carrier is only an adapter wire concern.
 11. *Compatibility?* Opt-in is explicit; an opted-in session changes
     classification only at a deliberate generation boundary, never merely
@@ -1076,10 +1082,11 @@ latency: that mechanism is outside this feature.
 
 * Residual ambiguities
 
-- The wire spelling of =context-promote= remains adapter-owned; its normalized
-  semantic payload, source identity, limits, and schema revision are fixed in
-  core.  A provider still needs separate conformance evidence before any
-  observation kind may be marked replaceable.
+- External cache behavior remains unconfirmed.  The two bounded selectors now
+  emit identity-complete records, but the 2026-08-27 run skipped before a
+  request because =/Users/dvorona/.codex/auth.json= was unavailable.
+- The run's records identify =bec4c0d6= while the current implementation is
+  =2118041f=; they are therefore not reusable acceptance evidence.
 - Existing session audit may retain more provenance than model projection
   needs.  SQLite retention can define that later without changing semantics.
 - Cache counters are evidence when exposed, not a correctness dependency.

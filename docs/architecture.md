@@ -10,7 +10,10 @@ The repository currently contains a usable chat-oriented runtime path: package
 startup, a provider-neutral harness core, JSONL-backed session persistence,
 capability-owned behavior bundles, layer presets, context assembly, a turn loop,
 resource-operation tools, OpenAI-like backend adapters, presentation shells, live
-reload support, and ERT coverage. Durable user data is primarily session state
+reload support, and ERT coverage. Feature 88's current path adds consumer-bound
+ephemeral context frames, model-directed `context-curate`, version-3 durable
+curation records, and read-only version-2 compatibility; external cache
+capability remains unconfirmed. Durable user data is primarily session state
 under the user's Emacs directory plus optional project-local capability
 configuration.
 
@@ -21,17 +24,17 @@ interaction mechanics.
 
 ## Table Of Contents
 
-- project overview: L3-L21
-- architecture overview: L36-L80
-- boundaries and invariants: L81-L116
-- repository mapping: L117-L149
-- components: L150-L348
-- data and control flow: L349-L401
-- public surfaces: L402-L432
-- extension points: L433-L444
-- testing and verification: L445-L463
-- change management: L464-L470
-- architecture discussion: L471-L512
+- [Project overview](#project-overview)
+- [Architecture overview](#architecture-overview)
+- [Boundaries and invariants](#boundaries-and-invariants)
+- [Repository mapping](#repository-mapping)
+- [Components](#components)
+- [Data and control flow](#data-and-control-flow)
+- [Public surfaces](#public-surfaces)
+- [Extension points](#extension-points)
+- [Testing and verification](#testing-and-verification)
+- [Change management](#change-management)
+- [Architecture discussion](#architecture-discussion)
 
 ## Architecture Overview
 
@@ -211,10 +214,12 @@ Capability-owned state persists under owner-keyed capability state. Active
 runtime state, presentation state, focus, point, overlays, read markers, timers,
 request handles, retry counters, and rebuildable caches stay in the harness,
 shell, buffer, or request that owns them.
-The OpenAI Responses WebSocket adapter's completed-response ledger, insertion
-order, bounded eviction history, idle timer, and connection diagnostics are
-active connection state in that same category: they are rebuilt per socket,
-cleared by the owning close path, and never serialized into session JSONL.
+The OpenAI Responses WebSocket adapter keeps only the latest immediate response
+availability and the general configurable idle policy as connection-local state;
+those values are rebuilt per socket, cleared by the owning close path, and never
+serialized into session JSONL.  Historical response graphs, eviction history,
+older-anchor diagnostics, and the Codex-specific idle override are not part of
+the current path.
 
 `e-session` owns the durable metadata schema and typed write paths for session
 config, current-state references, and capability state. Generic metadata writes
@@ -398,6 +403,26 @@ Context providers are read-only. They may inspect session state, active
 attachments, visible buffers, AGENTS/skill files, or resources, but they should
 not perform provider-specific request shaping or concrete side effects.
 
+#### Feature 88 context lifetime
+
+Feature 88 keeps the semantic body provider-neutral.  The lifetime core builds a
+consumer-bound ephemeral frame and its late source presentation; `e-session`
+owns the durable semantic path; and `e-harness` binds the still-live frame,
+prepares one curation, appends it before the next dispatch, and then consumes the
+frame.  New `context-promotion` records are version 3 and project to literal
+portable `(:role system :content VALUE)` messages.  Existing version-2 records
+remain read-only compatible.  See
+[`F88A4-CURATE`](feats/88-generational-context-ephemeral-frames/addendum4.org)
+and [`F88A3-SEM`](feats/88-generational-context-ephemeral-frames/addendum3.org).
+
+The loop keeps ordinary tool lifecycle and the one matching immediate causal
+follow-up.  The OpenAI adapter owns only the `context-curate` wire carrier,
+opaque immediate acknowledgement, response availability, and provider cache
+evidence; labels, estimates, provenance, and frame identities do not cross the
+wire.  Canonical later requests contain durable session projection, selected
+curation messages, and the new frontier.  The external cache capability is
+currently unconfirmed, independently of deterministic semantic acceptance.
+
 ### Agent Loop And Backend Adapter
 
 `lisp/core/e-loop.el` owns one turn. It receives backend-neutral messages, tools,
@@ -410,13 +435,15 @@ plus cancellable request handles. The OpenAI adapter in `lisp/adapters/openai/`
 implements provider profiles, model/reasoning defaults, Codex auth-file loading,
 token-auth profiles, Responses and Chat Completions request mapping, SSE parsing,
 HTTP timeouts, raw diagnostics, and cancellable `url-retrieve` requests. Its
-Responses WebSocket path additionally owns same-socket response-ID usability:
-the adapter-private bounded ledger is the sole compatibility authority, while
-profile/request context resolves the built-in Codex 600-second idle policy and
-the unchanged global fallback for other profiles. Only bounded scalar routing
-and retention diagnostics are projected through the harness; response IDs,
-ledger entries, request bodies, and tool results remain adapter-private. Injected
-request functions remain queued-only cancellable test seams.
+Responses WebSocket path additionally owns the latest same-socket response ID
+needed for one immediate causal tool follow-up, bounded canonical retry on an
+unavailable response, and the general configurable idle policy. Historical
+response graphs, ledgers, eviction history, older-anchor diagnostics, and a
+Codex-specific idle override are removed. The `context-curate` wire carrier is
+the only active reserved carrier; its schema and revision identity come from
+core, while response IDs, request bodies, acknowledgements, and tool results
+remain adapter-private. Injected request functions remain queued-only
+cancellable test seams.
 
 Adding a provider should be an adapter change. It should not require changing
 the chat shell, session store, or harness lifecycle policy.
@@ -594,13 +621,13 @@ actions, chat presentation, starter/canvas shells, and development reload.
 
 Core behavior is testable with fake backends, injected transports, in-memory
 stores, temporary persistent stores, fake tools, and capability fixtures. Adapter
-tests cover provider request/stream mapping, concrete side effects, the
-connection-local ledger, profile-owned timer resolution, close/retry cleanup,
-and bounded diagnostics. The provider-continuation integration test composes
-the real harness, context, tool, anchor, renderer, and fake socket boundaries;
-credentialed Codex E2E remains an explicit fast gate for private endpoint
-behavior, while timer-retention acceptance advances a test-local fake scheduler
-instead of waiting in wall-clock time.
+tests cover provider request/stream mapping, concrete side effects, latest
+response availability, canonical retry cleanup, the general idle policy, and
+bounded diagnostics. The provider-continuation integration test composes the
+real harness, context, tool, anchor, renderer, and fake socket boundaries;
+credentialed Codex E2E remains an explicit fast gate for private endpoint and
+cache behavior.  The two current selectors emit bounded identity-complete
+records and skip as configuration-unavailable when credentials are absent.
 Shell tests should keep proving command wiring and rendering against harness
 events rather than reimplementing harness tests.
 
