@@ -1,0 +1,316 @@
+#+title: Feature 88 Addendum 2 Implementation Review 06
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This fresh independent Tick reviewed exact revision
+=a2a6f8fc1e961d5cabd5b7dbf28137a68f58646b=.  P1-08, P2-10, and P2-11 are
+closed at their owning boundaries.  The deterministic half of P2-12 is closed,
+but its live measurement path remains incomplete and is one actionable P2
+finding.  No new P0, P1, or P3 implementation defect was found.
+
+P1-09 remains unavailable external credentialed acceptance evidence, not a
+reproduced source defect.  The configured private-provider scenario has still
+not run because the required auth file is absent.  It therefore continues to
+block the addendum's external acceptance criterion and a =Done= status even
+after code findings close.
+
+The production implementation is at a credible functional/architectural
+candidate fixed point, but the whole reviewed package has not reached the
+review-fixpoint definition: P2-12 still fails the accepted measurement
+contract, and the external P1-09 acceptance cell remains unknown.  Feature 88
+Addendum 2 must remain =In-review=.
+
+* Reviewed scope, revision, and worktree posture
+
+The prior implementation Tick reviewed
+=d9a7249b2b9acf72920ad04b40be63ac6689e656= in
+=addendum2-review-05.org=.  The remediation path reviewed here consists of
+=b31d101e=, which replaced the wall-clock idle E2E with deterministic fake
+time, =78f9e098=, which preserved Tick 05, and =a2a6f8fc=, which remediated the
+remaining source, test, measurement, and documentation findings.
+
+The exact reviewed object and current =HEAD= at the final source and gate
+checks were both =a2a6f8fc1e961d5cabd5b7dbf28137a68f58646b=.  The worktree was
+clean before this artifact was created.  During final artifact QA, an unrelated
+tracked modification appeared in
+=docs/feats/87-sqlite-session-board-persistence/plan.org=; it is outside this
+review, was not inspected as evidence, and was preserved untouched.  This Tick
+creates only
+=docs/feats/88-generational-context-ephemeral-frames/addendum2-review-06.org=.
+It does not edit implementation, accepted specifications, architecture,
+limitations, tests, or the feature index.  It does not stage, commit, push, or
+access the user's running Emacs.
+
+* Authorities and review mode
+
+The current target authority is
+=docs/feats/88-generational-context-ephemeral-frames/addendum2.org= at the exact
+reviewed revision.  The preceding Feature 88 authorities remain =plan.org= and
+=addendum.org=.  Current architecture and limitation authorities are
+=docs/architecture.md= and =limitations.org=.  Review process and status
+authorities are =AGENTS.md=, =docs/agents/review.org=, and
+=docs/references/dev_work.org=.
+
+This was an incremental evidence-efficient review because Tick 05 is a
+trustworthy whole-package review and the remediation impact is bounded to its
+five explicit findings.  Each prior finding was audited first through current
+source order and assertion bodies.  The review then sampled every invalidated
+contract cell and carried forward unchanged ledger, retry, redaction, profile,
+and composed-semantics cells only after checking their dependencies did not
+change.
+
+All file-and-line references below name the exact reviewed revision.
+
+* Tick 05 finding dispositions
+
+** DONE P1-08: request properties are detached before the request can be sent
+
+Required boundary: one immutable continuation-property identity must describe
+the request that actually started, including mutable strings, and later ledger
+admission must use that start-time identity.
+
+Current proof:
+
+1. =e-openai-codex--json-value-copy= now copies strings before recursing through
+   hash tables, vectors, and conses at
+   =lisp/adapters/openai/e-openai.el:2015-2036=.
+2. Request start derives and fully copies invariant properties at =:2404-2410=,
+   before =send-current-body= serializes the request at =:2584-2588=.
+3. Completed settlement admits only that detached =properties= value at
+   =:2536-2547=; later caller mutation cannot rewrite it.
+4. =e-openai-test-websocket-recorded-property-snapshot-detaches-strings= mutates
+   top-level model and nested tool-name strings before completion and again
+   after completion, proves the ledger retains the original values, and proves
+   the mutated request selects property-mismatch full reconstruction at
+   =test/e-openai-test.el:4137-4232=.
+
+The original three-case focused run passed 3/3, including this mutation
+regression.  The owner moved before the first irreversible send; copying only
+at ledger insertion is no longer the design.  Disposition: closed.
+
+** EXTERNAL P1-09: private-endpoint older-clean-anchor acceptance is still unavailable
+
+Required evidence: the fast credentialed built-in Codex scenario must prove
+that the private endpoint accepts =R0= as an older response ID after the real
+harness/tool chain, on the same socket, with current observations and no raw
+tool lineage.
+
+Current proof posture: the live scenario remains present at
+=e2e/e-live-e2e-test.el:782-1036= and retains the semantic, literal-request,
+anchor, connection, timer-policy, and redaction assertions.  The exact current
+handoff records the configured command and the missing credential at
+=addendum2.org:457-470=.  A read-only =test -f
+/Users/dvorona/.codex/auth.json= check returned exit 1 during this Tick.  No
+credentialed substitute was available, no provider request was made, and the
+running Emacs was not accessed.
+
+Classification: original P1 external acceptance blocker, not a current code
+defect.  Deterministic fake-socket success cannot settle the private endpoint's
+undocumented response-lineage behavior.  Disposition: unavailable/unknown,
+not closed and not counted as an implementation regression.
+
+Closure still requires running the fast credentialed semantic scenario on the
+exact candidate revision and recording its literal request, semantic result,
+same-socket diagnostics, and provider response.  An endpoint rejection must
+return the feature to design while preserving full fallback.
+
+** DONE P2-10: =response.incomplete= settles once without admitting an anchor
+
+Required boundary: a terminal incomplete response must emit the existing
+backend-neutral =done= item, clear the active request, call completion exactly
+once, retain a healthy socket and unrelated clean entries, schedule idle
+cleanup, and never admit the incomplete response ID.
+
+Current proof:
+
+1. The handler distinguishes completed, incomplete, and their shared terminal
+   predicate at =lisp/adapters/openai/e-openai.el:2603-2615=.
+2. It emits the mapped =done= item, then calls one guarded settlement for both
+   successful terminal kinds at =:2621-2640=.
+3. Settlement clears active ownership and schedules idle close, but records an
+   anchor only when given a string response ID at =:2536-2547=; the incomplete
+   path deliberately passes =nil=.
+4. The regression at =test/e-openai-test.el:3884-4023= proves one =done= item,
+   one completion callback, no error, no active request, no incomplete or late
+   response admission, survival and immediate reuse of an unrelated clean
+   entry, one subsequent completion, a 600-second idle schedule, and no close.
+
+The regression passed in the 3/3 focused run and again in the green complete
+suite.  Manual cancellation is no longer needed to recover the socket.
+Disposition: closed.
+
+** DONE P2-11: no mandatory wall-clock long-idle test remains
+
+Required boundary: prove the locally owned 300/600 retention policy by
+test-local deterministic time; retain only a fast credentialed semantic/socket
+test, and prohibit a five-minute sleep.
+
+Current proof:
+
+- The accepted contract now explicitly prohibits a wall-clock long-idle mode
+  and requires fake time at 301 and 600 at =addendum2.org:326-335=.
+- The 160-line =e-live-e2e-test-openai-codex-long-idle-retains-socket= and its
+  =sleep-for=, =E_E2E_LONG_IDLE=, and =E_E2E_LONG_IDLE_SECONDS= controls were
+  deleted from =e2e/e-live-e2e-test.el=.
+- Repository search finds no current long-idle environment control or long
+  wall-clock sleep outside the historical Tick 05/design-review record.
+- =e-openai-test-websocket-profile-idle-close-boundary-clears-ledger= owns a
+  local fake clock and deadline at =test/e-openai-test.el:3566-3598=.  It
+  advances to 301 and proves the socket and ledger remain live at =:3621-3631=,
+  then advances 299 more and proves one close plus complete ledger cleanup at
+  =:3632-3649=.
+- The real scheduler remains the adapter-owned relative =run-at-time= boundary
+  at =lisp/adapters/openai/e-openai.el:2238-2255=.
+
+Test classification: delete the obsolete long wall-clock mechanism test,
+strengthen the deterministic timer contract test, and retain the fast
+credentialed semantic E2E.  The focused timer case passed.  No provider
+pause-duration claim remains.  Disposition: closed.
+
+** INCOMPLETE P2-12: the live path does not report provider-request latency or successful metrics
+
+The deterministic part is closed.  The composed test captures literal
+serialized request bytes and input-item counts beside each request at
+=test/e-provider-continuation-integration-test.el:1158-1171=.  It selects the
+semantic warm request, compares it with full reconstruction, and asserts both
+warm measurements are smaller at =:1290-1317,1440-1507=.  The handoff records
+the observed 1,607 bytes/3 items versus 1,961 bytes/7 items at
+=addendum2.org:390-395=.
+
+The live part still misses two explicit contracts: request-latency identity and
+successful reporting.  The accepted requirements say separate measurements
+must report request latency and provider token values at
+=addendum2.org:521-526,550-554=.  The current E2E instead:
+
+1. starts =warm-started-at= before =e-board-e2e-prompt-batch= and subtracts
+   after the complete harness turn returns at =e2e/e-live-e2e-test.el:868-874=.
+   That includes context construction, provider request, loop settlement, and
+   harness publication; it is turn-scoped latency, as the handoff itself calls
+   it at =addendum2.org:401-403=, not provider-request latency.
+2. places elapsed time, input tokens, cached tokens, and the unavailable marker
+   only inside an =ert-info= context at =e2e/e-live-e2e-test.el:955-983=.
+   Passing ERT tests do not print =ert-info= contexts.  A one-test control in
+   this Tick passed with no =metric= text, and the passing composed metric test
+   likewise emitted no metric line.  Therefore a successful credentialed
+   command still would not report values that an implementation review can
+   record.
+3. overlooks the correct existing owner: the loop captures
+   =provider-request-started-at= at =lisp/core/e-loop.el:440-458= and publishes
+   rounded =:elapsed-seconds= in the matching =provider-request-finished=
+   payload at =:459-473= through =e-loop--request-lifecycle-payload= at
+   =:207-239=.  The E2E already selects exactly that warm finished event at
+   =e2e/e-live-e2e-test.el:899-909=.
+
+Classification: P2 incomplete prior closure and acceptance-instrumentation
+defect.  This is independent of the missing credential: even a passing live run
+would measure the wrong latency boundary and hide the numeric values on its
+ordinary success path.  Impact: the required performance evidence cannot be
+captured reproducibly, and turn overhead can be misreported as provider request
+latency.
+
+Owning correction: consume and assert the warm finished payload's existing
+=:elapsed-seconds= value rather than timing =e-board-e2e-prompt-batch=.  Emit one
+bounded, explicit success-path metrics record or log line containing separate
+request latency, input tokens, cached-input token value or =unavailable=,
+connection ID, reuse count, and fallback reason.  Keep semantic endpoint status
+separate from token-field availability.  Do not add another production timer,
+infer a missing cache field as zero, or retain the whole-turn stopwatch as a
+proxy.
+
+* New findings
+
+No additional P0, P1, P2, or P3 implementation finding was confirmed beyond
+the incomplete P2-12 disposition above.
+
+* Acceptance-closure ledger
+
+| Contract cell | Current evidence | Status |
+|---------------+------------------+--------|
+| detached per-response compatibility identity | source order =e-openai.el:2015-2036,2404-2410,2536-2547=; mutation test =e-openai-test.el:4137-4232= | closed |
+| latest/older lookup, mismatch, eviction, unavailable retry | unchanged owners from Tick 05; complete suite green | carried closed |
+| terminal incomplete lifecycle and non-admission | =e-openai.el:2536-2547,2603-2640=; =e-openai-test.el:3884-4023= | closed |
+| 600/=nil=/zero profile policy and 301/600 retention boundary | fake-time test =e-openai-test.el:3566-3649=; no slow E2E | closed |
+| composed real harness/tool/renderer/adapter semantics | =e-provider-continuation-integration-test.el:1025-1507= | closed deterministically |
+| deterministic bytes and input-item counts | =e-provider-continuation-integration-test.el:1158-1171,1499-1507= | closed |
+| public diagnostic projection and redaction | unchanged adapter/harness owners; complete suite green | carried closed |
+| live provider request latency and metric reporting | whole-turn timing plus silent =ert-info= at =e-live-e2e-test.el:868-874,955-983= | P2-12 incomplete |
+| private endpoint older-clean-anchor semantics and live values | credentialed scenario present; auth file absent | external unknown P1-09 |
+
+* Verification and exact evidence
+
+- =git rev-parse HEAD= returned
+  =a2a6f8fc1e961d5cabd5b7dbf28137a68f58646b= before the final gate and before
+  artifact creation.
+- Focused property-snapshot, terminal-incomplete, and fake-time-boundary tests:
+  3/3 expected, zero unexpected.
+- Focused real composed older-clean-anchor tool chain: 1/1 expected, zero
+  unexpected.
+- Unrestricted =eldev --robust-mode=never test -B=: 2,336 tests; 2,334 expected
+  results, zero unexpected, and two existing presentation skips.
+- Forced warnings-as-errors compilation passed for the changed production
+  owners =lisp/adapters/openai/e-openai.el= and =lisp/core/e-harness.el=.
+- =git diff --check
+  d9a7249b2b9acf72920ad04b40be63ac6689e656..a2a6f8fc1e961d5cabd5b7dbf28137a68f58646b=:
+  passed.
+- A minimal passing ERT control with =ert-info ((format "metric=%d" 42))=
+  completed 1/1 but printed no metric text, reproducing the success-reporting
+  defect without provider access.
+- =test -f /Users/dvorona/.codex/auth.json= returned exit 1.  The credentialed
+  scenario was not run and is not credited as a pass.
+
+Repo-wide lint and clean-source compilation retain the pre-existing baseline
+warnings/command-line migration-script behavior recorded in Tick 05; they were
+not reclassified as Addendum 2 findings.  No graphical E2E applies, and the
+running Emacs was left untouched.
+
+* Architecture self-check
+
+1. The package is materially better than the baseline: bounded older-anchor
+   reuse, safe fallback, detached identity, incomplete settlement, and finite
+   retention are all present.
+2. It advances provider-neutral semantic lifetime with adapter-local transport
+   capability and conservative full reconstruction.
+3. Private endpoint response-cache behavior and live token fields remain
+   explicitly uncertain and external; deterministic policy remains local and
+   reversible.
+4. The harness owns clean-anchor selection; the OpenAI adapter owns connection
+   availability, property identity, retry, and timer state; the loop already
+   owns provider-request lifecycle timing.
+5. No public ledger interface or core WebSocket dependency was introduced.
+6. Stable semantic policy still does not depend on the concrete adapter.
+7. Socket, retry, timer, and close side effects remain in the adapter.  P2-12
+   should reuse loop telemetry rather than introduce a second timing owner.
+8. Ledger state remains disposable, connection-local, bounded 256+256, and
+   cleared by one socket owner; its mutable leaves are now detached.
+9. Fixed-cap work is independent of durable session length.  The prohibited
+   five-minute test is gone.  Wire metrics measure literal requests; live
+   latency still measures excess whole-turn work and must be corrected.
+10. The private ledger is a real adapter variation and no speculative graph
+    abstraction or unsupported shared interface appears.
+11. Unknown, evicted, incompatible, cross-connection, and rejected anchors
+    retain safe full reconstruction; no compatibility shim was added.
+12. Ledger lookup remains the sole compatibility authority; no obsolete scalar
+    latest-only authority resurfaced.
+13. Expected unavailable and incomplete terminals now have explicit owners;
+    transport and unexpected errors remain visible.
+14. Owner tests and the realistic composed test agree.  The one remaining code
+    evidence gap is narrow: report the already-owned provider latency and live
+    usage values on successful credentialed execution.
+
+* Fixed-point verdict
+
+The production runtime has no confirmed P0--P3 functional defect after the
+Tick 05 remediations, but the reviewed package has not reached a functional and
+architectural evidence fixed point at
+=a2a6f8fc1e961d5cabd5b7dbf28137a68f58646b=.  P2-12 remains an actionable
+acceptance-instrumentation defect.  P1-09 remains a separate external unknown
+that blocks private-provider acceptance and =Done= but is not evidence of a
+source defect.
+
+After P2-12 is corrected, a fresh Tick should verify the exact metric owner and
+success-path report.  The fast credentialed scenario can then close P1-09 when
+credentials are available.  No remediation may reintroduce a wall-clock
+long-idle test; deterministic fake-time 301/600 evidence is the accepted
+retention proof.
