@@ -41,6 +41,14 @@ this Tick made no provider request.  There is no
 The index correctly keeps Feature 88 =Planned=.  Remediate this specification,
 then run a fresh design Tick before implementation.
 
+Remediation disposition at the subsequent specification Tock: =addendum3.org=
+now makes =F88A3-SEM= through =F88A3-COMPAT= the sole normative authority,
+changes late-input delivery truth to =inherited= at =F88A3-DELIVERY=, records
+the one-retry and seven-day freshness bounds, classifies affected tests, and
+separates deterministic, external, and observational evidence.  P1-01, P2-02,
+and P2-03 are implemented pending independent Review 02; this historical review
+body remains unchanged below.
+
 * Reviewed revision and scope
 
 Review mode: rebaseline specification review.
