@@ -1,0 +1,604 @@
+#+title: Addendum 3: Canonical Context with Warm Prefix Reuse
+#+date: 2026-08-26
+#+startup: overview
+
+* Status
+
+Planned.
+
+This addendum corrects the performance objective used by Addendum 2.
+The Feature 88 semantic lifetime model remains authoritative: observations are
+runtime-only, consumer-bound, visible to the matching invocation, promotable
+through the core-owned validation path, and absent from later context unless
+selected information was promoted.
+
+Where this document conflicts with Addendum 2's clean-anchor branching,
+connection-local retention, request-size performance contract, or acceptance
+criteria, this document supersedes Addendum 2.
+The first addendum's provider-specific observation-delivery evidence remains
+useful only where it describes semantics rather than a smaller wire request.
+
+Implementation is not authorized merely because this plan exists.  The
+=docs/feats/index.org= entry remains the compact status authority.
+
+* Goal
+
+Make correct canonical context reconstruction with a warm provider prefix the
+ordinary Feature 88 path.
+
+The primary performance goal is provider-reported prefix-cache reuse:
+
+#+begin_example
+request 1: [A B C]
+request 2: [A B D]
+
+desired provider work:
+  [cached A B] [uncached D]
+#+end_example
+
+Whether request 2 transmits =A= and =B= again is irrelevant.
+Reducing serialized bytes, input-item count, or on-the-wire replay is an
+explicit non-goal.
+
+An equally explicit goal is to delete complexity whose only justification was
+reducing on-the-wire replay.  In particular, the implementation must remove
+Addendum 2's older-response graph, eviction history, profile-specific socket
+retention, branch diagnostics, and byte-size acceptance when those mechanisms
+have no independent semantic or prefix-cache purpose.
+
+The target behavior is:
+
+#+begin_example
+stable durable prefix S
+  + request-local observation E
+  + current user frontier U
+                         → model invocation
+
+matching tool follow-up, when any:
+  latest tool-producing response
+  + required call output
+                         → final response
+
+next ordinary turn:
+  canonical durable prefix S'
+  + promoted facts P
+  + new observation E'
+  + new user frontier U'
+
+raw E and its call/result bundle are absent
+S or the largest unchanged prefix of S' is provider-cache hot
+#+end_example
+
+Provider-side caches may still contain obsolete prefixes or tool-descended
+state.  That cache pollution is acceptable.  Local semantic context and the
+literal next request must still obey Feature 88 lifetime rules.
+
+* Corrected vocabulary
+
+Use these terms consistently in code, tests, diagnostics, and documentation:
+
+- =canonical replay= :: submit the complete current semantic context derived
+  from the session and current runtime frames;
+- =continuation= :: submit a delta using =previous_response_id=;
+- =warm prefill= :: provider usage reports a meaningful cached prefix for the
+  current input;
+- =cold prefill= :: provider usage reports no meaningful cached prefix;
+- =stable prefix= :: the longest byte- and order-stable request prefix before
+  the current changing frontier; and
+- =frontier= :: current user input, current-state observations, dynamic
+  context, tool output, and other request-local material expected to change.
+
+Do not use =full replay= as a synonym for cache miss.
+A canonical replay can and should have a warm prefill.
+
+* Evidence baseline
+
+The 2026-08-26 credentialed ChatGPT Codex WebSocket probe used a 5,450-token
+request with a long stable =A B= prefix and a short divergent =C= or =D=
+suffix.  Both requests sent the complete canonical input and used the same
+prompt-cache/session identity.
+
+#+begin_example
+request [A B C]:
+  input_tokens  = 5450
+  cached_tokens = 0
+
+request [A B D]:
+  input_tokens  = 5450
+  cached_tokens = 4864
+#+end_example
+
+The result was repeated after deliberately closing the WebSocket between the
+two requests.  The second request again reported 4,864 cached tokens.
+Connection-local response lineage was therefore unnecessary for the observed
+prefix-cache reuse.
+
+A separate same-socket probe created a response after =A B=, continued it with
+=C=, and then attempted to continue the same older response with =D=:
+
+#+begin_example
+[A B] → Rb
+Rb + C → success
+Rb + D → previous_response_not_found
+#+end_example
+
+The current ChatGPT endpoint therefore supports the latest linear continuation
+needed by an immediate matching follow-up but did not support Addendum 2's
+older-anchor branch on the implicit lane.
+
+The public OpenAI
+[[https://developers.openai.com/api/docs/guides/websocket-mode][Responses WebSocket guide]]
+documents branching from a completed response by combining its
+=previous_response_id= with a different =stream_id=.
+That capability remains provider-specific.  Feature 88 does not need it merely
+to avoid resending a stable prefix, so implementing named streams is outside
+this remediation unless a separate semantic requirement needs independent
+conversation branches.
+
+These experiments establish the corrected optimization target:
+
+#+begin_example
+canonical context correctness
+  + stable prefix placement
+  + stable prompt-cache identity
+  + provider cached-token evidence
+
+not
+
+minimum request bytes
+  + oldest possible previous_response_id
+  + longest possible socket lifetime
+#+end_example
+
+* Decisions
+
+** Canonical replay is the normal cross-turn boundary
+
+After a request-local observation has been consumed, the next ordinary turn
+must be built from the session's durable semantic body plus current runtime
+frames.  It must not depend on a provider response descendant that still
+contains the expired observation.
+
+For the built-in ChatGPT Codex profile, that next ordinary turn sends canonical
+context without an older =previous_response_id=.  This is not a degraded path.
+It is successful when the stable prefix is warm.
+
+** Keep only immediate latest-response continuation where causally required
+
+A tool-producing response ID may be used for its immediate matching
+function-call output.  The provider chain is allowed to contain the tool call,
+replay items, current observation, and result during that successful turn.
+
+That response ID and its contaminated descendant remain runtime-only and
+immediate-followup-only.  Neither authorizes the next ordinary turn.
+
+If the existing latest-response scalar compatibility check is sufficient for
+this path, retain or restore it.  Do not replace it with a response graph,
+bounded historical ledger, eviction history, or persisted provider lineage.
+
+** Put changing context at the frontier
+
+Changing current-state or dynamic observations must not occupy a request field
+that precedes the durable prefix and invalidates caching from the beginning.
+
+The OpenAI adapter must render stable harness guidance and durable context
+first, then render request-local observations in a late provider input item at
+the frontier.  Use the provider role that preserves the observation's existing
+instruction authority; do not demote an instruction to untrusted user text
+merely to move it later.
+
+Top-level =instructions= must remain stable across the =[A B C] → [A B D]=
+acceptance sequence.  Canvas/current-state text must not be interpolated into
+that early field.
+
+For canonical OpenAI profiles with explicit prompt-cache breakpoints, place
+the breakpoint at the end of the proven stable prefix and before the frontier.
+For ChatGPT Codex, retain the stable session-derived =prompt_cache_key= and its
+existing implicit cache behavior.
+
+** Provider cache pollution is acceptable
+
+No code is required to delete provider-side cache entries for obsolete =C=,
+expired tool output, or superseded hypotheses.  Provider cache contents are an
+optimization detail.
+
+Correctness is evaluated against:
+
+1. session durable state;
+2. current runtime frames;
+3. literal request contents; and
+4. promotion provenance.
+
+It is not evaluated by assuming that every provider cache entry equals the
+current semantic context.
+
+** Socket retention is a resource policy, not a cache-correctness policy
+
+Remove the built-in Codex-only 600-second retention override introduced by
+Addendum 2.  Restore the existing general WebSocket idle-close policy unless a
+separate resource-management feature later changes it.
+
+Connection closure must not be described as a cold prefill without provider
+usage evidence.  The live probe demonstrated warm prefix reuse on a replacement
+socket.
+
+** Public API named streams are not part of this cleanup
+
+Do not add =stream_id=, response-graph persistence, or branch orchestration in
+this package merely to reduce input transmission.  Existing public-API
+continuation or compaction behavior may remain where it has an independent
+semantic purpose.
+
+* Required protocol
+
+Let =S0= be the stable durable prefix, =E1= the current observation, =U1= the
+current user input, =R1= a tool-producing response, =T1= its result, =R2= the
+final assistant response, and =P1= a selected promotion.
+
+#+begin_example
+ordinary request:
+  instructions = stable harness instructions
+  input = [S0, frontier(E1, U1)]
+  previous_response_id absent unless a semantically exact latest clean
+  continuation is intentionally retained
+                         → R1 emits a tool call
+
+matching follow-up:
+  previous_response_id = R1
+  input = [required replay/call output T1]
+                         → R2
+
+promotion transaction:
+  validate P1 against E1 in core
+  append P1 durably before the next request
+
+next ordinary request:
+  instructions = the same stable harness instructions
+  input = [S1 containing P1 and durable transcript, frontier(E2, U2)]
+  previous_response_id does not reference R1 or R2
+
+literal exclusions:
+  E1 raw payload absent
+  R1 call item absent
+  R1 replay item absent
+  T1 result marker absent
+  contaminated provider response IDs absent
+#+end_example
+
+The provider may cache the common prefix of =S0= and =S1=.
+New durable material appended after the previous stable boundary becomes part
+of a later cache generation naturally; no response-branch protocol is needed.
+
+* Scope
+
+This addendum covers:
+
+- late-frontier projection for replaceable current-state and dynamic context;
+- canonical cross-turn reconstruction after observation consumption;
+- stable prompt-cache identity and explicit breakpoint placement;
+- immediate matching tool-follow-up continuation;
+- cached-token observability and credentialed cache acceptance;
+- removal of Addendum 2's older-anchor and socket-retention machinery; and
+- cleanup of tests and documentation whose sole contract is smaller wire
+  input.
+
+It does not cover:
+
+- reducing serialized request size or input-item count;
+- arbitrary ChatGPT response branching;
+- provider cache deletion or cache-content introspection;
+- runtime capability discovery;
+- generalized provider response graphs;
+- changing the core promotion schema or provenance validation;
+- crash recovery, transactions, journaling, exactly-once semantics, or an
+  interim persistence abstraction ahead of Feature 87;
+- compaction redesign;
+- a new socket lifecycle framework; or
+- presentation changes.
+
+* Ownership and state lifetime
+
+| Entity | Owner | Lifetime | Required representation |
+|--------+-------+----------+-------------------------|
+| Durable semantic body | session | durable | existing session entries and promotions |
+| Ephemeral observation frame | core/harness runtime | one matching consumption | existing consumer-bound runtime frame |
+| Promotion validation and provenance | core | one validation followed by durable append | existing Feature 88 promotion contract |
+| Stable/frontier request layout | OpenAI adapter | one request projection | ordered provider input items |
+| Prompt-cache identity | harness plus adapter | stable session/cache epoch | existing derived key and profile cache mode |
+| Immediate tool continuation ID | OpenAI adapter/runtime turn | matching follow-up only | one latest-response scalar or equivalent direct state |
+| Cached-token measurement | provider usage plus bounded diagnostics | one request/activity record | numeric input and cached-input counts |
+
+No new durable state is introduced.
+No provider response ledger is persisted or retained across a connection.
+
+* Cleanup ledger
+
+Implementation must remove the following Addendum 2 machinery unless a current
+non-wire semantic consumer is demonstrated in the implementation review.
+
+** OpenAI adapter
+
+- Remove =response-ledger=, =response-order=, =evicted-response-ledger=, and
+  =evicted-response-order= from =e-openai-codex--websocket-session=.
+- Remove =e-openai--websocket-response-ledger-capacity= and
+  =e-openai--websocket-evicted-response-ledger-capacity=.
+- Remove the ledger ensure, clear, remove, record, eviction, and response-position
+  helpers.
+- Remove =e-openai-codex--json-value-copy= if the historical ledger remains its
+  only consumer.
+- Restore a single latest-response compatibility authority only if required by
+  immediate matching follow-up.
+- Remove =response-evicted=, =previous-response-unknown=, and older-anchor
+  request branches and diagnostics.
+- Keep one safe canonical retry for an actually rejected latest continuation,
+  including top-level =error= events carrying
+  =previous_response_not_found=.
+- Remove =e-openai--builtin-codex-websocket-idle-close-seconds=,
+  =e-openai--profile-websocket-idle-close-seconds=, the profile-private
+  =:websocket-idle-close-seconds= field, and its request plumbing.
+- Restore the general =e-openai-websocket-connection-idle-seconds= policy.
+- Remove =:websocket-anchor-position= and
+  =:websocket-idle-close-seconds= activity projection.
+
+** Harness and session integration
+
+- Stop selecting an older durable clean anchor for the built-in ChatGPT Codex
+  profile.
+- Do not persist tool-producing or tool-descended response IDs.
+- Retain provider-neutral anchor infrastructure only where a current provider,
+  compaction path, or semantic continuation consumer still requires it.
+- Delete ChatGPT-specific selection, fingerprint, delta, or diagnostic paths
+  whose only remaining purpose is smaller wire input.
+- Do not broaden the provider-neutral capability vocabulary merely to describe
+  an optimization that this addendum removes.
+
+** Tests and E2E
+
+- Delete the 256-entry live/evicted ledger and FIFO eviction tests.
+- Delete older-known-response branch acceptance for ChatGPT.
+- Delete the 301/600 fake-time assertions that exist only for the Codex-specific
+  retention override.
+- Delete assertions that a warm request has fewer serialized bytes or fewer
+  input items than canonical reconstruction.
+- Replace the credentialed older-clean-anchor E2E with canonical warm-prefix
+  acceptance, including a forced socket close.
+- Retain semantic frame, promotion, invalid-promotion, tool-follow-up, safe
+  retry, and cached-token reporting coverage.
+
+The cleanup is incomplete while implementation or tests still treat request
+byte reduction as a success criterion.
+
+* Implementation slices
+
+** Slice 1: Stable-prefix and frontier projection
+
+Move changing current-state and dynamic observations out of early top-level
+=instructions= and into a late provider input item without changing their
+authority or Feature 88 visibility.
+
+Prove deterministic =[A B C] → [A B D]= request layout, raw =C= disappearance,
+promotion placement, and an unchanged stable prefix.
+
+Exit condition: adapter tests compare the literal projected requests and show
+that only the frontier diverges before provider serialization.
+
+** Slice 2: Canonical tool-heavy loop
+
+Keep the streamed tool lifecycle unchanged.
+Use the latest tool-producing response only for its immediate matching
+follow-up, allow the provider chain to be contaminated during that turn, then
+build the next ordinary request canonically from session state.
+
+Exit condition: composed integration proves visibility, promotion, immediate
+tool continuation, and subsequent raw-observation disappearance without an
+older provider anchor.
+
+** Slice 3: Remove obsolete continuation machinery
+
+Apply the cleanup ledger at the owning boundaries.
+Prefer deleting state and branches over replacing them with new abstractions.
+Preserve only the minimum latest-response and safe-retry state needed by the
+existing streamed tool lifecycle.
+
+Exit condition: no response graph, eviction history, Codex-specific retention
+policy, older-anchor diagnostics, or wire-size assertion remains.
+
+** Slice 4: Cache acceptance and documentation
+
+Add deterministic layout coverage and credentialed ChatGPT E2E for warm
+canonical replay on a retained socket and a replacement socket.
+Update =limitations.org= to replace the old replay premise with measured warm
+prefill behavior, then run the focused and full repository gates.
+
+Exit condition: semantic and cache acceptance pass, documentation matches the
+new vocabulary, and independent review finds no complexity retained solely for
+wire reduction.
+
+* Acceptance criteria
+
+** Semantic correctness
+
+1. Each runtime frame is projected only into its designated consumer scope.
+   A tool-result frame is emitted exactly once into its matching follow-up;
+   provider inheritance inside that same successful turn is allowed and does
+   not make the frame durable.
+2. A matching tool follow-up sees the required call, replay, and result bundle.
+3. Promotion is emitted only after observation and cites the consumed frame and
+   source observation IDs.
+4. Valid promotion commits before any subsequent provider request.
+5. The next ordinary request contains the promoted fact and durable transcript
+   but no raw =E=, call item, replay item, or result marker.
+6. Invalid promotion preserves already-dispatched calls, dispatches no later
+   calls after detection, mutates no promotion state, and follows the existing
+   error path.
+7. The session remains the sole durable semantic body source.
+
+** Request layout
+
+1. Stable top-level instructions are identical across the cache fixture.
+2. Stable developer guidance and durable context precede the changing frontier.
+3. Current-state and dynamic observations occur only in the frontier.
+4. The second request's stable prefix is byte- and order-identical to the first
+   request's stable prefix.
+5. Canonical OpenAI explicit cache mode places its breakpoint after the stable
+   prefix and before the frontier.
+6. ChatGPT Codex retains a stable derived =prompt_cache_key=.
+
+** Continuation and cleanup
+
+1. The tool-producing response ID is used only for its immediate matching
+   follow-up.
+2. Neither it nor its contaminated descendant is used by the next ordinary
+   turn.
+3. A rejected latest continuation performs at most one canonical retry.
+4. Top-level =error= and =response.failed= forms of
+   =previous_response_not_found= use the same retry policy.
+5. No older-response ledger, eviction history, branch position, or
+   Codex-specific socket-retention state remains.
+6. No acceptance assertion compares request bytes or rewards fewer transmitted
+   input items.
+
+** Credentialed ChatGPT cache E2E
+
+Use a deterministic fixture whose stable prefix is safely above the provider's
+minimum cacheable size:
+
+#+begin_example
+request 1 = [A B C]
+request 2 = [A B D]
+#+end_example
+
+The test must prove:
+
+1. both requests submit canonical context;
+2. request 2 contains no =C=;
+3. request 2 reports =cached_input_tokens > 0=;
+4. for the fixed fixture, cached input is at least 75 percent of total input;
+5. the same requirement passes after deliberately closing and reopening the
+   WebSocket between requests while keeping the cache identity stable; and
+6. missing cached-token usage is unavailable evidence, not a pass.
+
+The historical probe result, 4,864 cached of 5,450 input tokens on both the
+retained and replacement socket, exceeds this threshold and is the baseline
+for the permanent E2E.
+
+** Tool-heavy cache E2E
+
+Run one complete successful turn containing a real tool result, then start the
+next ordinary turn canonically.
+
+Require:
+
+1. the tool follow-up uses its latest matching response ID;
+2. the subsequent ordinary request contains no raw tool bundle;
+3. the stable prefix remains identical up to the expected frontier;
+4. provider usage reports a nonzero cached prefix large enough for the fixture;
+   and
+5. success does not depend on an older response ID or a retained historical
+   response ledger.
+
+* Verification
+
+At minimum run:
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el
+eldev test -f test/e-provider-continuation-integration-test.el
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  eldev test -f e2e/e-live-e2e-test.el <new-cache-selectors>
+eldev test
+eldev lint
+eldev compile --warnings-as-errors
+git diff --check
+#+end_src
+
+Do not reload the user's running Emacs for repository-side validation.
+Adapter record-shape and core context-projection changes require a full Emacs
+restart before the running process can use them.
+
+* Performance contract
+
+Performance is judged from provider usage and stable-prefix structure.
+
+Required measurements are:
+
+- total input tokens;
+- cached input tokens;
+- cached-input ratio for deterministic fixtures;
+- provider request latency as supporting evidence; and
+- warm versus cold prefill frequency in live session diagnostics.
+
+Serialized request bytes, request input-item count, and delta-versus-full wire
+shape are not performance criteria.
+
+A regression is present when a large byte-identical stable prefix repeatedly
+produces a cold prefill without provider expiry, identity change, or explicit
+cache invalidation explaining it.
+
+* Compatibility and migration
+
+No session schema migration is required.
+Existing persisted ChatGPT provider anchors may remain in old JSONL sessions
+but must be ignored by the new ChatGPT cross-turn policy.  Do not add cleanup
+transactions or a compatibility journal ahead of the SQLite backend.
+
+Canonical OpenAI profiles may retain stored-response, provider compaction, or
+branch behavior with an independent semantic justification.  They must not
+force the ChatGPT adapter to retain a response graph it cannot use.
+
+Removing WebSocket session fields changes runtime record shape and therefore
+requires restarting Emacs.  Do not add compatibility shims for already-open
+connections.
+
+* Risks and responses
+
+- Moving current state later could accidentally change instruction authority.
+  Preserve its provider role and prove behavior with a literal request test and
+  credentialed canvas fixture.
+- Prompt-cache retention is provider-controlled and may expire.
+  Treat expiry as a cold-prefill observation, not semantic failure; keep
+  canonical context correct.
+- A tool-heavy turn may cause the immediately following canonical request to
+  reuse only the durable prefix before the prior frontier.
+  This is expected.  The stable generation advances on later requests.
+- Deleting historical response state could break immediate tool follow-up.
+  Retain one latest-response authority and cover both provider-done/tool-result
+  completion orderings.
+- Public OpenAI branching may be useful for future independent conversations.
+  Add it only under a separate semantic requirement, not as a wire optimization.
+- Tests may accidentally pass on cached state from an earlier run.
+  Use unique cache identities for cold baselines and one intentionally shared
+  identity within each warm pair.
+
+* Architecture self-check
+
+1. If this package stopped here, Feature 88 would keep correct ephemeral
+   context while obtaining measured prefix-cache reuse through a simpler path.
+2. The final direction is canonical semantic context plus provider-agnostic
+   stable-prefix policy, with provider cache mechanics confined to adapters.
+3. Stable decisions are observation lifetime, promotion provenance, and session
+   ownership.  Cache retention and endpoint continuation are uncertain and
+   remain adapter-local and disposable.
+4. Core owns lifetime and promotion; session owns durable meaning; harness owns
+   composition; adapter owns request order, roles, cache parameters, and latest
+   tool continuation.
+5. The change reduces coupling by deleting a connection-local response graph,
+   eviction diagnostics, profile-specific timer plumbing, and older-anchor
+   composition.
+6. Stable policy does not depend on ChatGPT WebSocket internals.
+7. Provider connection, retry, and cache parameters remain adapter side effects.
+8. The only retained provider response state is the smallest runtime lifetime
+   needed for an immediate matching follow-up.
+9. Canonical replay may transmit more bytes, but wire volume is a non-goal and
+   the provider-reported cached prefix is the relevant performance evidence.
+10. The remaining continuation contract is semantically real: a latest tool
+    response accepts its matching output.  It does not pretend to support
+    arbitrary historical substitution.
+11. Old JSONL anchor records are ignored without migration; no compatibility
+    machinery is added before SQLite.
+12. Historical response ledgers, eviction history, older-anchor diagnostics,
+    Codex-specific retention fields, and wire-size tests become removable.
+13. Expected unavailable latest continuation performs one canonical retry;
+    unexpected provider and projection errors remain visible.
+14. Deterministic tests prove layout and lifetime independently; credentialed
+    E2E proves actual cached-token reuse on retained and replacement sockets.
