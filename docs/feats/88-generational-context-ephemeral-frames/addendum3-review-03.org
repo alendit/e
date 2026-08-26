@@ -1,0 +1,249 @@
+#+title: Feature 88 Addendum 3 Specification Review 03
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This fresh independent incremental specification Tick reviewed exact revision
+=41423e826c22ba06630eccf384462bd4df5804d7=.
+
+Addendum 3 has reached a whole-specification fixed point and is ready for
+implementation.
+
+Findings:
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: none.
+
+Review 02 P2-03 is closed.  Every required specification cell and every
+=F88A3-*= contract row is cleared.  No unresolved unknown, architectural
+follow-up, or valid external product-contract failure remains.
+
+External capability status is separately =capability-unconfirmed=.  The
+historical probe is stale for acceptance, the credential file is absent, and
+this Tick made no provider request.  This does not block deterministic
+implementation, but it prevents =capability-confirmed= and =Done=.
+
+* Reviewed revision and mode
+
+Review mode: incremental specification review.
+
+Reviewed target:
+
+- =docs/feats/88-generational-context-ephemeral-frames/addendum3.org=
+- exact revision =41423e826c22ba06630eccf384462bd4df5804d7=
+
+The delta from Review 02 adds its review artifact and changes one external
+evidence record in =addendum3.org=.  Source, tests, the matrix, implementation
+slices, non-goals, compatibility boundaries, and test dispositions are
+unchanged.
+
+The remediation narrative in Review 02 was not accepted as proof.  The current
+addendum and affected evidence boundary were independently inspected.
+
+The reviewer changed no file, created no commit, contacted no running Emacs,
+and made no credentialed provider request.
+
+* Prior-finding dispositions
+
+** CARRIED DONE P1-01: inherited delivery and anchor safety remain coherent
+
+Affected profiles resolve current-state and dynamic-context observations as
+=inherited=.  Observation-bearing responses and descendants remain
+immediate-followup-only and ineligible as durable cross-turn anchors.
+
+The unchanged source owners still support the proposed correction:
+
+- adapter profile capability resolution owns delivery truth;
+- harness selection and persistence reject inherited contaminated anchors; and
+- the loop separately owns matching immediate tool continuation.
+
+No provider-specific core switch or falsely clean compatibility path is
+specified.
+
+** CARRIED DONE P2-02: the matrix remains the sole normative authority
+
+=F88A3-SEM= through =F88A3-COMPAT= still own every durable requirement.
+Rationale, scenarios, implementation slices, exact-bound records, test
+dispositions, risks, and architecture notes add only their purpose-specific
+information.
+
+Private state shapes, current helper/test names, diagnostics, and deletion
+inventory remain in the conditional implementation appendix.  No duplicated or
+contradictory normative authority was introduced by the latest delta.
+
+** DONE P2-03: external timeout evidence is now reproducible
+
+The mandatory external record now includes:
+
+- the scenario’s predeclared total timeout;
+- elapsed duration; and
+- the classified result.
+
+The runner declares the bound before its first request.  A run that does not
+conclude before that bound is =inconclusive-timeout=.  The timeout is explicitly
+private execution configuration: it bounds evidence collection but does not
+alter capability identity, provider semantics, or the durable F88A3 contract.
+
+This closes the exact Review 02 defect.  The timeout is auditable without
+becoming another unjustified normative number.
+
+* Contract-and-evidence matrix disposition
+
+| Contract | Incremental disposition | Status |
+|----------+-------------------------+--------|
+| =F88A3-SEM= | Canonical reconstruction, promotion inclusion, and exclusion of raw observations and contaminated lineage remain precise. | cleared |
+| =F88A3-LAYOUT= | Stable instructions/prefix, late developer-role frontier, and supported breakpoint remain adapter-owned and independently implementable. | cleared |
+| =F88A3-DELIVERY= | Inherited affected-profile delivery, immediate-only contaminated lineage, and retained older-profile behavior remain coherent. | cleared |
+| =F88A3-TOOL= | Matching immediate continuation, complete canonical recovery, both error forms, exact zero/one retry, and next-turn exclusion remain bounded. | cleared |
+| =F88A3-PROMOTION= | Core provenance validation and commit-before-subsequent-dispatch remain accepted inherited behavior. | cleared |
+| =F88A3-CACHE= | External identity, scenarios, freshness, timeout record, result classes, and observational metrics are complete.  Execution remains capability-unconfirmed. | cleared |
+| =F88A3-CLEANUP= | Obsolete historical state and wire-size acceptance are removed by contract while immediate causal state and general socket policy remain. | cleared |
+| =F88A3-COMPAT= | Generic anchors, independent compaction/continuation consumers, persisted audit records, unrelated transports, and non-goals remain protected. | cleared |
+
+No matrix wording changed in this Tock, and no downstream join invalidates a
+previously cleared row.
+
+* Required specification-cell ledger
+
+| Cell | Evidence and disposition | Status |
+|------+--------------------------+--------|
+| Single normative authority | Eight stable matrix rows remain the sole requirement authority. | cleared |
+| Durable contract boundary | Observable outcomes remain separate from conditional implementation mechanisms. | cleared |
+| Scenario diagnosability | Seven scenarios state distinct invariants and owner/boundary localization. | cleared |
+| Evidence topology | Deterministic semantics, external provider capability, and observational telemetry remain independent. | cleared |
+| External freshness | Identity, seven-day freshness, owner-change invalidation, reuse, timeout, and failure classification are explicit. | cleared |
+| Telemetry decision power | Cache ratio, provider latency, and warm/cold frequency remain explicitly observational. | cleared |
+| Exact-limit justification | One retry and seven days have complete records; scenario timeout is explicitly private and is predeclared/recorded per execution. | cleared |
+| Workflow boundary | The feature artifact contains targets and evidence without copying review numbering, commit, reviewer-selection, repetition, or stop mechanics. | cleared |
+
+All required cells are cleared; none is unknown or merely candidate.
+
+* Scenario and evidence audit
+
+| Scenario | Evidence class | Disposition |
+|----------+----------------+-------------|
+| =canonical-observe-promote-forget= | deterministic | cleared |
+| =stable-prefix-frontier-pair= | deterministic | cleared |
+| =latest-matching-tool-follow-up= | deterministic | cleared |
+| =rejected-latest-continuation= | deterministic | cleared |
+| =chatgpt-canonical-warm-prefix= | external compatibility | specification cleared; capability unconfirmed |
+| =chatgpt-canonical-tool-heavy= | external compatibility | specification cleared; capability unconfirmed |
+| =obsolete-cluster-absent= | deterministic | cleared |
+
+The minimal external probe and tool-heavy composition remain separately
+reportable and share only instrumentation.  External availability cannot block
+repository-controlled semantic gates, and an external success cannot substitute
+for them.
+
+Only a valid explicit-zero run under matching identity and freshness can produce
+=product-contract-failure=.  Missing credentials, missing usage, provider
+failure, infrastructure failure, or timeout leave capability unconfirmed.
+
+* Exact-bound audit
+
+| Bound | Disposition |
+|-------+-------------|
+| one canonical retry | Normative; correctness, workload, cost, exact/one-over behavior, and revision trigger remain explicit. |
+| seven calendar days | Normative evidence-freshness bound; drift, workload, cost, boundary, and revision trigger remain explicit. |
+| external scenario timeout | Private execution configuration; predeclared and recorded with elapsed duration and an exact timeout result. |
+| 4,864/5,450 historical tokens | Observational baseline only; stale for acceptance. |
+| removed 256-entry ledgers and 600-second override | Superseded mechanism limits, not Addendum 3 acceptance bounds. |
+
+No new normative number or accidental mechanism contract was introduced.
+
+* Test-disposition audit
+
+The unchanged test ledger remains coherent:
+
+- retain semantic lifetime, promotion, multi-tool, generic continuation,
+  compaction, disabled-feature, session-load, and transport contracts;
+- strengthen inherited-frontier, literal stable-prefix, both rejection forms,
+  and exact one-retry boundaries;
+- replace top-level replacement, explicit-cache/older-clean-anchor, live
+  older-anchor, and changed-instructions continuation evidence;
+- delete ledger, eviction, branch-position, Codex idle override, fake-time
+  retention, and wire-size/count mechanism evidence; and
+- preserve terminal and transport lifecycle behavior while replacing only its
+  ledger-specific assertions.
+
+A simpler correct implementation can pass the retained contract tests without
+recreating Addendum 2’s response graph.
+
+* Whole-scope architecture audit
+
+The specification remains a useful stopping point toward canonical semantic
+context with adapter-local provider optimization.  Core owns lifetime and
+promotion, session owns durable meaning, harness owns composition, loop owns
+causal tool continuation, and the OpenAI adapter owns request layout, transport,
+retry, and cache evidence.
+
+The package reduces coupling and state by deleting historical response graphs,
+eviction history, older-anchor diagnostics, the Codex-specific idle override,
+and wire-size acceptance.  It adds no durable state, compatibility shim,
+provider-specific core policy, speculative graph abstraction, or hidden
+fallback.
+
+Stable policy continues to depend only on backend capability truth.  Network,
+socket, retry, and cache side effects remain outward.  Increased canonical wire
+bytes are explicit and do not masquerade as the performance objective.
+Expected continuation loss has one bounded recovery; unexpected failures remain
+visible.
+
+No architectural-scope decision or durable follow-up is required.  Follow-up
+ledger delta: none.
+
+* Verification
+
+Fresh focused baseline checks at the reviewed revision:
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el \
+  e-openai-test-request-local-current-state-replaces-instructions \
+  e-openai-test-websocket-profile-idle-close-boundary-clears-ledger
+#+end_src
+
+Result: 2/2 expected, zero unexpected.
+
+#+begin_src sh
+eldev test -f test/e-provider-continuation-integration-test.el \
+  e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor
+#+end_src
+
+Result: 1/1 expected, zero unexpected.
+
+These tests confirm the unchanged implementation baseline that Addendum 3 will
+replace; they do not claim that the proposed behavior is already implemented.
+
+Other checks:
+
+- =git rev-parse HEAD= matched
+  =41423e826c22ba06630eccf384462bd4df5804d7=.
+- =git diff --check e62b8c30..HEAD= passed.
+- The matrix still contains exactly eight =F88A3-*= rows.
+- The credential file remained absent.
+- No full implementation gate was run because this Tick reviews a specification,
+  not an implemented target.
+
+The shared worktree retained the unrelated unstaged change to
+=docs/feats/87-sqlite-session-board-persistence/plan.org=.  It was neither read,
+modified, staged, nor otherwise disturbed by this review.
+
+* Implementation readiness
+
+Ready.
+
+The specification has zero P0–P3 findings, every required cell is cleared, the
+stable contract IDs are preserved, and current ownership can support the
+proposed slices without an architectural detour.
+
+Feature 88 and the index remain =Planned= at the reviewed revision.  The outer
+workflow may now begin the supervised implementation package and update status
+under the repository’s development-work rules.
+
+External status remains =capability-unconfirmed=.  Implementation can proceed,
+but =Done= still requires both external scenarios to produce current or
+reusable successful evidence under the declared identity and seven-day
+freshness rules.
