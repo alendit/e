@@ -3366,6 +3366,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :responses-transport websocket
              :continuation t
              :requires-openai-auth nil)))
+         (e-openai-websocket-connection-idle-seconds 300)
          (open-count 0)
          sends
          on-message
@@ -3498,6 +3499,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          "resp-two"))
           (should (eq (plist-get second-diagnostics :websocket-request-mode)
                       'incremental))
+          (should (eq (plist-get second-diagnostics
+                                 :websocket-anchor-position)
+                      'latest))
+          (should (= (plist-get second-diagnostics
+                                :websocket-idle-close-seconds)
+                     300))
           (should (eq (plist-get third-diagnostics :websocket-request-mode)
                       'full))
           (should (eq (plist-get third-diagnostics
@@ -3507,7 +3514,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                     :websocket-changed-properties)
                          ":model"))
           (should (eq (plist-get fourth-diagnostics :websocket-request-mode)
-                      'incremental)))
+                      'incremental))
+          (should (eq (plist-get fourth-diagnostics
+                                 :websocket-anchor-position)
+                      'older))
+          (should (= (plist-get fourth-diagnostics
+                                :websocket-idle-close-seconds)
+                     300)))
         (e-backend-cancel-request fourth-request)))))
 
 (ert-deftest e-openai-test-websocket-ledger-cap-and-close-cleanup ()

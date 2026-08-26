@@ -235,6 +235,33 @@ backend is whatever the configuration selected."
      :tools (list #'e-live-e2e--echo-tool-register
                   #'e-live-e2e--slow-tool-register)))))
 
+(defun e-live-e2e--deterministic-tool-register (registry &rest _context)
+  "Register a fixed-output tool in REGISTRY for continuation evidence."
+  (e-tools-register
+   registry
+   :name "e2e_deterministic"
+   :description "Return one fixed validation value exactly once."
+   :parameters '(:type "object" :properties nil)
+   :work
+   (e-tools-cheap-work
+    "e2e.live.deterministic"
+    (lambda (_arguments)
+      "LIVE-TOOL-OUTPUT"))))
+
+(defun e-live-e2e--deterministic-tool-layer ()
+  "Return a tool layer with one fixed-output continuation test tool."
+  (e-layer-create
+   :id 'e2e-deterministic-tool
+   :name "E2E Deterministic Tool"
+   :capabilities
+   (list
+    (e-capability-create
+     :id 'e2e-deterministic-tool
+     :name "E2E Deterministic Tool"
+     :instructions
+     "For continuation validation, call e2e_deterministic exactly when instructed."
+     :tools (list #'e-live-e2e--deterministic-tool-register)))))
+
 (defmacro e-live-e2e--with-harness (spec &rest body)
   "Run BODY with a live HARNESS and SESSION-ID.
 SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
@@ -751,6 +778,383 @@ provider turn to settle without an implicit local deadline."
             (should (= (length anchors) 2))
             (should (stringp newest-response-id))
             (should-not (equal newest-response-id first-response-id))))))))
+
+(ert-deftest e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain ()
+  "ChatGPT Codex branches from a clean anchor after a contaminated tool turn."
+  (unless (fboundp 'e-openai-codex--websocket-request-start)
+    (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
+  (e-live-e2e--require-enabled)
+  (let* ((provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
+    (should (eq (plist-get profile :response-store) :json-false))
+    (should (= (plist-get profile :websocket-idle-close-seconds) 600)))
+  (let* ((old-marker "LIVE-OLDER-OBSERVATION")
+         (new-marker "LIVE-CURRENT-OBSERVATION")
+         (current-state old-marker)
+         (provider
+          (e-context-provider-create
+           :name 'live-codex-older-current-state
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (layer
+          (e-layer-create
+           :id 'live-codex-older-clean-anchor
+           :name "Live Codex Older Clean Anchor"
+           :capabilities
+           (list
+            (e-capability-create
+             :id 'live-codex-older-clean-anchor
+             :instructions "LIVE-STABLE-INSTRUCTIONS"
+             :context-providers (list provider)))))
+         (raw-tool-output "LIVE-TOOL-OUTPUT"))
+    (e-live-e2e--with-harness
+        (harness session-id
+                 :layers (list layer (e-live-e2e--deterministic-tool-layer)))
+      (let ((original-start
+             (symbol-function 'e-openai-codex--websocket-request-start))
+            (original-record
+             (symbol-function
+              'e-openai-codex--websocket-session-record-response))
+            request-bodies
+            request-handles
+            completed-response-ids
+            first-turn-id
+            tool-turn-id
+            warm-turn-id)
+        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+                   (lambda (&rest args)
+                     (setq request-bodies
+                           (append request-bodies
+                                   (list (copy-tree
+                                          (plist-get args :body-data)))))
+                     (let ((request (apply original-start args)))
+                       (setq request-handles
+                             (append request-handles (list request)))
+                       request)))
+                  ((symbol-function
+                    'e-openai-codex--websocket-session-record-response)
+                   (lambda (session response-id properties)
+                     (when (stringp response-id)
+                       (setq completed-response-ids
+                             (append completed-response-ids
+                                     (list response-id))))
+                     (funcall original-record session response-id properties))))
+          (let ((first-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  "Reply with exactly LIVE-R0-READY. Do not call tools or repeat observation markers.")))
+            (setq first-turn-id (plist-get first-result :id))
+            (should (stringp first-turn-id))
+            (should (equal
+                     (string-trim (e-live-e2e--assistant-content first-result))
+                     "LIVE-R0-READY"))
+            (should-not (e-live-e2e--contains-p
+                         (e-live-e2e--assistant-content first-result)
+                         old-marker)))
+          (let ((tool-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  "Call e2e_deterministic exactly once. After it returns, reply with exactly LIVE-R2-READY and no other text.")))
+            (setq tool-turn-id (plist-get tool-result :id))
+            (should (stringp tool-turn-id))
+            (should (equal
+                     (string-trim (e-live-e2e--assistant-content tool-result))
+                     "LIVE-R2-READY")))
+          (setq current-state new-marker)
+          (let ((warm-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  "Reply with exactly the current observation marker from your instructions and no other text.")))
+            (setq warm-turn-id (plist-get warm-result :id))
+            (should (stringp warm-turn-id))
+            (should (equal (string-trim (e-live-e2e--assistant-content warm-result))
+                           new-marker))))
+        (let* ((ordered-bodies request-bodies)
+               (ordered-handles request-handles)
+               (response-ids completed-response-ids)
+               (r0 (nth 0 response-ids))
+               (r1 (nth 1 response-ids))
+               (r2 (nth 2 response-ids))
+               (first-body (nth 0 ordered-bodies))
+               (tool-body (nth 1 ordered-bodies))
+               (warm-body (nth 3 ordered-bodies))
+               (warm-handle (nth 3 ordered-handles))
+               (warm-input (append (plist-get warm-body :input) nil))
+               (warm-input-printed (prin1-to-string warm-input))
+               (warm-body-printed (prin1-to-string warm-body))
+               (first-diagnostics
+                (plist-get (e-backend-request-metadata
+                            (car ordered-handles))
+                           :diagnostics))
+               (warm-diagnostics
+                (plist-get (e-backend-request-metadata warm-handle)
+                           :diagnostics))
+               (warm-finished-events
+                (seq-filter
+                 (lambda (event)
+                   (equal (plist-get event :turn-id) warm-turn-id))
+                 (e-live-e2e--activity-of-type
+                  harness session-id 'provider-request-finished)))
+               (warm-finished-event (car warm-finished-events))
+               (warm-finished-payload
+                (plist-get warm-finished-event :payload))
+               (warm-finished-diagnostics
+                (plist-get warm-finished-payload :diagnostics))
+               (anchors
+                (e-session-provider-anchors
+                 (e-harness-sessions harness) session-id))
+               (anchor-ids
+                (mapcar
+                 (lambda (anchor)
+                   (plist-get (plist-get anchor :metadata) :response-id))
+                 anchors)))
+          (should (= (length ordered-bodies) 4))
+          (should (= (length ordered-handles) 4))
+          (should (= (length response-ids) 4))
+          (should (string-match-p
+                   (regexp-quote old-marker)
+                   (plist-get first-body :instructions)))
+          (should (string-match-p
+                   (regexp-quote old-marker)
+                   (plist-get tool-body :instructions)))
+          (dolist (response-id (list r0 r1 r2))
+            (should (stringp response-id)))
+          (should (= (length
+                      (e-live-e2e--activity-of-type
+                       harness session-id 'tool-started))
+                     1))
+          (should (= (length
+                      (e-live-e2e--activity-of-type
+                       harness session-id 'tool-finished))
+                     1))
+          (should (equal (plist-get warm-body :previous_response_id) r0))
+          (should-not (member (plist-get warm-body :previous_response_id)
+                              (list r1 r2)))
+          (should (eq (plist-get warm-diagnostics :websocket-request-mode)
+                      'incremental))
+          (should (eq (plist-get warm-diagnostics
+                                 :websocket-anchor-position)
+                      'older))
+          (should (= (plist-get warm-diagnostics
+                                :websocket-idle-close-seconds)
+                     600))
+          (should (eq (plist-get warm-diagnostics :websocket-reused) t))
+          (should (equal (plist-get first-diagnostics
+                                    :websocket-connection-id)
+                         (plist-get warm-diagnostics
+                                    :websocket-connection-id)))
+          (should warm-finished-event)
+          (should (= (length warm-finished-events) 1))
+          (should (eq (plist-get warm-finished-diagnostics
+                                 :websocket-anchor-position)
+                      'older))
+          (should (= (plist-get warm-finished-diagnostics
+                                :websocket-idle-close-seconds)
+                     600))
+          (should (eq (plist-get warm-finished-diagnostics
+                                 :websocket-request-mode)
+                      'incremental))
+          (should (eq (plist-get warm-finished-diagnostics
+                                 :previous-response-id-present)
+                      t))
+          (dolist (response-id (list r0 r1 r2))
+            (should-not (string-match-p
+                         (regexp-quote response-id)
+                         (prin1-to-string warm-finished-diagnostics))))
+          (should-not (string-match-p
+                       (regexp-quote raw-tool-output)
+                       (prin1-to-string warm-finished-diagnostics)))
+          (should (string-match-p
+                   (regexp-quote new-marker)
+                   (plist-get warm-body :instructions)))
+          (should (string-match-p
+                   (regexp-quote "LIVE-STABLE-INSTRUCTIONS")
+                   (plist-get warm-body :instructions)))
+          (should-not (string-match-p (regexp-quote old-marker)
+                                      warm-body-printed))
+          (should-not (string-match-p (regexp-quote raw-tool-output)
+                                      warm-body-printed))
+          (should (string-match-p
+                   (regexp-quote "Call e2e_deterministic exactly once")
+                   warm-input-printed))
+          (should-not
+           (seq-some
+            (lambda (item)
+              (member (plist-get item :type)
+                      '("function_call" "function_call_output"
+                        "provider-replay-item" "reasoning"
+                        function_call function_call_output
+                        provider-replay-item reasoning)))
+            warm-input))
+          (should-not (string-match-p (regexp-quote r1) warm-body-printed))
+          (should-not (string-match-p (regexp-quote r2) warm-body-printed))
+          (should (member r0 anchor-ids))
+          (should-not (member r1 anchor-ids))
+          (should-not (member r2 anchor-ids))
+          (e-backend-cancel-request warm-handle))))))
+
+(ert-deftest e-live-e2e-test-openai-codex-long-idle-retains-socket ()
+  "An explicitly gated pause beyond 300 seconds keeps Codex warm on one socket."
+  (unless (fboundp 'e-openai-codex--websocket-request-start)
+    (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
+  (e-live-e2e--require-enabled)
+  (unless (e-live-e2e--env "E_E2E_LONG_IDLE")
+    (ert-skip "Set E_E2E_LONG_IDLE=1 to run the slow 300--600 second acceptance."))
+  (let* ((delay
+          (e-live-e2e--positive-number-env "E_E2E_LONG_IDLE_SECONDS" 301.0))
+         (provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (and (> delay 300) (< delay 600))
+      (error "E_E2E_LONG_IDLE_SECONDS must be greater than 300 and less than 600"))
+    (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
+    (should (= (plist-get profile :websocket-idle-close-seconds) 600))
+    (let* ((old-marker "LIVE-LONG-IDLE-OLD")
+           (new-marker "LIVE-LONG-IDLE-NEW")
+           (current-state old-marker)
+           (provider
+            (e-context-provider-create
+             :name 'live-codex-long-idle-current-state
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      (list (list :role 'system :content current-state)))))
+           (layer
+            (e-layer-create
+             :id 'live-codex-long-idle
+             :name "Live Codex Long Idle"
+             :capabilities
+             (list
+              (e-capability-create
+               :id 'live-codex-long-idle
+               :instructions "LIVE-LONG-IDLE-STABLE-INSTRUCTIONS"
+               :context-providers (list provider)))))
+           (request-bodies nil)
+           (request-handles nil)
+           (websocket-session nil))
+      (e-live-e2e--with-harness (harness session-id :layers (list layer))
+        (let ((original-start
+               (symbol-function 'e-openai-codex--websocket-request-start)))
+          (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+                     (lambda (&rest args)
+                       (setq websocket-session (plist-get args :session))
+                       (setq request-bodies
+                             (append request-bodies
+                                     (list (copy-tree
+                                            (plist-get args :body-data)))))
+                       (let ((request (apply original-start args)))
+                         (setq request-handles
+                               (append request-handles (list request)))
+                         request))))
+            (let ((first-result
+                   (e-board-e2e-prompt-batch
+                    harness session-id
+                    "Reply with exactly LIVE-LONG-IDLE-FIRST. Do not repeat observation markers.")))
+              (should (e-live-e2e--contains-p
+                       (e-live-e2e--assistant-content first-result)
+                       "LIVE-LONG-IDLE-FIRST")))
+            (let* ((anchors
+                    (e-session-provider-anchors
+                     (e-harness-sessions harness) session-id))
+                   (first-anchor (car (last anchors)))
+                   (first-response-id
+                    (plist-get (plist-get first-anchor :metadata)
+                               :response-id))
+                   (first-body (car request-bodies)))
+              (should (stringp first-response-id))
+              (should (string-match-p
+                       (regexp-quote old-marker)
+                       (plist-get first-body :instructions)))
+              (should websocket-session)
+              (should (timerp
+                       (e-openai-codex--websocket-session-idle-timer
+                        websocket-session)))
+              (ert-info ((format "Configured long-idle delay: %.3f seconds"
+                                 delay))
+                (sleep-for delay))
+              (should (e-openai-codex--websocket-session-websocket
+                       websocket-session))
+              (should (timerp
+                       (e-openai-codex--websocket-session-idle-timer
+                        websocket-session)))
+              (setq current-state new-marker)
+              (let ((second-result
+                     (e-board-e2e-prompt-batch
+                      harness session-id
+                      "Reply with exactly the current observation marker from your instructions and no other text.")))
+                (should (equal (string-trim
+                                (e-live-e2e--assistant-content second-result))
+                               new-marker))
+                (let* ((ordered-bodies request-bodies)
+                       (ordered-handles request-handles)
+                       (second-body (cadr ordered-bodies))
+                       (first-diagnostics
+                        (plist-get (e-backend-request-metadata
+                                    (car ordered-handles))
+                                   :diagnostics))
+                       (second-diagnostics
+                        (plist-get (e-backend-request-metadata
+                                    (cadr ordered-handles))
+                                   :diagnostics))
+                       (finished-events
+                        (seq-filter
+                         (lambda (event)
+                           (equal (plist-get event :turn-id)
+                                  (plist-get second-result :id)))
+                         (e-live-e2e--activity-of-type
+                          harness session-id 'provider-request-finished)))
+                       (finished-diagnostics
+                        (plist-get (plist-get (car finished-events) :payload)
+                                   :diagnostics)))
+                  (should (= (length ordered-bodies) 2))
+                  (should (= (length ordered-handles) 2))
+                  (should (equal (plist-get second-body
+                                            :previous_response_id)
+                                 first-response-id))
+                  (should (eq (plist-get second-diagnostics
+                                         :websocket-request-mode)
+                              'incremental))
+                  (should (eq (plist-get second-diagnostics
+                                         :websocket-anchor-position)
+                              'latest))
+                  (should (= (plist-get second-diagnostics
+                                        :websocket-idle-close-seconds)
+                             600))
+                  (should (eq (plist-get second-diagnostics
+                                         :websocket-reused)
+                              t))
+                  (should (= (plist-get second-diagnostics
+                                        :websocket-reuse-count)
+                             1))
+                  (should (equal (plist-get first-diagnostics
+                                            :websocket-connection-id)
+                                 (plist-get second-diagnostics
+                                            :websocket-connection-id)))
+                  (should (= (length finished-events) 1))
+                  (should (eq (plist-get finished-diagnostics
+                                         :websocket-anchor-position)
+                              'latest))
+                  (should (= (plist-get finished-diagnostics
+                                        :websocket-idle-close-seconds)
+                             600))
+                  (should (eq (plist-get finished-diagnostics
+                                         :websocket-request-mode)
+                              'incremental))
+                  (should (eq (plist-get finished-diagnostics
+                                         :previous-response-id-present)
+                              t))
+                  (should (string-match-p
+                           (regexp-quote new-marker)
+                           (plist-get second-body :instructions)))
+                  (should-not (string-match-p
+                               (regexp-quote old-marker)
+                               (prin1-to-string second-body)))
+                  (should (timerp
+                           (e-openai-codex--websocket-session-idle-timer
+                            websocket-session)))
+                  (e-backend-cancel-request (cadr ordered-handles)))))))))))
 
 (ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
   "The configured OpenAI provider accepts encrypted reasoning full replay."

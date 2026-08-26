@@ -2129,6 +2129,19 @@ history."
       (setf (e-openai-codex--websocket-session-response-order session) order)))
   session)
 
+(defun e-openai-codex--websocket-session-response-position
+    (session response-id)
+  "Return the live ledger position of RESPONSE-ID on SESSION.
+The response insertion order is the ledger's existing compatibility-owned
+ordering: the newest retained entry is `latest', and another retained entry
+is `older'.  Unknown or absent response IDs have no position."
+  (let ((order (e-openai-codex--websocket-session-response-order session)))
+    (when (and (stringp response-id)
+               (member response-id order))
+      (if (equal response-id (car (last order)))
+          'latest
+        'older))))
+
 (defun e-openai-codex--websocket-cancel-idle-close (session)
   "Cancel SESSION's pending idle close timer."
   (when-let ((timer (e-openai-codex--websocket-session-idle-timer session)))
@@ -2318,11 +2331,13 @@ ordered request plists in adapter-local request data."
 
 (defun e-openai-codex--websocket-actual-metadata
     (metadata body-data connection-id reused reuse-count mode fallback-reason
-              changed-properties)
+              changed-properties anchor-position idle-close-seconds)
   "Return METADATA updated for the actual WebSocket BODY-DATA sent.
 CONNECTION-ID identifies the socket, REUSED and REUSE-COUNT describe its
 lifecycle, MODE and FALLBACK-REASON describe the selected request shape, and
-CHANGED-PROPERTIES names incompatible top-level request properties."
+CHANGED-PROPERTIES names incompatible top-level request properties.
+ANCHOR-POSITION is `latest' or `older' for a retained response selected by the
+request, and IDLE-CLOSE-SECONDS is the request-resolved local policy."
   (let* ((metadata (copy-tree metadata))
          (diagnostics (copy-sequence (plist-get metadata :diagnostics)))
          (previous-present
@@ -2355,6 +2370,12 @@ CHANGED-PROPERTIES names incompatible top-level request properties."
           (plist-put diagnostics :websocket-changed-properties
                      (and changed-properties
                           (string-join changed-properties ","))))
+    (when anchor-position
+      (setq diagnostics
+            (plist-put diagnostics :websocket-anchor-position anchor-position)))
+    (setq diagnostics
+          (plist-put diagnostics :websocket-idle-close-seconds
+                     idle-close-seconds))
     (setq metadata (plist-put metadata :provider-continuation continuation))
     (setq metadata (plist-put metadata :diagnostics diagnostics))
     (unless previous-present
@@ -2484,7 +2505,11 @@ list.  Return a cancellable `e-backend-request' handle."
                    (e-openai-codex--websocket-session-reuse-count session)
                    mode
                    reason
-                   changed-properties)))
+                   changed-properties
+                   (e-openai-codex--websocket-session-response-position
+                    session
+                    (plist-get actual-body-data :previous_response_id))
+                   idle-close-seconds)))
              (setf (e-backend-request-metadata request)
                    (append
                     (list :transport 'websocket

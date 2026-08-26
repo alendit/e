@@ -4634,7 +4634,9 @@ Return request options, persisted anchors, and the final context."
             :websocket-reuse-count 3
             :websocket-request-mode full
             :websocket-fallback-reason request-properties-changed
-            :websocket-changed-properties ":tools"))))
+            :websocket-changed-properties ":tools"
+            :websocket-anchor-position older
+            :websocket-idle-close-seconds 600))))
     (should (equal (plist-get projected :websocket-connection-id) "e-ws-7"))
     (should (eq (plist-get projected :websocket-reused) t))
     (should (= (plist-get projected :websocket-reuse-count) 3))
@@ -4642,7 +4644,11 @@ Return request options, persisted anchors, and the final context."
     (should (eq (plist-get projected :websocket-fallback-reason)
                 'request-properties-changed))
     (should (equal (plist-get projected :websocket-changed-properties)
-                   ":tools"))))
+                   ":tools"))
+    (should (eq (plist-get projected :websocket-anchor-position)
+                'older))
+    (should (= (plist-get projected :websocket-idle-close-seconds)
+               600))))
 
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
   "Harness turn events persist as activity, and messages keep their turn id."

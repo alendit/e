@@ -1147,6 +1147,13 @@ the socket transport is deterministic fake state."
                         (on-message
                          (plist-get (gethash websocket callbacks)
                                     :on-message)))
+                   (let ((callback on-message))
+                     (setq on-message
+                           (lambda (socket frame)
+                             (run-at-time
+                              0 nil
+                              (lambda ()
+                                (funcall callback socket frame))))))
                    (cl-incf send-count)
                    (setq sent-requests
                          (append sent-requests
@@ -1309,6 +1316,22 @@ the socket transport is deterministic fake state."
               (plist-get (e-backend-request-metadata
                           warm-diagnostics-request)
                          :diagnostics))
+             (warm-finished-activity
+              (seq-find
+               (lambda (event)
+                 (and (eq (plist-get event :event-type)
+                          'provider-request-finished)
+                      (eq (plist-get
+                           (plist-get (plist-get event :payload)
+                                      :diagnostics)
+                           :websocket-anchor-position)
+                          'older)))
+               (reverse
+                (e-session-activity-events
+                 (e-harness-sessions harness) "websocket-composed"))))
+             (warm-finished-diagnostics
+              (plist-get (plist-get warm-finished-activity :payload)
+                         :diagnostics))
              (anchor-ids
               (mapcar
                (lambda (anchor)
@@ -1335,9 +1358,43 @@ the socket transport is deterministic fake state."
                                :websocket-request-mode)
                     'incremental))
         (should (eq (plist-get warm-diagnostics
+                               :websocket-anchor-position)
+                    'older))
+        (should (plist-member warm-diagnostics
+                              :websocket-idle-close-seconds))
+        (should-not (plist-get warm-diagnostics
+                               :websocket-idle-close-seconds))
+        (should (eq (plist-get warm-diagnostics
                                :previous-response-id-present)
                     t))
         (should (eq (plist-get warm-diagnostics :websocket-reused) t))
+        ;; The completed activity is the public projection boundary: both
+        ;; adapter-owned scalar diagnostics survive without any ledger data.
+        (should warm-finished-activity)
+        (should (eq (plist-get warm-finished-diagnostics
+                               :websocket-anchor-position)
+                    'older))
+        (should (plist-member warm-finished-diagnostics
+                              :websocket-idle-close-seconds))
+        (should-not (plist-get warm-finished-diagnostics
+                               :websocket-idle-close-seconds))
+        (should (eq (plist-get warm-finished-diagnostics
+                               :websocket-request-mode)
+                    'incremental))
+        (should (eq (plist-get warm-finished-diagnostics
+                               :previous-response-id-present)
+                    t))
+        (should-not (string-match-p "resp-r0"
+                                    (prin1-to-string warm-finished-diagnostics)))
+        (should-not (string-match-p "resp-r1"
+                                    (prin1-to-string warm-finished-diagnostics)))
+        (should-not (string-match-p "resp-r2"
+                                    (prin1-to-string warm-finished-diagnostics)))
+        (dolist (marker '("RAW-COMPOSED-TOOL-RESULT"
+                          "call-composed-inspect"))
+          (should-not (string-match-p
+                       marker
+                       (prin1-to-string warm-finished-diagnostics))))
         (should (string-match-p "STABLE-COMPOSED-INSTRUCTIONS"
                                 (plist-get warm-body :instructions)))
         (should (string-match-p "CURRENT-COMPOSED-INSTRUCTIONS"
@@ -1350,6 +1407,7 @@ the socket transport is deterministic fake state."
         (dolist (marker '("RAW-COMPOSED-REPLAY"
                           "RAW-COMPOSED-TOOL-RESULT"
                           "call-composed-inspect"
+                          "provider-replay-item"
                           "resp-r1"
                           "resp-r2"))
           (should-not (string-match-p marker warm-body-printed)))

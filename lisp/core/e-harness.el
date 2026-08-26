@@ -1334,6 +1334,7 @@ board activity message unpublishable."
                    :websocket-connection-id :websocket-reused
                    :websocket-reuse-count :websocket-request-mode
                    :websocket-fallback-reason :websocket-changed-properties
+                   :websocket-anchor-position :websocket-idle-close-seconds
                    :anthropic-cache-mode :anthropic-cache-breakpoint
                    :anthropic-cache-ttl :anthropic-container-id-present))
       (when (and (listp diagnostics) (plist-member diagnostics key))
