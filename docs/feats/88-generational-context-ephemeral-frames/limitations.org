@@ -363,6 +363,16 @@ timer, cleanup, and projection assertions (10/10 current focused OpenAI
 cases; 156/156 harness cases).  These results prove the local state machine
 and ownership boundaries, not private-provider acceptance.
 
+The credential-free
+=e-live-e2e-test-provider-metrics-record-reports-bounded-scalars= check passed
+1/1.  It consumes the loop-owned =provider-request-finished= =:elapsed-seconds=
+value, keeps semantic =:status= separate, preserves an explicit cached-input
+zero, represents a missing cache field as =unavailable=, and emits exactly one
+bounded fixed-field metrics line with provider latency, input tokens, cached
+tokens, connection ID, reuse count, and fallback reason.  The credentialed
+older-clean-anchor E2E uses that same report path rather than a whole-turn
+stopwatch.
+
 The configured credentialed command was:
 
 #+begin_src sh
@@ -374,10 +384,11 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 It reached provider initialization but could not run because
 =/Users/dvorona/.codex/auth.json= is absent.  Consequently the
 fast older-clean-anchor provider scenario did not pass and remains unmeasured
-and blocked locally; its warm latency and turn-scoped provider input/cached
-token values remain unavailable.  No wall-clock 301-second provider run is
-required or claimed.  The deterministic timer test advances fake time to 301
-and 600; it is the acceptance evidence for the retention boundary.
+and blocked locally; its provider-request latency, provider input/cached token
+values, and success-path metrics line remain unavailable.  No wall-clock
+301-second provider run is required or claimed.  The deterministic timer test
+advances fake time to 301 and 600; it is the acceptance evidence for the
+retention boundary.
 
 ** Remediation direction
 

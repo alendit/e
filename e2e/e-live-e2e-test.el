@@ -154,6 +154,82 @@ backend is whatever the configuration selected."
    (lambda (event) (eq (plist-get event :event-type) type))
    (e-session-activity-events (e-harness-sessions harness) session-id)))
 
+(defun e-live-e2e--provider-metrics-record (finished-payload usage-payload)
+  "Return bounded scalar metrics from FINISHED-PAYLOAD and USAGE-PAYLOAD.
+The request latency comes from the loop-owned `provider-request-finished'
+payload.  A missing cached-input field is represented explicitly as the
+`unavailable' symbol; it is never inferred to be zero.  Semantic request
+status is intentionally not part of this measurement record."
+  (let ((diagnostics (plist-get finished-payload :diagnostics)))
+    (list :provider-request-latency-seconds
+          (plist-get finished-payload :elapsed-seconds)
+          :input-tokens
+          (plist-get usage-payload :input-tokens)
+          :cached-input-tokens
+          (if (plist-member usage-payload :cached-input-tokens)
+              (plist-get usage-payload :cached-input-tokens)
+            'unavailable)
+          :connection-id
+          (plist-get diagnostics :websocket-connection-id)
+          :reuse-count
+          (plist-get diagnostics :websocket-reuse-count)
+          :fallback-reason
+          (plist-get diagnostics :websocket-fallback-reason))))
+
+(defun e-live-e2e--report-provider-metrics (metrics)
+  "Emit one bounded explicit success-path record for METRICS."
+  (message
+   "E2E provider metrics: provider-request-latency-seconds=%s input-tokens=%s cached-input-tokens=%s connection-id=%s reuse-count=%s fallback-reason=%s"
+   (plist-get metrics :provider-request-latency-seconds)
+   (plist-get metrics :input-tokens)
+   (plist-get metrics :cached-input-tokens)
+   (plist-get metrics :connection-id)
+   (plist-get metrics :reuse-count)
+   (plist-get metrics :fallback-reason)))
+
+(ert-deftest e-live-e2e-test-provider-metrics-record-reports-bounded-scalars ()
+  "Metric extraction preserves unavailable cache fields and reports once."
+  (let (messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest arguments)
+                 (push (apply #'format format-string arguments) messages))))
+      (let ((metrics
+             (e-live-e2e--provider-metrics-record
+              '(:status done
+                :elapsed-seconds 0.417
+                :diagnostics (:websocket-connection-id "conn-1"
+                              :websocket-reuse-count 2
+                              :websocket-fallback-reason nil))
+              '(:input-tokens 321))))
+        (should (= (plist-get metrics :provider-request-latency-seconds)
+                   0.417))
+        (should (= (plist-get metrics :input-tokens) 321))
+        (should (eq (plist-get metrics :cached-input-tokens) 'unavailable))
+        (should (equal (plist-get metrics :connection-id) "conn-1"))
+        (should (= (plist-get metrics :reuse-count) 2))
+        (should (plist-member metrics :fallback-reason))
+        (should-not (plist-member metrics :status))
+        (e-live-e2e--report-provider-metrics metrics)
+        ;; An explicit provider-reported zero remains a numeric measurement.
+        (should (= (plist-get
+                    (e-live-e2e--provider-metrics-record
+                     '(:elapsed-seconds 0.1 :diagnostics nil)
+                     '(:input-tokens 1 :cached-input-tokens 0))
+                    :cached-input-tokens)
+                   0))))
+    (setq messages (nreverse messages))
+    (should (= (length messages) 1))
+    (should (string-match-p
+             "provider-request-latency-seconds=0.417"
+             (car messages)))
+    (should (string-match-p "input-tokens=321" (car messages)))
+    (should (string-match-p "cached-input-tokens=unavailable"
+                           (car messages)))
+    (should (string-match-p "connection-id=conn-1" (car messages)))
+    (should (string-match-p "reuse-count=2" (car messages)))
+    (should (string-match-p "fallback-reason=nil" (car messages)))
+    (should-not (string-match-p "status=" (car messages)))))
+
 (defun e-live-e2e--request-tool-differences (first second)
   "Return bounded tool identity differences between FIRST and SECOND bodies."
   (let ((first-tools (append (plist-get first :tools) nil))
@@ -823,8 +899,7 @@ provider turn to settle without an implicit local deadline."
             completed-response-ids
             first-turn-id
             tool-turn-id
-            warm-turn-id
-            warm-elapsed-seconds)
+            warm-turn-id)
         (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (setq request-bodies
@@ -865,17 +940,14 @@ provider turn to settle without an implicit local deadline."
                      (string-trim (e-live-e2e--assistant-content tool-result))
                      "LIVE-R2-READY")))
           (setq current-state new-marker)
-          (let ((warm-started-at (float-time)))
-            (let ((warm-result
-                   (e-board-e2e-prompt-batch
-                    harness session-id
-                    "Reply with exactly the current observation marker from your instructions and no other text.")))
-              (setq warm-elapsed-seconds
-                    (- (float-time) warm-started-at))
-              (setq warm-turn-id (plist-get warm-result :id))
-              (should (stringp warm-turn-id))
-              (should (equal (string-trim (e-live-e2e--assistant-content warm-result))
-                             new-marker))))
+          (let ((warm-result
+                 (e-board-e2e-prompt-batch
+                  harness session-id
+                  "Reply with exactly the current observation marker from your instructions and no other text.")))
+            (setq warm-turn-id (plist-get warm-result :id))
+            (should (stringp warm-turn-id))
+            (should (equal (string-trim (e-live-e2e--assistant-content warm-result))
+                           new-marker))))
         (let* ((ordered-bodies request-bodies)
                (ordered-handles request-handles)
                (response-ids completed-response-ids)
@@ -913,6 +985,7 @@ provider turn to settle without an implicit local deadline."
                    (equal (plist-get event :turn-id) warm-turn-id))
                  (e-live-e2e--activity-of-type
                   harness session-id 'token-usage)))
+               (warm-metrics nil)
                (anchors
                 (e-session-provider-anchors
                  (e-harness-sessions harness) session-id))
@@ -952,35 +1025,32 @@ provider turn to settle without an implicit local deadline."
                                 :websocket-idle-close-seconds)
                      600))
           (should (eq (plist-get warm-diagnostics :websocket-reused) t))
-          ;; Select the usage payload only after proving this turn has exactly
-          ;; one provider usage activity.  A missing cached field stays
-          ;; unavailable rather than being inferred as zero.
+          (should warm-finished-event)
+          (should (= (length warm-finished-events) 1))
           (should (= (length warm-usage-events) 1))
-          (let* ((warm-usage-payload
-                  (plist-get (car warm-usage-events) :payload))
-                 (warm-input-tokens
-                  (plist-get warm-usage-payload :input-tokens))
-                 (warm-cached-input-tokens-present
-                  (plist-member warm-usage-payload :cached-input-tokens))
-                 (warm-cached-input-tokens
-                  (plist-get warm-usage-payload :cached-input-tokens))
-                 (warm-cached-input-tokens-report
-                  (if warm-cached-input-tokens-present
-                      (format "%s" warm-cached-input-tokens)
-                    "unavailable"))
-            (ert-info
-                ((format
-                  "Warm request latency/tokens: elapsed=%.3fs input-tokens=%s cached-input-tokens=%s (present=%S)"
-                  warm-elapsed-seconds warm-input-tokens
-                  warm-cached-input-tokens-report
-                  (and warm-cached-input-tokens-present t)))
-              (should (numberp warm-elapsed-seconds))
-              (should (>= warm-elapsed-seconds 0.0))
-              (should (numberp warm-input-tokens))
-              ;; A provider may report no cached prefix as an explicit zero;
-              ;; an omitted field is unavailable evidence, not zero savings.
-              (should warm-cached-input-tokens-present)
-              (should (numberp warm-cached-input-tokens))))
+          ;; Keep semantic endpoint status separate from the bounded metrics
+          ;; record, whose latency comes from the loop-owned lifecycle event.
+          (should (eq (plist-get warm-finished-payload :status) 'done))
+          (setq warm-metrics
+                (e-live-e2e--provider-metrics-record
+                 warm-finished-payload
+                 (plist-get (car warm-usage-events) :payload)))
+          (should (numberp
+                   (plist-get warm-metrics
+                              :provider-request-latency-seconds)))
+          (should (>= (plist-get warm-metrics
+                                  :provider-request-latency-seconds)
+                       0.0))
+          (should (numberp (plist-get warm-metrics :input-tokens)))
+          (should (or (eq (plist-get warm-metrics :cached-input-tokens)
+                         'unavailable)
+                      (numberp (plist-get warm-metrics
+                                            :cached-input-tokens))))
+          (should (stringp (plist-get warm-metrics :connection-id)))
+          (should (numberp (plist-get warm-metrics :reuse-count)))
+          (should (or (null (plist-get warm-metrics :fallback-reason))
+                      (symbolp (plist-get warm-metrics :fallback-reason))
+                      (stringp (plist-get warm-metrics :fallback-reason))))
           (should (equal (plist-get first-diagnostics
                                     :websocket-connection-id)
                          (plist-get warm-diagnostics
@@ -1033,7 +1103,11 @@ provider turn to settle without an implicit local deadline."
           (should (member r0 anchor-ids))
           (should-not (member r1 anchor-ids))
           (should-not (member r2 anchor-ids))
-          (e-backend-cancel-request warm-handle))))))))
+          ;; This is deliberately one fixed-field line rather than an ERT
+          ;; info context, because passing ERT contexts are not output by a
+          ;; normal successful batch run.
+          (e-live-e2e--report-provider-metrics warm-metrics)
+          (e-backend-cancel-request warm-handle))))))
 
 (ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
   "The configured OpenAI provider accepts encrypted reasoning full replay."

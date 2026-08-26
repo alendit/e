@@ -398,10 +398,15 @@ The implementation is present in the following owners and symbols:
   credentialed acceptance path.  It asserts the resolved 600-second policy,
   a pending timer, and same-socket incremental continuation.  It also asserts
   that the old observation was present in the initial and tool-turn requests
-  before asserting its later replacement and absence.  It measures warm
-  turn-scoped latency and separately requires numeric provider input and
-  cached-input token fields (an explicit cached zero is valid; an omitted
-  field remains unavailable).  There is no wall-clock long-idle E2E.
+  before asserting its later replacement and absence.  It selects exactly one
+  warm =provider-request-finished= activity, asserts its semantic =:status=
+  separately, and consumes its loop-owned =:elapsed-seconds= as provider
+  request latency.  A successful run emits one bounded fixed-field metrics
+  line containing request latency, input tokens, cached-input tokens or
+  =unavailable=, connection ID, reuse count, and fallback reason; an explicit
+  cached zero remains numeric.  The credential-free
+  =e-live-e2e-test-provider-metrics-record-reports-bounded-scalars= test proves
+  extraction and one-line reporting.  There is no wall-clock long-idle E2E.
 
 Deterministic repository validation on the implementation revision was:
 
@@ -426,6 +431,9 @@ eldev test -B -f test/e-openai-test.el \
   e-openai-test-websocket-terminal-and-transport-cleanup \
   e-openai-test-websocket-unresolved-anchor-retries-full-request
   8/8 passed; the timer case advanced fake time 301 then 600
+E_E2E=1 eldev test -B -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-provider-metrics-record-reports-bounded-scalars
+  1/1 passed; missing cached-input usage remains the explicit unavailable value
 eldev exec -R '(dolist (file (quote ("e2e/e-live-e2e-test.el"
   "lisp/adapters/openai/e-openai.el" "lisp/core/e-harness.el"
   "test/e-harness-test.el" "test/e-openai-test.el"
@@ -463,8 +471,9 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 It reached provider
 initialization but could not run because =/Users/dvorona/.codex/auth.json= is
 absent.  Therefore the provider semantic scenario did not pass, and the
-fast credentialed semantic claim, including its warm latency and token-use
-values, remains unmeasured and blocked locally.
+fast credentialed semantic claim, including its provider-request latency,
+token-use values, and success-path metrics line, remains unmeasured and blocked
+locally.
 There is no wall-clock 301-second provider run to claim or require; the
 deterministic adapter test advances fake time to 301 and 600 instead.  Neither
 the skip nor the missing credential is treated as acceptance.
