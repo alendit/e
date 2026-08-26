@@ -4,10 +4,12 @@
 
 * Status
 
-In-review.  Independent implementation Tick 1 at exact revision
-=a3e613a18f1d937344a14376c47f7773a6050dcd= found one P1 correctness defect
-and one P2 evidence-runner defect.  The implementation is not at a functional
-fixed point and is not ready for acceptance.
+In-review.  Implementation Tock 1 resolved Tick 1's two defects in
+=da2b01ab016437d6b6373c93fd5e6890a9cfd800= and
+=0b7576250c99707725a39a0935b62d596afb1ed6=.  Fresh independent Tick 2 at
+exact revision =0b7576250c99707725a39a0935b62d596afb1ed6= found two P2
+impact-cone defects.  The implementation is not at a functional fixed point
+and is not ready for acceptance.
 
 External capability remains a separate state.  The current configured run was
 honestly =configuration-unavailable= because the built-in Codex authentication
@@ -17,9 +19,10 @@ capability proof.
 * Review boundary and decision
 
 The review covered the full Addendum 3/4 implementation and documentation
-range from the accepted Addendum 4 specification through =a3e613a1=, including
+range from the accepted Addendum 4 specification through =0b757625=, including
 =159f4be4=, =626919bc=, =7bbbe09f=, =5983a612=, =77647733=,
-=bec4c0d6=, and =2118041f=.  Addendum 4 supersedes Addendum 3 only for
+=bec4c0d6=, =2118041f=, =da2b01ab=, and =0b757625=.  Addendum 4 supersedes
+Addendum 3 only for
 promotion/curation; Addendum 3's semantic reconstruction, layout, delivery,
 tool continuation/retry, cache evidence, cleanup, compaction, and compatibility
 contracts remain inherited.
@@ -32,16 +35,37 @@ transports.  The two findings below prevent fixed-point acceptance.
 
 | Contract cell | Disposition | Evidence |
 |---------------+-------------+----------|
-| =F88A4-PRESENT=, =F88A4-CURATE=, =F88A4-BOUNDS=, =F88A4-DURABLE=, =F88A4-COST= | clear | core source/codec inspection and owner tests |
-| =F88A4-ATOMIC= / =F88A3-SEM= | blocked by =F88A4.I1= | completion-order reproduction |
+| =F88A4-PRESENT=, =F88A4-CURATE=, =F88A4-BOUNDS=, =F88A4-COST= | clear | core source/codec inspection and owner tests |
+| =F88A4-ATOMIC= / =F88A3-SEM= | clear for =F88A4.I1= | pure completion preflight and failure no-mutation evidence |
+| =F88A4-DURABLE= provenance join | blocked by =F88A4.I3= | assistant/provider identity reproduction |
 | =F88A3-LAYOUT=, =F88A3-DELIVERY=, =F88A3-TOOL= | clear | literal adapter, loop, integration, and E2E evidence |
-| =F88A3-CACHE= deterministic runner | blocked by =F88A3.I2= | failure-path source audit |
+| =F88A3-CACHE= result finalization | clear for =F88A3.I2= | outcome matrix and preserved-condition tests |
+| =F88A3-CACHE= captured request identity | blocked by =F88A3.I4= | partial-capture reproduction |
 | =F88A3-CACHE= external capability | =capability-unconfirmed= | current identity-complete =configuration-unavailable= records |
 | =F88A3-CLEANUP=, =F88A3-COMPAT= | clear | negative inventory, session, compaction, and full regression suite |
 
+* Implementation Tock 1 disposition
+
+Both Tick 1 findings are resolved in their original scope.  =da2b01ab=
+preflights provider-completion curation before an assistant append, preserves
+ordinary streamed-tool ordering, commits before any follow-up dispatch, and
+leaves session/frame state untouched on unknown-label or one-over-bound failure.
+=0b757625= gives both external selectors one finalizer that emits once and then
+preserves the original condition.
+
+| Outcome | Recorded result | Preserved outcome |
+|---------+-----------------+-------------------|
+| missing auth/configuration | =configuration-unavailable= | ERT skip |
+| scenario deadline | =inconclusive-timeout= | original error |
+| provider/infrastructure error | =provider/infrastructure-failure= | original error |
+| semantic assertion | =semantic-failure= | ERT failure |
+| explicit zero cache usage | =product-contract-failure= | ERT failure |
+| missing cache usage | =unavailable= | ERT skip |
+| semantic and warm-cache success | =pass= | normal return |
+
 * Findings
 
-** TODO P1 =F88A4.I1=: failed curation can leave assistant content durable
+** DONE P1 =F88A4.I1=: failed curation can leave assistant content durable
 
 Contract cells: =F88A4-ATOMIC= and =F88A3-SEM=.
 
@@ -87,7 +111,16 @@ live, no later provider request starts, and already-streamed ordinary calls
 retain the documented behavior.  Retain the valid assistant-bearing path and
 prove its curation commits before any later dispatch.
 
-** TODO P2 =F88A3.I2=: external scenario failures emit no classified evidence record
+Tock 1 resolution: =da2b01ab= added a pure harness preflight and invokes it at
+=lisp/core/e-loop.el:1048-1069= before the assistant append.  Unknown-label and
+8,193-byte composed regressions now prove one request, no assistant or curation
+append, and an unchanged live frame.  Tool responses preflight and commit at
+=lisp/core/e-loop.el:529-549= before =maybe-start-followup=, while the existing
+streamed-tool ordering and descendant-frame race tests pass.  Tick 2 therefore
+closes the original mutation-order defect; the distinct response-identity
+defect is =F88A4.I3= below.
+
+** DONE P2 =F88A3.I2=: external scenario failures emit no classified evidence record
 
 Contract cell: =F88A3-CACHE= deterministic evidence runner.
 
@@ -121,23 +154,101 @@ then preserve the intended failure outcome.  Existing auth-unavailable,
 missing-usage, explicit-zero, and passing records must remain single-record
 cases.
 
+Tock 1 resolution: =0b757625= introduced one shared finalizer at
+=e2e/e-live-e2e-test.el:414-481=.  It records once and then re-signals the
+original ERT skip/failure or provider error.  Deterministic execution covered
+authentication, timeout, provider error, semantic failure, unavailable usage,
+explicit zero, and warm success; all produced one record with the distinct
+documented result and preserved outcome.  Tick 2 closes the original
+missing-record defect; the distinct partial-capture defect is =F88A3.I4= below.
+
+* Implementation Tick 2 findings
+
+** TODO P2 =F88A4.I3=: assistant curation provenance binds a transient request ID
+
+Contract cell: =F88A4-DURABLE=, joined to =F88A4-ATOMIC=.
+
+Observed fact: preflight resolves the response identity from the current
+session path and otherwise falls back to =:provider-request-id=
+(=lisp/core/e-harness.el:3119-3160=), then prepares the complete v3 record with
+that value (=lisp/core/e-harness.el:3169-3179=).  For a non-tool response this
+runs before =append-message= (=lisp/core/e-loop.el:1048-1069=), so no assistant
+entry exists yet.  The append subsequently mints the durable assistant ID.
+A direct exact-revision reproduction returned
+=:preflight-binding "provider-request-audit"= and a distinct assistant ULID,
+with =:equal nil=.  Commit persists the prepared record and consumes the frame
+using the earlier request ID (=lisp/core/e-harness.el:3191-3227=).
+
+Consequence: a valid non-tool curation's =:response-entry-id= and the consumed
+frame's response provenance do not identify the durable response entry required
+by the schema.  The semantic projection is correct, but persisted provenance,
+curation identity, and audit linkage are false.
+
+Minimal correction: allocate the assistant message's durable entry ID before
+preflight without appending it, include that ID in the completion payload, and
+prepare against it.  Append must preserve the same ID.  Keep tool-response
+binding to its already appended tool-call entry and retain the pure
+no-session-mutation preflight boundary.
+
+Acceptance evidence: on a valid assistant-bearing curation, assert that the
+assistant message ID, v3 =:response-entry-id=, consumed-frame response ID, and
+consumption event response ID are identical before and after reopen/fork.
+Retain the unknown-label and exact 8,192/8,193-byte no-mutation gates and prove
+the correctly bound preparation still precedes append and later dispatch.
+
+** TODO P2 =F88A3.I4=: a captured request body disappears when metadata is absent
+
+Contract cell: =F88A3-CACHE= deterministic evidence identity.
+
+Observed fact: the record builder documents request metadata as available
+rather than mandatory, but constructs material shapes by zip-iterating
+=request-bodies= and =diagnostics= (=e2e/e-live-e2e-test.el:312-340=).  Both
+scenario interceptors capture a body before calling the real WebSocket starter
+and append the handle only after it returns (=e2e/e-live-e2e-test.el:1338-1347=
+and =1762-1770=).  A provider-start error can therefore leave one captured body
+and zero metadata entries.  An exact-revision reproduction produced
+=(:request-count 1 :material-shape [])=.
+
+Consequence: the finalizer emits exactly one correctly classified provider
+failure, but drops the material request identity already available at the
+failure boundary.  Such a record cannot support the required shape/freshness
+audit and is not identity-complete.
+
+Minimal correction: derive one bounded shape for every captured request body
+by index, joining optional metadata when present instead of terminating at the
+shorter list.  Leave metadata-derived fields unavailable for an unmatched body;
+do not invent a request handle or usage.
+
+Acceptance evidence: inject a WebSocket-start failure after body capture and
+before handle return.  Assert exactly one provider/infrastructure-failure
+record, preservation of the original error, =request-count= one, and one
+content-free material shape with its hashes, counts, roles/types, wire keys,
+tool identity, and metadata fields explicitly unavailable.  Also cover a
+multi-request prefix whose metadata list is shorter by one.
+
 * Verification performed
 
-- =eldev test=: 2,358 tests; 2,356 passed, 0 failed, 2 unrelated display tests
-  skipped.  The command was run with loopback socket permission so the HTTP
-  lifecycle tests exercised their real local fixtures.
-- The focused Addendum 3/4 owner set ran 530 tests.  Its only two initial
-  failures were sandbox-denied loopback binds; both passed when rerun with
-  loopback permission.
+- =eldev test=: 2,360 tests; 2,352 passed, six sandbox-denied loopback tests,
+  and two unrelated display skips.  All six loopback tests passed 6/6 when
+  rerun with socket permission, leaving no repository-suite failure.
+- Focused loop/harness/context-lifetime execution passed 216/216, including
+  both preflight failure classes, completion ordering, tool races, canonical
+  next-turn exclusion, compaction fencing, and performance evidence.
 - =eldev test -f e2e/e-context-lifetime-e2e-test.el=: 4/4 passed, including
   observe-curate-forget, multi-tool one-shot delivery, capability profiles,
   compaction fencing, and the bounded performance record.
-- The two external-evidence record/metric owner tests passed 2/2.
+- External record/finalizer/metric owner tests passed 3/3.  Additional
+  deterministic injected execution proved one record and preserved outcome for
+  warm success, explicit-zero product failure, and missing-usage skip; the
+  checked-in tests cover auth, timeout, provider error, and semantic failure.
 - The exact configured cache selectors at the reviewed revision emitted one
   bounded record each with exact profile/endpoint/model/transport/store,
-  repository revision =a3e613a18f1d937344a14376c47f7773a6050dcd=, zero
+  repository revision =0b7576250c99707725a39a0935b62d596afb1ed6=, zero
   requests, semantic/cache =unavailable=, and
   =configuration-unavailable=; both then skipped.
+- Read-only reproductions established the two Tick 2 findings: the provider
+  request/assistant entry IDs differ, and one body with no metadata yields one
+  request but zero material shapes.
 - Negative production inventory found no =context-promote= carrier,
   =append-context-promotion= API, or v2 promotion writer.  The retained v2
   decoder/projection is read-only compatibility.
@@ -150,7 +261,7 @@ change.
 
 * Architecture and design self-check
 
-1. The package is a useful step only after =F88A4.I1= and =F88A3.I2= are
+1. The package is a useful step only after =F88A4.I3= and =F88A3.I4= are
    resolved; the current successful semantic path otherwise moves toward the
    accepted canonical durable-context design.
 2. Stable behavior is direct: core owns source/curation semantics, session owns
@@ -158,9 +269,9 @@ change.
    owns wire continuation and the reserved carrier.
 3. Provider cache capability remains explicitly uncertain, local to the
    adapter/evidence boundary, and reversible without changing core semantics.
-4. Responsibilities are cohesive except for the completion ordering exposed by
-   =F88A4.I1=; its correction should split pure preflight from mutation rather
-   than move policy into the loop.
+4. Responsibilities remain cohesive; =F88A4.I3= requires the loop/session join
+   to expose the durable response identity without moving curation policy out
+   of core/harness.
 5. Interfaces remain narrow and consumer-shaped; the review found no new
    provider-to-core dependency or unused generalized interface.
 6. Dependencies still point from adapter/harness orchestration toward stable
@@ -179,15 +290,15 @@ change.
     are absent.
 12. No additional legacy code was identified beyond the required v2 reader and
     historical audit data.
-13. Expected malformed curation surfaces as a domain error; =F88A4.I1= is the
-    remaining side-effect-order violation on that error path.
+13. Expected malformed curation now surfaces before semantic mutation;
+    unexpected provider and evidence failures remain visible.
 14. Owner, composed, persistence, retry, compaction, external-record, and full
-    repository tests are broad, but the two finding-specific regressions are
+    repository tests are broad, but the two Tick 2 identity regressions are
     required before the next independent Tick.
 
 * Fixed-point disposition
 
-Changes requested.  Remediate =F88A4.I1= and =F88A3.I2=, run their focused
+Changes requested.  Remediate =F88A4.I3= and =F88A3.I4=, run their focused
 regressions plus the affected loop/harness/OpenAI/E2E suites, and submit the
 exact resulting revision for a fresh independent implementation Tick.  Do not
 mark Addendum 4 or Feature 88 Done on repository evidence alone; even after a
