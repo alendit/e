@@ -411,24 +411,75 @@ lists matching those requests where available."
   (message "E88 external evidence: %s"
            (json-encode (e-live-e2e--json-plist record))))
 
-(defun e-live-e2e--codex-auth-preflight (scenario profile)
-  "Emit unavailable evidence and return nil when Codex auth is missing."
-  (if (file-readable-p (e-openai-codex-auth-file))
-      t
-    (let ((now (float-time)))
-      (e-live-e2e--report-external-evidence
-       (e-live-e2e--external-evidence-record
-        :scenario scenario
-        :provider e-openai-default-provider
-        :profile profile
-        :model e-openai-default-model
-        :request-bodies nil :request-metadata nil
-        :usage-payloads nil :timeout (e-live-e2e--cache-scenario-timeout)
-        :started-at now
-        :ended-at now
-        :semantic-result "unavailable" :cache-result "unavailable"
-        :result "configuration-unavailable")))
-    nil))
+(cl-defun e-live-e2e--run-external-scenario
+    (&key scenario provider profile model timeout started-at capture thunk)
+  "Run THUNK and emit exactly one bounded evidence record.
+CAPTURE is called after THUNK settles and returns the best state captured so
+far as a plist.  The original error or ERT skip is re-signalled after the
+record is emitted; configuration, semantic, cache, and overall results stay
+separate in that record."
+  (let (condition value configuration-unavailable)
+    (condition-case caught
+        (setq value
+              (progn
+                (unless (file-readable-p (e-openai-codex-auth-file))
+                  (setq configuration-unavailable t)
+                  (ert-skip "ChatGPT Codex auth.json is unavailable."))
+                (funcall thunk)))
+      (error (setq condition caught)))
+    (let* ((state (or (ignore-errors (funcall capture)) nil))
+           (condition-type (car condition))
+           (cache-result (or (plist-get state :cache-result)
+                             "unavailable"))
+           (condition-message
+            (and condition (ignore-errors (error-message-string condition))))
+           (semantic-result
+            (cond
+             (configuration-unavailable "unavailable")
+             ((and (eq condition-type 'ert-test-failed)
+                   (equal cache-result "product-contract-failure"))
+              (or (plist-get state :semantic-result) "pass"))
+             ((eq condition-type 'ert-test-failed) "failure")
+             (t (or (plist-get state :semantic-result) "unavailable"))))
+           (result
+            (cond
+             (configuration-unavailable "configuration-unavailable")
+             ((and condition-message
+                   (string-match-p "inconclusive-timeout"
+                                   condition-message))
+              "inconclusive-timeout")
+             ((and condition
+                   (eq condition-type 'ert-test-failed)
+                   (equal cache-result "product-contract-failure"))
+              "product-contract-failure")
+             ((and condition (eq condition-type 'ert-test-failed))
+              "semantic-failure")
+             ((and condition (eq condition-type 'ert-test-skipped))
+              "unavailable")
+             (condition "provider/infrastructure-failure")
+             ((equal cache-result "warm") "pass")
+             ((equal cache-result "product-contract-failure")
+              "product-contract-failure")
+             (t "unavailable"))))
+      (ignore-errors
+        (e-live-e2e--report-external-evidence
+         (e-live-e2e--external-evidence-record
+          :scenario scenario
+          :provider (or provider e-openai-default-provider)
+          :profile profile
+          :model (or (plist-get state :model) model)
+          :request-bodies (plist-get state :request-bodies)
+          :request-metadata (plist-get state :request-metadata)
+          :usage-payloads (plist-get state :usage-payloads)
+          :timeout timeout
+          :started-at started-at
+          :ended-at (float-time)
+          :semantic-result semantic-result
+          :cache-result cache-result
+          :result result))))
+    (if condition
+        (signal (car condition) (cdr condition))
+      value)))
 
 (defun e-live-e2e--prompt-batch-before-deadline
     (harness session-id prompt deadline)
@@ -482,12 +533,19 @@ lists matching those requests where available."
         (e-live-e2e--report-external-evidence record)
         (cl-letf (((symbol-function 'e-openai-codex-auth-file)
                    (lambda () "/private/tmp/e88-missing-auth.json")))
-          (should-not
-           (e-live-e2e--codex-auth-preflight
-            'chatgpt-canonical-warm-prefix
-            '(:name "ChatGPT Codex"
-              :base-url "https://chatgpt.example/codex"
-              :response-store :json-false))))))
+          (should-error
+           (e-live-e2e--run-external-scenario
+            :scenario 'chatgpt-canonical-warm-prefix
+            :provider 'codex
+            :profile '(:name "ChatGPT Codex"
+                       :base-url "https://chatgpt.example/codex"
+                       :response-store :json-false)
+            :model "gpt-5.6-sol"
+            :timeout 120.0
+            :started-at 100.0
+            :capture (lambda () nil)
+            :thunk (lambda () (ert-skip "auth unavailable")))
+           :type 'ert-test-skipped))))
     (setq messages (nreverse messages))
     (should (= (length messages) 2))
     (let ((line (car messages))
@@ -504,6 +562,51 @@ lists matching those requests where available."
                        "\"cache-result\":\"unavailable\""
                        "\"result\":\"configuration-unavailable\""))
         (should (string-match-p (regexp-quote field) missing-line))))))
+
+(ert-deftest e-live-e2e-test-external-finalizer-classifies-injected-failures ()
+  "The shared finalizer records failures before preserving their outcome."
+  (let (records)
+    (cl-letf (((symbol-function 'file-readable-p) (lambda (&rest _) t))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (dolist (case
+               (list
+                (list "provider/infrastructure-failure"
+                      (lambda () (error "socket unavailable"))
+                      'error)
+                (list "inconclusive-timeout"
+                      (lambda ()
+                        (error "inconclusive-timeout: deadline expired"))
+                      'error)
+                (list "semantic-failure"
+                      (lambda () (ert-fail "semantic assertion"))
+                      'ert-test-failed)))
+        (setq records nil)
+        (let (condition)
+          (condition-case caught
+              (e-live-e2e--run-external-scenario
+               :scenario 'chatgpt-canonical-tool-heavy
+               :provider 'codex
+               :profile '(:name "ChatGPT Codex"
+                          :base-url "https://chatgpt.example/codex"
+                          :response-store :json-false)
+               :model "gpt-5.6-sol"
+               :timeout 120.0
+               :started-at 100.0
+               :capture (lambda () nil)
+               :thunk (cadr case))
+            (error (setq condition caught)))
+          (should condition)
+          (should (eq (car condition) (nth 2 case)))
+          (should (= (length records) 1))
+          (let ((record (car records)))
+            (should (equal (plist-get record :result) (car case)))
+            (should (equal (plist-get record :semantic-result)
+                           (if (equal (car case) "semantic-failure")
+                               "failure"
+                             "unavailable")))
+            (should (equal (plist-get record :cache-result)
+                           "unavailable"))))))))
 
 (ert-deftest e-live-e2e-test-provider-metrics-record-reports-bounded-scalars ()
   "Metric extraction preserves unavailable cache fields and reports once."
@@ -1164,8 +1267,7 @@ provider turn to settle without an implicit local deadline."
     (should (eq (plist-get profile :response-store) :json-false))
     ;; The built-in profile uses the general configurable socket policy; it
     ;; does not carry a Codex-specific timeout override.
-    (should-not (plist-member profile :websocket-idle-close-seconds))
-    (unless (e-live-e2e--codex-auth-preflight 'chatgpt-canonical-tool-heavy profile) (ert-skip "ChatGPT Codex auth.json is unavailable.")))
+    (should-not (plist-member profile :websocket-idle-close-seconds)))
   (let* ((old-marker "LIVE-INITIAL-OBSERVATION")
          (new-marker "LIVE-CURRENT-OBSERVATION")
          (current-state old-marker)
@@ -1207,8 +1309,33 @@ provider turn to settle without an implicit local deadline."
              curation-record
              first-turn-id
              tool-turn-id
-             warm-turn-id)
-        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+             warm-turn-id
+             (cache-result nil)
+             (semantic-result "unavailable"))
+        (e-live-e2e--run-external-scenario
+         :scenario 'chatgpt-canonical-tool-heavy
+         :provider e-openai-default-provider
+         :profile (e-openai-provider-profile e-openai-default-provider)
+         :model e-openai-default-model
+         :timeout scenario-timeout
+         :started-at started-at
+         :capture
+         (lambda ()
+           (list
+            :request-bodies request-bodies
+            :request-metadata
+            (mapcar (lambda (handle)
+                      (ignore-errors (e-backend-request-metadata handle)))
+                    request-handles)
+            :usage-payloads
+            (mapcar (lambda (event) (plist-get event :payload))
+                    (e-live-e2e--activity-of-type
+                     harness session-id 'token-usage))
+            :semantic-result semantic-result
+            :cache-result cache-result))
+         :thunk
+         (lambda ()
+          (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (setq request-bodies
                            (append request-bodies
@@ -1286,8 +1413,6 @@ provider turn to settle without an implicit local deadline."
                (tool-followup-body (nth 2 ordered-bodies))
                (warm-body (nth 3 ordered-bodies))
                (warm-handle (nth 3 ordered-handles))
-               (request-metadata
-                (mapcar #'e-backend-request-metadata ordered-handles))
                (tool-followup-input
                 (append (plist-get tool-followup-body :input) nil))
                (warm-input (append (plist-get warm-body :input) nil))
@@ -1326,6 +1451,7 @@ provider turn to settle without an implicit local deadline."
                  (mapcar (lambda (event) (plist-get event :payload))
                          warm-usage-events)))
                (warm-metrics nil))
+          (setq cache-result warm-cache-result)
           (should (= (length ordered-bodies) 4))
           (should (= (length ordered-handles) 4))
           (should (= (length response-ids) 4))
@@ -1463,32 +1589,9 @@ provider turn to settle without an implicit local deadline."
             (should-not (string-match-p
                          (regexp-quote response-id)
                          warm-body-printed)))
-          ;; This is deliberately one fixed-field line rather than an ERT
-          ;; info context, because passing ERT contexts are not output by a
-          ;; normal successful batch run.  Missing usage remains an explicit
-          ;; unavailable classification in the external record.
           (when warm-metrics
             (e-live-e2e--report-provider-metrics warm-metrics))
-          (e-live-e2e--report-external-evidence
-           (e-live-e2e--external-evidence-record
-            :scenario 'chatgpt-canonical-tool-heavy
-            :provider e-openai-default-provider
-            :profile (e-openai-provider-profile e-openai-default-provider)
-            :model (plist-get first-body :model)
-            :request-bodies ordered-bodies
-            :request-metadata request-metadata
-            :usage-payloads
-            (mapcar (lambda (event) (plist-get event :payload))
-                    (e-live-e2e--activity-of-type
-                     harness session-id 'token-usage))
-            :timeout scenario-timeout
-            :started-at started-at
-              :ended-at (float-time)
-              :semantic-result "pass"
-              :cache-result warm-cache-result
-              :result (if (equal warm-cache-result "warm")
-                          "pass"
-                      warm-cache-result)))
+          (setq semantic-result "pass")
           (cond
            ((equal warm-cache-result "warm") nil)
            ((equal warm-cache-result "product-contract-failure")
@@ -1497,7 +1600,7 @@ provider turn to settle without an implicit local deadline."
            (t
             (ert-skip
              "Cached-token usage was unavailable; external cache evidence is inconclusive.")))
-          (e-backend-cancel-request warm-handle)))))))
+          (e-backend-cancel-request warm-handle)))))))))
 
 (ert-deftest e-live-e2e-test-openai-store-false-full-replay ()
   "The configured OpenAI provider accepts encrypted reasoning full replay."
@@ -1584,8 +1687,7 @@ provider turn to settle without an implicit local deadline."
     (unless (e-openai--builtin-codex-profile-p provider-id profile)
       (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
     (should (eq (plist-get profile :response-store) :json-false))
-    (should (eq (plist-get profile :observation-delivery) 'inherited))
-    (unless (e-live-e2e--codex-auth-preflight 'chatgpt-canonical-warm-prefix profile) (ert-skip "ChatGPT Codex auth.json is unavailable.")))
+    (should (eq (plist-get profile :observation-delivery) 'inherited)))
   (let* ((current-state "live state one")
          ;; OpenAI only caches prefixes of at least 1,024 tokens.  Keep this
          ;; probe independent of whichever default layers the E2E config loads.
@@ -1625,8 +1727,39 @@ provider turn to settle without an implicit local deadline."
               (symbol-function 'e-openai-codex--websocket-request-start))
              request-bodies
              request-handles
-             request-sessions)
-        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+             request-sessions
+             (cache-result nil)
+             (semantic-result "unavailable"))
+        (e-live-e2e--run-external-scenario
+         :scenario 'chatgpt-canonical-warm-prefix
+         :provider e-openai-default-provider
+         :profile (e-openai-provider-profile e-openai-default-provider)
+         :model e-openai-default-model
+         :timeout scenario-timeout
+         :started-at started-at
+         :capture
+         (lambda ()
+           (let* ((ordered-bodies (reverse request-bodies))
+                  (ordered-handles (reverse request-handles))
+                  (usage-events
+                   (e-live-e2e--activity-of-type
+                    harness session-id 'token-usage)))
+             (list
+              :model (plist-get (plist-get (car ordered-bodies) :body) :model)
+              :request-bodies
+              (mapcar (lambda (entry) (plist-get entry :body)) ordered-bodies)
+              :request-metadata
+              (mapcar (lambda (handle)
+                        (ignore-errors (e-backend-request-metadata handle)))
+                      ordered-handles)
+              :usage-payloads
+              (mapcar (lambda (event) (plist-get event :payload))
+                      usage-events)
+              :semantic-result semantic-result
+              :cache-result cache-result)))
+         :thunk
+         (lambda ()
+          (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
                    (lambda (&rest args)
                      (push (list :body
                                  (copy-tree (plist-get args :body-data))
@@ -1653,8 +1786,8 @@ provider turn to settle without an implicit local deadline."
                           harness session-id 'provider-request-started))
                (latest (car (last requests)))
                (diagnostics (plist-get (plist-get latest :payload) :diagnostics))
-               (ordered-bodies (nreverse request-bodies))
-               (ordered-handles (nreverse request-handles))
+               (ordered-bodies (reverse request-bodies))
+               (ordered-handles (reverse request-handles))
                (first-body (plist-get (car ordered-bodies) :body))
                (latest-body
                 (plist-get (car (last ordered-bodies)) :body))
@@ -1684,7 +1817,7 @@ provider turn to settle without an implicit local deadline."
                 (e-live-e2e--cache-result (list retained-usage)))
                (replacement-cache-result
                 (e-live-e2e--cache-result (list replacement-usage)))
-               (cache-result
+               (computed-cache-result
                 (e-live-e2e--cache-result
                  (list retained-usage replacement-usage)))
                (tool-differences
@@ -1738,40 +1871,21 @@ provider turn to settle without an implicit local deadline."
                                       :prompt_cache_key)))
             (should (equal (plist-get first-body :prompt_cache_key)
                            (plist-get latest-body :prompt_cache_key)))
-            (e-live-e2e--report-external-evidence
-             (e-live-e2e--external-evidence-record
-              :scenario 'chatgpt-canonical-warm-prefix
-              :provider e-openai-default-provider
-              :profile (e-openai-provider-profile e-openai-default-provider)
-              :model (plist-get first-body :model)
-              :request-bodies (mapcar (lambda (entry)
-                                        (plist-get entry :body))
-                                      ordered-bodies)
-              :request-metadata request-metadata
-              :usage-payloads (mapcar (lambda (event)
-                                        (plist-get event :payload))
-                                      usage-events)
-              :timeout scenario-timeout
-              :started-at started-at
-              :ended-at (float-time)
-              :semantic-result "pass"
-              :cache-result cache-result
-              :result (if (equal cache-result "warm")
-                          "pass"
-                        cache-result)))
+            (setq cache-result computed-cache-result)
+            (setq semantic-result "pass")
             ;; Request one is the intentionally cold prefill.  Require both
             ;; the retained and replacement targets to report warm usage only
             ;; after their bounded evidence record has been emitted.
             (cond
-             ((equal cache-result "warm")
+             ((equal computed-cache-result "warm")
               (should (equal retained-cache-result "warm"))
               (should (equal replacement-cache-result "warm")))
-             ((equal cache-result "product-contract-failure")
+             ((equal computed-cache-result "product-contract-failure")
               (ert-fail
                "The provider explicitly reported zero cached tokens for a warm target."))
              (t
              (ert-skip
-               "Cached-token usage was unavailable; external cache evidence is inconclusive.")))))))))
+               "Cached-token usage was unavailable; external cache evidence is inconclusive.")))))))))))
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."
