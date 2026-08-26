@@ -1,0 +1,126 @@
+#+title: Feature 88 Addendum 4 Specification Review 03
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This fresh independent incremental specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum4.org= at exact
+revision =192a8ee768521c8e73cd60f98944ea539516285e=.
+
+Addendum 4 has reached a whole-specification fixed point and is ready for
+supervised implementation.
+
+Findings:
+
+- P0: none.
+- P1: none.
+- P2: none.
+
+Review 02 P1-06 and P2-07 are closed.  Review 01's five findings and all
+unaffected inherited =F88A3-*= cells remain cleared.  No required specification
+cell is unknown.
+
+External cache capability remains separately =capability-unconfirmed=.  This
+does not block repository-controlled implementation, but it prevents a later
+claim of =capability-confirmed= or =Done= until fresh identity-complete
+=F88A3-CACHE= evidence exists.
+
+* Reviewed delta and scope
+
+Review mode: incremental specification review.
+
+- prior target: =b816d1e1c58c8d817ad3bac6f950a9e8a19e6d4b=
+- current target: =192a8ee768521c8e73cd60f98944ea539516285e=
+
+The Tick inspected only the P1-06 durable portable-message mapping, P2-07 slice
+ordering, and their affected =F88A4-DURABLE=, =F88A3-SEM=,
+=F88A3-LAYOUT=, persistence, compaction, scenario, and matrix joins.  Production
+source and tests are unchanged from the feasibility baseline.
+
+The reviewer changed no file, contacted no running Emacs, and made no provider
+request.  The unrelated Feature 87 modification was preserved.
+
+* Prior-finding dispositions
+
+** DONE P1-06: version-3 durable projection has one literal portable mapping
+
+The =F88A4-DURABLE= matrix row requires one portable system message per v3 item
+and literal role/content preservation through compaction.  The owning section
+defines:
+
+#+begin_src emacs-lisp
+exact item   -> (:role system :content EXACT-CANONICAL-SOURCE-VALUE)
+summary item -> (:role system :content MODEL-AUTHORED-TEXT)
+#+end_src
+
+Core adds no frame label, token count, internal ID, =Promoted fact= prefix, or
+=prin1= conversion.  Content must satisfy the portable-message codec.
+Compaction consumes the identical role/content sequence, while v2 keeps its
+existing compatibility projection (=addendum4.org:35,204-223=).
+
+=curate-persistence-compat= requires literal v3 role/content across reopen,
+mixed projection, branches, and compaction.  The composed scenario requires
+literal ordered durable messages and exclusion of consumed/presentation state
+(=addendum4.org:284-294=).  P1-06 is closed.
+
+** DONE P2-07: durable session support now precedes carrier-driven writes
+
+Slice 2 establishes strict v3 validation, append, replay, projection, read-only
+v2 dispatch, mixed-version reopen, branches, and compaction before a
+model-facing writer exists (=addendum4.org:328-335=).  Slice 3 then implements
+loop/harness/OpenAI commit composition using that accepted boundary
+(=addendum4.org:337-343=).
+
+This matches the current requirement that session append normalize a context
+record through its core codec before mutation.  No bypass, unreplayable
+intermediate record, or reversed dependency is required.  P2-07 is closed.
+
+* Compact cell disposition
+
+| Cell | Incremental disposition | Status |
+|------+-------------------------+--------|
+| =F88A4-DURABLE= | V3 storage, literal portable system projection, v2 read compatibility, ordering, provenance, reopen, branches, and compaction are complete. | cleared |
+| =F88A3-SEM= join | The next ordinary projection has ordered curation messages and no consumed raw source or contaminated lineage. | cleared |
+| =F88A3-LAYOUT= join | Durable curation uses the stable durable prefix; labels/counts remain late-frontier-only. | cleared |
+| Persistence/compaction scenario | Literal role/content survives v2/v3 reopen, branches, and compaction. | cleared |
+| Ordered slices | Preparation precedes durable codec/session support, which precedes carrier-driven commit. | cleared |
+| Review 01 findings P1-01 through P2-05 | No changed dependency contradicts their Review 02 closures. | carried cleared |
+| Other inherited =F88A3-*= cells | Outside the impact cone; no contradictory contract change. | carried cleared |
+| External cache evidence | Material-shape refresh remains required after implementation. | specification cleared; capability unconfirmed |
+
+All required specification cells—normative authority, durable boundary,
+scenario diagnosability, evidence topology, external freshness/failure class,
+telemetry decision power, exact-limit justification, and workflow boundary—are
+cleared or correctly separated as external execution status.
+
+* Architecture disposition
+
+The corrected owner flow is coherent:
+
+#+begin_example
+core source preparation and bounded prepared record
+  -> core/session versioned durable codec and projection
+  -> loop/harness atomic commit composition
+  -> adapter reserved wire carrier
+#+end_example
+
+Core owns semantic role/content mapping shared with compaction.  Session owns
+persisted version dispatch and branch/reopen behavior.  Harness and loop own
+response completion.  OpenAI owns only wire encoding and immediate opaque
+acknowledgement.  No provider-specific core dependency, append bypass, durable
+open frame, compatibility writer, board storage, or compaction coupling is
+added.  No architecture follow-up is required.
+
+* Verification
+
+The reviewer reran six focused feasibility-baseline tests: 6/6 passed.  Current
+Addendum 4 Org parsing, =git diff --check b816d1e1..192a8ee7=, exact revision,
+and ancestry checks passed.  Running Emacs was unchanged and no provider request
+was made.
+
+* Implementation readiness
+
+The Addendum 4 specification is at fixed point and ready for supervised
+implementation in the stated slice order.  External status remains
+=capability-unconfirmed= and must continue to be reported separately.

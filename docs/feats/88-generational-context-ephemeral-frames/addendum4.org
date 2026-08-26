@@ -4,7 +4,7 @@
 
 * Status
 
-Planned.
+Ready.
 
 This addendum replaces only Feature 88's promotion contract.  The model can
 keep an ephemeral input exactly, replace selected inputs with a smaller durable
