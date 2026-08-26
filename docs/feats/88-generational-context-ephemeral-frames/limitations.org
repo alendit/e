@@ -4,10 +4,11 @@
 
 * Status
 
-Ready.  This document records limitations observed after Feature 88 and its
-request-local observation-delivery addendum were enabled in the live ChatGPT
-Codex adapter.  It is an evidence handoff for later remediation, not a design
-review, proposed architecture, or acceptance decision.
+In-review.  This document records limitations observed after Feature 88 and
+its request-local observation-delivery addendum were enabled in the live
+ChatGPT Codex adapter, and the implemented disposition from Addendum 2.  It is
+an evidence handoff for the remaining review and live acceptance work, not a
+Done decision.
 
 * Purpose
 
@@ -288,11 +289,20 @@ Escalate rebase work only if measured replay latency, cost, or context pressure 
 
 The ChatGPT Codex profile uses Responses WebSocket mode with =store=false=.
 Its useful response lineage is held in the connection-local provider cache.
-The adapter currently retains an idle socket for:
+The historical six-turn experiment below ran with the then-current global
+adapter policy:
 
 #+begin_example
 e-openai-websocket-connection-idle-seconds = 300
 #+end_example
+
+The current implementation keeps that global value as the fallback, but the
+exact built-in ChatGPT Codex profile now resolves an adapter-private
+=:websocket-idle-close-seconds= value of 600 through the request context.
+Profiles without that field retain the global behavior, including =nil= for no
+idle timer.  The adapter also owns a bounded connection-local ledger of up to
+256 completed response IDs plus 256 evicted IDs; neither collection is
+persisted or exposed through the harness.
 
 After five idle minutes, the adapter closes the socket.  Turns four and five
 show that a locally persisted anchor can still be selected after that close,
@@ -309,7 +319,7 @@ prior response is unavailable, the caller must provide full input context.
 The ChatGPT Codex profile's =store=false= behavior therefore cannot rely on
 stored-response recovery after the connection-local cache disappears.
 
-The effective capability window is currently:
+The historical effective capability window was:
 
 #+begin_example
 clean tool-free anchor
@@ -321,9 +331,46 @@ clean tool-free anchor
 Network failure, backend replacement, Emacs restart, or the provider's own connection limit can end that window earlier or later than the local idle timer.
 A durable local anchor record does not make the remote response state durable.
 
+** Implemented disposition and residual evidence
+
+Addendum 2 implements older-clean-anchor branching without changing Feature 88
+semantic lifetime.  =e-openai-codex--websocket-session-record-response= admits
+only completed terminal responses; compatibility uses the adapter ledger and
+recorded request properties; close, transport failure, cancellation, and timer
+expiry clear the ledger in the owning socket-close path.  The harness still
+selects the durable clean anchor, while the adapter decides whether that ID is
+usable on the current socket.  Incompatible, unavailable, or lost lineage
+continues through full reconstruction, and an unavailable response removes
+only the rejected entry before its one full retry.
+
+The deterministic composition test
+=e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
+passed 11/11 for the complete warm tool-chain branch and cold socket-loss
+fallback.  The adapter and harness suites also passed their focused diagnostics,
+ledger, timer, cleanup, and projection assertions (4/4 focused OpenAI cases;
+156/156 harness cases).  These results prove the local state machine and
+ownership boundaries, not private-provider acceptance.
+
+The configured credentialed command was:
+
+#+begin_src sh
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain
+#+end_src
+
+It reached provider initialization but could not run because
+=/Users/dvorona/.codex/auth.json= is absent.  Consequently the
+older-clean-anchor provider scenario did not pass,
+and the separately gated 301-second (greater than 300 and less than 600)
+long-idle measurement remains unmeasured and blocked locally.  The deterministic
+600-second timer boundary is covered; it is not a substitute for the missing
+credentialed semantic and pause measurements.
+
 ** Remediation direction
 
-Retain the ChatGPT Codex WebSocket beyond the current five-minute idle window.
+Retain the exact built-in ChatGPT Codex WebSocket beyond the historical
+five-minute idle window using its implemented 600-second profile policy.
 Prefer keeping it until provider close, transport failure, backend replacement, explicit session teardown, or another bounded resource policy requires eviction.
 This improves the common pause-prone workflow without treating connection-local response state as durable.
 
@@ -338,7 +385,10 @@ That profile-specific option must not weaken the full-reconstruction fallback or
 
 Measure the longer retention policy before adding a rebase call or stored-response dependency.
 Track socket lifetime, idle duration before reuse, continuation success, full-fallback frequency, request latency, and transport failures.
-Add acceptance coverage for reuse after more than five idle minutes, provider-forced socket loss, explicit teardown, and a new connection that cannot resolve the old response ID.
+Deterministic coverage now covers the 600-second timer boundary, provider-forced
+socket loss, explicit teardown, and unavailable response IDs.  Credentialed
+reuse after more than five idle minutes remains an explicit acceptance gate,
+not a completed measurement.
 
 * Limitation: continuation and prompt-cache savings are different
 

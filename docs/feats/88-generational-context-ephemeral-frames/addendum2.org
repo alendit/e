@@ -4,13 +4,14 @@
 
 * Status
 
-In-progress.
+In-review.
 This addendum addresses the two highest-priority continuation limits recorded in =limitations.org=.
 It preserves the Feature 88 lifetime model and adds the adapter behavior needed to use that model on the ChatGPT Codex Responses WebSocket.
 Design review reached a fixed point in =addendum2-review-04.org= with zero P0--P3 findings.
-Implementation has started with Slice 1.
-The Feature 88 entry in =docs/feats/index.org= is =In-progress= while this package is under implementation.
-Advance it to =In-review= and =Done= through the repository status workflow for this package.
+All five ordered implementation slices are present and the package is ready for
+independent implementation review.  The Feature 88 entry in
+=docs/feats/index.org= is =In-review= while review notes and exact-revision
+gates remain pending.  This package is not =Done=.
 
 The parent Feature 88 design, its first addendum, and their accepted implementation remain authoritative except where this document changes WebSocket response compatibility and connection retention.
 The first addendum's request-local observation-delivery contract remains unchanged.
@@ -333,6 +334,108 @@ Create or update the implementation review under the Feature 88 directory.
 Update =docs/feats/index.org= according to the repository status workflow.
 
 Exit condition: repository gates pass on the exact reviewed revision, documentation matches source, and a fresh independent implementation Tick reports no P0--P3 finding.
+
+* Implementation handoff
+
+The implementation is present in the following owners and symbols:
+
+- =lisp/adapters/openai/e-openai.el=: =e-openai--profile-websocket-idle-close-seconds=,
+  =e-openai--request-context=, =e-openai-codex--websocket-session-ensure-response-ledger=,
+  =e-openai-codex--websocket-session-record-response=,
+  =e-openai-codex--websocket-session-remove-response=,
+  =e-openai-codex--websocket-session-clear-response-ledger=,
+  =e-openai-codex--websocket-session-response-position=,
+  =e-openai-codex--websocket-schedule-idle-close=, and
+  =e-openai-codex--websocket-actual-metadata=.
+  The adapter-private live and evicted ledgers are capped at 256 entries each,
+  are populated only after completed terminal responses, and are cleared with
+  the WebSocket.  The exact built-in Codex profile resolves
+  =:websocket-idle-close-seconds= to 600; undeclared profiles retain the global
+  fallback, including =nil=.
+- =lisp/core/e-harness.el=: =e-harness--provider-diagnostics-activity-projection=
+  projects only the bounded scalar =:websocket-anchor-position= and
+  =:websocket-idle-close-seconds= values into =provider-request-finished=.
+  Response IDs, ledger entries, bodies, and tool results remain private.
+- =test/e-openai-test.el=: the older-compatible-response, ledger-cap/close,
+  profile-idle-boundary, nil-fallback, explicit-zero, eviction-diagnostic,
+  terminal/transport-cleanup, and unavailable-anchor retry tests cover the
+  adapter state machine.  The focused compatibility and cleanup selector is
+  =e-openai-test-websocket-reuses-older-known-response=,
+  =e-openai-test-websocket-ledger-cap-and-close-cleanup=,
+  =e-openai-test-websocket-terminal-and-transport-cleanup=, and
+  =e-openai-test-websocket-unresolved-anchor-retries-full-request=.
+- =test/e-provider-continuation-integration-test.el=:
+  =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
+  composes the real harness, context, tool, anchor, renderer, and fake socket
+  boundaries for warm older-anchor branching and cold full reconstruction.
+- =e2e/e-live-e2e-test.el=:
+  =e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain= and
+  =e-live-e2e-test-openai-codex-long-idle-retains-socket= are the explicitly
+  gated credentialed acceptance paths.  The former also asserts that the old
+  observation was present in the initial and tool-turn requests before
+  asserting its later replacement and absence.
+
+Deterministic repository validation on the implementation revision was:
+
+#+begin_example
+eldev test -B -f test/e-openai-test.el
+  149/149 passed in the authoritative escalated full adapter run
+eldev test -B -f test/e-harness-test.el
+  156/156 passed
+eldev test -B -f test/e-provider-continuation-integration-test.el
+  11/11 passed (harness plus continuation: 167/167)
+eldev test -B -f test/e-openai-test.el \
+  e-openai-test-websocket-reuses-older-known-response \
+  e-openai-test-websocket-ledger-cap-and-close-cleanup \
+  e-openai-test-websocket-terminal-and-transport-cleanup \
+  e-openai-test-websocket-unresolved-anchor-retries-full-request
+  4/4 passed
+eldev exec -R '(dolist (file (quote ("e2e/e-live-e2e-test.el"
+  "lisp/adapters/openai/e-openai.el" "lisp/core/e-harness.el"
+  "test/e-harness-test.el" "test/e-openai-test.el"
+  "test/e-provider-continuation-integration-test.el")))
+  (with-temp-buffer (insert-file-contents file) (emacs-lisp-mode)
+    (check-parens)))'
+  passed for all six changed Elisp files
+eldev compile -F e2e/e-live-e2e-test.el
+  passed
+git diff --check
+  passed
+#+end_example
+
+These are slice-validation results.  The full exact-revision commands
+=eldev test=, =eldev lint=, and =eldev compile --warnings-as-errors=, plus the
+fresh independent Sol implementation Tick, remain pending before a =Done=
+status can be considered.
+
+The default-gated E2E selector was:
+
+#+begin_src sh
+E_E2E=1 eldev test -B -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain \
+  e-live-e2e-test-openai-codex-long-idle-retains-socket
+#+end_src
+
+It produced two skips and zero unexpected results without a loaded
+credentialed harness configuration.  The configured older-clean-anchor
+command was:
+
+#+begin_src sh
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain
+#+end_src
+
+It reached provider
+initialization but could not run because =/Users/dvorona/.codex/auth.json= is
+absent.  Therefore the provider semantic scenario did not pass, and the
+separately gated 301-second (greater than 300 and less than 600) long-idle
+measurement was not run.  Both live claims remain unmeasured and blocked
+locally; neither skip nor the missing credential is treated as acceptance.
+
+No new numbered independent Tick artifact is created by this documentation
+slice.  The reused Sol reviewer supplies that review after the exact-revision
+gates.
 
 * Acceptance criteria
 

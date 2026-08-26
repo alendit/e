@@ -211,6 +211,10 @@ Capability-owned state persists under owner-keyed capability state. Active
 runtime state, presentation state, focus, point, overlays, read markers, timers,
 request handles, retry counters, and rebuildable caches stay in the harness,
 shell, buffer, or request that owns them.
+The OpenAI Responses WebSocket adapter's completed-response ledger, insertion
+order, bounded eviction history, idle timer, and connection diagnostics are
+active connection state in that same category: they are rebuilt per socket,
+cleared by the owning close path, and never serialized into session JSONL.
 
 `e-session` owns the durable metadata schema and typed write paths for session
 config, current-state references, and capability state. Generic metadata writes
@@ -405,7 +409,13 @@ function calls require follow-up; and emits lifecycle events to the harness.
 plus cancellable request handles. The OpenAI adapter in `lisp/adapters/openai/`
 implements provider profiles, model/reasoning defaults, Codex auth-file loading,
 token-auth profiles, Responses and Chat Completions request mapping, SSE parsing,
-HTTP timeouts, raw diagnostics, and cancellable `url-retrieve` requests. Injected
+HTTP timeouts, raw diagnostics, and cancellable `url-retrieve` requests. Its
+Responses WebSocket path additionally owns same-socket response-ID usability:
+the adapter-private bounded ledger is the sole compatibility authority, while
+profile/request context resolves the built-in Codex 600-second idle policy and
+the unchanged global fallback for other profiles. Only bounded scalar routing
+and retention diagnostics are projected through the harness; response IDs,
+ledger entries, request bodies, and tool results remain adapter-private. Injected
 request functions remain queued-only cancellable test seams.
 
 Adding a provider should be an adapter change. It should not require changing
@@ -584,9 +594,13 @@ actions, chat presentation, starter/canvas shells, and development reload.
 
 Core behavior is testable with fake backends, injected transports, in-memory
 stores, temporary persistent stores, fake tools, and capability fixtures. Adapter
-tests cover provider request/stream mapping and concrete side effects. Shell
-tests should keep proving command wiring and rendering against harness events
-rather than reimplementing harness tests.
+tests cover provider request/stream mapping, concrete side effects, the
+connection-local ledger, profile-owned timer resolution, close/retry cleanup,
+and bounded diagnostics. The provider-continuation integration test composes
+the real harness, context, tool, anchor, renderer, and fake socket boundaries;
+credentialed Codex E2E remains an explicit gate for private endpoint behavior.
+Shell tests should keep proving command wiring and rendering against harness
+events rather than reimplementing harness tests.
 
 Runtime-facing changes still require live Emacs reload and focused live probes
 because batch-green Emacs Lisp does not prove the user's current Emacs process
