@@ -1,0 +1,143 @@
+#+title: Addendum 4: Model-Directed Context Curation
+#+date: 2026-08-26
+#+startup: overview
+
+* Status
+
+Planned.
+
+This addendum replaces only Feature 88's promotion contract.  The model must
+be able to keep an ephemeral input exactly, replace selected inputs with a
+smaller durable summary, or let them disappear.  It must not have to echo
+runtime bookkeeping to do so.
+
+Addendum 3's canonical reconstruction, stable-prefix, continuation, retry,
+cache-evidence, and cleanup contracts remain unchanged.  This addendum does
+not add a board storage class: ephemeral and durable still describe future
+model visibility, while session or board audit retention is an independent
+concern.  Where the documents conflict, this addendum supersedes
+=F88A3-PROMOTION= and the original plan's promotion schema.
+
+* Decision
+
+Replace the model-facing =context-promote= payload with one frame-local
+=context-curate= action.  For example, after receiving three labeled ephemeral
+inputs:
+
+#+begin_example
+durable context
+
+[1] tool result 1
+[2] tool result 2
+[3] tool result 3
+#+end_example
+
+the model may call =context-curate= with:
+
+#+begin_src json
+{
+  "keep": [1],
+  "summaries": [
+    {"sources": [2, 3], "text": "The durable fact learned from results 2 and 3."}
+  ]
+}
+#+end_src
+
+The result is durable context containing the exact model-visible value of
+=[1]= and the submitted replacement for =[2, 3]=.  The original values of
+=[2]= and =[3]= are absent from later ordinary context.  Any source not
+mentioned by a successful curation call is dropped.  If the model makes no
+call, the whole frame is dropped as it is today.
+
+The labels are short references scoped to the active frame.  The runtime binds
+them to the real frame, observation, generation, request, and provenance
+identities.  It also generates durable entry IDs and the schema revision.  None
+of those values belongs in the model-facing arguments.
+
+* Semantics
+
+- =keep= copies the exact bounded value that was presented to the model.  The
+  model selects it but does not repeat it.
+- =summaries= stores model-authored replacement text with core-derived
+  provenance for all listed sources.  One summary may replace several inputs.
+- Omission means drop; a separate =drop= list would add tokens without adding
+  meaning.
+- A source may have only one disposition.  Unknown labels, duplicate use, or
+  malformed summaries reject the whole call before durable context changes.
+- At most one successful curation call applies to a frame.  It commits before
+  the next provider request, and the next ordinary projection contains only
+  the selected exact values and summaries, not the consumed sources.
+
+This is an in-memory end-of-frame semantic decision, not the persistent frame
+settlement, acknowledgement, retry, or crash-recovery protocol removed by the
+original Feature 88 plan.
+
+* Large results and progressive discovery
+
+Exact retention does not authorize tools to dump unbounded output into model
+context.  A tool or resource returning a large value should expose a bounded
+preview, total size or shape, and an external handle with operations such as
+outline, search, or ranged reads.  Each retrieved slice becomes another
+bounded ephemeral input that can be curated.
+
+=keep= preserves only the bounded value actually shown to the model; it does
+not silently pull the full object behind a handle into durable context.  This
+keeps output moderation at the tool/resource boundary and lifetime choice at
+the context boundary.
+
+* Cost guidance
+
+Summarization is not inherently cheaper.  It spends output tokens now and
+then spends input tokens on the summary in later requests, while exact retained
+input may receive cheaper cached-input pricing.  A summary is economically
+smaller only when:
+
+#+begin_example
+summary output cost + future summary input cost
+  < future retained-source input cost
+#+end_example
+
+The frame presentation must include an approximate token count for each
+ephemeral input.  A numerical summary budget may also be shown when the runtime
+has enough information, but it must state its assumed reuse count, input/output
+prices, and cached-input treatment.  When those assumptions are unknown, show
+the source sizes and the qualitative warning instead.  Do not put provider
+pricing in core policy, automatically summarize, or reject a model choice on
+cost grounds.
+
+* Future compaction seam
+
+The provider-neutral operation introduced here is:
+
+#+begin_example
+source context items -> keep exact | replace with summary | drop
+#+end_example
+
+A future compaction design may reuse that operation for durable context at a
+generation boundary.  This package does not implement compaction changes,
+persist rewrite plans, or make frame curation wait for a compaction service.
+Frame curation and later compaction may share pure validation and rewrite
+vocabulary while keeping separate owners and transaction boundaries.
+
+* Minimum acceptance
+
+1. Model-visible ephemeral inputs have compact frame-local references and
+   approximate token sizes; internal IDs are not exposed for the model to
+   echo.
+2. One call can keep one input exactly, summarize several others together, and
+   omit the rest.
+3. Exact retention copies the trusted bounded input rather than model-supplied
+   content or the full value behind an external handle.
+4. Summary provenance is derived by core, and an invalid mixed disposition
+   commits nothing.
+5. The next ordinary request contains the chosen durable replacements and no
+   consumed raw inputs.
+6. Existing audit records may retain source provenance without making raw
+   content model-visible, and no new board lifetime concept is introduced.
+
+* Non-goals
+
+This addendum does not redesign tool result formats, build a pricing service,
+choose what the model should retain, add automatic summarization, change
+provider cache semantics, implement generation compaction, or add restart
+recovery for open frames.
