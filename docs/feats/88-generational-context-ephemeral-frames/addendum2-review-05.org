@@ -1,0 +1,390 @@
+#+title: Feature 88 Addendum 2 Implementation Review 05
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This independent Tick review found two P1 findings and three P2 findings at
+=d9a7249b2b9acf72920ad04b40be63ac6689e656=.  There are no P0 or P3 findings.
+The implementation has not reached a functional or acceptance-evidence fixed
+point and Feature 88 Addendum 2 must remain =In-review=.
+
+The deterministic implementation proves most of the promised ledger,
+retention, retry, cleanup, redaction, and composed-tool-chain behavior.  It does
+not freeze the property identity of the request actually sent, does not settle
+a terminal =response.incomplete= event, and does not implement the required
+performance measurements.  The private endpoint's acceptance of an older
+clean response ID is still unproved.  In addition, the accepted requirement for
+a credentialed 301-second wall-clock test is itself an avoidable five-minute
+acceptance defect and should be replaced by deterministic time control.
+
+* Reviewed scope, revision, and worktree posture
+
+The implementation baseline is
+=44c1692f=.
+The reviewed Addendum 2 slice commits are =79a03e9a=, =ffd65a5c=,
+=8c53e62a=, =a082cb01=, and =d9a7249b=.
+The exact reviewed object is
+=d9a7249b2b9acf72920ad04b40be63ac6689e656=.
+
+The shared branch advanced to a later remediation commit while this review was
+in progress.  To avoid mixing revisions, all final source reads, reproductions,
+and repository gates used =git show= or a clean archive materialized from the
+exact reviewed object under =/private/tmp=.  Later commits, including
+=b31d101e=, are outside this Tick and receive no disposition here.
+
+This Tick creates only
+=docs/feats/88-generational-context-ephemeral-frames/addendum2-review-05.org=.
+It does not modify implementation, accepted specifications, tests, feature
+status, or the user's running Emacs.  It does not stage, commit, or push.
+
+* Authorities and review mode
+
+The target authority is the accepted
+=docs/feats/88-generational-context-ephemeral-frames/addendum2.org= at the
+reviewed object.  Its preceding contract authorities are =plan.org= and
+=addendum.org=.  The review process authorities are =AGENTS.md=,
+=docs/agents/review.org=, and =docs/references/dev_work.org=.
+
+The implementation owners reviewed are
+=lisp/adapters/openai/e-openai.el= and =lisp/core/e-harness.el=.  Deterministic
+evidence owners are =test/e-openai-test.el=,
+=test/e-harness-test.el=, and
+=test/e-provider-continuation-integration-test.el=.  Credentialed evidence is
+owned by =e2e/e-live-e2e-test.el=.  Every file-and-line reference below names
+the line in the exact reviewed object, not the later shared checkout.
+
+This was an incremental implementation review.  It first audited the promised
+closures from Design Review 04, then followed source ownership and ordered
+state transitions, then searched the remaining acceptance cells for defects or
+missing evidence.  Passing test names were not treated as proof without reading
+the setup, mutation, and assertions.
+
+* Prior design-finding dispositions
+
+** DONE P2-06: endpoint-rejected response remained eligible
+
+The request handler removes the requested response ID before the one full retry
+at =lisp/adapters/openai/e-openai.el:2581-2594=.  It neither closes the healthy
+socket nor clears unrelated ledger entries.  The deterministic unavailable-
+response scenario at =test/e-openai-test.el:4083-4260= exercises rejection,
+full retry, later initial-full convergence for the rejected ID, and continued
+use of another compatible entry.  The ordered state transition now matches
+=addendum2.org:177-182=.  Disposition: closed.
+
+** DONE P3-07: eviction history had no deterministic retirement representation
+
+The WebSocket session owns separate live and evicted ledgers plus FIFO order at
+=lisp/adapters/openai/e-openai.el:1987-2007=.  Insertion and retirement are
+centralized in the adapter; close clears both lookups and both order lists in
+one owner.  The cap and FIFO scenarios at =test/e-openai-test.el:3526-3564= and
+the eviction diagnostic scenario at =test/e-openai-test.el:3684-3761= prove the
+256/257 boundaries and bounded reason.  This matches =addendum2.org:184-192=.
+Disposition: closed.
+
+The remaining Design Review 01--04 findings were already closed in Review 04.
+Source inspection found no reversal of their accepted ownership boundaries.
+
+* Acceptance-closure ledger
+
+| Acceptance cell | Exact evidence | Status |
+|-----------------+----------------+--------|
+| latest and older compatible anchors | adapter lookup at =e-openai.el:2413-2454=; deterministic older-anchor and composed tests | partial: mutable identity finding P1-08 |
+| unknown, evicted, cross-connection, and property-mismatch fallback | =e-openai.el:2413-2454=; =e-openai-test.el:3356-3761= | closed |
+| unavailable-response single full retry | =e-openai.el:2581-2594=; =e-openai-test.el:4083-4260= | closed |
+| cap, FIFO retirement, and close cleanup | =e-openai.el:1987-2167=; cap, expiry, close, cancellation, and transport tests | closed except terminal incomplete P2-10 |
+| exact Codex 600, inherited numeric or =nil=, explicit zero, negative rejection | =e-openai.el:423-545=; =e-openai-test.el:1619-1766,3566-3682= | closed deterministically |
+| public diagnostics and redaction | adapter metadata =e-openai.el:2332-2385=; allowlist =e-harness.el:1322-1345=; integration assertions =e-provider-continuation-integration-test.el:1360-1397= | closed |
+| real composed harness/tool/renderer/adapter chain | =e-provider-continuation-integration-test.el:1025-1474= | closed deterministically |
+| private-provider older-clean-anchor semantics | live scenario =e-live-e2e-test.el:782-997=; handoff =addendum2.org:429-434= | open: P1-09 |
+| 300/600 policy boundary | fake scheduler =e-openai-test.el:3566-3634=; wall-clock sleep =e-live-e2e-test.el:999-1157= | deterministic boundary closed; slow acceptance design rejected by P2-11 |
+| transport bytes and provider token/latency measurements | contract =addendum2.org:485-490,514-524= | open: P2-12 |
+
+* Findings
+
+** P1-08: Mutable request properties can rewrite a completed response's compatibility identity
+
+The contract permits an older response only when the current invariant request
+properties equal those recorded for the request that produced it
+(=addendum2.org:147-159,167-178=).  The implementation does not preserve that
+historical fact:
+
+1. Request start removes three top-level keys but otherwise retains the
+   original plist values at =lisp/adapters/openai/e-openai.el:2255-2264= and
+   binds that shallow result as =properties= at =:2402-2403=.
+2. The request is serialized and sent at =:2576-2580=.
+3. Only after an asynchronous completed event does settlement pass the still-
+   shared =properties= object into the ledger at =:2529-2537=.
+4. Ledger insertion recursively copies hash tables, vectors, and conses at
+   =:2015-2034,2122=, but its default branch returns strings unchanged.  Emacs
+   strings are mutable.
+
+A one-shot batch reproduction against the exact archive mutated the request's
+model string after =websocket-send-text= captured the wire JSON and before the
+completion callback.  It then mutated the retained original again after
+completion.  The evidence was:
+
+#+begin_example
+shared-string=t recorded-model="Xpt-test" compatible-after-mutation=t
+#+end_example
+
+The response was actually produced under the pre-mutation model string, yet a
+later request using the mutated value was authorized to send that response ID.
+The same alias class applies to mutable strings nested in tool schemas and
+response-shape objects.  The existing JSON-property test at
+=test/e-openai-test.el:3960-3979= checks value equality between independent hash
+tables; it never mutates the properties of an active or recorded request.
+
+Classification: Addendum 2 compatibility-authority defect.  Impact: an
+incompatible request can be sent incrementally from a response created by a
+different wire identity, producing endpoint rejection or semantically invalid
+continuation.
+
+Owning correction: at request start, before the first serialization/send,
+create one fully detached snapshot of the invariant JSON-like properties,
+including copied strings, and record that start-time snapshot on completion.
+Add a regression that mutates model and nested tool-schema strings both while
+the request is active and after completion; it must preserve the literal sent
+identity and make the changed request select full reconstruction.  Copying only
+at ledger insertion is insufficient because mutation can occur between send
+and completion.
+
+** P1-09: Private-endpoint older-clean-anchor acceptance remains unproved
+
+The addendum says only credentialed built-in Codex evidence establishes that
+the private endpoint accepts an older clean response ID on the same socket.  It
+defines the semantic scenario at =addendum2.org:309-319= and makes that evidence
+an exit condition at =:327=.  The implementation includes a materially useful
+live scenario at =e2e/e-live-e2e-test.el:782-997=, but it was not run: the
+checked-in handoff records that =/Users/dvorona/.codex/auth.json= is absent and
+that the provider semantic claim remains unmeasured at
+=addendum2.org:429-434=.  This review had no credentialed alternative and did
+not access the user's running Emacs.
+
+The deterministic composed scenario is genuine: it exercises the real
+harness/session/context/tool/renderer/adapter chain, substantive tool-started
+and tool-finished events, =R1= follow-up, later =R0= selection, current
+instructions, absence of raw tool/replay/result material, and connection-loss
+full fallback at =test/e-provider-continuation-integration-test.el:1025-1474=.
+Its WebSocket and endpoint responses are nevertheless fakes.  It cannot prove
+the private provider's undocumented response-cache semantics.
+
+Classification: blocking Addendum 2 acceptance-evidence gap.  Impact: the
+package's central optimization may be rejected by the only initial production
+endpoint even though all local branching tests pass.
+
+Owning correction: on a remediation revision with available credentials, run
+the fast built-in-Codex older-clean-anchor tool-chain scenario and preserve the
+literal request, semantic response, socket-reuse diagnostics, and exact command
+as durable evidence.  If the endpoint rejects the older response ID, retain the
+safe full fallback and return to design rather than declaring acceptance from a
+mock.
+
+** P2-10: =response.incomplete= emits =done= without settling the WebSocket request
+
+The ledger contract excludes partial response IDs at
+=addendum2.org:177-179,462-465=.  A terminal incomplete response must also
+release the active request so the socket lifecycle can proceed.  Instead:
+
+1. =response.incomplete= maps to a backend-neutral =done= item at
+   =lisp/adapters/openai/e-openai.el:2978-2981=.
+2. The WebSocket handler recognizes only =response.completed= and
+   =response.done= as terminal settlement events at =:2600-2602=.
+3. It emits the incomplete =done= item but calls =settle-complete= only for that
+   narrower completed predicate at =:2614-2623=.
+4. Consequently =active-request= remains owned, no idle-close timer is armed,
+   and the next request signals =e-openai-websocket-busy= at =:2464-2465=.
+
+The exact-object reproduction reported:
+
+#+begin_example
+done-count=0 active-request=t item-types=(done) ledger-count=1 incomplete-recorded=nil
+#+end_example
+
+Here =done-count= is the completion-callback count; the one ledger entry was a
+pre-existing valid response, and the incomplete response ID was correctly not
+admitted.  The named partial-response test does not cover this state
+transition: its =partial= arm emits only =response.output_text.delta= at
+=test/e-openai-test.el:3763-3771= and then explicitly cancels at =:3822-3840=.
+
+Classification: inherited baseline lifecycle defect now inside Addendum 2's
+explicit partial-response and connection-lifecycle acceptance surface.  The
+same handler shape exists at =44c1692f=, so this is not attributed as a newly
+introduced regression.  Impact: output-limit and other incomplete responses
+can leave a session permanently busy until timeout, cancellation, or transport
+failure.
+
+Owning correction: give terminal incomplete its own settlement path.  It must
+emit the existing incomplete reason, invoke completion exactly once, clear the
+active request, never admit the incomplete ID, preserve any valid prior ledger
+entries on a healthy socket, and establish the intended idle-close lifecycle.
+Add a real =response.incomplete= regression that asserts all of those effects
+and proves a following request can start without manual cancellation.
+
+** P2-11: Mandatory 301-second wall-clock acceptance is an avoidable five-minute test
+
+The accepted text requires a pause greater than 300 and less than 600 seconds
+at =addendum2.org:321-327=.  The live test defaults that pause to 301 seconds at
+=e2e/e-live-e2e-test.el:999-1011= and implements it with literal =sleep-for= at
+=:1074-1076=.  This makes one acceptance observation consume more than five
+minutes, adds wall-clock and network flakiness, and slows every future attempt
+to close the feature without increasing proof of the locally owned policy.
+
+The adapter's 600-second ownership boundary is already controllable without
+waiting: =test/e-openai-test.el:3566-3634= intercepts scheduling, proves the
+resolved value is exactly 600, proves the socket and ledger remain live before
+the callback, then fires the callback and proves one close plus complete ledger
+cleanup.  A deterministic fake clock/scheduler can also advance from 301 to
+600 instantly while retaining the real request and connection state machine.
+
+Classification: acceptance-design and test-performance defect.  Impact: the
+specified gate is prohibitively slow, flaky, and discourages repeatable fixed-
+point validation.
+
+Owning correction: amend the accepted addendum and remove the long wall-clock
+sleep requirement.  Use deterministic test-only scheduler/clock control or a
+backend mock to prove the 300/600 policy boundary immediately.  Retain a fast
+credentialed semantic/socket-reuse E2E if it remains useful, but do not require
+it to idle for five minutes.
+
+** P2-12: Required transport, token, and latency measurements are not implemented
+
+The observability acceptance requires separate transport input count, provider
+input tokens, cached input tokens, request latency, connection ID, reuse count,
+and fallback reason at =addendum2.org:485-490=.  The performance contract then
+requires deterministic request-body input count and serialized bytes plus live
+provider input tokens, cached input tokens, and latency at =:514-524=.
+
+The deterministic composed test inspects semantic request contents and scalar
+diagnostics at
+=test/e-provider-continuation-integration-test.el:1360-1474=, but neither
+counts the request input items nor serializes and measures warm-versus-full
+request bytes.  The credentialed scenario captures bodies, handles, response
+IDs, semantic output, connection ID, reuse count, and fallback diagnostics at
+=e2e/e-live-e2e-test.el:782-997=, but it does not extract or report provider
+input tokens, cached input tokens, or request latency.  The implementation
+handoff contains no measured values and explicitly says the live run did not
+occur at =addendum2.org:429-434=.  Thus credentials alone would not make the
+current evidence satisfy the measurement contract.
+
+Classification: Addendum 2 acceptance-evidence and instrumentation gap.
+Impact: the package cannot substantiate its claimed wire-work reduction or
+separate continuation from cached-input pricing, and it has no measured live
+latency tradeoff.
+
+Owning correction: make the deterministic composed scenario report exact input
+item counts and =string-bytes= of the literal serialized warm and full request
+bodies.  Make the fast credentialed scenario report provider usage fields and
+elapsed request latency separately from connection/reuse/fallback diagnostics.
+Record missing provider fields explicitly as unavailable rather than inferring
+cache savings from =previous_response_id=.
+
+* Verification and exact evidence
+
+All revision-sensitive commands below ran from a clean archive of
+=d9a7249b2b9acf72920ad04b40be63ac6689e656= with the repository's Eldev state
+copied into the archive.  Network-binding tests were rerun outside the sandbox;
+no command contacted a provider or the user's Emacs.
+
+- =eldev test -B -f test/e-openai-test.el=: 149/149 expected results after an
+  unrestricted rerun.  The first sandboxed run's two loopback failures were
+  environmental and disappear outside the sandbox.
+- =eldev test -B -f test/e-harness-test.el=: 156/156 expected results.
+- =eldev test -B -f test/e-provider-continuation-integration-test.el=: 11/11
+  expected results.
+- =eldev --robust-mode=never test -B=: 2,334 tests; 2,332 expected results,
+  zero unexpected, and two expected presentation skips in the unrestricted
+  run.  The sandboxed precursor's six HTTP/socket/process failures all pass in
+  the unrestricted run.
+- =eldev compile -F --warnings-as-errors
+  lisp/adapters/openai/e-openai.el lisp/core/e-harness.el=: passed for both
+  implementation owners.
+- =git diff --check 44c1692f..d9a7249b2b9acf72920ad04b40be63ac6689e656=:
+  passed.
+- A batch request-property alias reproduction produced
+  =shared-string=t recorded-model="Xpt-test" compatible-after-mutation=t=.
+- A batch terminal-incomplete reproduction produced
+  =done-count=0 active-request=t item-types=(done) ledger-count=1
+  incomplete-recorded=nil=.
+- The configured credentialed command from =addendum2.org:423-427= was not
+  rerun because its required auth file is absent; this is unavailable evidence,
+  not a pass.
+
+* Pre-existing baseline and non-actionable notes
+
+- Repo-wide =eldev lint= exits nonzero on the exact archive with the repository's
+  existing doc, package, and regexp warnings.  Representative OpenAI warning
+  =e-openai.el:424= blames to =419891418=, before the =44c1692f= baseline.  No
+  slice-specific lint warning was used to inflate the findings above.
+- A clean-archive =eldev compile --warnings-as-errors= compiles the source set
+  and then exits through the top-level usage guard in
+  =tools/migrate-session-checkpoints.el:9-17=.  That command-line file and guard
+  predate the baseline and are outside Addendum 2.  The two changed
+  implementation owners compile cleanly with forced warnings-as-errors, as
+  recorded above.
+- The six failures in the first sandboxed full-suite run were local-bind or
+  process restrictions, not product failures; the identical exact-object suite
+  passed unrestricted.
+- The two full-suite skips are existing presentation tests and are outside this
+  adapter/harness package.
+- The absent credential is not a product defect, but the consequent missing
+  private-provider acceptance evidence is actionable as P1-09.
+- The =response.incomplete= lifecycle defect predates Addendum 2, but it remains
+  actionable because this package explicitly claims partial-response and
+  connection-lifecycle closure.
+- No graphical E2E is applicable: the slice changes no redisplay, window,
+  focus, viewport, timer-presentation, or workspace behavior.
+- The running Emacs was left unchanged.  These adapter record/function changes
+  require a restart if a later accepted implementation is to affect it.
+
+* Architecture self-check
+
+1. The package is useful at this stopping point because it adds bounded older-
+   anchor support with safe full fallback, but it is not acceptance-complete.
+2. It moves toward provider-neutral generational context with transport-local
+   continuation capability.
+3. The stable semantic contract remains in the harness; uncertain private-
+   endpoint behavior remains in the adapter and credentialed evidence lane.
+4. The harness owns clean-anchor selection.  The OpenAI adapter cohesively owns
+   WebSocket connection state, request-property compatibility, and ledgers.
+5. Coupling is reduced by keeping response IDs and ledger representation out of
+   core and public diagnostics.
+6. No dependency points from stable harness policy into the concrete OpenAI
+   ledger.  The adapter consumes the selected anchor through the existing
+   request contract.
+7. Socket open/send/close, timers, and provider response handling remain at the
+   adapter boundary; no new core side effect is warranted.
+8. Added ledger state is connection-local, bounded 256+256, rebuildable, and
+   cleared by its connection owner.  P1-08 must make each entry an immutable
+   historical snapshot rather than aliased caller state.
+9. Fixed-cap lookup and maintenance are independent of durable session length.
+   P2-11 identifies the unjustified verification-time regression; P2-12 marks
+   the missing measured wire/latency evidence.
+10. No speculative shared graph interface was added.  The direct private
+    representation satisfies the one concrete adapter contract.
+11. Unknown, stale, cross-connection, evicted, incompatible, and endpoint-
+    rejected anchors retain full reconstruction compatibility paths.
+12. The obsolete scalar compatibility authority is absent; ledger lookup is
+    the single compatibility owner.
+13. Expected mismatch and unavailable-response errors receive bounded fallback.
+    Transport and provider failures surface.  Terminal incomplete currently
+    falls between those owners and must be corrected by P2-10.
+14. Core behavior has narrow deterministic tests, and the composed test uses
+    the real harness/tool chain.  Missing mutation, incomplete-terminal,
+    measurement, and credentialed-provider evidence are precisely the narrow
+    additions required by the findings.
+
+* Fixed-point verdict
+
+No fixed point was reached at
+=d9a7249b2b9acf72920ad04b40be63ac6689e656=.  P1-08 and P2-10 prevent semantic
+and lifecycle closure.  P1-09 and P2-12 prevent the accepted provider and
+performance evidence closure.  P2-11 requires correcting the acceptance design
+itself rather than spending five minutes asleep in a test.
+
+Ordered remediation should first fix and prove request-property snapshot
+ownership and terminal-incomplete settlement, then replace the slow acceptance
+with deterministic time, add the missing measurements, and finally capture the
+fast credentialed private-provider semantic evidence.  A fresh independent Tick
+must review the exact remediation revision; later commits are not implicitly
+accepted by this artifact.
