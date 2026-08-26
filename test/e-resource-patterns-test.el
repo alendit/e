@@ -80,6 +80,20 @@
     (should (string-match-p regexp "a needle here"))
     (should-not (string-match-p regexp "needles"))))
 
+(ert-deftest e-resource-patterns-test-search-coalesces-wildcard-runs ()
+  "Repeated wildcards compile once and remain fast on nonmatching text."
+  (let ((single (e-resource-pattern-search-emacs-regexp "* 4." nil))
+        (repeated (e-resource-pattern-search-emacs-regexp "** 4." nil)))
+    (should (equal repeated single))
+    (should (string-match-p repeated "prefix 4."))
+    ;; This shape previously produced adjacent greedy repetitions and made
+    ;; `string-match' backtrack catastrophically in the phrase-score pass.
+    (should
+     (e-resource-pattern-search-score
+      (concat "4. " (make-string 4096 ?a))
+      "** 4."
+      nil))))
+
 (ert-deftest e-resource-patterns-test-search-equivalence-across-resource-schemes ()
   "The same facade search query works across file, tmp, buffer, and e://."
   (let* ((directory (make-temp-file "e-pattern-file-" t))

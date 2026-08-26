@@ -147,14 +147,23 @@ CASE-SENSITIVE defaults to non-nil."
    ""))
 
 (defun e-resource-pattern--search-part-regexp (part quote-function)
-  "Return regexp for one facade search PART using QUOTE-FUNCTION."
-  (mapconcat
-   (lambda (char)
-     (if (= char ?*)
-         "[^[:space:]\n\r]*"
-       (funcall quote-function (char-to-string char))))
-   part
-   ""))
+  "Return regexp for one facade search PART using QUOTE-FUNCTION.
+Consecutive wildcards have the same meaning as one wildcard and are
+coalesced to avoid adjacent unbounded regexp repetitions."
+  (let ((index 0)
+        pieces)
+    (while (< index (length part))
+      (if (= (aref part index) ?*)
+          (progn
+            (push "[^[:space:]\n\r]*" pieces)
+            (while (and (< index (length part))
+                        (= (aref part index) ?*))
+              (setq index (1+ index))))
+        (push (funcall quote-function
+                       (char-to-string (aref part index)))
+              pieces)
+        (setq index (1+ index))))
+    (apply #'concat (nreverse pieces))))
 
 (defun e-resource-pattern-search-terms (query)
   "Return normalized search terms from QUERY."
