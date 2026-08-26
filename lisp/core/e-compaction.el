@@ -426,9 +426,22 @@ removes tool bodies, provider replay metadata, anchors, continuation ids,
 cache counters, runtime frames, and diagnostics."
   (let* ((projection (e-session-context-lifetime-projection store session-id))
          (generation (plist-get projection :generation))
+         ;; Keep literal v2 records available to the compatibility summary
+         ;; path.  They came from the session journal and are never rebuilt by
+         ;; a production v2 encoder; new writes are v3-only.
+         (legacy-promotion-ids (plist-get projection :promotion-frontier))
          (promotions
-          (mapcar #'e-context-lifetime-promotion-record
-                  (plist-get projection :promotions)))
+          (delq nil
+                (mapcar
+                 (lambda (entry)
+                   (when (eq (plist-get entry :type) 'context-promotion)
+                     (let ((record (e-session--context-record entry)))
+                       (when (and (equal (plist-get record :record-version)
+                                         e-context-lifetime-record-version)
+                                  (member (plist-get record :id)
+                                          legacy-promotion-ids))
+                         record))))
+                 (e-session-current-path store session-id))))
          (curations (copy-tree (plist-get projection :curations))))
     (list :generation-id
           (and generation

@@ -19,6 +19,24 @@
 (require 'e-context-lifetime)
 (require 'e-board)
 
+(defun e-session-test--append-literal-v2-record (store session-id record)
+  "Install literal version-2 RECORD as a test-only replay fixture.
+
+This helper writes the journal envelope directly and replays the same literal
+record into STORE.  It intentionally does not call a production context
+promotion writer; new production records are version 3 only."
+  (let* ((session (e-session-get store session-id))
+         (entry (list :type "context-promotion"
+                      :session-id session-id
+                      :id (format "legacy-entry:%s" (plist-get record :id))
+                      :parent-id (plist-get session :current-head-id)
+                      :timestamp "2026-08-24T00:00:00Z"
+                      :context-record
+                      (e-session--context-record-for-json record))))
+    (e-session--append-record-now store session-id entry)
+    (e-session--replay-record store entry)
+    record))
+
 (ert-deftest e-session-test-create-and-read ()
   "Sessions can be created and read by id."
   (let ((store (e-session-store-create)))
@@ -27,11 +45,23 @@
     (should (equal (e-session-messages store "session-1") nil))))
 
 (ert-deftest e-session-test-context-v2-records-round-trip-through-reopen ()
-  "Generation boundaries and selected facts retain exact semantic values."
+  "Literal version-2 records remain readable after a persistent reopen."
   (let* ((directory (make-temp-file "e-session-context-v2-" t))
          (store (e-session-persistent-store-create directory))
          (session-id "context-v2")
-         generation promotion)
+         generation
+         (v2-record
+          '(:record-version 2
+            :type context-promotion
+            :id "promotion-v2"
+            :frame-id "frame-v2"
+            :generation-id "generation-v2"
+            :consumer-request-id "consumer-v2"
+            :response-entry-id "response-entry"
+            :facts ((:id "fact-v2" :value "promoted fact"))
+            :source-observation-ids ("observation-v2")
+            :source-refs ("external:canvas:v2")
+            :source-fingerprints ("canvas-v2"))))
     (unwind-protect
         (progn
           (let* ((session (e-session-create store :id session-id))
@@ -52,32 +82,8 @@
              '(:id "response-entry"
                :role assistant
                :content "selected response"))
-            (let* ((frame
-                    (e-context-lifetime-frame-create
-                     :id "frame-v2"
-                     :generation-id "generation-v2"
-                     :consumer-request-id "consumer-v2"
-                     :observations
-                     '((:observation-id "observation-v2"
-                        :kind "current-state"
-                        :source-entry-ref "external:canvas:v2"
-                        :source-fingerprint "canvas-v2"
-                        :effective-delivery "request-local-replaceable"
-                        :body (:content "ephemeral")))))
-                   (consumed
-                    (e-context-lifetime-frame-complete-for-consumer
-                     frame "consumer-v2" "response-entry")))
-              (setq promotion
-                    (e-context-lifetime-promotion-from-effect
-                     consumed
-                     '(:type context-promote
-                       :schema-version 1
-                       :frame-id "frame-v2"
-                       :source-observation-ids ("observation-v2")
-                       :facts ((:id "fact-v2"
-                                :value "promoted fact"))))))
-              (e-session-append-context-promotion
-               store session-id promotion)))
+            (e-session-test--append-literal-v2-record
+             store session-id v2-record)))
           (e-session-flush-write-queue store)
           (let* ((before (e-session-persistent-store-create directory))
                  (before-generations
@@ -100,9 +106,13 @@
             (should (equal before-generations
                            (list (e-context-lifetime-generation-record
                                   generation))))
-            (should (equal before-promotions
-                           (list (e-context-lifetime-promotion-record
-                                  promotion))))
+            (let ((decoded
+                   (e-context-lifetime-promotion-from-record
+                    (car before-promotions))))
+              (should (equal (e-context-lifetime-promotion-id decoded)
+                             "promotion-v2"))
+              (should (equal (e-context-lifetime-promotion-facts decoded)
+                             '((:id "fact-v2" :value "promoted fact")))))
             (should (equal before-manifest after-manifest))
             (should-not
              (plist-member (car before-generations) :durable-tail))
@@ -157,12 +167,9 @@
                   :covered-session-boundary
                   (plist-get (e-session-get store session-id)
                              :root-event-id))))
-          (e-session-append-context-promotion store session-id v2-record)
+          (e-session-test--append-literal-v2-record
+           store session-id v2-record)
           (e-session-append-context-curation store session-id v3-record)
-          ;; The old compatibility writer is deliberately v2-only.
-          (should-error
-           (e-session-append-context-promotion store session-id v3-record)
-           :type 'e-session-error)
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (records (mapcar #'e-session--context-record
@@ -313,7 +320,7 @@
          store "append-context" generation-record)
         (dolist (bad (variants promotion-record))
           (should-error
-           (e-session-append-context-promotion
+           (e-session-append-context-curation
             store "append-context" bad)
            :type 'e-session-error))
         (should (= (length (e-session-context-generations
@@ -2866,46 +2873,36 @@
     (e-session-append-message
      store session-id
      '(:id "answer" :role assistant :content "ordinary answer"))
-    (let* ((frame
-            (e-context-lifetime-frame-create
-             :id "frame-projection"
-             :generation-id "generation-projection"
-             :consumer-request-id "consumer-projection"
-             :observations
-             '((:observation-id "observation-tool"
-                :kind "tool-result"
-                :source-entry-ref "result-entry"
-                :source-fingerprint "tool-fingerprint"
-                :effective-delivery "inherited"
-                :body (:content "BULKY-TOOL-RESULT")))))
-           (consumed
-            (e-context-lifetime-frame-complete-for-consumer
-             frame "consumer-projection" "answer"))
-           (promotion
-            (e-context-lifetime-promotion-from-effect
-             consumed
-             '(:type context-promote :schema-version 1
-               :frame-id "frame-projection"
-               :source-observation-ids ("observation-tool")
-               :facts ((:id "fact-selected" :value "first divergence"))))))
-      (e-session-append-context-promotion store session-id promotion)
-      (let* ((projection (e-session-context-lifetime-projection
-                          store session-id))
-             (tail (plist-get projection :durable-tail))
-             (contents (mapcar (lambda (message)
-                                 (plist-get message :content))
-                               tail)))
-        (should (equal contents '("durable intent" "ordinary answer")))
-        (should-not (seq-some
-                     (lambda (content)
-                       (string-match-p "BULKY-TOOL-RESULT"
-                                       (format "%S" content)))
-                     contents))
-        (should (= (length (plist-get projection :promotions)) 1))
-        (should (equal
-                 (e-context-lifetime-promotion-facts
-                  (car (plist-get projection :promotions)))
-                 '((:id "fact-selected" :value "first divergence"))))))))
+    (e-session-test--append-literal-v2-record
+     store session-id
+     '(:record-version 2
+       :type context-promotion
+       :id "promotion-projection"
+       :frame-id "frame-projection"
+       :generation-id "generation-projection"
+       :consumer-request-id "consumer-projection"
+       :response-entry-id "answer"
+       :facts ((:id "fact-selected" :value "first divergence"))
+       :source-observation-ids ("observation-tool")
+       :source-refs ("result-entry")
+       :source-fingerprints ("tool-fingerprint")))
+    (let* ((projection (e-session-context-lifetime-projection
+                        store session-id))
+           (tail (plist-get projection :durable-tail))
+           (contents (mapcar (lambda (message)
+                               (plist-get message :content))
+                             tail)))
+      (should (equal contents '("durable intent" "ordinary answer")))
+      (should-not (seq-some
+                   (lambda (content)
+                     (string-match-p "BULKY-TOOL-RESULT"
+                                     (format "%S" content)))
+                   contents))
+      (should (= (length (plist-get projection :promotions)) 1))
+      (should (equal
+               (e-context-lifetime-promotion-facts
+                (car (plist-get projection :promotions)))
+               '((:id "fact-selected" :value "first divergence")))))))
 
 (provide 'e-session-test)
 

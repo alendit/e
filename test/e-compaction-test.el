@@ -20,6 +20,25 @@
 (require 'e-openai)
 (require 'e-session)
 
+(defun e-compaction-test--append-literal-v2-record
+    (store session-id record)
+  "Install literal version-2 RECORD as a test-only replay fixture.
+
+The production session boundary is v3-only.  This helper exercises the
+read-only compatibility path by writing a literal journal envelope and replaying
+that same value into the fixture store."
+  (let* ((session (e-session-get store session-id))
+         (entry (list :type "context-promotion"
+                      :session-id session-id
+                      :id (format "legacy-entry:%s" (plist-get record :id))
+                      :parent-id (plist-get session :current-head-id)
+                      :timestamp "2026-08-24T00:00:00Z"
+                      :context-record
+                      (e-session--context-record-for-json record))))
+    (e-session--append-record-now store session-id entry)
+    (e-session--replay-record store entry)
+    record))
+
 (ert-deftest e-compaction-test-prepare-chooses-user-boundary ()
   "Compaction preparation keeps a suffix starting at a user message."
   (let ((store (e-session-store-create)))
@@ -187,29 +206,19 @@ later assistant/tool-call message instead of signalling no-boundary."
     (e-session-append-message store session-id
                               '(:id "answer" :role assistant
                                 :content "durable answer"))
-    (let* ((frame
-            (e-context-lifetime-frame-create
-             :id "frame-portable-input"
-             :generation-id "generation-portable-input"
-             :consumer-request-id "consumer-portable-input"
-             :observations
-             '((:observation-id "observation-raw"
-                :kind "tool-result"
-                :source-entry-ref "result"
-                :source-fingerprint "raw-e-fingerprint"
-                :effective-delivery "inherited"
-                :body (:content "RAW-E-PORTABLE")))))
-           (consumed
-            (e-context-lifetime-frame-complete-for-consumer
-             frame "consumer-portable-input" "answer"))
-           (promotion
-            (e-context-lifetime-promotion-from-effect
-             consumed
-             '(:type context-promote :schema-version 1
-               :frame-id "frame-portable-input"
-               :source-observation-ids ("observation-raw")
-               :facts ((:id "selected" :value "promoted fact"))))))
-      (e-session-append-context-promotion store session-id promotion))
+    (e-compaction-test--append-literal-v2-record
+     store session-id
+     '(:record-version 2
+       :type context-promotion
+       :id "promotion-portable-input"
+       :frame-id "frame-portable-input"
+       :generation-id "generation-portable-input"
+       :consumer-request-id "consumer-portable-input"
+       :response-entry-id "answer"
+       :facts ((:id "selected" :value "promoted fact"))
+       :source-observation-ids ("observation-raw")
+       :source-refs ("result")
+       :source-fingerprints ("raw-e-fingerprint")))
     (let* ((prepared (e-compaction-prepare
                       store session-id :keep-recent-tokens 1 :portable t))
            (input (plist-get prepared :portable-input))
@@ -287,7 +296,8 @@ later assistant/tool-call message instead of signalling no-boundary."
                                     '(:role user :content "before"))
           (e-session-append-message store session-id
                                     '(:role assistant :content "boundary"))
-          (e-session-append-context-promotion store session-id v2-record)
+          (e-compaction-test--append-literal-v2-record
+           store session-id v2-record)
           (e-session-append-context-curation store session-id v3-record)
           (let* ((before (e-session-context-lifetime-projection
                           store session-id))
@@ -418,7 +428,8 @@ later assistant/tool-call message instead of signalling no-boundary."
             ;; The durable records deliberately interleave v3, v2, and v3;
             ;; the first v3 record also contains two equal-valued items.
             (e-session-append-context-curation store session-id v3-first)
-            (e-session-append-context-promotion store session-id v2)
+            (e-compaction-test--append-literal-v2-record
+             store session-id v2)
             (e-session-append-context-curation store session-id v3-second)
             (let* ((projection
                     (e-session-context-lifetime-projection store session-id))
@@ -695,31 +706,21 @@ later assistant/tool-call message instead of signalling no-boundary."
                               '(:role user :content "prepare"))
     (e-session-append-message store session-id
                               '(:role assistant :content "boundary"))
-    (let* ((preparation (e-compaction-prepare
-                         store session-id :keep-recent-tokens 1 :portable t))
-           (frame
-            (e-context-lifetime-frame-create
-             :id "frame-frontier"
-             :generation-id "generation-frontier"
-             :consumer-request-id "consumer-frontier"
-             :observations
-             '((:observation-id "observation-frontier"
-                :kind "tool-result"
-                :source-entry-ref "external:frontier"
-                :source-fingerprint "frontier-fingerprint"
-                :effective-delivery "inherited"
-                :body (:content "late promotion")))))
-           (consumed
-            (e-context-lifetime-frame-complete-for-consumer
-             frame "consumer-frontier" "response-frontier"))
-           (promotion
-            (e-context-lifetime-promotion-from-effect
-             consumed
-             '(:type context-promote :schema-version 1
-               :frame-id "frame-frontier"
-               :source-observation-ids ("observation-frontier")
-               :facts ((:id "frontier-fact" :value "selected later"))))))
-      (e-session-append-context-promotion store session-id promotion)
+    (let ((preparation (e-compaction-prepare
+                        store session-id :keep-recent-tokens 1 :portable t)))
+      (e-compaction-test--append-literal-v2-record
+       store session-id
+       '(:record-version 2
+         :type context-promotion
+         :id "promotion-frontier"
+         :frame-id "frame-frontier"
+         :generation-id "generation-frontier"
+         :consumer-request-id "consumer-frontier"
+         :response-entry-id "response-frontier"
+         :facts ((:id "frontier-fact" :value "selected later"))
+         :source-observation-ids ("observation-frontier")
+         :source-refs ("external:frontier")
+         :source-fingerprints ("frontier-fingerprint")))
       (should-error
        (e-compaction-apply-portable-boundary
         store session-id

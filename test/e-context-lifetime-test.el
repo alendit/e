@@ -139,172 +139,50 @@
                    (e-context-lifetime-generation-record
                     (e-context-lifetime-generation-from-record record))))))
 
-(ert-deftest e-context-lifetime-test-frame-is-consumer-bound ()
-  "Each successful invocation owns a distinct frame and consumed frames cannot promote."
-  (let* ((first (e-context-lifetime-test--frame "consumer-1" "frame-1"
-                                                "observation-1" "same-state"))
-         (second (e-context-lifetime-test--frame "consumer-2" "frame-2"
-                                                 "observation-2" "same-state"))
-         (first-consumed
-          (e-context-lifetime-frame-complete-for-consumer
-           first "consumer-1" "response-1"))
-         (second-consumed
-          (e-context-lifetime-frame-complete-for-consumer
-           second "consumer-2" "response-2"))
-         (effect
-          '(:type context-promote :schema-version 1 :frame-id "frame-2"
-            :source-observation-ids ("observation-2")
-            :facts ((:id "fact-1" :value "selected")))))
-    (should-not (e-context-lifetime-frame-consumed-p first))
-    (should (e-context-lifetime-frame-consumed-p first-consumed))
-    (should (e-context-lifetime-frame-consumed-p second-consumed))
-    (should-error
-     (e-context-lifetime-promotion-from-effect first-consumed
-                                               (plist-put
-                                                (copy-tree effect)
-                                                :frame-id "frame-1")))
-    (should (equal
-             (e-context-lifetime-promotion-frame-id
-              (e-context-lifetime-promotion-from-effect
-               second-consumed effect))
-             "frame-2"))))
-
-(ert-deftest e-context-lifetime-test-promotion-preserves-submitted-fact ()
-  "Only the explicitly submitted fact and core-derived provenance persist."
-  (let* ((frame
-         (e-context-lifetime-frame-complete-for-consumer
-           (e-context-lifetime-test--frame) "consumer-1" "response-1"))
-         (effect
-          '(:type context-promote :schema-version 1 :frame-id "frame-1"
-            :source-observation-ids ("observation-1")
-            :facts ((:id "fact-1"
-                     :value "first-divergence=normalize-price"))))
-         (promotion (e-context-lifetime-promotion-from-effect frame effect))
-         (record (e-context-lifetime-promotion-record promotion))
-         (tail (e-context-lifetime-apply-promotion nil promotion)))
-    (should (equal (plist-get (car tail) :value)
-                   "first-divergence=normalize-price"))
-    (should (equal (plist-get record :source-refs)
-                   '("external:canvas:1")))
-    (should (equal (plist-get record :source-fingerprints)
-                   '("canvas-fingerprint-1")))
-    (should-not (plist-member record :body))
-    (should-not (plist-member record :observations))
-    (should (equal (plist-get record :response-entry-id) "response-1"))))
-
-(ert-deftest e-context-lifetime-test-forged-provenance-is-rejected ()
-  "Model/adapter provenance controls cannot enter the normalized effect."
-  (let ((effect
-         '(:type context-promote :schema-version 1 :frame-id "frame-1"
-           :source-observation-ids ("observation-1")
-           :source-refs ("forged")
-           :fingerprint "forged"
-           :facts ((:id "fact-1" :value "fact")))))
-    (should-error
-     (e-context-lifetime-normalize-promotion-effect effect)
-     :type 'e-context-lifetime-invalid-record)))
-
-(ert-deftest e-context-lifetime-test-promotion-requires-consumed-frame ()
-  "A promotion cannot select information before its frame is consumed."
-  (should-error
-   (e-context-lifetime-promotion-from-effect
-    (e-context-lifetime-test--frame)
-    '(:type context-promote :schema-version 1 :frame-id "frame-1"
-      :source-observation-ids ("observation-1")
-      :facts ((:id "fact-1" :value "fact"))))
-   :type 'e-context-lifetime-invalid-record))
-
-(ert-deftest e-context-lifetime-test-promotion-fact-limits ()
-  "Core enforces fact count and normalized UTF-8 byte limits."
-  (let ((frame
-         (e-context-lifetime-frame-complete-for-consumer
-          (e-context-lifetime-test--frame) "consumer-1" "response-1")))
-    (dolist (facts (list nil
-                         (make-list 17 '((:id "fact" :value "too-many")))))
-      (should-error
-       (e-context-lifetime-promotion-from-effect
-        frame
-        (list :type 'context-promote :schema-version 1 :frame-id "frame-1"
-              :source-observation-ids '("observation-1") :facts facts))
-       :type 'e-context-lifetime-invalid-record))
-    (should-error
-     (e-context-lifetime-promotion-from-effect
-      frame
-      (list :type 'context-promote :schema-version 1 :frame-id "frame-1"
-            :source-observation-ids '("observation-1")
-            :facts (list (list :id "fact-1"
-                               :value (make-string 9000 ?x)))))
-     :type 'e-context-lifetime-invalid-record)))
-
-(ert-deftest e-context-lifetime-test-promotion-exact-limit-is-accepted ()
-  "A complete normalized effect exactly at the byte limit is accepted."
-  (let* ((frame
-         (e-context-lifetime-frame-complete-for-consumer
-           (e-context-lifetime-test--frame) "consumer-1" "response-1"))
-         (effect
-          (cl-loop for length from 1 to 10000
-                   for candidate = (list
-                                    :type 'context-promote
-                                    :schema-version 1
-                                    :frame-id "frame-1"
-                                    :source-observation-ids '("observation-1")
-                                    :facts (list
-                                            (list :id "fact-1"
-                                                  :value
-                                                  (make-string length ?x))))
-                   when (= (e-context-lifetime--bytes
-                            (e-context-lifetime-normalize-promotion-effect
-                             candidate))
-                           8192)
-                   return candidate)))
-    (should effect)
-    (should
-     (e-context-lifetime-promotion-p
-      (e-context-lifetime-promotion-from-effect
-       frame effect)))
-    (let* ((fact (car (plist-get effect :facts)))
-           (too-large (copy-tree effect)))
-      (plist-put too-large :facts
-                 (list (list :id (plist-get fact :id)
-                             :value
-                             (concat (plist-get fact :value) "x"))))
-      (should-error
-       (e-context-lifetime-normalize-promotion-effect too-large)
-       :type 'e-context-lifetime-invalid-record))))
-
-(ert-deftest e-context-lifetime-test-promotion-fact-schema-is-exact ()
-  "Facts use the bounded id/value schema and retain declared order."
-  (let ((valid
-         '(:type context-promote :schema-version 1 :frame-id "frame-1"
-           :source-observation-ids ("observation-1")
-           :facts ((:id "fact-1" :value "first")
-                   (:id "fact-2" :value (:enabled :json-false))))))
-    (let* ((normalized
-            (e-context-lifetime-normalize-promotion-effect valid))
-           (facts (plist-get normalized :facts)))
-      (should (equal (mapcar (lambda (fact) (plist-get fact :id)) facts)
-                     '("fact-1" "fact-2")))
-      (should (eq (plist-get (plist-get (cadr facts) :value) :enabled)
-                  :json-false)))
-    (dolist (bad
-             (list
-              (let ((copy (copy-tree valid)))
-                (plist-put copy :facts '((:id "fact-1"))))
-              (let ((copy (copy-tree valid)))
-                (plist-put copy :facts '((:id "fact-1" :value "x"
-                                                :extra "no"))))
-              (let ((copy (copy-tree valid)))
-                (plist-put copy :facts
-                           '((:id "fact-1" :value "x")
-                             (:id "fact-1" :value "y"))))
-              (let ((copy (copy-tree valid)))
-                (plist-put copy :facts '((:value "missing-id"))))
-              (let ((copy (copy-tree valid)))
-                (plist-put copy :facts '((:id "fact-1" :value
-                                          (:unsupported-object . t)))))))
-      (should-error
-       (e-context-lifetime-normalize-promotion-effect bad)
-       :type 'e-context-lifetime-invalid-record))))
+(ert-deftest e-context-lifetime-test-literal-v2-record-decodes-strictly ()
+  "The compatibility path decodes literal v2 records but has no writer API."
+  (cl-labels
+      ((without-key
+        (plist key)
+        (let (result)
+          (while plist
+            (let ((current-key (pop plist))
+                  (value (pop plist)))
+              (unless (eq current-key key)
+                (setq result (append result (list current-key value))))))
+          result)))
+    (let ((record
+           '(:record-version 2
+             :type context-promotion
+             :id "promotion-v2"
+             :frame-id "frame-v2"
+             :generation-id "generation-v2"
+             :consumer-request-id "consumer-v2"
+             :response-entry-id "response-v2"
+             :facts ((:id "fact-v2" :value "selected"))
+             :source-observation-ids ("observation-v2")
+             :source-refs ("source-v2")
+             :source-fingerprints ("fingerprint-v2"))))
+      (let ((decoded (e-context-lifetime-promotion-from-record record)))
+        (should (e-context-lifetime-promotion-p decoded))
+        (should (equal (e-context-lifetime-promotion-id decoded)
+                       "promotion-v2"))
+        (should (equal (e-context-lifetime-promotion-facts decoded)
+                       '((:id "fact-v2" :value "selected")))))
+      (dolist (bad
+               (list
+                (without-key record :facts)
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :record-version 3))
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :type "context-promotion"))
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :body '(:content "runtime-only")))
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :durable-tail '("copied")))))
+        (should-error
+         (e-context-lifetime-promotion-from-record bad)
+         :type 'e-context-lifetime-invalid-record)))))
 
 (ert-deftest e-context-lifetime-test-frame-completion-validates-consumer ()
   "Only the owning consumer request may complete an open frame once."
@@ -408,7 +286,7 @@
                '("external:canvas:1"))))))
 
 (ert-deftest e-context-lifetime-test-narrow-codecs-reject-shape-drift ()
-  "Generation and promotion codecs reject missing, extra, and wrong fields."
+  "The generation codec rejects missing, extra, and wrong fields."
   (cl-labels
       ((without-key
         (plist key)
@@ -440,30 +318,7 @@
         (should-error
          (e-context-lifetime-generation-from-record bad)
          :type 'e-context-lifetime-invalid-record)))
-    (let* ((frame
-            (e-context-lifetime-frame-complete-for-consumer
-             (e-context-lifetime-test--frame) "consumer-1" "response-1"))
-           (promotion
-            (e-context-lifetime-promotion-from-effect
-             frame
-             '(:type context-promote :schema-version 1 :frame-id "frame-1"
-               :source-observation-ids ("observation-1")
-               :facts ((:id "fact-1" :value "selected")))))
-           (record (e-context-lifetime-promotion-record promotion)))
-      (dolist (bad
-               (list
-                (without-key record :facts)
-                (let ((copy (copy-tree record)))
-                  (plist-put copy :record-version nil))
-                (let ((copy (copy-tree record)))
-                  (plist-put copy :type "context-promotion"))
-                (let ((copy (copy-tree record)))
-                  (plist-put copy :body '(:content "runtime")))
-                (let ((copy (copy-tree record)))
-                  (plist-put copy :durable-tail '("copied")))))
-        (should-error
-         (e-context-lifetime-promotion-from-record bad)
-         :type 'e-context-lifetime-invalid-record)))))
+    ))
 
 (ert-deftest e-context-lifetime-test-json-false-remains-false ()
   "Nested JSON false keeps its semantic boolean representation."

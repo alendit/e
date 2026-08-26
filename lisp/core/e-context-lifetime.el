@@ -64,14 +64,11 @@ have a closed role vocabulary."
               (list 'portable-message :role role)))
     role))
 
-(defconst e-context-lifetime-promotion-schema-version 1
-  "Version of the model-facing context promotion effect.")
+(defconst e-context-lifetime-legacy-promotion-max-facts 16
+  "Maximum facts accepted while decoding a version-2 promotion record.
 
-(defconst e-context-lifetime-promotion-max-facts 16
-  "Maximum facts accepted in one normalized promotion effect.")
-
-(defconst e-context-lifetime-promotion-max-bytes 8192
-  "Maximum normalized UTF-8 bytes accepted in one promotion effect.")
+This bound belongs to the read-only compatibility decoder.  New writes use the
+version-3 curation codec and its complete-record bound.")
 
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
@@ -282,7 +279,7 @@ unique within one response and declared order is retained."
         result
         ids)
     (unless (and (not (null items))
-                 (<= (length items) e-context-lifetime-promotion-max-facts))
+                 (<= (length items) e-context-lifetime-legacy-promotion-max-facts))
       (signal 'e-context-lifetime-invalid-record
               (list 'promotion :facts-count (length items))))
     (dolist (fact items (nreverse result))
@@ -1071,45 +1068,6 @@ validated FRAME, never as caller-supplied positional provenance."
      :promotion-ids (e-context-lifetime--id-list
                      promotion-ids 'promotion))))
 
-(cl-defun e-context-lifetime-promotion-create
-    (&key id frame-id generation-id consumer-request-id response-entry-id facts
-          source-observation-ids source-refs source-fingerprints)
-  "Create a durable promotion from core-resolved provenance."
-  (let* ((source-observation-ids
-          (e-context-lifetime--id-list source-observation-ids
-                                       'source-observation))
-         (source-refs (e-context-lifetime--reference-list
-                       source-refs 'source-ref))
-         (source-fingerprints
-          (e-context-lifetime--reference-list
-           source-fingerprints 'source-fingerprint)))
-    (unless source-observation-ids
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :source-observation-ids
-                    source-observation-ids)))
-    (unless (= (length source-observation-ids) (length source-refs))
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :source-refs source-observation-ids source-refs)))
-    (unless (= (length source-observation-ids)
-               (length source-fingerprints))
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :source-fingerprints
-                    source-observation-ids source-fingerprints)))
-    (e-context-lifetime-promotion--create
-     :id (e-context-lifetime--require-id id 'promotion)
-     :frame-id (e-context-lifetime--require-id frame-id 'promotion)
-     :generation-id (e-context-lifetime--require-id
-                     generation-id 'promotion-generation)
-     :consumer-request-id
-     (e-context-lifetime--require-id
-      consumer-request-id 'promotion-consumer-request)
-     :response-entry-id
-     (e-context-lifetime--require-id response-entry-id 'response-entry)
-     :facts (e-context-lifetime--validate-facts facts)
-     :source-observation-ids source-observation-ids
-     :source-refs source-refs
-     :source-fingerprints source-fingerprints)))
-
 (defun e-context-lifetime-generation-copy (generation)
   "Return a detached copy of GENERATION."
   (unless (e-context-lifetime-generation-p generation)
@@ -1137,26 +1095,6 @@ validated FRAME, never as caller-supplied positional provenance."
      (e-context-lifetime-frame-consumer-request-id frame)
      :observations (e-context-lifetime-frame-observations frame))))
 
-(defun e-context-lifetime-promotion-copy (promotion)
-  "Return a detached copy of PROMOTION."
-  (unless (e-context-lifetime-promotion-p promotion)
-    (signal 'wrong-type-argument
-            (list 'e-context-lifetime-promotion-p promotion)))
-  (e-context-lifetime-promotion-create
-   :id (e-context-lifetime-promotion-id promotion)
-   :frame-id (e-context-lifetime-promotion-frame-id promotion)
-   :generation-id (e-context-lifetime-promotion-generation-id promotion)
-   :consumer-request-id
-   (e-context-lifetime-promotion-consumer-request-id promotion)
-   :response-entry-id
-   (e-context-lifetime-promotion-response-entry-id promotion)
-   :facts (e-context-lifetime-promotion-facts promotion)
-   :source-observation-ids
-   (e-context-lifetime-promotion-source-observation-ids promotion)
-   :source-refs (e-context-lifetime-promotion-source-refs promotion)
-   :source-fingerprints
-   (e-context-lifetime-promotion-source-fingerprints promotion)))
-
 (defun e-context-lifetime-generation-record (generation)
   "Return the narrowed JSON-friendly durable GENERATION record."
   (let ((generation (e-context-lifetime-generation-copy generation)))
@@ -1183,28 +1121,7 @@ validated FRAME, never as caller-supplied positional provenance."
    :covered-session-boundary
    (plist-get record :covered-session-boundary)))
 
-(defun e-context-lifetime-promotion-record (promotion)
-  "Return the narrowed JSON-friendly durable PROMOTION record."
-  (let ((promotion (e-context-lifetime-promotion-copy promotion)))
-    (list :record-version e-context-lifetime-record-version
-          :type 'context-promotion
-          :id (e-context-lifetime-promotion-id promotion)
-          :frame-id (e-context-lifetime-promotion-frame-id promotion)
-          :generation-id
-          (e-context-lifetime-promotion-generation-id promotion)
-          :consumer-request-id
-          (e-context-lifetime-promotion-consumer-request-id promotion)
-          :response-entry-id
-          (e-context-lifetime-promotion-response-entry-id promotion)
-          :facts (e-context-lifetime-promotion-facts promotion)
-          :source-observation-ids
-          (e-context-lifetime-promotion-source-observation-ids promotion)
-          :source-refs (e-context-lifetime-promotion-source-refs promotion)
-          :source-fingerprints
-          (e-context-lifetime-promotion-source-fingerprints promotion))))
-
 (defun e-context-lifetime-promotion-from-record (record)
-  "Decode a version-2 durable PROMOTION record."
   (e-context-lifetime--validate-exact-plist
    record
    '(:record-version :type :id :frame-id :generation-id
@@ -1215,16 +1132,50 @@ validated FRAME, never as caller-supplied positional provenance."
                       e-context-lifetime-record-version)
                (eq (plist-get record :type) 'context-promotion))
     (signal 'e-context-lifetime-invalid-record (list 'promotion record)))
-  (e-context-lifetime-promotion-create
-   :id (plist-get record :id)
-   :frame-id (plist-get record :frame-id)
-   :generation-id (plist-get record :generation-id)
-   :consumer-request-id (plist-get record :consumer-request-id)
-   :response-entry-id (plist-get record :response-entry-id)
-   :facts (plist-get record :facts)
-   :source-observation-ids (plist-get record :source-observation-ids)
-   :source-refs (plist-get record :source-refs)
-   :source-fingerprints (plist-get record :source-fingerprints)))
+  (let* ((source-observation-ids
+          (e-context-lifetime--id-list
+           (plist-get record :source-observation-ids)
+           'source-observation))
+         (source-refs
+          (e-context-lifetime--reference-list
+           (plist-get record :source-refs) 'source-ref))
+         (source-fingerprints
+          (e-context-lifetime--reference-list
+           (plist-get record :source-fingerprints)
+           'source-fingerprint)))
+    (unless source-observation-ids
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-observation-ids
+                    source-observation-ids)))
+    (unless (= (length source-observation-ids) (length source-refs))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-refs source-observation-ids source-refs)))
+    (unless (= (length source-observation-ids)
+               (length source-fingerprints))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'promotion :source-fingerprints
+                    source-observation-ids source-fingerprints)))
+    ;; This private struct is a decoded compatibility value, never a writer
+    ;; input.  Keep the old shape available to read-only projections.
+    (e-context-lifetime-promotion--create
+     :id (e-context-lifetime--require-id (plist-get record :id) 'promotion)
+     :frame-id (e-context-lifetime--require-id
+                (plist-get record :frame-id) 'promotion)
+     :generation-id (e-context-lifetime--require-id
+                     (plist-get record :generation-id)
+                     'promotion-generation)
+     :consumer-request-id
+     (e-context-lifetime--require-id
+      (plist-get record :consumer-request-id)
+      'promotion-consumer-request)
+     :response-entry-id
+     (e-context-lifetime--require-id
+      (plist-get record :response-entry-id) 'response-entry)
+     :facts (e-context-lifetime--validate-facts
+             (plist-get record :facts))
+     :source-observation-ids source-observation-ids
+     :source-refs source-refs
+     :source-fingerprints source-fingerprints)))
 
 (defun e-context-lifetime--curation-record-items (items)
   "Return ITEMS as a non-empty strict curation item sequence."
@@ -1445,141 +1396,6 @@ IDs selected by the response handling path."
      frame (e-context-lifetime--require-id response-entry-id
                                            'response-entry)
      promotion-ids)))
-
-(defun e-context-lifetime-normalize-promotion-effect (effect)
-  "Validate and canonicalize the model-facing context-promote EFFECT.
-
-Only the effect type, wire schema, frame identity, source observation IDs, and
-selected facts are accepted.  Adapter/model supplied source references or
-fingerprints are unknown controls and are rejected."
-  (e-context-lifetime--validate-exact-plist
-   effect '(:type :schema-version :frame-id :source-observation-ids :facts)
-   'promotion-effect)
-  (unless (eq (plist-get effect :type) 'context-promote)
-    (signal 'e-context-lifetime-invalid-record
-            (list 'promotion-effect :type (plist-get effect :type))))
-  (unless (equal (plist-get effect :schema-version)
-                 e-context-lifetime-promotion-schema-version)
-    (signal 'e-context-lifetime-invalid-record
-            (list 'promotion-effect :schema-version
-                  (plist-get effect :schema-version))))
-  (let* ((source-observation-ids
-          (e-context-lifetime--id-list
-           (plist-get effect :source-observation-ids) 'source-observation))
-         (normalized (list :type 'context-promote
-                           :schema-version
-                           e-context-lifetime-promotion-schema-version
-                           :frame-id
-                           (e-context-lifetime--require-id
-                            (plist-get effect :frame-id) 'promotion-frame)
-                           :source-observation-ids source-observation-ids
-                           :facts (e-context-lifetime--validate-facts
-                                   (plist-get effect :facts)))))
-    (unless source-observation-ids
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion-effect :source-observation-ids
-                    source-observation-ids)))
-    (when (> (e-context-lifetime--bytes normalized)
-             e-context-lifetime-promotion-max-bytes)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion-effect :bytes
-                    (e-context-lifetime--bytes normalized))))
-    normalized))
-
-(defun e-context-lifetime--observation-provenance (frame observation-id)
-  "Return core-derived provenance for OBSERVATION-ID in FRAME."
-  (let* ((observation
-          (seq-find
-           (lambda (item)
-             (and (e-context-lifetime--keyword-plist-p item)
-                  (equal (plist-get item :observation-id) observation-id)))
-           (e-context-lifetime-frame-observations frame)))
-         (position
-          (cl-position observation-id
-                       (e-context-lifetime-frame-observation-ids frame)
-                       :test #'equal))
-         (ref (or (and observation
-                        (or (plist-get observation :source-entry-ref)
-                            (plist-get observation :source-ref)))
-                  (and position
-                       (nth position
-                            (e-context-lifetime-frame-source-entry-refs
-                             frame)))))
-         (fingerprint
-          (or (and observation
-                   (plist-get observation :source-fingerprint))
-              (and position
-                   (nth position
-                        (e-context-lifetime-frame-source-fingerprints
-                         frame))))))
-    (unless (or observation position)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :unknown-observation observation-id)))
-    (unless (and ref fingerprint)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :missing-source-provenance observation-id)))
-    (list :ref (e-context-lifetime-canonicalize ref)
-          :fingerprint (e-context-lifetime-canonicalize fingerprint))))
-
-(defun e-context-lifetime-promotion-id-for (frame effect)
-  "Return a deterministic durable promotion ID for FRAME and EFFECT."
-  (format "promotion:%s"
-          (substring
-           (secure-hash
-            'sha256
-            (prin1-to-string
-             (list (e-context-lifetime-frame-id frame)
-                   (e-context-lifetime-frame-generation-id frame)
-                   (e-context-lifetime-frame-consumer-request-id frame)
-                   (e-context-lifetime-frame-consuming-response-entry-id frame)
-                   (e-context-lifetime-normalize-promotion-effect effect))))
-           0 32)))
-
-(defun e-context-lifetime-promotion-from-effect (frame effect)
-  "Resolve EFFECT against consumed FRAME using core-derived provenance."
-  (let* ((effect (e-context-lifetime-normalize-promotion-effect effect))
-         (source-ids (plist-get effect :source-observation-ids)))
-    (unless (e-context-lifetime-frame-consumed-p frame)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :frame-not-consumed
-                    (e-context-lifetime-frame-id frame))))
-    (unless (equal (plist-get effect :frame-id)
-                   (e-context-lifetime-frame-id frame))
-      (signal 'e-context-lifetime-invalid-record
-              (list 'promotion :frame-mismatch
-                    (e-context-lifetime-frame-id frame)
-                    (plist-get effect :frame-id))))
-    (let (refs fingerprints)
-      (dolist (observation-id source-ids)
-        (let ((provenance
-               (e-context-lifetime--observation-provenance
-                frame observation-id)))
-          (push (plist-get provenance :ref) refs)
-          (push (plist-get provenance :fingerprint) fingerprints)))
-      (e-context-lifetime-promotion-create
-       :id (e-context-lifetime-promotion-id-for frame effect)
-       :frame-id (e-context-lifetime-frame-id frame)
-       :generation-id (e-context-lifetime-frame-generation-id frame)
-       :consumer-request-id
-       (e-context-lifetime-frame-consumer-request-id frame)
-       :response-entry-id
-       (e-context-lifetime-frame-consuming-response-entry-id frame)
-       :facts (plist-get effect :facts)
-       :source-observation-ids source-ids
-       :source-refs (nreverse refs)
-       :source-fingerprints (nreverse fingerprints)))))
-
-(defun e-context-lifetime-apply-promotion (durable-tail promotion)
-  "Return DURABLE-TAIL with selected PROMOTION facts appended.
-
-The helper operates on a caller-owned reconstructed tail; it never stores that
-tail on the generation record and never copies source observation bodies."
-  (unless (e-context-lifetime-promotion-p promotion)
-    (signal 'wrong-type-argument
-            (list 'e-context-lifetime-promotion-p promotion)))
-  (append (e-context-lifetime-canonicalize durable-tail)
-          (e-context-lifetime--copy
-           (e-context-lifetime-promotion-facts promotion))))
 
 (defun e-context-lifetime-promotion-fact-messages (promotions)
   "Return portable model messages for durable PROMOTIONS.

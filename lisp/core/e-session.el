@@ -2199,7 +2199,8 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                    (e-session--normalize-context-record
                     entry-type
                     (e-session--normalize-context-record-for-replay
-                     entry-type raw-context-record)))
+                     entry-type raw-context-record)
+                    nil t))
                   (_ownership
                    (e-session--validate-context-entry-ownership
                     store session-id entry-type context-record))
@@ -3715,15 +3716,17 @@ record before the core decoder sees them."
       duplicate)))
 
 (defun e-session--normalize-context-record (type record
-                                            &optional expected-record-version)
+                                            &optional expected-record-version
+                                            read-legacy-p)
   "Decode and canonicalize a narrowed context RECORD.
 
 This is shared by append and replay.  Legacy v1 frame and settlement records
 are handled by the replay caller as ignored audit history and never enter this
-validator.  Context generations remain version 2.  Context promotions dispatch
-version 3 to the curation codec and retain the version-2 promotion reader for
-compatibility.  EXPECTED-RECORD-VERSION, when non-nil, fences an append
-boundary to one context-promotion version."
+validator.  Context generations remain version 2.  New context-promotion
+appends dispatch only to the version-3 curation codec.  READ-LEGACY-P permits
+the version-2 promotion decoder for replay and projection only; it never
+re-encodes or appends the decoded value.  EXPECTED-RECORD-VERSION, when
+non-nil, fences an append boundary to one context-promotion version."
   (unless (memq type e-session--context-lifetime-entry-types)
     (signal 'e-session-error (list "Unknown context lifetime entry" type)))
   (when (e-session--context-record-has-duplicate-key-p record)
@@ -3733,19 +3736,34 @@ boundary to one context-promotion version."
       (let* ((record-version (and (e-session--keyword-plist-p record)
                                   (plist-get record :record-version)))
              (decoded
-              (if (eq type 'context-generation)
-                  (e-context-lifetime-generation-from-record record)
-                (if (equal record-version
-                           e-context-lifetime-curation-record-version)
-                    (e-context-lifetime-curation-from-record record)
-                  (e-context-lifetime-promotion-from-record record))))
+              (cond
+               ((eq type 'context-generation)
+                (e-context-lifetime-generation-from-record record))
+               ((equal record-version
+                       e-context-lifetime-curation-record-version)
+                (e-context-lifetime-curation-from-record record))
+               ((and read-legacy-p
+                     (equal record-version e-context-lifetime-record-version))
+                (e-context-lifetime-promotion-from-record record))
+               (t
+                (signal 'e-session-error
+                        (list "Context promotion writes require version 3"
+                              record-version)))))
              (normalized
-              (if (eq type 'context-generation)
-                  (e-context-lifetime-generation-record decoded)
-                (if (equal record-version
-                           e-context-lifetime-curation-record-version)
-                    (e-context-lifetime-curation-record decoded)
-                  (e-context-lifetime-promotion-record decoded)))))
+              (cond
+               ((eq type 'context-generation)
+                (e-context-lifetime-generation-record decoded))
+               ((equal record-version
+                       e-context-lifetime-curation-record-version)
+                (e-context-lifetime-curation-record decoded))
+               ;; A legacy record has already been strictly decoded above.
+               ;; Preserve its detached literal shape for replay; there is
+               ;; deliberately no version-2 production encoder.
+               (read-legacy-p (copy-tree record))
+               (t
+                (signal 'e-session-error
+                        (list "Context promotion writes require version 3"
+                              record-version))))))
         (when (and expected-record-version
                    (not (equal expected-record-version
                                (plist-get normalized :record-version))))
@@ -3848,21 +3866,6 @@ boundary to one context-promotion version."
        (e-context-lifetime-generation-record generation)
      generation)
    :write-index write-index))
-
-(cl-defun e-session-append-context-promotion
-    (store session-id promotion &key (write-index t))
-  "Append temporary pre-switch v2 PROMOTION compatibility data.
-
-The old model-facing `context-promote' path is retained only until the later
-runtime switch removes it.  This writer is explicitly fenced to version 2;
-new curation callers must use `e-session-append-context-curation'."
-  (e-session--append-context-entry
-   store session-id 'context-promotion :context-promotions
-   (if (e-context-lifetime-promotion-p promotion)
-       (e-context-lifetime-promotion-record promotion)
-     promotion)
-   :write-index write-index
-   :expected-record-version e-context-lifetime-record-version))
 
 (cl-defun e-session-append-context-curation
     (store session-id record &key (write-index t))
