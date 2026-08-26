@@ -1,0 +1,186 @@
+#+title: Feature 88 Addendum 4 Specification Review 02
+#+date: 2026-08-26
+#+startup: overview
+
+* Result
+
+This fresh independent incremental specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum4.org= at exact
+revision =b816d1e1c58c8d817ad3bac6f950a9e8a19e6d4b=.
+
+Addendum 4 has not reached a specification fixed point and is not ready for
+implementation.
+
+Review 01's five findings are substantively closed.  This Tick found two new
+actionable defects:
+
+- P0: none.
+- P1: one.
+- P2: one.
+
+The remaining defects are bounded to =F88A4-DURABLE= public projection and the
+ordering of implementation slices.  No accepted inherited =F88A3-*= contract is
+reopened.  External cache capability remains =capability-unconfirmed=; no
+provider request was made and no external product-contract failure exists.
+
+* Reviewed delta and scope
+
+Review mode: incremental specification review.
+
+- Review 01 target: =bd02dcb508091f74be58c0ea35077a67c1fa5701=
+- current target: =b816d1e1c58c8d817ad3bac6f950a9e8a19e6d4b=
+
+The Tick inspected the complete current Addendum 4, its delta, all five prior
+findings, inherited Addendum 3 joins, and current lifetime, session, harness,
+loop, compaction, context, OpenAI, and focused-test owners.  Production source
+and tests were unchanged from the feasibility baseline.  The reviewer changed
+no file or runtime state and preserved the unrelated Feature 87 modification.
+
+* Review 01 finding dispositions
+
+| Prior finding | Independent disposition | Status |
+|---------------+-------------------------+--------|
+| P1-01 =F88A4-BOUNDS= | Source and complete prepared-record limits, exact/one-over behavior, included values/provenance, owner, revision trigger, and scenarios are explicit. | closed |
+| P1-02 =F88A4-ATOMIC= | Multiple effects reject atomically, already-streamed calls survive, later dispatch stops, preparation uses the live frame, commit precedes later requests, and acknowledgement is immediate replay only. | closed |
+| P1-03 =F88A4-DURABLE=/compatibility | Ordered v3 items, per-item provenance, v2 read compatibility, mixed-version reopen/branch/compaction, v3-only writing, and old-carrier removal are explicit. | closed as raised; distinct projection defect P1-06 remains |
+| P2-04 normative authority/evidence | One matrix owns stable rows; deterministic/external scenarios and the test ledger are explicit. | closed |
+| P2-05 source token presentation | Granularity, estimator input/owner/rounding/fallback, late-frontier identity, and retained-value exclusion are explicit. | closed |
+
+* Compact contract-cell disposition
+
+| Cell | Disposition | Status |
+|------+-------------+--------|
+| =F88A4-PRESENT= | Source, ordering, label, estimate, identity, and retained-value boundary are explicit and feasible. | cleared |
+| =F88A4-CURATE= | Wire keys/shapes, uniqueness, omission, and runtime identity binding are explicit. | cleared |
+| =F88A4-ATOMIC= | Validation, tool behavior, live-frame preparation, commit order, and acknowledgement lifetime are explicit. | cleared |
+| =F88A4-BOUNDS= | Exact source and complete-record limits, owner, evidence, and revision consequences are explicit. | cleared |
+| =F88A4-DURABLE= | Storage and v2/v3 compatibility are explicit, but the literal provider-neutral message mapping is absent. | P1-06 |
+| =F88A4-COST= | Neutral estimates and optional pricing have distinct decision roles. | cleared |
+| inherited =F88A3-SEM/LAYOUT/DELIVERY/TOOL= | Coherent; P1-06 blocks only the new durable-item composition. | retained |
+| inherited =F88A3-CACHE= | Specification/freshness topology remains valid; fresh material-shape evidence is required after implementation. | specification cleared; capability unconfirmed |
+| inherited =F88A3-CLEANUP/COMPAT= | Old carrier removal and v2 durability compatibility are explicit. | retained |
+| Ordered implementation readiness | Slice 2 requires the durable codec assigned to Slice 3. | P2-07 |
+
+* Findings
+
+** TODO P1-06: =F88A4-DURABLE= does not define the literal portable message produced by a v3 item
+
+*** Contract cell
+
+=F88A4-DURABLE= at its =F88A3-SEM= and =F88A3-LAYOUT= composition.
+
+*** Observed source fact
+
+Addendum 4 permits heterogeneous independently rendered source values, treats a
+tool source as bounded result content rather than its replay envelope, stores
+=:value= for exact items and =:text= for summaries, and says only that
+projection renders the value or text (=addendum4.org:90-100,177-208=).  It does
+not define a portable role, content mapping, prefix, or serialization rule.
+
+Current projection requires role-bearing portable messages and permits only
+system, user, and assistant roles
+(=lisp/core/e-context-lifetime.el:39-46,277-304=).  V2 promotion projection
+chooses system authority and adds a =Promoted fact ID:= wrapper
+(=lisp/core/e-context-lifetime.el:910-927=).  Tool-result content has no portable
+durable role of its own.
+
+*** Consequence
+
+Implementations could preserve a transient role, elevate to system, demote to
+user, stringify structured content, retain the obsolete prefix, or emit a
+roleless item.  Those alternatives change authority, literal request bytes,
+stable-prefix behavior, and compaction output.
+
+*** Minimal correction
+
+Projection must map each v3 item, in record order, to exactly one portable
+message:
+
+#+begin_src emacs-lisp
+exact item   -> (:role system :content EXACT-CANONICAL-SOURCE-VALUE)
+summary item -> (:role system :content MODEL-AUTHORED-TEXT)
+#+end_src
+
+Core inserts stored content without labels, estimates, IDs, a =Promoted fact=
+prefix, or =prin1= conversion.  Content must already be accepted by the
+portable-message codec.  Compaction must consume the identical role/content
+sequence.  V2 retains its existing projection solely for compatibility.
+
+*** Acceptance evidence
+
+- exact string, structured content, and summary each produce one literal system
+  message;
+- exact content is equal before decoration and after projection;
+- no presentation/provenance/prefix/stringification leaks;
+- item order is keep order followed by summary order;
+- compaction preserves the sequence; and
+- v2 rendering remains unchanged.
+
+** TODO P2-07: Slice 2 commits v3 records before Slice 3 establishes their codec
+
+*** Contract cell
+
+Implementation ordering for =F88A4-ATOMIC= and =F88A4-DURABLE=.
+
+*** Observed source fact
+
+Slice 2 commits the prepared record before frame consumption
+(=addendum4.org:313-317=), while Slice 3 introduces its codec and projection
+(=addendum4.org:319-324=).  The session append boundary always normalizes a
+context record through the promotion decoder before mutation and currently
+accepts only v2 (=lisp/core/e-session.el:3655-3676,3728-3756=).
+
+*** Consequence
+
+Slice 2 cannot be accepted without duplicating or bypassing Slice 3 work, and a
+revision could write a record it cannot reopen.
+
+*** Minimal correction
+
+Make Slice 2 establish =F88A4-DURABLE= first: portable mapping, strict v3 codec,
+append/replay/projection, read-only v2 dispatch, and mixed-version reopen,
+branch, and compaction.  It stops at a tested session boundary accepting a pure
+prepared v3 record with no provider writer.  Make Slice 3 establish
+=F88A4-ATOMIC= and the =F88A3-TOOL=/=F88A3-SEM= joins using that boundary,
+including carrier, acknowledgement, live-frame preparation, append, consume,
+and composed observe-curate-forget behavior.
+
+*** Acceptance evidence
+
+- Slice 2 append/reopen works without a carrier or bypass;
+- Slice 3 uses the accepted append/codec surface;
+- no revision writes an unreplayable durable record; and
+- each later slice depends only on accepted earlier behavior.
+
+* Scenario and architecture delta
+
+=curate-persistence-compat= must assert literal v3 role/content before and after
+reopen and compaction.  =canonical-observe-curate-forget= must assert literal
+ordered durable messages.  Slice 2 owns codec/session gates; Slice 3 owns
+loop/harness/OpenAI/composed gates.  No new external scenario is required.
+
+The portable-message mapping belongs in core because it defines durable
+semantic authority shared by ordinary projection and compaction.  Corrected
+dependency order is:
+
+#+begin_example
+pure prepared record
+  -> versioned core/session durable boundary
+  -> loop/harness commit composition
+  -> adapter wire carrier
+#+end_example
+
+No new follow-up, compatibility shim, provider-specific core policy,
+persistent-frame state, or board state is justified.
+
+* Verification
+
+The reviewer reran six focused feasibility-baseline tests: 6/6 passed.  Current
+Addendum 4 Org parsing, =git diff --check bd02dcb5..b816d1e1=, and exact HEAD
+checks passed.  Running Emacs was unchanged and no provider request was made.
+
+* Implementation readiness
+
+Blocked by P1-06 and P2-07.  A fresh incremental Tick should disposition only
+these findings and their affected durable-composition and slice-order cells;
+the five Review 01 findings and unaffected inherited cells remain cleared.
