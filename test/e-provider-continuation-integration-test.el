@@ -1159,7 +1159,16 @@ the socket transport is deterministic fake state."
                          (append sent-requests
                                  (list (list :ordinal send-count
                                              :body payload
-                                             :projection projection))))
+                                             :projection projection
+                                             ;; Keep the serialized transport
+                                             ;; measurement beside its parsed
+                                             ;; request so dynamic response ids
+                                             ;; cannot change which request is
+                                             ;; being compared.
+                                             :wire-bytes (string-bytes text)
+                                             :input-item-count
+                                             (length (or (plist-get payload :input)
+                                                         nil))))))
                    (pcase send-count
                          (1
                       (funcall on-message websocket
@@ -1290,12 +1299,22 @@ the socket transport is deterministic fake state."
              (tool-followup-body (plist-get tool-followup :body))
              (tool-followup-input-printed
               (prin1-to-string (plist-get tool-followup-body :input)))
-             (warm (nth 3 sent-requests))
+             (warm
+              (seq-find
+               (lambda (request)
+                 (let ((body (plist-get request :body)))
+                   (and (plist-get body :previous_response_id)
+                        (string-match-p
+                         "D2 later ordinary turn"
+                         (prin1-to-string (plist-get body :input))))))
+               sent-requests))
              (warm-body (plist-get warm :body))
              (warm-input (plist-get warm-body :input))
              (warm-options (plist-get (plist-get warm :projection) :options))
              (warm-input-printed (prin1-to-string warm-input))
              (warm-body-printed (prin1-to-string warm-body))
+             (warm-wire-bytes (plist-get warm :wire-bytes))
+             (warm-input-item-count (plist-get warm :input-item-count))
              (event-types
               (mapcar (lambda (event) (plist-get event :type))
                       (reverse events)))
@@ -1368,6 +1387,8 @@ the socket transport is deterministic fake state."
                                :previous-response-id-present)
                     t))
         (should (eq (plist-get warm-diagnostics :websocket-reused) t))
+        (should (numberp warm-wire-bytes))
+        (should (numberp warm-input-item-count))
         ;; The completed activity is the public projection boundary: both
         ;; adapter-owned scalar diagnostics survive without any ledger data.
         (should warm-finished-activity)
@@ -1422,11 +1443,14 @@ the socket transport is deterministic fake state."
         (funcall on-close socket)
         (e-board-e2e-prompt-batch
          harness "websocket-composed" "D3 after socket loss")
-        (let* ((recovered (nth 4 sent-requests))
+        (let* ((recovered (car (last sent-requests)))
                (recovered-body (plist-get recovered :body))
                (recovered-input (plist-get recovered-body :input))
                (recovered-input-printed (prin1-to-string recovered-input))
                (recovered-body-printed (prin1-to-string recovered-body))
+               (recovered-wire-bytes (plist-get recovered :wire-bytes))
+               (recovered-input-item-count
+                (plist-get recovered :input-item-count))
                (recovered-request
                 (seq-find
                  (lambda (request)
@@ -1471,7 +1495,16 @@ the socket transport is deterministic fake state."
                             "resp-r1"
                             "resp-r2"
                             "CURRENT-COMPOSED-INSTRUCTIONS"))
-            (should-not (string-match-p marker recovered-input-printed))))))))
+            (should-not (string-match-p marker recovered-input-printed)))
+          (should (numberp recovered-wire-bytes))
+          (should (numberp recovered-input-item-count))
+          (ert-info
+              ((format
+                "Composed wire metrics: warm bytes=%d input-items=%d; cold bytes=%d input-items=%d"
+                warm-wire-bytes warm-input-item-count
+                recovered-wire-bytes recovered-input-item-count))
+            (should (< warm-wire-bytes recovered-wire-bytes))
+            (should (< warm-input-item-count recovered-input-item-count))))))))
 
 (ert-deftest e-provider-continuation-integration-test-branchable-inherited-reuses-clean-anchor ()
   "Branchable inherited observations reuse one clean anchor without promotion."

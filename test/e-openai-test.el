@@ -3881,6 +3881,147 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (empty-ledger-p session)))
         (should (= close-count 3))))))
 
+(ert-deftest e-openai-test-websocket-incomplete-settles-without-anchor ()
+  "An incomplete response settles once without admitting its response id."
+  (let* ((e-openai-websocket-idle-timeout-seconds nil)
+         (url "wss://gateway.example.test/v1/responses")
+         (headers nil)
+         on-message
+         (send-count 0)
+         (first-done-items 0)
+         (second-done-items 0)
+         (first-complete-count 0)
+         (second-complete-count 0)
+         first-error
+         second-error
+         sends
+         scheduled-seconds
+         (close-count 0)
+         (session (e-openai-codex--websocket-session-create)))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (cl-incf send-count)
+                 (setq sends
+                       (append
+                        sends
+                        (list
+                         (json-parse-string text
+                                            :object-type 'plist
+                                            :array-type 'list
+                                            :null-object nil
+                                            :false-object :json-false))))
+                 (if (= send-count 1)
+                     (progn
+                       ;; A later completed frame must be ignored after the
+                       ;; incomplete terminal event has settled the request.
+                       (funcall on-message
+                                websocket
+                                (json-encode
+                                 '(:type "response.incomplete"
+                                   :response (:id "resp-incomplete"
+                                              :status "incomplete"
+                                              :incomplete_details
+                                              (:reason "max_output_tokens")))))
+                       (funcall on-message
+                                websocket
+                                (json-encode
+                                 '(:type "response.completed"
+                                   :response (:id "resp-late"
+                                              :status "completed")))))
+                   (funcall on-message
+                            websocket
+                            (json-encode
+                             '(:type "response.completed"
+                               :response (:id "resp-followup"
+                                          :status "completed")))))))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)))
+              ((symbol-function 'run-at-time)
+               (lambda (seconds _repeat _callback)
+                 (setq scheduled-seconds seconds)
+                 'fake-idle-timer))
+              ((symbol-function 'timerp)
+               (lambda (timer) (eq timer 'fake-idle-timer)))
+              ((symbol-function 'cancel-timer) #'ignore))
+      ;; A pre-existing clean anchor must survive the unrelated incomplete
+      ;; request and remain usable by the immediately following request.
+      (e-openai-codex--websocket-session-open session url headers)
+      (e-openai-codex--websocket-session-record-response
+       session "resp-clean" '(:model "gpt-test"))
+      (e-openai-codex--websocket-request-start
+       :session session
+       :url url
+       :headers headers
+       :body-data '(:model "gpt-test" :input nil)
+       :full-body-data '(:model "gpt-test" :input nil)
+       :request-metadata '(:diagnostics nil)
+       :idle-close-seconds 600
+       :on-item (lambda (item)
+                  (when (eq (plist-get item :type) 'done)
+                    (cl-incf first-done-items)))
+       :on-complete (lambda (_status) (cl-incf first-complete-count))
+       :on-error (lambda (err) (setq first-error err)))
+      (should (= first-done-items 1))
+      (should (= first-complete-count 1))
+      (should-not first-error)
+      (should-not
+       (e-openai-codex--websocket-session-active-request session))
+      (should (equal (plist-get (car sends) :previous_response_id) nil))
+      (should (gethash
+               "resp-clean"
+               (e-openai-codex--websocket-session-response-ledger session)))
+      (should-not
+       (gethash "resp-incomplete"
+                (e-openai-codex--websocket-session-response-ledger session)))
+      (should-not
+       (gethash "resp-late"
+                (e-openai-codex--websocket-session-response-ledger session)))
+      ;; The next request starts directly after incomplete settlement and
+      ;; reuses the preserved clean anchor without a manual cancellation.
+      (let* ((second-request
+              (e-openai-codex--websocket-request-start
+               :session session
+               :url url
+               :headers headers
+               :body-data '(:model "gpt-test"
+                            :input nil
+                            :previous_response_id "resp-clean")
+               :full-body-data '(:model "gpt-test" :input nil)
+               :request-metadata '(:diagnostics nil)
+               :idle-close-seconds 600
+               :on-item (lambda (item)
+                          (when (eq (plist-get item :type) 'done)
+                            (cl-incf second-done-items)))
+               :on-complete (lambda (_status)
+                              (cl-incf second-complete-count))
+               :on-error (lambda (err) (setq second-error err))))
+             (diagnostics
+              (plist-get (e-backend-request-metadata second-request)
+                         :diagnostics))
+             (second-payload (cadr sends)))
+        (should (e-backend-request-p second-request))
+        (should (= second-done-items 1))
+        (should (= second-complete-count 1))
+        (should-not second-error)
+        (should (equal (plist-get second-payload :previous_response_id)
+                       "resp-clean"))
+        (should (eq (plist-get diagnostics :websocket-request-mode)
+                    'incremental))
+        (should (gethash
+                 "resp-followup"
+                 (e-openai-codex--websocket-session-response-ledger session))))
+      (should-not
+       (e-openai-codex--websocket-session-active-request session))
+      (should (eq (e-openai-codex--websocket-session-websocket session)
+                  'fake-websocket))
+      (should (= scheduled-seconds 600))
+      (should (= close-count 0)))))
+
 (ert-deftest e-openai-test-websocket-changed-instructions-continue-incrementally ()
   "Replacement instructions keep the current response anchor and socket."
   (let* ((process-environment
@@ -3992,6 +4133,103 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should
        (equal (e-openai-codex--websocket-changed-property-names first second)
               '(":tools"))))))
+
+(ert-deftest e-openai-test-websocket-recorded-property-snapshot-detaches-strings ()
+  "Mutable request-property strings cannot mutate an anchor snapshot."
+  (let* ((e-openai-websocket-idle-timeout-seconds nil)
+         (e-openai-websocket-connection-idle-seconds nil)
+         (model (copy-sequence "gpt-test"))
+         (tool-name (copy-sequence "inspect"))
+         (tools (vector (list :type "function" :name tool-name)))
+         (session (e-openai-codex--websocket-session-create))
+         (url "wss://gateway.example.test/v1/responses")
+         (headers nil)
+         sends
+         on-message)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (let ((payload
+                        (json-parse-string text
+                                           :object-type 'plist
+                                           :array-type 'list
+                                           :null-object nil
+                                           :false-object :json-false)))
+                   (setq sends (append sends (list payload)))
+                   ;; Leave the first response in flight so the test can
+                   ;; mutate both top-level and nested source strings before
+                   ;; settlement.  Complete the second request immediately.
+                   (when (= (length sends) 2)
+                     (funcall on-message
+                              websocket
+                              (json-encode
+                               '(:type "response.completed"
+                                 :response (:id "resp-two"
+                                            :status "completed"))))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-openai-codex--websocket-request-start
+       :session session
+       :url url
+       :headers headers
+       :body-data (list :model model :tools tools :input nil)
+       :full-body-data (list :model model :tools tools :input nil)
+       :request-metadata '(:diagnostics nil)
+       :on-item #'ignore
+       :on-complete #'ignore
+       :on-error #'signal)
+      ;; Mutate the original request while the first response is still in
+      ;; flight.  Request-start must already own a detached property snapshot.
+      (aset model 0 ?X)
+      (aset tool-name 0 ?c)
+      (funcall on-message
+               'fake-websocket
+               (json-encode
+                '(:type "response.completed"
+                  :response (:id "resp-one" :status "completed"))))
+      ;; A second mutation after completion must also leave the recorded
+      ;; identity unchanged.
+      (aset model 0 ?Y)
+      (aset tool-name 0 ?l)
+      (let ((recorded
+             (gethash
+              "resp-one"
+              (e-openai-codex--websocket-session-response-ledger session))))
+        (should (equal (plist-get recorded :model) "gpt-test"))
+        (should (equal (plist-get (aref (plist-get recorded :tools) 0) :name)
+                       "inspect")))
+      (let* ((request
+              (e-openai-codex--websocket-request-start
+               :session session
+               :url url
+               :headers headers
+               :body-data (list :model model
+                                :tools tools
+                                :input nil
+                                :previous_response_id "resp-one")
+               :full-body-data (list :model model :tools tools :input nil)
+               :request-metadata '(:diagnostics nil)
+               :on-item #'ignore
+               :on-complete #'ignore
+               :on-error #'signal))
+             (second (cadr sends))
+             (diagnostics
+              (plist-get (e-backend-request-metadata request)
+                         :diagnostics)))
+        ;; The changed mutable leaf forces a complete request while preserving
+        ;; the separately recorded response for future compatible requests.
+        (should-not (plist-member second :previous_response_id))
+        (should (eq (plist-get diagnostics :websocket-request-mode) 'full))
+        (should (eq (plist-get diagnostics :websocket-fallback-reason)
+                    'request-properties-changed))
+        (should (string-match-p
+                 ":model"
+                 (plist-get diagnostics :websocket-changed-properties)))
+        (should (string-match-p
+                 ":tools"
+                 (plist-get diagnostics :websocket-changed-properties)))))))
 
 (ert-deftest e-openai-test-websocket-reconnects-with-full-request ()
   "A follow-up after server close reconnects without the stale response id."

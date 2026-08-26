@@ -343,13 +343,25 @@ usable on the current socket.  Incompatible, unavailable, or lost lineage
 continues through full reconstruction, and an unavailable response removes
 only the rejected entry before its one full retry.
 
+Request-start now snapshots continuation properties through
+=e-openai-codex--json-value-copy= before serialization, so mutable top-level and
+nested JSON strings cannot rewrite the identity recorded for an in-flight
+response.  =response.incomplete= settles exactly once as a successful
+backend-neutral terminal item, schedules the retained-socket idle policy, and
+does not admit its response ID; an unrelated clean entry remains usable by the
+next request.
+
 The deterministic composition test
 =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
 passed 11/11 for the complete warm tool-chain branch and cold socket-loss
-fallback.  The adapter and harness suites also passed their focused diagnostics,
-ledger, timer, cleanup, and projection assertions (8/8 focused OpenAI cases;
-156/156 harness cases).  These results prove the local state machine and
-ownership boundaries, not private-provider acceptance.
+fallback.  Its actual serialized wire measurements were 1,607 bytes and 3
+input items for warm incremental continuation versus 1,961 bytes and 7 input
+items for cold full reconstruction; the test asserts warm is smaller.  The
+authoritative full adapter suite passed 151/151, and the
+adapter and harness suites also passed their focused diagnostics, ledger,
+timer, cleanup, and projection assertions (10/10 current focused OpenAI
+cases; 156/156 harness cases).  These results prove the local state machine
+and ownership boundaries, not private-provider acceptance.
 
 The configured credentialed command was:
 
@@ -362,9 +374,10 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 It reached provider initialization but could not run because
 =/Users/dvorona/.codex/auth.json= is absent.  Consequently the
 fast older-clean-anchor provider scenario did not pass and remains unmeasured
-and blocked locally.  No wall-clock 301-second provider run is required or
-claimed.  The deterministic timer test advances fake time to 301 and 600; it
-is the acceptance evidence for the retention boundary.
+and blocked locally; its warm latency and turn-scoped provider input/cached
+token values remain unavailable.  No wall-clock 301-second provider run is
+required or claimed.  The deterministic timer test advances fake time to 301
+and 600; it is the acceptance evidence for the retention boundary.
 
 ** Remediation direction
 

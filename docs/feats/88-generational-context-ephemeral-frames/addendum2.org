@@ -178,6 +178,9 @@ The ledger is not serialized to JSONL or checkpoints.
 
 The adapter records a response only after a completed terminal event.
 It does not record failed, partial, cancelled, or unconfirmed response IDs.
+=response.incomplete= is a successful lifecycle terminal event for the
+backend-neutral =done= item, but its response ID is not admitted as a
+continuation anchor.
 A retry that falls back to full input records only the completed response from the actual full request.
 When the endpoint rejects =previous_response_id= as unavailable, the adapter removes only that requested response ID and its recorded properties from the live ledger before sending the one full retry.
 It preserves the healthy socket and every other ledger entry.
@@ -354,7 +357,10 @@ The implementation is present in the following owners and symbols:
   =e-openai-codex--websocket-actual-metadata=.
   The adapter-private live and evicted ledgers are capped at 256 entries each,
   are populated only after completed terminal responses, and are cleared with
-  the WebSocket.  The exact built-in Codex profile resolves
+  the WebSocket.  Request-start snapshots continuation properties through
+  =e-openai-codex--json-value-copy= before the first send, including mutable
+  JSON strings.  =response.incomplete= settles lifecycle cleanup without
+  admitting an anchor.  The exact built-in Codex profile resolves
   =:websocket-idle-close-seconds= to 600; undeclared profiles retain the global
   fallback, including =nil=.
 - =lisp/core/e-harness.el=: =e-harness--provider-diagnostics-activity-projection=
@@ -373,29 +379,43 @@ The implementation is present in the following owners and symbols:
   =e-openai-test-websocket-profile-idle-close-explicit-zero-schedules-value=,
   =e-openai-test-websocket-eviction-fallback-diagnostics=,
   =e-openai-test-websocket-terminal-and-transport-cleanup=, and
-  =e-openai-test-websocket-unresolved-anchor-retries-full-request=; the timer
-  boundary case advances fake time to 301 and 600 without sleeping.
+  =e-openai-test-websocket-unresolved-anchor-retries-full-request=,
+  =e-openai-test-websocket-recorded-property-snapshot-detaches-strings=, and
+  =e-openai-test-websocket-incomplete-settles-without-anchor=; the timer
+  boundary case advances fake time to 301 and 600 without sleeping.  The
+  property regression mutates top-level and nested strings before and after
+  completion and proves full fallback.  The incomplete regression proves one
+  done item and completion callback, preserves an unrelated clean entry,
+  ignores a later completed frame, and immediately reuses the clean entry.
 - =test/e-provider-continuation-integration-test.el=:
   =e-provider-continuation-integration-test-websocket-tool-chain-uses-older-clean-anchor=
   composes the real harness, context, tool, anchor, renderer, and fake socket
-  boundaries for warm older-anchor branching and cold full reconstruction.
+  boundaries for warm older-anchor branching and cold full reconstruction.  It
+  measures 1,607 serialized warm bytes and 3 warm input items versus 1,961
+  serialized cold bytes and 7 cold input items, and asserts warm is smaller.
 - =e2e/e-live-e2e-test.el=:
   =e-live-e2e-test-openai-codex-older-clean-anchor-tool-chain= is the fast
   credentialed acceptance path.  It asserts the resolved 600-second policy,
   a pending timer, and same-socket incremental continuation.  It also asserts
   that the old observation was present in the initial and tool-turn requests
-  before asserting its later replacement and absence.  There is no wall-clock
-  long-idle E2E.
+  before asserting its later replacement and absence.  It measures warm
+  turn-scoped latency and separately requires numeric provider input and
+  cached-input token fields (an explicit cached zero is valid; an omitted
+  field remains unavailable).  There is no wall-clock long-idle E2E.
 
 Deterministic repository validation on the implementation revision was:
 
 #+begin_example
 eldev test -B -f test/e-openai-test.el
-  149/149 passed in the authoritative escalated full adapter run
+  151/151 passed in the authoritative escalated full adapter run
 eldev test -B -f test/e-harness-test.el
   156/156 passed
 eldev test -B -f test/e-provider-continuation-integration-test.el
   11/11 passed (harness plus continuation: 167/167)
+eldev test -B -f test/e-openai-test.el \
+  e-openai-test-websocket-recorded-property-snapshot-detaches-strings \
+  e-openai-test-websocket-incomplete-settles-without-anchor
+  2/2 passed
 eldev test -B -f test/e-openai-test.el \
   e-openai-test-websocket-reuses-older-known-response \
   e-openai-test-websocket-ledger-cap-and-close-cleanup \
@@ -443,7 +463,8 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 It reached provider
 initialization but could not run because =/Users/dvorona/.codex/auth.json= is
 absent.  Therefore the provider semantic scenario did not pass, and the
-fast credentialed semantic claim remains unmeasured and blocked locally.
+fast credentialed semantic claim, including its warm latency and token-use
+values, remains unmeasured and blocked locally.
 There is no wall-clock 301-second provider run to claim or require; the
 deterministic adapter test advances fake time to 301 and 600 instead.  Neither
 the skip nor the missing credential is treated as acceptance.

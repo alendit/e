@@ -2017,6 +2017,8 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
 Hash tables are copied by contents so the connection-local response ledger does
 not share mutable request-property objects with a later request."
   (cond
+   ((stringp value)
+    (copy-sequence value))
    ((hash-table-p value)
     (let ((copy (make-hash-table :test (hash-table-test value))))
       (maphash (lambda (key entry)
@@ -2400,7 +2402,12 @@ list.  Return a cancellable `e-backend-request' handle."
          (full-body-data (or full-body-data body-data))
          (_ (e-openai-codex--websocket-session-ensure-response-ledger session))
          (properties
-          (e-openai-codex--websocket-request-properties full-body-data))
+          ;; Snapshot all continuation properties before the first send.  A
+          ;; caller may reuse and mutate its request tree while the response
+          ;; is still in flight; the later ledger admission must compare the
+          ;; request that was actually started, not that mutable tree.
+          (e-openai-codex--json-value-copy
+           (e-openai-codex--websocket-request-properties full-body-data)))
          (requested-response-id (plist-get body-data :previous_response_id))
          (existing-websocket
           (e-openai-codex--websocket-session-websocket session))
@@ -2526,13 +2533,14 @@ list.  Return a cancellable `e-backend-request' handle."
              (e-openai-codex--websocket-session-close session)
              (when on-error
                (funcall on-error err))))
-         (settle-complete ()
+         (settle-complete (&optional response-id)
            (unless settled
              (setq settled t)
              (cancel-timeout)
              (clear-active-request)
-             (e-openai-codex--websocket-session-record-response
-              session completed-response-id properties)
+             (when (stringp response-id)
+               (e-openai-codex--websocket-session-record-response
+                session response-id properties))
              (e-openai-codex--websocket-schedule-idle-close
               session idle-close-seconds)
              (when on-complete
@@ -2600,6 +2608,11 @@ list.  Return a cancellable `e-backend-request' handle."
                         (completed-event-p
                          (member (plist-get event :type)
                                  '("response.completed" "response.done")))
+                        (incomplete-event-p
+                         (equal (plist-get event :type)
+                                "response.incomplete"))
+                        (terminal-event-p
+                         (or completed-event-p incomplete-event-p))
                         ;; WebSocket responses are valid connection-local
                         ;; anchors even with store=false.  If the connection is
                         ;; later lost, previous_response_not_found already
@@ -2619,8 +2632,12 @@ list.  Return a cancellable `e-backend-request' handle."
                                     emit-anchor
                                     prompt-layout-revision))
                        (emit-item item))
-                     (when completed-event-p
-                       (settle-complete))))
+                     (when terminal-event-p
+                       ;; An incomplete response is a successful terminal
+                       ;; lifecycle event, but its response id is not a
+                       ;; confirmed connection-local continuation anchor.
+                       (settle-complete
+                        (unless incomplete-event-p completed-response-id)))))
                (error
                 (settle-error err)))))
          (handle-close (&rest _args)
