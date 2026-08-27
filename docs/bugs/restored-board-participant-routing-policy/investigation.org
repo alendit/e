@@ -65,6 +65,76 @@ Exposing the existing =turn-retrying= lifecycle edge makes transient attempts
 legible, but does not prevent the duplicate turn.  Preserving the routing
 policy remains the correctness fix for this report.
 
+* 2026-08-27 Settlement Incident
+
+The same open routing defect reproduced in the running Emacs after a restart.
+The selected Daily root session was
+=20260827T083407-654c183c5a6e=.  Its restored background participant session
+=20260827T083408-6f5b5c3db895= had again acquired the generic =main= pickup
+route.  One ordinary input, board message =msg_1= at =15:24:19Z=, consequently
+started both of these private turns:
+
+- selected participant =ptc_01M11X47RH2VRJTCXC4YW2WA9E=, private turn
+  =01M11X4VF847VEWKTNFDSY8E78=;
+- restored participant =ptc_01M11X4823Y2WVTBZQK5ZGPAVK=, private turn
+  =01M11X4VRVY03WGV3F86RCRJ25=.
+
+The restored participant published output =msg_36= and its terminal summary
+=msg_37= at =15:24:48Z=.  The selected participant remained active for another
+79 seconds and did not publish its output and terminal summary until
+=15:26:07Z=.  Between those terminal boundaries, at =15:25:47Z=, the user
+submitted board input =msg_74= as a new conversational turn.
+
+The board delivered =msg_74= to both participants.  The restored participant,
+whose preceding turn had finished, started private turn
+=01M11X7HPJN7TYVWDDEHCTCMW7=.  The selected participant was still running, so
+its private journal recorded =msg_74= as =turn-steered= on
+=01M11X4VF847VEWKTNFDSY8E78=.  Both participants then published answers to the
+second input.
+
+This classification was not visible user intent.  It was a disagreement
+between presentation settlement and the selected attachment's execution
+state:
+
+- the root binding observes all =main=-tagged board messages, including output
+  from the restored sibling participant;
+- =e-chat-service--message-event= marks every runtime board output as
+  =:terminal-output t= and correlates sibling output to the causal board input;
+- =e-chat--render-event= passes such output to
+  =e-chat--settle-successful-turn-presentation=, which stops progress, sets the
+  status to =done=, and restores the composer;
+- =e-chat--submit-intent= independently asks
+  =e-chat-service-active-turn-p= about only the selected binding's private
+  attachment.  It therefore chose =steer= even though sibling output had made
+  the shared presentation look complete.
+
+The repository's focused tests confirm both constituent contracts: board
+projection keeps participant-local source turns distinct, while a terminal
+board assistant message settles chat presentation before its later summary.
+They do not cover the unsafe composition in which a sibling participant's
+terminal output arrives while the selected participant remains active.
+
+This incident strengthens the existing conclusion.  Durable restoration of
+the participant's private routing policy prevents both duplicate execution and
+the premature sibling settlement that exposed the submit-mode mismatch.  The
+presentation boundary should also be made explicit: either only terminal output
+owned by the selected participant may settle its composer, or settlement must
+be derived from an application-level board completion contract that accounts
+for every intended responder.  A generic =main=-tagged sibling output is not a
+sound completion witness for the selected attachment.
+
+The live investigation used the bounded =scripts/e-live-probe chat= probe plus
+the two durable private journals and the owning board journal.  No live state
+was changed and the running Emacs was not reloaded.
+
+Focused repository validation:
+
+- =eldev test -f test/e-modernchat-test.el
+  e-chat-service-test-replay-is-bounded-board-derived-and-causal -f
+  test/e-chat-test.el
+  e-chat-test-board-final-assistant-settles-turn-progress=: 2 passed, 0
+  unexpected.
+
 * Partial Fix
 
 - =turn-retrying= is now durable audit activity.  Its normalized provider error,

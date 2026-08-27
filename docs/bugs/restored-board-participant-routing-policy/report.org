@@ -18,3 +18,11 @@ One ordinary chat prompt started turns in both the interactive Daily session
 and its private background update session.  Provider retries from both turns
 were merged into the visible input's activity, producing several apparently
 independent failure rows even though both turns eventually succeeded.
+
+A later live incident exposed a settlement consequence.  The restored
+background participant finished first, and its board output made the shared
+chat presentation look settled while the interactive participant was still
+running.  The next ordinary composer submission was therefore recorded as
+steering for the interactive participant even though the user submitted it as
+a new turn.  The same board input also started a new turn in the already-idle
+background participant, so both participants answered it.
