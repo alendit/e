@@ -13,9 +13,10 @@ resource-operation tools, OpenAI-like backend adapters, presentation shells, liv
 reload support, and ERT coverage. Feature 88's current path adds consumer-bound
 ephemeral context frames, model-directed `context-curate`, version-3 durable
 curation records, and read-only version-2 compatibility; external cache
-capability remains unconfirmed. Durable user data is primarily session state
-under the user's Emacs directory plus optional project-local capability
-configuration.
+evidence is current for the configured Responses HTTP profile, while the exact
+ChatGPT/WebSocket scope remains unconfirmed. Durable user data is primarily
+session state under the user's Emacs directory plus optional project-local
+capability configuration.
 
 The architectural direction is capability-first. The harness owns lifecycle and
 runtime records, capabilities own named behavior contracts, layers package those
@@ -421,7 +422,9 @@ opaque immediate acknowledgement, response availability, and provider cache
 evidence; labels, estimates, provenance, and frame identities do not cross the
 wire.  Canonical later requests contain durable session projection, selected
 curation messages, and the new frontier.  The external cache capability is
-currently unconfirmed, independently of deterministic semantic acceptance.
+current for the configured compatible Responses HTTP profile, independently of
+the still-unconfirmed ChatGPT/WebSocket-specific scope and deterministic
+semantic acceptance.
 
 ### Agent Loop And Backend Adapter
 
@@ -626,8 +629,9 @@ response availability, canonical retry cleanup, the general idle policy, and
 bounded diagnostics. The provider-continuation integration test composes the
 real harness, context, tool, anchor, renderer, and fake socket boundaries;
 credentialed Codex E2E remains an explicit fast gate for private endpoint and
-cache behavior.  The two current selectors emit bounded identity-complete
-records and skip as configuration-unavailable when credentials are absent.
+cache behavior; the configured Responses HTTP selectors currently provide
+identity-complete warm evidence, while the strict ChatGPT/WebSocket selectors
+remain separately unconfirmed.
 Shell tests should keep proving command wiring and rendering against harness
 events rather than reimplementing harness tests.
 

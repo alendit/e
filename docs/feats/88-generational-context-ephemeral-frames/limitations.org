@@ -6,8 +6,10 @@
 
 In-review (deterministic-fixed-point; external capability-unconfirmed).  This
 document records the remaining external limitation after Addenda 3 and 4.  The
-repository-controlled implementation is accepted through =0f67b992=, but the
-credentialed cache capability is not confirmed, so this is not a Done decision.
+repository-controlled implementation is accepted through
+=3a287d885c8b527e7934ef18217011dc86457ecc=.  A compatible configured
+Responses HTTP profile has current cache evidence; the exact built-in ChatGPT
+Codex WebSocket scope is not confirmed, so this is not a Done decision.
 
 * Purpose
 
@@ -17,10 +19,11 @@ tool continuation; Addendum 4 adds provider-neutral source presentation,
 model-directed =context-curate=, and version-3 durable curation records while
 retaining read-only version-2 records.  The historical live experiments below
 remain useful background, but their old optimization mechanisms are not current
-acceptance requirements.  The remaining external limitation is:
+acceptance requirements.  The remaining external limitation is the
+profile-specific built-in ChatGPT Codex WebSocket behavior:
 
-1. the private provider cache and response availability cannot be confirmed
-   without credentials; and
+1. retained/replaced-socket cache behavior and response availability have not
+   been exercised at the current evidence revision; and
 2. a =store=false= response lineage remains connection-local, so canonical
    replay is the correctness fallback after a socket or response loss.
 
@@ -68,24 +71,25 @@ fixed point in this dependency order:
 | =0b757625= | exactly-once external evidence finalization |
 | =d7e2e9ae= | durable assistant identity across preflight and append |
 | =0f67b992= | body-complete evidence shapes with optional transport metadata |
+| =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
 
-The exact configured run on 2026-08-27 invoked both
-=e-live-e2e-test-chatgpt-canonical-warm-prefix= and
-=e-live-e2e-test-chatgpt-canonical-tool-heavy= with the exact built-in ChatGPT
-Codex profile, base URL =https://chatgpt.com/backend-api/codex=, Responses
-WebSocket transport, =store=false=, model =gpt-5.6-sol=, and a 120-second
-scenario timeout.  Both selectors reached the identity gate, found
-=/Users/dvorona/.codex/auth.json= unreadable/absent, emitted one
-identity-complete bounded record with an empty material request shape, no
-requests or token usage, semantic/cache results =unavailable=, and overall
-result =configuration-unavailable=, then skipped.  The records report
-=0f67b992=, matching the deterministic fixed-point implementation.  They are
-current identity-complete diagnostics, but are not reusable external capability
-acceptance evidence because no request or usage observation occurred.
+The exact configured run on 2026-08-27 used provider/profile
+=eng-ai-gateway-gpt=, Responses HTTP transport, =:json-false= store mode,
+model =gpt-5.6-sol=, and a predeclared 120-second timeout.  The
+identity-complete records at revision
+=3a287d885c8b527e7934ef18217011dc86457ecc= report:
 
-Deterministic semantics remain accepted independently of this unavailable
-external run.  The cache specification and runners are accepted, while
-=F88A3-CACHE= remains =capability-unconfirmed=.
+| Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+----------+-------+--------|
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+
+This is current external compatibility evidence for the configured Responses
+HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
+WebSocket retained/replaced-socket or response-continuation claims; those
+remain separately unconfirmed and not exercised.  Deterministic semantics,
+the cache specification, and the runners are accepted independently of that
+remaining transport-specific scope.
 
 * Systems and sessions inspected
 
@@ -363,11 +367,11 @@ configurable socket idle policy remains, but the built-in profile has no
 private 600-second override and no response-ID ledger.
 
 The durable local session record does not make this provider lineage durable.
-The external endpoint and cache behavior remain unconfirmed: the exact
-2026-08-27 configured runs could not read =/Users/dvorona/.codex/auth.json=,
-so both named selectors emitted bounded =configuration-unavailable= records
-without requests or token usage.  The deterministic tests prove the fallback
-and ownership state machine, not private-provider retention.
+The current configured Responses HTTP run proves warm cache accounting for
+=eng-ai-gateway-gpt=, but does not prove this built-in ChatGPT Codex
+WebSocket's retained/replaced-socket behavior or response availability.  The
+deterministic tests prove the fallback and ownership state machine; the
+ChatGPT/WebSocket retention claim remains unconfirmed.
 
 * Historical experiment: the ChatGPT continuation is connection-local
 
@@ -456,7 +460,7 @@ tokens, connection ID, reuse count, and fallback reason.  The credentialed
 older-clean-anchor E2E uses that same report path rather than a whole-turn
 stopwatch.
 
-The configured credentialed command was:
+The earlier configured credentialed command was:
 
 #+begin_src sh
 E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
@@ -465,13 +469,12 @@ E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 #+end_src
 
 It reached provider initialization but could not run because
-=/Users/dvorona/.codex/auth.json= is absent.  Consequently the
-fast older-clean-anchor provider scenario did not pass and remains unmeasured
-and blocked locally; its provider-request latency, provider input/cached token
-values, and success-path metrics line remain unavailable.  No wall-clock
-301-second provider run is required or claimed.  The deterministic timer test
-advances fake time to 301 and 600; it is the acceptance evidence for the
-retention boundary.
+=/Users/dvorona/.codex/auth.json= was absent.  This is a superseded historical
+diagnostic, not the current acceptance selector: it predates the profile-aware
+Responses runners and provides no provider-request or cache evidence.  No
+wall-clock 301-second provider run is required or claimed.  The deterministic
+timer test advances fake time to 301 and 600; it is historical acceptance
+evidence for the removed retention boundary, not current behavior.
 
 ** Historical remediation direction
 
@@ -585,23 +588,21 @@ canonical OpenAI profiles.
 
 Repository-side semantics, compatibility, cleanup, and bounded evidence
 runners are accepted at the deterministic fixed point recorded above.  The
-remaining capability claim is external: a current credentialed run must
-exercise both retained and deliberately replaced sockets in the canonical
-warm-prefix scenario, and a real tool call, matching immediate continuation,
-=context-curate= commit, and canonical ordinary request in the tool-heavy
-scenario.  Cache results are reported separately from semantic results.
+configured compatible Responses HTTP profile now has current external evidence;
+cache results remain separate from semantic results.
 
-On 2026-08-27 both exact built-in Codex selectors reached their identity gate
-but found the configured auth file unreadable/absent.  Each emitted one
-identity-complete bounded record with the endpoint, WebSocket transport,
-=store=false=, model, revision, timeout, empty request shape, and no request
-or token usage; semantic/cache were =unavailable= and the overall result was
-=configuration-unavailable=.  The records report matching implementation
-revision =0f67b992=, but remain diagnostic rather than capability evidence
-because no request or usage observation occurred.  Until that command is rerun
-with credentials at a clean matching revision,
-=F88A3-CACHE= remains capability-unconfirmed and this document remains
-In-review rather than Done.
+On 2026-08-27 the provider/profile =eng-ai-gateway-gpt= run used Responses HTTP,
+=:json-false= store mode, model =gpt-5.6-sol=, and a 120-second bound at
+revision =3a287d885c8b527e7934ef18217011dc86457ecc=.  The warm-prefix scenario
+completed 3 requests with 6,204 total and 4,087 cached input tokens; the
+tool-heavy scenario completed 5 requests with 14,506 total and 11,230 cached
+input tokens.  Both report semantic =pass=, cache =warm=, and result =pass=.
+
+This evidence accepts the cache contract for that compatible Responses HTTP
+profile.  The exact built-in ChatGPT Codex WebSocket retained/replaced-socket
+and response-continuation claims were not exercised and remain
+=capability-unconfirmed=; therefore this document remains =In-review= rather
+than =Done=.
 
 * Historical acceptance gap: the warm path only
 

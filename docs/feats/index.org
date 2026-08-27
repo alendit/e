@@ -98,5 +98,5 @@ Status values for coding agents:
 | 85 | Done        | 85-default-projects/                        | Default Projects                                     |
 | 86 | In-review   | 86-current-emacs-config-e2e/                | Current Emacs Configuration E2E Mode                 |
 | 87 | Planned     | 87-sqlite-session-board-persistence/         | SQLite Session and Board Persistence                 |
-| 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addendum 4 |
+| 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addenda 3/4 |
 | 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |

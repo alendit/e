@@ -18,7 +18,25 @@ tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; the persisted =context-promotion= family remains readable as version 2
 only.  The repository-controlled implementation is at deterministic fixed point
-through =0f67b992=, while the external cache capability remains unconfirmed.
+through =3a287d885c8b527e7934ef18217011dc86457ecc=.  A configured compatible
+Responses HTTP profile has current cache evidence; ChatGPT/WebSocket-specific
+continuation and retained/replacement-socket behavior remain unconfirmed.
+
+The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=,
+Responses HTTP transport, =:json-false= store mode, model =gpt-5.6-sol=, and
+the bounded scenario runners at the exact revision above:
+
+| Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+----------+-------+--------|
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+
+This is current external compatibility evidence for that configured Responses
+profile.  It does not exercise the exact built-in ChatGPT Codex WebSocket
+retained/replaced-socket or response-continuation claims; those remain a
+separate unconfirmed scope.  Addendum 4 supersedes Addendum 3 only where the
+model-facing promotion contract conflicts, using =context-curate= and durable
+version-3 records while retaining read-only version-2 compatibility.
 
 * Goal
 
@@ -866,9 +884,9 @@ and atomic transitions are the future owner of that concern.
 ** Mandatory credential-free E2E
 
 This original baseline is completed by the Addendum 3/4 composition tests.  The
-current model-facing operation is =context-curate=, and the current external
-selectors and unavailable-auth result are recorded in those addenda; the steps
-below remain the provider-neutral semantic baseline.
+current model-facing operation is =context-curate=, and the current
+profile-aware external evidence is recorded in those addenda; the steps below
+remain the provider-neutral semantic baseline.
 
 Add a real E2E with a stateful instrumented transport recording literal request,
 inherited continuation context, request-local replacement, and effective model
@@ -1082,12 +1100,15 @@ latency: that mechanism is outside this feature.
 
 * Residual ambiguities
 
-- External cache behavior remains unconfirmed.  The two bounded selectors now
-  emit identity-complete records, but the 2026-08-27 run skipped before a
-  request because =/Users/dvorona/.codex/auth.json= was unavailable.
-- The current records identify exact implementation revision =0f67b992=, but
-  contain no requests or usage because authentication was unavailable; they
-  are diagnostic evidence, not external capability acceptance evidence.
+- The configured =eng-ai-gateway-gpt= Responses HTTP profile has current
+  identity-complete cache evidence: warm-prefix is 3 requests with 6,204 total
+  and 4,087 cached input tokens; tool-heavy is 5 requests with 14,506 total
+  and 11,230 cached input tokens.  Both runs report semantic =pass=, cache
+  =warm=, and result =pass= at revision
+  =3a287d885c8b527e7934ef18217011dc86457ecc=.
+- The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
+  response-continuation claims were not exercised by that HTTP run and remain
+  unconfirmed; this keeps the plan =In-review= rather than =Done=.
 - Existing session audit may retain more provenance than model projection
   needs.  SQLite retention can define that later without changing semantics.
 - Cache counters are evidence when exposed, not a correctness dependency.

@@ -51,9 +51,9 @@ evidence; they refer to these IDs and do not add independent requirements.
 | =F88A3-SEM= | After a consumed observation, the next ordinary request is rebuilt from the session-owned durable body, committed promotions, and the new runtime frontier; the prior raw observation, call, replay item, result marker, and contaminated response IDs are absent. | core lifetime policy plus session/harness composition | ordinary turn following an observed/promoted tool turn | 2 | =canonical-observe-promote-forget= owner and composed scenarios | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-LAYOUT= | An affected OpenAI Responses request keeps top-level instructions stable, renders the unchanged semantic prefix before the changing user/observation frontier, preserves observation instruction authority with developer-role input, and places an explicit breakpoint at the stable-prefix boundary where supported. | OpenAI adapter consuming harness-owned segment identity | literal built-in Codex and canonical OpenAI request bodies | 1 | two canonical =[A B C] -> [A B D]= projections with byte/order prefix comparison, raw =C= exclusion, authority check, and breakpoint check | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-DELIVERY= | For a profile adopting late-input frontier layout, current-state and dynamic-context input is =inherited= under continuation.  An observation-bearing response or descendant is not a durable cross-turn anchor.  Profiles that retain top-level instruction replacement remain under the first addendum instead. | backend capability contract and OpenAI profile resolver | harness anchor selection/persistence joined to the affected profile | 1 and 2 | capability-map, anchor-safety, no-persistence, and canonical-next-turn scenarios | not applicable; repository-controlled | not applicable | accepted |
-| =F88A3-TOOL= | The latest tool-producing response is usable only by its matching in-memory function-call-output follow-up.  A =previous_response_not_found= rejection performs at most one complete canonical retry containing the required call/replay/result bundle; neither response lineage authorizes the next ordinary turn. | loop for causal follow-up; OpenAI adapter for response availability/retry | streamed tool response, tool execution, matching follow-up, then next ordinary turn | 2 and 3 | both provider-done/tool-result orderings; top-level =error= and =response.failed=; exact zero/one retry; next-turn exclusion | =chatgpt-canonical-tool-heavy= reports tool continuation separately from cache status | retry reason/count may be bounded diagnostics; otherwise not applicable | accepted |
+| =F88A3-TOOL= | The latest tool-producing response is usable only by its matching in-memory function-call-output follow-up.  A =previous_response_not_found= rejection performs at most one complete canonical retry containing the required call/replay/result bundle; neither response lineage authorizes the next ordinary turn. | loop for causal follow-up; OpenAI adapter for response availability/retry | streamed tool response, tool execution, matching follow-up, then next ordinary turn | 2 and 3 | both provider-done/tool-result orderings; top-level =error= and =response.failed=; exact zero/one retry; next-turn exclusion | configured compatible Responses tool-heavy run reports continuation and cache separately; ChatGPT/WebSocket-specific continuation remains unconfirmed | retry reason/count may be bounded diagnostics; otherwise not applicable | accepted |
 | =F88A3-PROMOTION= | Core validates promotion provenance against the consumed frame and commits valid facts to the session before any subsequent provider request; invalid promotion follows the existing failure path without later dispatch or semantic mutation. | core and harness/session append boundary | observed tool turn followed by promoted ordinary turn | 2 | existing owner tests plus public valid/invalid promotion composition | not applicable; repository-controlled | not applicable | accepted inherited contract; superseded by =F88A4-CURATE= |
-| =F88A3-CACHE= | With unchanged capability identity and cache key, canonical retained-socket and replacement-socket request pairs report a warm prefix on request 2; missing usage is unavailable, explicit zero on a valid run is =product-contract-failure=, and semantic correctness remains independent of cache availability. | OpenAI adapter profile/evidence boundary | minimal canonical pair and tool-heavy canonical composition | 4 | stable key, literal prefix, and replacement-socket request identity | separately reportable minimal pair and tool-heavy scenario | cached ratio, latency, and warm/cold frequency are observational | accepted specification/runner; external capability-unconfirmed |
+| =F88A3-CACHE= | With unchanged capability identity and cache key, a compatible configured Responses profile's canonical pair reports a warm prefix; stateful WebSocket retained and deliberate replacement-socket behavior remains a transport-specific case.  Missing usage is unavailable, explicit zero on a valid run is =product-contract-failure=, and semantic correctness remains independent of cache availability. | OpenAI adapter profile/evidence boundary | minimal canonical pair and tool-heavy canonical composition | 4 | stable key, literal prefix, transport-aware request identity, and usage classification | configured compatible Responses HTTP profile is current; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | cached ratio, latency, and warm/cold frequency are observational | accepted specification/runner; HTTP external evidence current; ChatGPT/WebSocket capability-unconfirmed |
 | =F88A3-CLEANUP= | The ChatGPT optimization path retains no historical response ledger, eviction history, older-anchor diagnostics, Codex-specific idle override, or wire-size acceptance; only immediate causal response state and the general socket policy remain, and no new durable state or compatibility shim is introduced. | OpenAI adapter | adapter state across response completion, follow-up, rejection, close, and replacement | 3 | negative source/test searches plus latest-follow-up, retry, general idle-close, and cleanup tests | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-COMPAT= | Provider-neutral anchors, canonical OpenAI compaction/continuation with an independent semantic consumer, persisted historical audit records, and unrelated transports remain unchanged; named streams, generalized graphs, crash recovery, compaction redesign, and presentation are outside this package. | existing owning modules | unaffected-profile and disabled-feature regressions | 3 and 4 | existing generic branchable, compaction, disabled, session-load, and transport suites | public named-stream documentation is context, not acceptance | not applicable | accepted |
 
@@ -75,22 +75,26 @@ the following dependency order:
 | =0b757625= | exactly-once external evidence finalization |
 | =d7e2e9ae= | durable assistant identity across preflight and append |
 | =0f67b992= | body-complete evidence shapes with optional transport metadata |
+| =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
 
-The 2026-08-27 configured run exercised both named external selectors with the
-exact built-in ChatGPT Codex profile: base URL
-=https://chatgpt.com/backend-api/codex=, Responses WebSocket transport,
-=store=false=, model =gpt-5.6-sol=, and a predeclared 120-second timeout.  The
-Codex authentication file was unreadable/absent at
-=/Users/dvorona/.codex/auth.json=.  Each selector emitted one identity-complete
-bounded evidence record with no request or token usage, semantic/cache results
-=unavailable=, and overall result =configuration-unavailable= before skipping.
-The records report exact implementation revision =0f67b992=.  They are current
-identity-complete diagnostics, but cannot prove cache capability because
-authentication failed before any request or usage observation.
+The 2026-08-27 configured run exercised the two canonical scenarios with the
+compatible Responses provider/profile =eng-ai-gateway-gpt=, Responses HTTP
+transport, =:json-false= store mode, model =gpt-5.6-sol=, and a predeclared
+120-second timeout.  The identity-complete records at revision
+=3a287d885c8b527e7934ef18217011dc86457ecc= report:
 
-Thus every repository-controlled row is accepted, including the =F88A3-CACHE=
-specification and runners, while external cache capability remains explicitly
-=capability-unconfirmed=.  This addendum is =In-review= rather than =Done=.
+| Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+----------+-------+--------|
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+
+This is current external compatibility evidence for the configured Responses
+HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
+WebSocket retained/replaced-socket or response-continuation claims; those
+remain separately unconfirmed and not exercised.  All repository-controlled
+rows are accepted, including the =F88A3-CACHE= specification and runners, but
+the addendum remains =In-review= rather than =Done= while that
+ChatGPT/WebSocket-specific scope is unconfirmed.
 
 * Rationale and corrected vocabulary
 
@@ -160,21 +164,27 @@ latest response; reusing the older response produced
 =previous_response_not_found=.  These observations motivated the design but
 lack the identity record below and are stale for acceptance.
 
-=F88A3-CACHE= has two separately reportable external scenarios:
+=F88A3-CACHE= has separately reportable external scenarios for each compatible
+configured Responses profile:
 
-1. =chatgpt-canonical-warm-prefix=: the smallest canonical =[A B C] -> [A B D]=
-   pair, run once on a retained socket and once after a deliberate replacement
-   socket; and
-2. =chatgpt-canonical-tool-heavy=: one real tool-producing response, its
-   matching immediate function-call-output continuation, and the following
-   canonical ordinary request.
+1. =responses-canonical-warm-prefix=: the smallest canonical
+   =[A B C] -> [A B D]= pair, with transport-specific request and cache
+   identity captured; and
+2. =responses-canonical-tool-heavy=: one real tool-producing response, its
+   matching immediate function-call-output continuation, the curation carrier,
+   and the following canonical ordinary request.
+
+The strict =chatgpt-canonical-warm-prefix= and
+=chatgpt-canonical-tool-heavy= selectors remain the separate built-in Codex
+WebSocket retained/replaced-socket and continuation scenarios.  They were not
+exercised by the current HTTP run and remain externally unconfirmed.
 
 Each record contains provider/profile ID, exact base-URL identity, Responses
-WebSocket transport, store mode, native requester identity, exact model ID,
-prompt-layout revision, prompt-cache-key derivation revision, material request
-shape, scenario name, timestamp, repository revision, total input tokens,
-cached input tokens, the scenario's predeclared total timeout, elapsed duration,
-and result.
+transport (HTTP or WebSocket), store mode, native requester identity, exact
+model ID, prompt-layout revision, prompt-cache-key derivation revision,
+material request shape, scenario name, timestamp, repository revision, total
+input tokens, cached input tokens, the scenario's predeclared total timeout,
+elapsed duration, and result.
 
 Each scenario runner declares its total timeout before sending the first
 request.  The timeout is private execution configuration rather than a durable
@@ -204,10 +214,12 @@ convergence, and targeted cleanup.  They do not require credentials.
 Cached-input ratio, provider latency, and live warm/cold frequency are
 observational telemetry.  The historical 4,864/5,450 result is an observational
 baseline, not a percentage gate.  The package may reach
-=deterministic-fixed-point= while external execution is unavailable, but
-remains =capability-unconfirmed= and is not =Done= until both initial external
-scenarios are =current= or =reusable=.  A valid =product-contract-failure=
-returns =F88A3-CACHE= to design or remediation.
+=deterministic-fixed-point= while a transport-specific external scope is
+unavailable.  The configured compatible Responses HTTP evidence is current,
+while the strict ChatGPT/WebSocket scope remains =capability-unconfirmed=;
+the addendum is not =Done= until that remaining scope is =current= or
+=reusable=.  A valid =product-contract-failure= returns =F88A3-CACHE= to
+design or remediation.
 
 | Freshness field | Record |
 |-----------------+--------|
@@ -225,8 +237,10 @@ returns =F88A3-CACHE= to design or remediation.
 | =stable-prefix-frontier-pair= | =F88A3-LAYOUT=, =F88A3-DELIVERY= | canonical bodies have an identical prefix, different late frontier, correct roles, and no false clean anchor | deterministic gate | segment IDs, literal body, capability map, and anchor activity |
 | =latest-matching-tool-follow-up= | =F88A3-TOOL= | R1 is used by exactly its matching output; the next ordinary request omits R1/R2 | deterministic gate | response ID and request-ordinal capture |
 | =rejected-latest-continuation= | =F88A3-TOOL= | both error forms cause exactly one canonical replay with the complete bundle and no second retry | deterministic gate | request count, mode, and error form |
-| =chatgpt-canonical-warm-prefix= | =F88A3-CACHE= | request 2 reports nonzero cached input on retained and replacement sockets | external compatibility | request/key/connection/usage capture isolates provider cache |
-| =chatgpt-canonical-tool-heavy= | =F88A3-SEM=, =F88A3-TOOL=, =F88A3-CACHE= | semantics pass independently; the subsequent canonical request reports cache status independently | external compatibility | shared request and usage capture separates product owner from provider cache |
+| =responses-canonical-warm-prefix= | =F88A3-CACHE= | configured Responses HTTP canonical requests report nonzero cached input with stable material identity | external compatibility | request/key/usage capture isolates provider cache; transport identity is recorded |
+| =responses-canonical-tool-heavy= | =F88A3-SEM=, =F88A3-TOOL=, =F88A3-CACHE= | semantics pass independently; the subsequent canonical request reports cache status independently | external compatibility | shared request and usage capture separates product owner from provider cache |
+| =chatgpt-canonical-warm-prefix= | =F88A3-CACHE= | strict built-in Codex WebSocket retained/replacement pair | external compatibility | separate transport-specific evidence; not exercised by current HTTP run |
+| =chatgpt-canonical-tool-heavy= | =F88A3-SEM=, =F88A3-TOOL=, =F88A3-CACHE= | strict built-in Codex WebSocket continuation and canonical ordinary request | external compatibility | separate response-ID/socket evidence; not exercised by current HTTP run |
 | =obsolete-cluster-absent= | =F88A3-CLEANUP=, =F88A3-COMPAT= | obsolete state and wire-size acceptance are absent while generic consumers still pass | deterministic gate | negative source/test searches plus focused generic regressions |
 
 * Scope and non-goals

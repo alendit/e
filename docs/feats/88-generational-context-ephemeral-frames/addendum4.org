@@ -19,10 +19,13 @@ unchanged.  Where the documents conflict, this addendum supersedes only
 
 This addendum does not add a board storage class.  Ephemeral and durable still
 describe future model visibility; session or board audit retention is an
-independent concern.  External provider capability is
+independent concern.  External provider capability is profile- and
+transport-specific: the configured Responses HTTP cache run is current, while
+the exact built-in ChatGPT Codex WebSocket scope remains
 =capability-unconfirmed=.  Repository-controlled curation semantics do not
-depend on external evidence, while the material prompt and reserved-tool change
-invalidates earlier =F88A3-CACHE= evidence by request-shape identity.
+depend on external evidence.  The material prompt and reserved-tool change
+invalidated earlier =F88A3-CACHE= evidence by request-shape identity; the
+current profile-aware records are listed below.
 
 * Normative contract matrix
 
@@ -37,8 +40,8 @@ invalidates earlier =F88A3-CACHE= evidence by request-shape identity.
 | =F88A3-SEM= | inherited with terminology substitution | The next ordinary request is canonical durable state plus successful curation items and the new frontier; consumed raw values and contaminated lineage are absent. | unchanged session/harness composition | revised canonical observe-curate-forget composition | not applicable | accepted inherited implementation join |
 | =F88A3-LAYOUT= | inherited | Curation source presentation is late-frontier input.  Stable policy and reserved schema remain stable-prefix-compatible; presentation/schema revisions fence anchors and cache evidence. | unchanged harness/OpenAI layout owners | literal request order, prefix, and fingerprint tests | not applicable | accepted inherited implementation join |
 | =F88A3-DELIVERY= | inherited | Affected frontier observations remain inherited under continuation and contaminated descendants remain immediate-followup-only. | unchanged capability/anchor owners | retained delivery and anchor-safety scenarios | not applicable | accepted inherited contract |
-| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | =chatgpt-canonical-tool-heavy= | accepted inherited implementation join |
-| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | both inherited scenarios =capability-unconfirmed= | accepted specification/runner; external capability-unconfirmed |
+| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | configured compatible Responses tool-heavy run reports continuation and cache separately; ChatGPT/WebSocket-specific continuation remains unconfirmed | accepted inherited implementation join |
+| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | configured compatible Responses HTTP profile is current; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | accepted specification/runner; HTTP external evidence current; ChatGPT/WebSocket capability-unconfirmed |
 | =F88A3-CLEANUP= | inherited | No response graph or durable recovery machinery returns; the old model-facing =context-promote= carrier and writers are removed. | adapter/core/session negative inventory | negative source inventory and lifecycle tests | not applicable | accepted |
 | =F88A3-COMPAT= | inherited | V2 durable context records, generic anchors/branches, compaction, and unrelated transports remain valid. | core/session plus unaffected adapters | mixed v2/v3 reopen and regressions | not applicable | accepted inherited contract |
 
@@ -60,22 +63,26 @@ the following dependency order:
 | =0b757625= | exactly-once external evidence finalization |
 | =d7e2e9ae= | durable assistant identity across preflight and append |
 | =0f67b992= | body-complete evidence shapes with optional transport metadata |
+| =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
 
-The 2026-08-27 configured run exercised both named external selectors with the
-exact built-in ChatGPT Codex profile: base URL
-=https://chatgpt.com/backend-api/codex=, Responses WebSocket transport,
-=store=false=, model =gpt-5.6-sol=, and a predeclared 120-second timeout.  The
-Codex authentication file was unreadable/absent at
-=/Users/dvorona/.codex/auth.json=.  Each selector emitted one identity-complete
-bounded evidence record with no request or token usage, semantic/cache results
-=unavailable=, and overall result =configuration-unavailable= before skipping.
-The records report exact implementation revision =0f67b992=.  They are current
-identity-complete diagnostics, but cannot prove cache capability because
-authentication failed before any request or usage observation.
+The 2026-08-27 configured run exercised the two canonical scenarios with the
+compatible Responses provider/profile =eng-ai-gateway-gpt=, Responses HTTP
+transport, =:json-false= store mode, model =gpt-5.6-sol=, and a predeclared
+120-second timeout.  The identity-complete records at revision
+=3a287d885c8b527e7934ef18217011dc86457ecc= report:
 
-All repository-controlled A3/A4 rows are accepted, including the =F88A3-CACHE=
-specification and runners.  The external cache capability remains explicitly
-=capability-unconfirmed=, so this addendum is =In-review= rather than =Done=.
+| Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+----------+-------+--------|
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+
+This is current external compatibility evidence for the configured Responses
+HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
+WebSocket retained/replaced-socket or response-continuation claims; those
+remain separately unconfirmed and not exercised.  All repository-controlled
+A3/A4 rows are accepted, including the =F88A3-CACHE= specification and
+runners, but this addendum remains =In-review= rather than =Done= while that
+ChatGPT/WebSocket-specific scope is unconfirmed.
 
 * Decision
 
@@ -325,14 +332,18 @@ vocabulary while keeping separate owners and transaction boundaries.
 | =curate-persistence-compat= | deterministic | v2/v3 reopen, mixed active projection, branches, and literal v3 portable role/content preserved through compaction |
 | =curate-large-handle= | deterministic | only a presented preview becomes durable; its backing value remains external |
 | =canonical-observe-curate-forget= | deterministic composition | core/session/harness/OpenAI path emits the literal ordered durable system messages and excludes consumed values, presentation metadata, acknowledgement, and contaminated response IDs |
-| =chatgpt-canonical-warm-prefix= | external compatibility | inherited =F88A3-CACHE= minimal scenario rerun after material request-shape change |
-| =chatgpt-canonical-tool-heavy= | external compatibility | inherited tool-heavy scenario rerun with the curation carrier |
+| =responses-canonical-warm-prefix= | external compatibility | configured Responses HTTP minimal scenario after the material request-shape change; current evidence is recorded above |
+| =responses-canonical-tool-heavy= | external compatibility | configured Responses HTTP tool-heavy scenario with the curation carrier; current evidence is recorded above |
+| =chatgpt-canonical-warm-prefix= | external compatibility | strict built-in Codex WebSocket retained/replacement scenario; not exercised by the current HTTP run |
+| =chatgpt-canonical-tool-heavy= | external compatibility | strict built-in Codex WebSocket continuation scenario; not exercised by the current HTTP run |
 
 All curation semantics are repository-controlled deterministic gates.  External
-cache evidence cannot substitute for them or block their implementation.
-External status remains =capability-unconfirmed= until a fresh,
-identity-complete run satisfies =F88A3-CACHE=.  Live provider latency, ratios,
-and prices are observational telemetry rather than curation acceptance.
+cache evidence cannot substitute for them or block their implementation.  The
+configured Responses HTTP run now satisfies the external cache contract for
+that compatible profile.  The strict ChatGPT/WebSocket scope remains
+=capability-unconfirmed= and must be reported separately.  Live provider
+latency, ratios, and prices are observational telemetry rather than curation
+acceptance.
 
 * Test disposition
 
