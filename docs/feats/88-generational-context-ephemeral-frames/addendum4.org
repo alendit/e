@@ -4,7 +4,7 @@
 
 * Status
 
-In-review (repository implementation through I6; Tick 5 pending; external capability-unconfirmed).
+In-review (Tick 6 candidate; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
 
 This addendum replaces only Feature 88's promotion contract.  The model can
 keep an ephemeral input exactly, replace selected inputs with a smaller durable
@@ -47,8 +47,10 @@ current profile-aware records are listed below.
 
 * Implementation and acceptance status
 
-The repository-controlled implementation is complete through the current
-remediation revision; Tick 5 review remains pending.  The dependency order is:
+The repository-controlled implementation is at the Tick 6 candidate revision
+=f991f895=; independent Tick 6 review remains pending.  The I5 checkpoint
+dependency is the candidate at that revision, and I6 remains closed at
+=031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order is:
 
 | Commit | Delivered boundary |
 |--------+--------------------|
@@ -66,13 +68,19 @@ remediation revision; Tick 5 review remains pending.  The dependency order is:
 | =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
 | =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
 | =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
+| =f991f895= | I5 checkpoint retention pins referenced curation audit controls beyond the bounded activity tail |
 
 The I5 durable correction gives a reserved-only curation response its own
 audit-resolvable control entry, binding that entry consistently to the v3
 record, consumed frame, and consumption event while keeping it out of model
 projection.  The I6 evidence correction derives endpoint, store, model,
 transport, and native requester from captured material requests and rejects
-identity drift or declaration mismatch as acceptance evidence.
+identity drift or declaration mismatch as acceptance evidence.  The I5
+checkpoint-retention correction pins the exact referenced control beyond the
+bounded activity tail without changing model projection.  Authoritative
+validation at =f991f895= is =eldev test= with 2,367 total tests, 2,365
+expected passes, 0 unexpected, and 2 expected skips; =eldev compile= passed and
+the focused checkpoint test passed 1/1.
 
 The 2026-08-27 configured run exercised the two canonical scenarios with the
 compatible Responses provider/profile =eng-ai-gateway-gpt=, exact base URL
@@ -88,6 +96,10 @@ all five identity fields agree across each scenario's material requests.
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
 | =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
+
+The later =f991f895= change is session-checkpoint-only and does not alter
+request/evidence owners, so this configured Responses HTTP proof remains
+reusable/current.  Independent Tick 6 review remains pending.
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
