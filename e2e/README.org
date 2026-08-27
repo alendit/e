@@ -213,6 +213,37 @@ content.  This selector is intentionally not run by repository-side tests;
 external adoption capability remains unconfirmed until a credentialed record
 is reviewed.
 
+The Addendum 6 reasoning-summary capability probe is a separate, one-request
+check of the configured Responses adapter:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
+E_E2E_CACHE_SCENARIO_TIMEOUT_SECONDS=120 \
+eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-responses-reasoning-summary-capability
+#+end_src
+
+The configured gateway requires =ENG_AI_MODEL_GW_KEY=.  The probe sends an
+ordinary request with the effective Responses reasoning fields, including
+=summary: "auto"=, and emits exactly one content-free =E88 external evidence:=
+record.  Its bounded identity includes the scenario, provider/profile,
+effective endpoint/base URL, transport, store mode, native requester, model,
+effort/summary, material and probe request identities, timestamp, repository
+revision, timeout, elapsed time, returned-summary presence, and result.  It
+never records the prompt, answer, summary text, credentials, headers, or other
+provider content.
+
+The result is =pass= for any terminal successful request regardless of returned
+summary presence (=present=, =empty=, or =absent=).  Endpoint rejection is
+=unavailable= without a fallback request; authentication/configuration,
+provider/infrastructure, timeout, and malformed or mismatched captured identity
+use =configuration-unavailable=, =provider/infrastructure-failure=,
+=inconclusive-timeout=, and =semantic-failure= respectively.  Evidence reuse
+is limited to seven days with exact identity and dependency-cone equality.
+Returned summary presence is diagnostic only: it is not curation evidence and
+cannot change the capability or semantic result.
+
 * Development bytecode smoke test
 
 The stale source-adjacent bytecode check is an explicit checkout diagnostic,

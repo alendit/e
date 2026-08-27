@@ -456,8 +456,13 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
     "e2e/e-live-e2e-test.el")
   "Source owners whose changes invalidate adoption evidence reuse.")
 
-(defun e-live-e2e--adoption-dependency-identity ()
-  "Return a content-free digest of the adoption dependency cone.
+(defconst e-live-e2e--reasoning-summary-dependency-cone-files
+  '("lisp/adapters/openai/e-openai.el"
+    "e2e/e-live-e2e-test.el")
+  "Source owners whose changes invalidate reasoning-summary probe evidence.")
+
+(defun e-live-e2e--dependency-identity (files)
+  "Return a content-free digest of dependency-cone FILES.
 The digest is evidence identity, not a replacement for repository provenance;
 missing owner files remain explicit in the digest rather than silently falling
 back to the repository revision."
@@ -478,8 +483,26 @@ back to the repository revision."
                         (insert-file-contents-literally path)
                         (secure-hash 'sha256 (current-buffer)))
                     "unavailable"))))
-      e-live-e2e--adoption-dependency-cone-files
+      files
       "\n"))))
+
+(defun e-live-e2e--adoption-dependency-identity ()
+  "Return a content-free digest of the adoption dependency cone."
+  (e-live-e2e--dependency-identity
+   e-live-e2e--adoption-dependency-cone-files))
+
+(defun e-live-e2e--reasoning-summary-dependency-identity ()
+  "Return a content-free digest of the reasoning-summary probe cone."
+  (e-live-e2e--dependency-identity
+   e-live-e2e--reasoning-summary-dependency-cone-files))
+
+(defconst e-live-e2e--reasoning-summary-evidence-schema-revision
+  "e88-reasoning-summary-evidence-v1"
+  "Revision of the bounded reasoning-summary capability evidence record.")
+
+(defconst e-live-e2e--reasoning-summary-freshness-seconds
+  (* 7 24 60 60)
+  "Seven-calendar-day freshness window for reasoning-summary probe evidence.")
 
 (defun e-live-e2e--request-shape (body)
   "Return a bounded, content-free material shape for Responses BODY."
@@ -510,6 +533,184 @@ back to the repository revision."
           (and (plist-member body :prompt_cache_options) t)
           :prompt-cache-retention-present
           (and (plist-member body :prompt_cache_retention) t))))
+
+(defun e-live-e2e--keyword-plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist."
+  (condition-case nil
+      (and (listp value)
+           (cl-evenp (length value))
+           (cl-loop for (key _value) on value by #'cddr
+                    always (keywordp key)))
+    (error nil)))
+
+(defun e-live-e2e--reasoning-identity-from-body (body)
+  "Return the bounded effective reasoning identity from Responses BODY."
+  (let* ((reasoning (and (listp body) (plist-get body :reasoning)))
+         (valid-p (e-live-e2e--keyword-plist-p reasoning))
+         (effort (and valid-p (plist-get reasoning :effort)))
+         (summary (and valid-p (plist-get reasoning :summary))))
+    (when (and (stringp effort)
+               (not (string-empty-p effort))
+               (member summary '("auto" "detailed")))
+      (list :effort effort :summary summary))))
+
+(defun e-live-e2e--captured-reasoning-state (request-bodies)
+  "Return bounded reasoning identity state for captured REQUEST-BODIES."
+  (let* ((identities (mapcar #'e-live-e2e--reasoning-identity-from-body
+                             request-bodies))
+         (first (car identities)))
+    (list :valid-p
+          (and identities
+               first
+               (cl-every (lambda (identity)
+                           (and identity (equal identity first)))
+                         identities))
+          :effort (plist-get first :effort)
+          :summary (plist-get first :summary)
+          :probe-request-identity
+          (and request-bodies
+               (plist-get (e-live-e2e--request-shape (car request-bodies))
+                          :body-sha256)))))
+
+(defun e-live-e2e--reasoning-summary-presence (events &optional messages)
+  "Return bounded summary presence from provider-neutral EVENTS/MESSAGES.
+Only the presence category is retained; summary text is never returned."
+  (let ((empty-p nil)
+        (present-p nil))
+    (dolist (event events)
+      (let* ((payload (plist-get event :payload))
+             (item (if (eq (plist-get event :type) 'reasoning-delta)
+                       event
+                     payload))
+             (content (plist-get item :content)))
+        (when (and (member (plist-get item :type)
+                           '(reasoning-delta "reasoning-delta"))
+                   (member (plist-get item :stream-kind)
+                           '(summary "summary"))
+                   (stringp content))
+          (if (string-empty-p content)
+              (setq empty-p t)
+            (setq present-p t)))))
+    ;; The parser keeps the provider's reasoning item on the assistant message
+    ;; as opaque replay metadata.  Its summary member distinguishes an explicit
+    ;; empty/null array from a response that omitted the member entirely.
+    (dolist (message messages)
+      (dolist (record (plist-get (plist-get message :metadata)
+                                 :provider-replay-items))
+        (let ((item (plist-get record :item)))
+          (when (member (plist-get item :type) '("reasoning" reasoning))
+            (if (plist-member item :summary)
+                (let ((summary (plist-get item :summary)))
+                  (if (and (or (listp summary) (vectorp summary))
+                           (= (length summary) 0))
+                      (setq empty-p t)
+                    (setq present-p t))))))))
+    (cond
+     (present-p "present")
+     (empty-p "empty")
+     (t "absent"))))
+
+(cl-defun e-live-e2e--classify-reasoning-summary-capability
+    (&key identity-result request-valid-p completed-p endpoint-rejected-p
+          provider-failure-p configuration-unavailable-p timeout-p)
+  "Classify one reasoning-summary capability probe outcome.
+Identity and request-shape failures are semantic; endpoint rejection is bounded
+unavailability and never triggers a fallback request."
+  (cond
+   (configuration-unavailable-p "configuration-unavailable")
+   (timeout-p "inconclusive-timeout")
+   ((not (equal identity-result "pass")) "semantic-failure")
+   ((not request-valid-p) "semantic-failure")
+   (endpoint-rejected-p "unavailable")
+   (provider-failure-p "provider/infrastructure-failure")
+   ((not completed-p) "provider/infrastructure-failure")
+   (t "pass")))
+
+(defun e-live-e2e--reasoning-summary-endpoint-rejection-p (condition)
+  "Return non-nil when CONDITION is an explicit summary-field rejection.
+This is only a bounded classification aid for the capability probe; the
+condition itself is never emitted as evidence."
+  (let ((text (downcase (prin1-to-string condition))))
+    (and (string-match-p "reasoning" text)
+         (string-match-p "summary" text)
+         (string-match-p
+          "\\(?:unsupported\\|unknown\\|unrecognized\\|invalid\\|not[[:space:]]+support\\)"
+          text))))
+
+(defun e-live-e2e--reasoning-summary-captured-identity-result
+    (profile request-bodies request-metadata model)
+  "Classify the effective identity of captured reasoning probe requests.
+The wire endpoint, model, and store must be captured where the adapter emits
+them; only transport/requester defaults that are implicit in the adapter may
+  be inferred."
+  (let* ((identities
+          (cl-loop for body in request-bodies
+                   for index from 0
+                   collect
+                   (e-live-e2e--captured-request-identity
+                    profile body (nth index request-metadata) model)))
+         (required-fields '(:base-url :model :store :transport
+                            :native-requester))
+         (complete-p
+          (and identities
+               (cl-every
+                (lambda (identity)
+                  (and (cl-every (lambda (field)
+                                   (plist-get identity field))
+                                 required-fields)
+                       (plist-get identity :endpoint-captured-p)
+                       (plist-get identity :model-captured-p)
+                       (plist-get identity :store-present)))
+                identities)))
+         (first (car identities))
+         (drift-p
+          (and first
+               (seq-some
+                (lambda (identity)
+                  (seq-some
+                   (lambda (field)
+                     (not (equal (plist-get first field)
+                                 (plist-get identity field))))
+                   required-fields))
+                (cdr identities)))))
+    (cond
+     ((not complete-p) "unavailable")
+     ((or drift-p (e-live-e2e--identity-mismatches profile identities))
+      "invalid")
+     (t "pass"))))
+
+(defun e-live-e2e--reasoning-summary-evidence-reusable-p
+    (previous current &optional now)
+  "Return non-nil when CURRENT can reuse bounded PREVIOUS probe evidence."
+  (let* ((previous-time (e-live-e2e--adoption-time
+                         (plist-get previous :timestamp)))
+         (current-time (e-live-e2e--adoption-time
+                        (plist-get current :timestamp)))
+         (now-time (e-live-e2e--adoption-time (or now (float-time))))
+         (identity-fields
+          '(:evidence-schema-revision :scenario :provider-id :profile-id
+            :base-url-identity :endpoint-identity :transport :store-mode
+            :native-requester :model-id :reasoning-effort :reasoning-summary
+            :material-request-shape :probe-request-identity
+            :prompt-layout-revision :prompt-cache-key-derivation-revision
+            :dependency-identity)))
+    (and previous current previous-time current-time now-time
+         (equal (plist-get previous :identity-result) "pass")
+         (equal (plist-get current :identity-result) "pass")
+         (equal (plist-get previous :result) "pass")
+         (equal (plist-get current :result) "pass")
+         (stringp (plist-get previous :dependency-identity))
+         (stringp (plist-get current :dependency-identity))
+         (not (string-empty-p (plist-get previous :dependency-identity)))
+         (not (string-empty-p (plist-get current :dependency-identity)))
+         (>= (- current-time previous-time) 0)
+         (>= (- now-time current-time) 0)
+         (<= (- now-time previous-time)
+             e-live-e2e--reasoning-summary-freshness-seconds)
+         (cl-every (lambda (field)
+                     (equal (plist-get previous field)
+                            (plist-get current field)))
+                   identity-fields))))
 
 (defun e-live-e2e--captured-body-at-boundary (request-bodies prior-count)
   "Return the first chronological BODY captured after PRIOR-COUNT bodies.
@@ -862,7 +1063,9 @@ RETRY-EVENTS must already be restricted to the captured turn."
           usage-payloads timeout started-at ended-at semantic-result
           cache-result result adoption-result composition-result failure-stage
           adoption-disposition scenario-prompt-identity affordance-revision
-          presentation-revision adoption-gates adoption-dependency-identity)
+          presentation-revision adoption-gates adoption-dependency-identity
+          evidence-schema-revision reasoning-effort reasoning-summary
+          probe-request-identity dependency-identity returned-summary-presence)
   "Return one bounded identity-complete external evidence RECORD.
 REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
 or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
@@ -1046,7 +1249,9 @@ unavailable."
                   "identity-unavailable")
               scenario-result))))
     (let ((record
-           (list :evidence-schema-revision e-live-e2e--external-evidence-schema-revision
+           (list :evidence-schema-revision
+                 (or evidence-schema-revision
+                     e-live-e2e--external-evidence-schema-revision)
                  :scenario (format "%s" scenario)
                  :provider-id (format "%s" provider)
                  :profile-id profile-name
@@ -1091,6 +1296,22 @@ unavailable."
                  :semantic-result (or semantic-result "unavailable")
                  :cache-result (or cache-result "unavailable")
                  :result record-result)))
+      (setq record
+            (if (or evidence-schema-revision reasoning-effort reasoning-summary
+                    probe-request-identity dependency-identity
+                    returned-summary-presence)
+                (append record
+                        (list :reasoning-effort
+                              (or reasoning-effort "unavailable")
+                              :reasoning-summary
+                              (or reasoning-summary "unavailable")
+                              :probe-request-identity
+                              (or probe-request-identity "unavailable")
+                              :dependency-identity
+                              (or dependency-identity "unavailable")
+                              :returned-summary-presence
+                              (or returned-summary-presence "unavailable")))
+              record))
       (if (or adoption-result composition-result failure-stage
               adoption-gates adoption-disposition scenario-prompt-identity
               affordance-revision presentation-revision
@@ -1135,7 +1356,8 @@ unavailable."
     (e-backend-cancel-request request)))
 
 (cl-defun e-live-e2e--run-external-scenario
-    (&key scenario provider profile model timeout started-at capture thunk cancel)
+    (&key scenario provider profile model timeout started-at capture thunk cancel
+          evidence-schema-revision profile-function)
   "Run THUNK and emit exactly one bounded evidence record.
 CAPTURE is called after THUNK settles and returns the best state captured so
 far as a plist.  The original error or ERT skip is re-signalled after the
@@ -1148,6 +1370,13 @@ finalization, including when the original condition is re-signalled."
           (condition-case caught
               (setq value
                     (progn
+                      (when profile-function
+                        (condition-case profile-caught
+                            (setq profile (funcall profile-function))
+                          (error
+                           (setq configuration-unavailable t)
+                           (signal (car profile-caught)
+                                   (cdr profile-caught)))))
                       (unless (e-live-e2e--profile-auth-available-p profile)
                         (setq configuration-unavailable t)
                         (ert-skip
@@ -1164,6 +1393,7 @@ finalization, including when the original condition is re-signalled."
                        (plist-get state :scenario-result)))
                  (cache-result (or (plist-get state :cache-result)
                                    "unavailable"))
+                 (terminal-result (plist-get state :terminal-result))
                  (semantic-result
                   (cond
                    (configuration-unavailable "unavailable")
@@ -1176,8 +1406,9 @@ finalization, including when the original condition is re-signalled."
                    ((eq condition-type 'ert-test-failed) "failure")
                    (t (or (plist-get state :semantic-result) "unavailable"))))
                  (result
-                  (cond
+                 (cond
                    (configuration-unavailable "configuration-unavailable")
+                   (terminal-result terminal-result)
                    (scenario-result-override scenario-result-override)
                    ((eq condition-type 'e-live-e2e-scenario-timeout)
                     "inconclusive-timeout")
@@ -1201,6 +1432,16 @@ finalization, including when the original condition is re-signalled."
                 :provider (or provider e-openai-default-provider)
                 :profile profile
                 :model (or (plist-get state :model) model)
+                :evidence-schema-revision
+                (or (plist-get state :evidence-schema-revision)
+                    evidence-schema-revision)
+                :reasoning-effort (plist-get state :reasoning-effort)
+                :reasoning-summary (plist-get state :reasoning-summary)
+                :probe-request-identity
+                (plist-get state :probe-request-identity)
+                :dependency-identity (plist-get state :dependency-identity)
+                :returned-summary-presence
+                (plist-get state :returned-summary-presence)
                 :request-bodies (plist-get state :request-bodies)
                 :request-metadata (plist-get state :request-metadata)
                 :usage-payloads (plist-get state :usage-payloads)
@@ -1558,6 +1799,211 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
        base (plist-put (copy-sequence current) :material-request-shape
                        '((:body-sha256 "body-2")))
       "2026-08-30T00:00:00Z"))))
+
+(ert-deftest e-live-e2e-test-reasoning-summary-capability-classification-partitions ()
+  "Reasoning-summary capability outcomes have one bounded classification."
+  (dolist (case
+           '((:completed-p t "pass")
+             (:endpoint-rejected-p t "unavailable")
+             (:provider-failure-p t "provider/infrastructure-failure")
+             (:timeout-p t "inconclusive-timeout")
+             (:configuration-unavailable-p t "configuration-unavailable")))
+    (let ((arguments (list :identity-result "pass"
+                           :request-valid-p t
+                           :completed-p nil)))
+      (setq arguments (plist-put arguments (car case) (nth 1 case)))
+      (should (equal
+               (apply #'e-live-e2e--classify-reasoning-summary-capability
+                      arguments)
+               (nth 2 case)))))
+  (should (equal
+           (e-live-e2e--classify-reasoning-summary-capability
+            :identity-result "invalid" :request-valid-p t :completed-p t)
+           "semantic-failure"))
+  (should (equal
+           (e-live-e2e--classify-reasoning-summary-capability
+            :identity-result "pass" :request-valid-p nil :completed-p t)
+           "semantic-failure")))
+
+(ert-deftest e-live-e2e-test-reasoning-summary-presence-is-bounded-and-content-free ()
+  "Summary presence distinguishes present, empty, and absent without text."
+  (should (equal
+           (e-live-e2e--reasoning-summary-presence
+            '((:type reasoning-delta :stream-kind summary
+               :content "PRIVATE-SUMMARY")))
+           "present"))
+  (should (equal
+           (e-live-e2e--reasoning-summary-presence
+            '((:type reasoning-delta :stream-kind summary :content "")))
+           "empty"))
+  (should (equal (e-live-e2e--reasoning-summary-presence nil) "absent"))
+  (should (equal
+           (e-live-e2e--reasoning-summary-presence
+            nil
+            '((:metadata
+               (:provider-replay-items
+                ((:item (:type "reasoning" :summary [])))))))
+           "empty"))
+  (should (equal
+           (e-live-e2e--reasoning-summary-presence
+            nil
+            '((:metadata
+               (:provider-replay-items
+                ((:item (:type "reasoning")))))))
+           "absent")))
+
+(ert-deftest e-live-e2e-test-reasoning-summary-capability-evidence-is-content-free ()
+  "The probe record carries identity fields but no provider content."
+  (let* ((record
+          (e-live-e2e--external-evidence-record
+           :evidence-schema-revision
+           e-live-e2e--reasoning-summary-evidence-schema-revision
+           :scenario 'responses-reasoning-summary-capability
+           :provider 'configured-provider
+           :profile '(:name "Configured Responses"
+                      :base-url "https://gateway.example/v1"
+                      :responses-transport http
+                      :response-store :json-false)
+           :model "gpt-5.6-sol"
+           :request-bodies
+           '((:model "gpt-5.6-sol" :store :json-false
+              :reasoning (:effort "high" :summary "auto")
+              :input [(:role "user" :content "PRIVATE-PROMPT")]))
+           :request-metadata
+           '((:url "https://gateway.example/v1/responses"
+              :transport url-retrieve))
+           :reasoning-effort "high"
+           :reasoning-summary "auto"
+           :probe-request-identity "probe-hash"
+           :dependency-identity "dependency-hash"
+           :returned-summary-presence "present"
+           :timeout 120.0
+           :started-at 100.0
+           :ended-at 100.5
+           :semantic-result "pass"
+           :cache-result "unavailable"
+           :result "pass"))
+         (encoded (json-encode (e-live-e2e--json-plist record))))
+    (should (equal (plist-get record :scenario)
+                   "responses-reasoning-summary-capability"))
+    (should (equal (plist-get record :reasoning-effort) "high"))
+    (should (equal (plist-get record :reasoning-summary) "auto"))
+    (should (equal (plist-get record :returned-summary-presence) "present"))
+    (should (equal (plist-get record :probe-request-identity) "probe-hash"))
+    (should-not (string-match-p "PRIVATE-PROMPT" encoded))))
+
+(ert-deftest e-live-e2e-test-reasoning-summary-capability-evidence-freshness-and-reuse ()
+  "Probe evidence reuses for seven days only with exact identity equality."
+  (let* ((base
+          '(:evidence-schema-revision "e88-reasoning-summary-evidence-v1"
+            :scenario "responses-reasoning-summary-capability"
+            :provider-id "gateway" :profile-id "Responses"
+            :base-url-identity "https://gateway.example"
+            :endpoint-identity "https://gateway.example/responses"
+            :transport "responses-http" :store-mode "json-false"
+            :native-requester "e-openai-codex--http-request-start"
+            :model-id "gpt-5.6-sol"
+            :reasoning-effort "high" :reasoning-summary "auto"
+            :material-request-shape ((:body-sha256 "body-1"))
+            :probe-request-identity "probe-1"
+            :prompt-layout-revision "layout-1"
+            :prompt-cache-key-derivation-revision "cache-1"
+            :dependency-identity "cone-1"
+            :identity-result "pass" :result "pass"
+            :repository-revision "repo-1"
+            :timestamp "2026-08-27T00:00:00Z"))
+         (current (copy-sequence base)))
+    (should
+     (e-live-e2e--reasoning-summary-evidence-reusable-p
+      base current "2026-09-03T00:00:00Z"))
+    ;; Repository provenance may change without changing the material probe.
+    (should
+     (e-live-e2e--reasoning-summary-evidence-reusable-p
+      base (plist-put (copy-sequence current) :repository-revision "repo-2")
+      "2026-09-03T00:00:00Z"))
+    (dolist (field '(:reasoning-effort :reasoning-summary :probe-request-identity
+                     :material-request-shape :dependency-identity))
+      (let ((changed (copy-sequence current)))
+        (plist-put changed field (format "%s-2" (plist-get changed field)))
+        (should-not
+         (e-live-e2e--reasoning-summary-evidence-reusable-p
+          base changed "2026-09-03T00:00:00Z"))))
+    (should-not
+     (e-live-e2e--reasoning-summary-evidence-reusable-p
+      base current "2026-09-03T00:00:01Z"))
+    (should (string-match-p
+             "\\`[[:xdigit:]]\\{64\\}\\'"
+             (e-live-e2e--reasoning-summary-dependency-identity)))))
+
+(ert-deftest e-live-e2e-test-reasoning-summary-capability-finalizes-terminal-paths ()
+  "The capability boundary records success, rejection, config, and timeout once."
+  (let* ((profile '(:name "Configured Responses"
+                    :wire-api responses
+                    :responses-transport http
+                    :base-url "https://gateway.example/v1"
+                    :response-store :json-false))
+         (body '(:model "gpt-5.6-sol" :store :json-false
+                 :reasoning (:effort "medium" :summary "auto")
+                 :input [(:type "message" :role "user")]))
+         (metadata '((:url "https://gateway.example/v1/responses"
+                      :transport url-retrieve)))
+         (cases (list
+                 (list "pass" t
+                       (lambda () :completed))
+                 (list "unavailable" t
+                       (lambda () (ert-skip "summary rejected")))
+                 (list "configuration-unavailable" nil
+                       (lambda () :must-not-run))
+                 (list "inconclusive-timeout" t
+                       (lambda ()
+                         (signal 'e-live-e2e-scenario-timeout
+                                 (list :deadline 120.0)))))))
+    (dolist (case cases)
+      (let (records condition ran)
+        (cl-letf (((symbol-function
+                    'e-live-e2e--profile-auth-available-p)
+                   (lambda (&rest _) (nth 1 case)))
+                  ((symbol-function 'e-live-e2e--report-external-evidence)
+                   (lambda (record) (push record records))))
+          (condition-case caught
+              (e-live-e2e--run-external-scenario
+               :scenario 'responses-reasoning-summary-capability
+               :provider 'configured-provider
+               :profile profile
+               :model "gpt-5.6-sol"
+               :timeout 120.0
+               :started-at 100.0
+               :evidence-schema-revision
+               e-live-e2e--reasoning-summary-evidence-schema-revision
+               :capture
+               (lambda ()
+                 (list :request-bodies (list body)
+                       :request-metadata metadata
+                       :reasoning-effort "medium"
+                       :reasoning-summary "auto"
+                       :probe-request-identity "probe"
+                       :dependency-identity "dependency"
+                       :returned-summary-presence "absent"
+                       :semantic-result "pass"
+                       :scenario-result
+                       (and (equal (car case) "pass") "pass")))
+               :thunk (lambda ()
+                        (setq ran t)
+                        (funcall (nth 2 case))))
+            (error (setq condition caught))))
+        (should (= (length records) 1))
+        (should (if (equal (car case) "pass")
+                    (null condition)
+                  condition))
+        (when condition
+          (should
+           (eq (car condition)
+               (if (equal (car case) "inconclusive-timeout")
+                   'e-live-e2e-scenario-timeout
+                 'ert-test-skipped))))
+        (should (eq ran (nth 1 case)))
+        (should (equal (plist-get (car records) :result)
+                       (car case)))))))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-record-is-content-free ()
   "Adoption subresults add bounded fields without exposing captured content."
@@ -2583,9 +3029,10 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
 
 (defmacro e-live-e2e--with-harness (spec &rest body)
   "Run BODY with a live HARNESS and SESSION-ID.
-SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT EVENTS-VAR).
+SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT EVENTS-VAR EVENTS-HOLDER).
 When EVENTS-VAR is supplied, bind it to the newest-first public activity sink
-events collected during BODY."
+events collected during BODY.  When EVENTS-HOLDER is supplied, its first cell
+is updated through BODY so an outer finalizer can observe later events."
   (declare (indent 1))
   (let* ((harness (nth 0 spec))
         (session-id (nth 1 spec))
@@ -2594,6 +3041,7 @@ events collected during BODY."
         (store (make-symbol "store"))
         (events (make-symbol "events"))
         (events-var (plist-get options :events-var))
+        (events-holder (plist-get options :events-holder))
         (subscription (make-symbol "subscription")))
     `(progn
        (e-live-e2e--require-enabled)
@@ -2614,7 +3062,9 @@ events collected during BODY."
                 (lambda (event)
                   (push event ,events)
                   ,@(when events-var
-                      `((push event ,events-var))))
+                      `((push event ,events-var)))
+                  ,@(when events-holder
+                      `((push event (car ,events-holder)))))
                 :session-id ,session-id)))
          (unwind-protect
              (progn
@@ -2677,6 +3127,163 @@ native request starter.  The supplied capture lists are newest-first."
                      (push request ,request-handles)
                      request))))
              ,@body))))))
+
+(defun e-live-e2e--run-reasoning-summary-capability ()
+  "Run one bounded configured Responses reasoning-summary capability probe.
+The probe sends a single ordinary request with `reasoning.summary' set to
+`auto'.  Its capture is content-free; the shared scenario boundary emits one
+evidence record on every terminal path."
+  (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
+         (started-at (float-time))
+         (provider-id e-openai-default-provider)
+         (model e-openai-default-model)
+         profile harness session-id (events-holder (list nil))
+         request-bodies request-handles
+         (semantic-result "unavailable")
+         (scenario-result nil)
+         (terminal-result nil))
+    (e-live-e2e--run-external-scenario
+     :scenario 'responses-reasoning-summary-capability
+     :provider nil
+     :profile profile
+     :model model
+     :timeout scenario-timeout
+     :started-at started-at
+     :evidence-schema-revision
+     e-live-e2e--reasoning-summary-evidence-schema-revision
+     :profile-function
+     (lambda ()
+       (e-live-e2e--require-enabled)
+       (setq provider-id e-openai-default-provider
+             model e-openai-default-model
+             profile (e-openai-provider-profile provider-id))
+       profile)
+     :cancel (lambda ()
+               (e-live-e2e--cancel-newest-request request-handles))
+     :capture
+     (lambda ()
+       (let* ((ordered-entries (reverse request-bodies))
+              (ordered-handles (reverse request-handles))
+              (bodies
+               (mapcar (lambda (entry)
+                         (or (plist-get entry :full-body)
+                             (plist-get entry :body)))
+                       ordered-entries))
+              (metadata
+               (mapcar (lambda (handle)
+                         (ignore-errors
+                           (e-backend-request-metadata handle)))
+                       ordered-handles))
+              (usage-payloads
+               (and harness session-id
+                    (mapcar (lambda (event) (plist-get event :payload))
+                            (e-live-e2e--activity-of-type
+                             harness session-id 'token-usage))))
+              (reasoning-state
+               (e-live-e2e--captured-reasoning-state bodies)))
+         (list
+          :model (or (plist-get (car bodies) :model)
+                     e-openai-default-model)
+          :request-bodies bodies
+          :request-metadata metadata
+          :usage-payloads usage-payloads
+          :reasoning-effort (plist-get reasoning-state :effort)
+          :reasoning-summary (plist-get reasoning-state :summary)
+          :probe-request-identity
+          (plist-get reasoning-state :probe-request-identity)
+          :dependency-identity
+          (e-live-e2e--reasoning-summary-dependency-identity)
+          :returned-summary-presence
+          (e-live-e2e--reasoning-summary-presence
+           (car events-holder)
+           (and harness session-id
+                (e-harness-messages harness session-id)))
+          :evidence-schema-revision
+          e-live-e2e--reasoning-summary-evidence-schema-revision
+          :semantic-result semantic-result
+          :scenario-result scenario-result
+          :terminal-result terminal-result))))
+     :thunk
+     (lambda ()
+       (unless (eq (e-openai--provider-wire-api profile) 'responses)
+         (setq terminal-result "configuration-unavailable")
+         (ert-skip "The configured provider is not a Responses profile."))
+       (let ((transport (or (plist-get profile :responses-transport) 'http)))
+         (unless (fboundp (if (eq transport 'websocket)
+                              'e-openai-codex--websocket-request-start
+                            'e-openai-codex--http-request-start))
+           (setq terminal-result "configuration-unavailable")
+           (ert-skip
+            "The configured Responses transport starter is not loaded."))
+         ;; Leave this set until the harness macro enters its body: if its
+         ;; configuration gate skips before then, the finalizer keeps the
+         ;; capability-specific configuration classification.
+         (setq terminal-result "configuration-unavailable")
+         (e-live-e2e--with-harness
+             (live-harness live-session :events-holder events-holder)
+           (setq terminal-result nil)
+           (setq harness live-harness
+                 session-id live-session)
+           (setf (e-harness-default-options harness)
+                 (plist-put
+                  (copy-sequence (e-harness-default-options harness))
+                  :reasoning-summary "auto"))
+           (let* ((deadline (+ started-at scenario-timeout))
+                  response)
+             (e-live-e2e--with-responses-request-capture
+                 profile request-bodies request-handles
+               (setq response
+                     (condition-case caught
+                         (e-live-e2e--prompt-batch-before-deadline
+                          harness session-id
+                          "Reply with exactly CAPABILITY-PROBE-OK and no other words."
+                          deadline)
+                       (error
+                        (if (e-live-e2e--reasoning-summary-endpoint-rejection-p
+                             caught)
+                            (progn
+                              (setq terminal-result "unavailable")
+                              (ert-skip
+                               "The Responses endpoint rejected reasoning.summary."))
+                          (signal (car caught) (cdr caught)))))))
+             ;; Any normally settled response is a capability success.  The
+             ;; returned answer and summary prose are deliberately irrelevant.
+             (ignore response)
+             (let* ((ordered-entries (reverse request-bodies))
+                    (ordered-handles (reverse request-handles))
+                    (bodies
+                     (mapcar (lambda (entry)
+                               (or (plist-get entry :full-body)
+                                   (plist-get entry :body)))
+                             ordered-entries))
+                    (metadata
+                     (mapcar (lambda (handle)
+                               (ignore-errors
+                                 (e-backend-request-metadata handle)))
+                             ordered-handles))
+                    (reasoning-state
+                     (e-live-e2e--captured-reasoning-state bodies))
+                    (identity-result
+                     (e-live-e2e--reasoning-summary-captured-identity-result
+                      profile bodies metadata e-openai-default-model))
+                    (request-valid-p
+                     (and (plist-get reasoning-state :valid-p)
+                          (equal (plist-get reasoning-state :summary) "auto")))
+                    (classification
+                     (e-live-e2e--classify-reasoning-summary-capability
+                      :identity-result identity-result
+                      :request-valid-p request-valid-p
+                      :completed-p t)))
+               (setq semantic-result
+                     (if (equal classification "pass") "pass" "failure")
+                     scenario-result classification)
+               (unless (equal classification "pass")
+                 (ert-fail
+                  "The captured Responses reasoning probe was invalid.")))))))))
+
+(ert-deftest e-live-e2e-test-responses-reasoning-summary-capability ()
+  "Probe the configured Responses backend for reasoning-summary support."
+  (e-live-e2e--run-reasoning-summary-capability))
 
 (ert-deftest e-live-e2e-test-responses-request-capture-selects-native-starter ()
   "The shared capture boundary follows each configured Responses transport."
