@@ -6092,9 +6092,13 @@ an empty summary\"."
 (ert-deftest e-harness-test-context-lifetime-tool-result-curates-on-follow-up ()
   "A tool result is observed by B, curated there, then forgotten afterward."
   (e-harness-test--with-empty-layer-registry
-    (let* ((request-count 0)
+    (let* ((directory (make-temp-file "e-harness-reserved-curation-" t))
+           (store (e-session-persistent-store-create directory))
+           (request-count 0)
            (requests nil)
            (curation-input nil)
+           (events nil)
+           (consumed-frames nil)
            (raw-result "UNIQUE-RAW-TOOL-RESULT")
            (backend
             (e-backend-create
@@ -6110,29 +6114,44 @@ an empty summary\"."
                             :options (copy-tree options))
                       requests)
                 (setq request-count (1+ request-count))
-                (if (= request-count 1)
-                    (progn
-                      ;; Response A only requests the ordinary tool.  The
-                      ;; promotion is deliberately withheld until B sees the
-                      ;; paired call/result bundle.
-                      (funcall
-                       on-item
-                       '(:type tool-call
-                         :id "call-tool-result"
-                         :name "inspect-result"
-                         :arguments (:target "raw")))
-                      (funcall on-item '(:type done :reason tool-use)))
-                  (setq curation-input
-                        (list :type 'context-curate
-                              :arguments
-                              '(:summaries
-                                ((:sources (2)
-                                  :text "selected from tool result")))))
-                  (funcall on-item curation-input)
-                  (funcall on-item
-                           '(:type assistant-message
-                             :content "follow-up selected"))
-                  (funcall on-item '(:type done :reason stop)))))))
+                (pcase request-count
+                  (1
+                   ;; Response A only requests the ordinary tool.  The
+                   ;; curation is deliberately withheld until B sees the
+                   ;; paired call/result bundle.
+                   (funcall
+                    on-item
+                    '(:type tool-call
+                      :id "call-tool-result"
+                      :name "inspect-result"
+                      :arguments (:target "raw")))
+                   (funcall on-item '(:type done :reason tool-use)))
+                  (2
+                   (setq curation-input
+                         (list :type 'context-curate
+                               :arguments
+                               '(:summaries
+                                 ((:sources (2)
+                                   :text "selected from tool result")))
+                               :provider-replay-items
+                               '((:type provider-replay-item
+                                 :provider-id openai
+                                 :item (:type "function_call"
+                                        :call_id "curation-call"
+                                        :name "context-curate"
+                                        :arguments "{}"))
+                                (:type provider-replay-item
+                                 :provider-id openai
+                                 :item (:type "function_call_output"
+                                        :call_id "curation-call"
+                                        :output "")))))
+                   (funcall on-item curation-input)
+                   (funcall on-item '(:type done :reason stop)))
+                  (3
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "follow-up selected"))
+                   (funcall on-item '(:type done :reason stop))))))))
            (provider
             (e-context-provider-create
              :name 'context-lifetime-tool-result-canvas
@@ -6154,75 +6173,194 @@ an empty summary\"."
            (harness
             (e-harness-create
              :backend backend
+             :sessions store
              :intrinsic-capabilities (list capability))))
-      (let ((e-context-lifetime-shadow-projection-enabled t))
-        (e-harness-create-session harness :id "session-1")
-        (e-harness-test-prompt-batch harness "session-1" "inspect"))
-      (should (= request-count 2))
-      (let* ((ordered (reverse requests))
-             (request-a (car ordered))
-             (request-b (cadr ordered))
-             (messages-b (plist-get request-b :messages))
-             (roles-b (mapcar (lambda (message) (plist-get message :role))
-                              messages-b))
-             (options-b (plist-get request-b :options))
-             (curation-arguments (plist-get curation-input :arguments)))
-        (should (equal roles-b '(user system system tool-call system tool)))
-        (should (string-match-p raw-result (prin1-to-string messages-b)))
-        (let ((tool-position
-               (cl-position 'tool roles-b :from-end t)))
-          (should (equal (plist-get (nth (1- tool-position) messages-b)
-                                    :role)
-                         'system))
-          (should (string-match-p
-                   "\\[2, ~[0-9]+ tokens\\]"
-                   (plist-get (nth (1- tool-position) messages-b)
-                              :content))))
-        (should (equal curation-arguments
-                       '(:summaries
-                         ((:sources (2)
-                           :text "selected from tool result")))))
-        )
-      (should (equal (mapcar (lambda (message) (plist-get message :role))
-                             (e-harness-messages harness "session-1"))
-                     '(user tool-call tool assistant)))
-      (let* ((store (e-harness-sessions harness))
-             (projection (e-session-context-lifetime-projection
-                          store "session-1"))
-             (curations (plist-get projection :curations))
-             (tool-call
-              (seq-find (lambda (message)
-                          (eq (plist-get message :role) 'tool-call))
-                        (e-harness-messages harness "session-1")))
-             (assistant
-              (car (last
-                    (seq-filter
+      (unwind-protect
+          (progn
+            (let ((e-context-lifetime-shadow-projection-enabled t)
+                  (complete-frame
+                   (symbol-function
+                    'e-context-lifetime-frame-complete-for-consumer)))
+              (e-harness-create-session harness :id "session-1")
+              (e-harness--install-activity-sink
+               harness (lambda (event) (push event events))
+               :session-id "session-1")
+              (cl-letf (((symbol-function
+                          'e-context-lifetime-frame-complete-for-consumer)
+                         (lambda (&rest arguments)
+                           (let ((frame (apply complete-frame arguments)))
+                             (push (list :frame frame
+                                         :response-id (nth 2 arguments))
+                                   consumed-frames)
+                             frame))))
+                (e-harness-test-prompt-batch harness "session-1" "inspect")))
+            (e-session-flush-write-queue store)
+            (should (= request-count 3))
+            (let* ((ordered (reverse requests))
+                   (request-b (cadr ordered))
+                   (request-c (caddr ordered))
+                   (messages-b (plist-get request-b :messages))
+                   (roles-b (mapcar (lambda (message) (plist-get message :role))
+                                    messages-b))
+                   (tool-message-c
+                    (seq-find
                      (lambda (message)
-                       (eq (plist-get message :role) 'assistant))
-                     (e-harness-messages harness "session-1")))))
-             (next-context
-              (let ((e-context-lifetime-shadow-projection-enabled t))
-                (e-harness-turn-context
-                 harness "session-1" "next-consumer")))
-             (next-messages (plist-get next-context :messages))
-             (printed (prin1-to-string next-messages)))
-        (should (= (length curations) 1))
-        (should (equal (plist-get (car curations) :response-entry-id)
-                       (plist-get assistant :id)))
-        (should-not (equal (plist-get (car curations) :response-entry-id)
-                           (plist-get tool-call :id)))
-        (should
-         (equal (plist-get projection :promotion-messages)
-                '((:role system :content "selected from tool result"))))
-        (should (string-match-p "selected from tool result" printed))
-        (should-not (string-match-p raw-result printed))
-        (should-not (string-match-p "call-tool-result" printed))
-        (should-not (member 'tool-call
-                            (mapcar (lambda (message) (plist-get message :role))
-                                    next-messages)))
-        (should-not (member 'tool
-                            (mapcar (lambda (message) (plist-get message :role))
-                                    next-messages)))))))
+                       (and (eq (plist-get message :role) 'tool)
+                            (equal (plist-get (plist-get message :content)
+                                              :tool-call-id)
+                                   "call-tool-result")))
+                     (plist-get request-c :messages)))
+                   (replay-items-c
+                    (plist-get (plist-get tool-message-c :metadata)
+                               :provider-replay-items))
+                   (curation-call-position
+                    (cl-position-if
+                     (lambda (item)
+                       (equal (plist-get (plist-get item :item) :type)
+                              "function_call"))
+                     replay-items-c))
+                   (curation-ack-position
+                    (cl-position-if
+                     (lambda (item)
+                       (and (equal (plist-get (plist-get item :item) :type)
+                                   "function_call_output")
+                            (equal (plist-get (plist-get item :item) :output)
+                                   "")))
+                     replay-items-c))
+                   (curation-arguments (plist-get curation-input :arguments)))
+              (should (equal (mapcar (lambda (message)
+                                       (plist-get message :role))
+                                     messages-b)
+                             '(user system system tool-call system tool)))
+              (should (string-match-p raw-result (prin1-to-string messages-b)))
+              (let ((tool-position
+                     (cl-position 'tool roles-b :from-end t)))
+                (should (equal (plist-get (nth (1- tool-position) messages-b)
+                                          :role)
+                               'system))
+                (should (string-match-p
+                         "\\[2, ~[0-9]+ tokens\\]"
+                         (plist-get (nth (1- tool-position) messages-b)
+                                    :content))))
+              (should (equal curation-arguments
+                             '(:summaries
+                               ((:sources (2)
+                                 :text "selected from tool result")))))
+              (should tool-message-c)
+              (should (equal (mapcar (lambda (item)
+                                       (plist-get (plist-get item :item) :type))
+                                     replay-items-c)
+                             '("function_call" "function_call_output")))
+              (should (integerp curation-call-position))
+              (should (integerp curation-ack-position))
+              (should (< curation-call-position curation-ack-position)))
+            (should (equal (mapcar (lambda (message) (plist-get message :role))
+                                   (e-harness-messages harness "session-1"))
+                           '(user tool-call tool assistant)))
+            (let* ((projection (e-session-context-lifetime-projection
+                                store "session-1"))
+                   (curations (plist-get projection :curations))
+                   (tool-call
+                    (seq-find (lambda (message)
+                                (eq (plist-get message :role) 'tool-call))
+                              (e-harness-messages harness "session-1")))
+                   (assistant
+                    (car (last
+                          (seq-filter
+                           (lambda (message)
+                             (eq (plist-get message :role) 'assistant))
+                           (e-harness-messages harness "session-1")))))
+                   (next-context
+                    (let ((e-context-lifetime-shadow-projection-enabled t))
+                      (e-harness-turn-context
+                       harness "session-1" "next-consumer")))
+                   (next-messages (plist-get next-context :messages))
+                   (printed (prin1-to-string next-messages))
+                   (control-events
+                    (seq-filter
+                     (lambda (event)
+                       (eq (plist-get event :event-type)
+                           'context-curation-response))
+                     (e-session-activity-events store "session-1")))
+                   (control (car control-events))
+                   (control-id (and control (plist-get control :id)))
+                   (consumed-event
+                    (seq-find
+                     (lambda (event)
+                       (eq (plist-get event :type) 'context-frame-consumed))
+                     events))
+                   (consumed-binding
+                    (seq-find
+                     (lambda (binding)
+                       (equal (plist-get binding :response-id) control-id))
+                     consumed-frames))
+                   (reopened (e-session-persistent-store-create directory)))
+              (should (= (length curations) 1))
+              (should (= (length control-events) 1))
+              (should control)
+              (should (equal control-id
+                             (plist-get (car curations) :response-entry-id)))
+              (should (equal control-id
+                             (plist-get (plist-get control :payload)
+                                        :response-entry-id)))
+              (should (equal control-id
+                             (plist-get (plist-get consumed-event :payload)
+                                        :response-entry-id)))
+              (should consumed-binding)
+              (should (equal control-id
+                             (e-context-lifetime-frame-consuming-response-entry-id
+                              (plist-get consumed-binding :frame))))
+              (should-not (equal control-id (plist-get tool-call :id)))
+              (should-not (equal control-id (plist-get assistant :id)))
+              (should (equal (plist-get control :event-type)
+                             'context-curation-response))
+              (should (equal (plist-get control :payload)
+                             (list :response-entry-id control-id)))
+              (should-not (string-match-p
+                           "curation-call\\|function_call_output\\|frame-id\\|retry"
+                           (prin1-to-string control)))
+              (should-not (seq-find
+                           (lambda (message)
+                             (equal (plist-get message :id) control-id))
+                           (e-session-messages store "session-1")))
+              (should-not (string-match-p control-id printed))
+              (should
+               (equal (plist-get projection :promotion-messages)
+                      '((:role system :content "selected from tool result"))))
+              (should (string-match-p "selected from tool result" printed))
+              (should-not (string-match-p raw-result printed))
+              (should-not (string-match-p "call-tool-result" printed))
+              (should-not (member 'tool-call
+                                  (mapcar (lambda (message)
+                                            (plist-get message :role))
+                                          next-messages)))
+              (should-not (member 'tool
+                                  (mapcar (lambda (message)
+                                            (plist-get message :role))
+                                          next-messages)))
+              (let* ((reopened-record
+                      (car (e-session-context-curations reopened "session-1")))
+                     (reopened-control
+                      (e-session-entry-by-id reopened "session-1" control-id))
+                     (fork (e-session-fork reopened "session-1"))
+                     (fork-id (plist-get fork :id))
+                     (fork-projection
+                      (e-session-context-lifetime-projection reopened fork-id))
+                     (fork-generation (plist-get fork-projection :generation))
+                     (fork-text
+                      (prin1-to-string
+                       (e-context-lifetime-generation-checkpoint
+                        fork-generation))))
+                (should (equal control-id
+                               (plist-get reopened-record :response-entry-id)))
+                (should (equal (e-session-entry-by-id reopened
+                                                      "session-1" control-id)
+                               reopened-control))
+                (should (string-match-p "selected from tool result" fork-text))
+                (should-not (string-match-p raw-result fork-text))
+                (should-not (string-match-p control-id fork-text))
+                (should-not (e-session-entry-by-id reopened fork-id control-id)))))
+        (delete-directory directory t)))))
 
 (ert-deftest e-harness-test-invalid-curation-does-not-mutate-session ()
   "Invalid reserved control stops later tools and creates no curation."

@@ -3209,16 +3209,26 @@ frame."
     (let* ((payload-frame (plist-get payload :frame))
            (active-frame (plist-get active-entry :context-frame))
            (effects (plist-get payload :curation-effects))
+           (assistant-content (plist-get payload :assistant-content))
+           (reserved-response-p
+            (and effects
+                 (not (plist-get payload :tool-called))
+                 (or (null assistant-content)
+                     (and (stringp assistant-content)
+                          (string-empty-p assistant-content)))))
            ;; A present payload frame is authoritative: a newer descendant
            ;; may have been installed by an ordinary tool call, but it was not
            ;; presented in this provider request.  The active entry is only a
            ;; fallback for synthetic callers that omit the payload frame.
            (frame (or payload-frame active-frame))
            (response-id
-            (e-harness--lifetime-response-entry-id
-             harness session-id turn-id
-             (and (not (plist-get payload :tool-called))
-                  (plist-get payload :response-entry-id)))))
+            (if reserved-response-p
+                (or (plist-get payload :response-entry-id)
+                    (e-session-generate-ulid))
+              (e-harness--lifetime-response-entry-id
+               harness session-id turn-id
+               (and (not (plist-get payload :tool-called))
+                    (plist-get payload :response-entry-id))))))
       (unless (or (null effects) (= (length effects) 1))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :effect-count (length effects))))
@@ -3232,6 +3242,7 @@ frame."
             (and (e-context-lifetime-frame-p frame)
                  (e-context-lifetime-frame-consumer-request-id frame))
             :response-id response-id
+            :reserved-response-p reserved-response-p
             :record
             (when (= (length effects) 1)
               (e-context-lifetime-prepare-curation
@@ -3246,7 +3257,9 @@ frame."
 The loop has already validated the effect shape while streaming.  A pure
 preflight value from `e-harness--lifetime-preflight-response' is consumed when
 present; direct synthetic callers without that value are preflighted here.
-The session append precedes frame consumption and the next provider request."
+For a reserved-only response, the session first appends its audit-only control
+entry using the preflight response id, then appends the semantic record.  The
+session append precedes frame consumption and the next provider request."
   (when (and (e-context-lifetime-shadow-enabled-p)
              (e-harness--active-turn-running-p active-entry))
     (let* ((preflight
@@ -3265,9 +3278,14 @@ The session append precedes frame consumption and the next provider request."
                     (e-context-lifetime-frame-consumer-request-id frame)))
                (curation-id (and record (plist-get record :id)))
                (appended
-                (when record
-                  (e-session-append-context-curation
-                   (e-harness-sessions harness) session-id record)))
+                (progn
+                  (when (plist-get preflight :reserved-response-p)
+                    (e-session-append-context-curation-response
+                     (e-harness-sessions harness) session-id turn-id response-id
+                     :write-index nil))
+                  (when record
+                    (e-session-append-context-curation
+                     (e-harness-sessions harness) session-id record))))
                (consumed
                 (e-context-lifetime-frame-complete-for-consumer
                  frame consumer-id response-id

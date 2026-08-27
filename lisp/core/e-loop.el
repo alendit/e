@@ -686,6 +686,13 @@ the frame-local presentation installed."
                                 turn-messages))
                         (signal 'e-loop-empty-output
                                 (list 'curation :missing-ack-target)))
+                      ;; This response has no assistant message to carry the
+                      ;; durable identity.  Reserve a distinct response id
+                      ;; for the audit-only control entry before pure
+                      ;; preparation; the harness persists it only after that
+                      ;; preparation succeeds.
+                      (unless response-entry-id
+                        (setq response-entry-id (e-session-generate-ulid)))
                       (setq followup-started t)
                       (setq curation-only-followups
                             (1+ curation-only-followups))

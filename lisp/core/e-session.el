@@ -3483,18 +3483,23 @@ the updated message, or nil when no such message exists."
              :display (and display (symbol-name display))))
       message)))
 
-(cl-defun e-session-append-activity-event
-    (store session-id turn-id event-type payload &key (write-index t))
-  "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
+(defun e-session--append-activity-event-entry
+    (store session-id turn-id event-type payload entry-id write-index)
+  "Append activity EVENT-TYPE with optional durable ENTRY-ID.
+
+ENTRY-ID is reserved for the one audit-only context-curation response control
+entry whose identity must be shared with its prepared record.  Ordinary
+activity events continue to mint their own ids."
   (let* ((session (e-session--get-live store session-id))
          (timestamp (e-session--timestamp))
          (event (e-session--normalize-entry-from-record
                  session
                  'activity-event
-                 (list :turn-id turn-id
-                       :event-type event-type
-                       :payload payload
-                       :created-at timestamp)
+                 (append (when entry-id (list :id entry-id))
+                         (list :turn-id turn-id
+                               :event-type event-type
+                               :payload (copy-tree payload)
+                               :created-at timestamp))
                  timestamp)))
     (unless (plist-member event :board-activity-sequence)
       (let ((sequence
@@ -3518,10 +3523,33 @@ the updated message, or nil when no such message exists."
            :board-activity-sequence (plist-get event :board-activity-sequence)
            :timestamp timestamp
            :event-type event-type
-           :payload payload))
+           :payload (copy-tree (plist-get event :payload))))
     (when write-index
       (e-session--write-index store))
     event))
+
+(cl-defun e-session-append-activity-event
+    (store session-id turn-id event-type payload &key (write-index t))
+  "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
+  (e-session--append-activity-event-entry
+   store session-id turn-id event-type payload nil write-index))
+
+(cl-defun e-session-append-context-curation-response
+    (store session-id turn-id response-entry-id &key (write-index t))
+  "Append the audit-only control entry for a reserved curation response.
+
+RESPONSE-ENTRY-ID is the durable identity already allocated for the provider
+response.  The entry is kept in activity history rather than transcript
+messages, so it is resolvable by id but cannot enter ordinary model context."
+  (unless (and (stringp response-entry-id)
+               (not (string-empty-p response-entry-id)))
+    (signal 'e-session-error
+            (list "Context curation response requires an entry id"
+                  response-entry-id)))
+  (e-session--append-activity-event-entry
+   store session-id turn-id 'context-curation-response
+   (list :response-entry-id response-entry-id)
+   response-entry-id write-index))
 
 (defun e-session-append-process-report (store session-id report)
   "Append out-of-band process REPORT to SESSION-ID in STORE.
