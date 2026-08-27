@@ -137,8 +137,15 @@ promotion writer; new production records are version 3 only."
             :source-observation-ids ("observation-v2")
             :source-refs ("source-v2")
             :source-fingerprints ("fingerprint-v2")))
+         (web-result
+          (e-context-lifetime-canonicalize
+           '(:capability "web.fetch"
+             :headers ((:name "set-cookie" :value "first=1")
+                       (:name "set-cookie" :value "second=2")
+                       (:name "server" :value "nginx"))
+             :text "Fetched page")))
          (v3-record
-          '(:record-version 3
+          `(:record-version 3
             :type context-promotion
             :id "curation-v3"
             :frame-id "frame-v3"
@@ -146,7 +153,7 @@ promotion writer; new production records are version 3 only."
             :consumer-request-id "consumer-v3"
             :response-entry-id "response-v3"
             :items
-            ((:kind exact :value (:count 2 :decision "retain")
+            ((:kind exact :value ,web-result
               :source-observation-ids ("observation-v3-exact")
               :source-refs ("source-v3-exact")
               :source-fingerprints ("fingerprint-v3-exact"))
@@ -204,16 +211,18 @@ promotion writer; new production records are version 3 only."
                                (list (plist-get message :role)
                                      (plist-get message :content)))
                              promotion-messages)
-                     '((system "Promoted fact fact-v2: legacy value")
-                       (system (:count 2 :decision "retain"))
-                       (system "summarized replacement"))))
+                     (list
+                      '(system "Promoted fact fact-v2: legacy value")
+                      (list 'system web-result)
+                      '(system "summarized replacement"))))
             (should (equal
                      (e-context-lifetime-generation-checkpoint fork-generation)
-                     '((:role system :content "C0")
-                       (:role system
+                     (list
+                      '(:role system :content "C0")
+                      '(:role system
                         :content "Promoted fact fact-v2: legacy value")
-                       (:role system :content (:count 2 :decision "retain"))
-                       (:role system :content "summarized replacement"))))
+                      (list :role 'system :content web-result)
+                      '(:role system :content "summarized replacement"))))
             (should (equal
                      (e-context-lifetime-generation-checkpoint
                       selected-generation)

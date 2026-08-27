@@ -521,6 +521,16 @@ operators because ddgr's --site accepts only a single domain."
               headers)))
     (nreverse headers)))
 
+(defun e-web-tools--header-records (headers)
+  "Return ordered model-facing records for parsed HTTP HEADERS.
+
+HTTP fields are an ordered multimap, so keep repeated names as separate
+records instead of exposing implementation-facing dotted pairs or collapsing
+them into an object."
+  (mapcar (lambda (header)
+            (list :name (car header) :value (cdr header)))
+          headers))
+
 (defun e-web-tools--response-status (header-text)
   "Return numeric HTTP status from HEADER-TEXT."
   (if (string-match "\\`HTTP/[0-9.]+[ \t]+\\([0-9]+\\)" header-text)
@@ -735,7 +745,8 @@ operators because ddgr's --site accepts only a single domain."
                            :final_url url
                            :status (plist-get response :status)
                            :content_type content-type
-                           :headers (plist-get response :headers)
+                           :headers (e-web-tools--header-records
+                                     (plist-get response :headers))
                            :diagnostics diagnostics)))
         (when (member format '("text" "both"))
           (setq content (append content (list :text text))))
@@ -794,7 +805,8 @@ operators because ddgr's --site accepts only a single domain."
                          :final_url url
                          :status (plist-get response :status)
                          :content_type content-type
-                         :headers (plist-get response :headers)
+                         :headers (e-web-tools--header-records
+                                   (plist-get response :headers))
                          :diagnostics diagnostics)))
       (when (member format '("text" "both"))
         (setq content (append content (list :text text))))

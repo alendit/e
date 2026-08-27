@@ -6099,7 +6099,12 @@ an empty summary\"."
            (curation-input nil)
            (events nil)
            (consumed-frames nil)
-           (raw-result "UNIQUE-RAW-TOOL-RESULT")
+           (raw-result-marker "UNIQUE-RAW-TOOL-RESULT")
+           (raw-result
+            `(:capability "web.fetch"
+              :headers ((:name "server" :value "nginx")
+                        (:name "content-type" :value "text/html"))
+              :text ,raw-result-marker))
            (backend
             (e-backend-create
              :name "context-lifetime-tool-result"
@@ -6232,7 +6237,8 @@ an empty summary\"."
                                        (plist-get message :role))
                                      messages-b)
                              '(user system system tool-call system tool)))
-              (should (string-match-p raw-result (prin1-to-string messages-b)))
+              (should (string-match-p raw-result-marker
+                                      (prin1-to-string messages-b)))
               (let ((tool-position
                      (cl-position 'tool roles-b :from-end t)))
                 (should (equal (plist-get (nth (1- tool-position) messages-b)
@@ -6328,7 +6334,7 @@ an empty summary\"."
                (equal (plist-get projection :promotion-messages)
                       '((:role system :content "selected from tool result"))))
               (should (string-match-p "selected from tool result" printed))
-              (should-not (string-match-p raw-result printed))
+              (should-not (string-match-p raw-result-marker printed))
               (should-not (string-match-p "call-tool-result" printed))
               (should-not (member 'tool-call
                                   (mapcar (lambda (message)
@@ -6357,7 +6363,7 @@ an empty summary\"."
                                                       "session-1" control-id)
                                reopened-control))
                 (should (string-match-p "selected from tool result" fork-text))
-                (should-not (string-match-p raw-result fork-text))
+                (should-not (string-match-p raw-result-marker fork-text))
                 (should-not (string-match-p control-id fork-text))
                 (should-not (e-session-entry-by-id reopened fork-id control-id)))))
         (delete-directory directory t)))))

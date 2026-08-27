@@ -38,8 +38,9 @@ No assistant message follows the final tool result.
 * Source evidence
 
 =e-web-tools--parse-headers= documents and constructs an alist by pushing
-=cons= cells such as =("server" . "nginx")=.  Both HTTP fetch result builders
-then place that value under the structured tool result's =:headers= field.
+=cons= cells such as =("server" . "nginx")=.  Before the fix, both HTTP fetch
+result builders placed that value directly under the structured tool result's
+=:headers= field.
 
 =e-context-lifetime--segment-observations= extracts each tool result's semantic
 content and passes the complete nested value to
@@ -59,22 +60,92 @@ alist case.
 
 * Root cause
 
-Generational-context source preparation assumes that every model-visible tool
-result already uses its narrow canonical semantic-value grammar.  The model
-tool boundary does not enforce that assumption, and =web_fetch= has an
-established valid result shape containing alists.  Consequently, enabling
-context lifetime makes a normal successful web result capable of terminating
-the turn before the model can consume it.
+Generational-context source preparation requires every model-visible tool
+result to use its narrow canonical semantic-value grammar.  Before the fix,
+=web_fetch= violated that producer contract by exposing its internal alist.
+Consequently, enabling context lifetime made a normal successful web result
+capable of terminating the turn before the model could consume it.
 
-* Next step
+* Resolution
 
-No fix was made during this diagnosis.  The repair should establish one stable
-canonical representation for association/object values at the owning semantic
-boundary, preserve the exact model-visible meaning across session replay, and
-add a composed regression using a =web_fetch= result with nested headers.  It
-should not special-case the literal =server= header or silently discard web
-metadata merely to avoid the validator.
+The web layer now converts its internal header alist into an ordered sequence
+of model-facing records before returning a =web_fetch= result:
 
-Because context lifetime is core runtime behavior, applying the eventual fix
-to the user's running Emacs will require a full restart rather than
-=e-dev-reload=.
+#+begin_src emacs-lisp
+((:name "server" :value "nginx")
+ (:name "set-cookie" :value "first=1")
+ (:name "set-cookie" :value "second=2"))
+#+end_src
+
+This is the natural semantic shape for HTTP fields: names may repeat and their
+order remains observable.  It also belongs at the producer boundary.  The URL
+adapter can continue using an alist for internal lookup, while every
+model-facing result satisfies the existing provider-neutral semantic-value
+grammar before the harness sees it.
+
+An initial core-level repair converted string-keyed alists into keyword plists.
+Independent review found that this both left list-valued alists ambiguous and
+permanently interned remote-controlled field names in Emacs.  That approach was
+removed.  The final correction neither broadens core acceptance of arbitrary
+cons cells nor creates process-global symbols from response headers.
+
+* Verification
+
+- The web producer regression proves that repeated =Set-Cookie= fields become
+  separate name/value records in original order.
+- The composed harness regression passes a structured =web_fetch= result
+  through tool follow-up, source presentation, curation, forgetting, reopen,
+  and fork without aborting the turn or retaining the consumed raw value.
+- The session regression proves that repeated header names survive exact
+  version-3 append, JSONL reopen, projection, and fork in order.
+- The three focused cross-boundary regressions passed, as did all 15 web-tool
+  tests and =eldev compile=.  Compilation reported only the repository's
+  existing Emacs 31 obsolescence warnings.
+- The final-tree full suite ran 2,367 tests.  It reported four failures: the
+  three baseline failures
+  =e-openai-test-default-http-request-start-normalizes-header-bytes=,
+  =e-org-canvas-test-visibility_tools_accept_heading_path_targets=, and
+  =e-org-canvas-test-visibility_tools_operate_on_session_canvas=, plus
+  =e-chat-test-submit-does-not-render-assistant-before-async-provider-completes=.
+  The first three fail unchanged on the pre-fix revision.  The fourth passed
+  immediately in isolation, identifying it as order-dependent suite noise.
+- A fresh independent review of the remediated diff reported no actionable
+  findings.
+
+The user's running Emacs was not changed.  Because the final implementation is
+owned by the web layer rather than core runtime, an explicit =e-dev-reload= can
+load it into the running Emacs; a normal restart will also apply it.
+
+* Architecture self-check
+
+1. The package is useful at this stopping point: ordinary =web_fetch= results
+   no longer terminate generational-context turns.
+2. It moves toward provider-neutral semantic values whose producer-visible
+   shape remains valid through observation, curation, persistence, and replay.
+3. HTTP's ordered, repeatable field semantics are stable.  The uncertain
+   question of a general Lisp object representation remains local because the
+   fix does not introduce one.
+4. The web layer owns its model-facing result shape; context lifetime continues
+   to own validation and lifetime policy.
+5. Coupling is reduced: core has no web-specific exception, and the conversion
+   helper exposes only ordered name/value records.
+6. Dependency direction is unchanged.  The web producer conforms to the core
+   contract rather than making core depend on a web representation.
+7. The conversion is already at the outermost correct side-effect boundary;
+   it adds no transport, persistence, or global-symbol side effect.
+8. No state is added.  Header records live only as part of the existing tool
+   result and any explicitly selected durable value.
+9. Performance remains linear in the number of response fields, with one
+   short allocation pass at result construction.
+10. The representation models a real ordered multimap and does not require an
+    implementation to ignore duplicates or throw unsupported-operation errors.
+11. Internal URL parsing remains compatible.  The model-facing header value
+    intentionally changes from an implementation alist that violated the
+    semantic-value contract to portable records.
+12. The invalid model-facing alist path is removed; no compatibility shim or
+    duplicate path remains.
+13. Unsupported cons shapes still fail visibly in core.  Valid web results no
+    longer reach that failure path.
+14. Producer, session, and composed harness tests prove the behavior at its
+    owner and across the two representative consumers without freezing private
+    orchestration details.

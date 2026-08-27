@@ -177,7 +177,9 @@ JSON
                  (let ((buffer
                         (e-web-tools-test--http-buffer
                          200
-                         '(("Content-Type" . "text/html; charset=utf-8"))
+                         '(("Content-Type" . "text/html; charset=utf-8")
+                           ("Set-Cookie" . "first=1")
+                           ("Set-Cookie" . "second=2"))
                          "<html><head><title>Example Title</title><script>ignored()</script></head><body><h1>Hello</h1><p>Readable <b>text</b>.</p><a href=\"/next\">Next page</a></body></html>")))
                    (with-current-buffer buffer
                      (funcall callback nil))
@@ -204,6 +206,11 @@ JSON
         (should (equal (plist-get content :status) 200))
         (should (equal (plist-get content :content_type)
                        "text/html; charset=utf-8"))
+        (should (equal (plist-get content :headers)
+                       '((:name "content-type"
+                          :value "text/html; charset=utf-8")
+                         (:name "set-cookie" :value "first=1")
+                         (:name "set-cookie" :value "second=2"))))
         (should (string-match-p "Example Title" (plist-get content :text)))
         (should (string-match-p "Hello" (plist-get content :text)))
         (should-not (string-match-p "ignored" (plist-get content :text)))
