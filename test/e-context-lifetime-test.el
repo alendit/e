@@ -408,7 +408,7 @@
     (should (equal (plist-get (nth 2 sources) :source-observation-id)
                    (nth 2 observation-ids)))
     (should (equal (plist-get (nth 0 sources) :marker)
-                   (format "[1, ~%d tokens]"
+                   (format "[ephemeral context source 1, ~%d tokens]"
                            (plist-get (nth 0 sources) :estimated-tokens))))
     (should-not (string-match-p
                  "call-1\|message-1\|metadata"
@@ -417,7 +417,7 @@
     (should (equal (mapcar (lambda (source) (plist-get source :marker))
                            presentation)
                    (mapcar (lambda (source)
-                             (format "[%d, ~%d tokens]"
+                             (format "[ephemeral context source %d, ~%d tokens]"
                                      (plist-get source :label)
                                      (plist-get source :estimated-tokens)))
                            sources)))
@@ -676,9 +676,9 @@
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v1"))
+                   "context-curate-v2"))
     (should (equal (plist-get first :presentation-revision)
-                   "context-curation-presentation-v1"))
+                   "context-curation-presentation-v2"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))
     (should (= (plist-get first :max-sources) 16))
     (should (= (plist-get first :max-record-bytes) 8192))))

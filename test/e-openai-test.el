@@ -424,9 +424,9 @@
             (:kind history
              :messages ((:role user :content "durable prompt")))
             (:kind dynamic-context
-             :messages ((:role system :content "[1, ~2 tokens]")
+             :messages ((:role system :content "[ephemeral context source 1, ~2 tokens]")
                         (:role system :content ,source-one)
-                        (:role system :content "[2, ~3 tokens]")
+                        (:role system :content "[ephemeral context source 2, ~3 tokens]")
                         (:role system :content "SOURCE-TWO")))))
          (segments-two
           `((:kind static-prefix
@@ -436,9 +436,9 @@
             (:kind history
              :messages ((:role user :content "durable prompt")))
             (:kind dynamic-context
-             :messages ((:role system :content "[1, ~2 tokens]")
+             :messages ((:role system :content "[ephemeral context source 1, ~2 tokens]")
                         (:role system :content ,source-two)
-                        (:role system :content "[2, ~3 tokens]")
+                        (:role system :content "[ephemeral context source 2, ~3 tokens]")
                         (:role system :content "SOURCE-TWO")))))
          (messages-one
           (append
@@ -451,9 +451,9 @@
            '((:role system :content "STATIC-POLICY")
              (:role system :content "STABLE-GUIDANCE")
              (:role user :content "durable prompt"))
-           (list (list :role 'system :content "[1, ~2 tokens]")
+           (list (list :role 'system :content "[ephemeral context source 1, ~2 tokens]")
                  (list :role 'system :content source-two)
-                 (list :role 'system :content "[2, ~3 tokens]")
+                 (list :role 'system :content "[ephemeral context source 2, ~3 tokens]")
                  (list :role 'system :content "SOURCE-TWO"))))
          (options-one
           `(:model "gpt-5.5"
@@ -482,9 +482,9 @@
                              (plist-get (aref (plist-get item :content) 0)
                                         :text))
                            late-one)
-                   (list "[1, ~2 tokens]"
+                   (list "[ephemeral context source 1, ~2 tokens]"
                          (json-encode source-one)
-                         "[2, ~3 tokens]"
+                         "[ephemeral context source 2, ~3 tokens]"
                          "SOURCE-TWO")))
     (should (equal prefix-one prefix-two))
     (should (equal (plist-get (aref (plist-get (nth 0 input-one) :content) 0)
@@ -571,6 +571,11 @@
               (e-openai-codex--prompt-layout-revision first-options))))
     (let ((e-context-lifetime-curation-presentation-revision
            "context-curation-presentation-test-v2"))
+      (should-not
+       (equal first
+              (e-openai-codex--prompt-layout-revision first-options))))
+    (let ((e-context-lifetime-curation-schema-revision
+           "context-curate-test-v3"))
       (should-not
        (equal first
               (e-openai-codex--prompt-layout-revision first-options))))
@@ -4973,6 +4978,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    "context-curate"))
     ;; The carrier is the exact optional keep/summaries shape.  Internal
     ;; frame/source identities do not belong in the provider schema.
+    (should
+     (equal
+      (plist-get (aref enabled-tools 0) :description)
+      "For ephemeral context sources shown with labels, call this after using a source when it may be needed later: use keep with a label for exact retention or summaries with labels for a compact durable replacement; omitted sources are dropped after a successful call, and make no call when nothing should remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))

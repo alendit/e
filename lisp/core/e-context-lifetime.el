@@ -73,12 +73,12 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v1"
-  "Stable revision of the model-facing context-curate shape.")
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v2"
+  "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
-  "context-curation-presentation-v1"
-  "Stable revision of frame-local curation labels and size markers.")
+  "context-curation-presentation-v2"
+  "Stable revision of frame-local curation labels, lifetime, and size markers.")
 
 (defconst e-context-lifetime-curation-max-sources 16
   "Maximum distinct frame-local sources disposed by one curation.")
@@ -757,7 +757,7 @@ BYTES-PER-TOKEN supplies the estimate ratio."
            (list :label source-label
                  :value value
                  :estimated-tokens estimated-tokens
-                 :marker (format "[%d, ~%d tokens]"
+                 :marker (format "[ephemeral context source %d, ~%d tokens]"
                                  source-label estimated-tokens)
                  :kind kind
                  :source-observation-id

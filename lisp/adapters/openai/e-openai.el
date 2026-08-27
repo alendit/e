@@ -1497,7 +1497,8 @@ retained response already carries the stable segment and its earlier marker."
   "Return the wire carrier for the core-owned curation effect."
   (list :type "function"
         :name "context-curate"
-        :description "Keep or summarize bounded values from ephemeral context."
+        :description
+        "For ephemeral context sources shown with labels, call this after using a source when it may be needed later: use keep with a label for exact retention or summaries with labels for a compact durable replacement; omitted sources are dropped after a successful call, and make no call when nothing should remain."
         :parameters
         (list :type "object"
               :additionalProperties :json-false
