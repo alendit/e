@@ -1890,6 +1890,9 @@
 (ert-deftest e-loop-test-response-preflight-precedes-assistant-append ()
   "A completion preflight runs before the assistant append callback."
   (let* ((order nil)
+         (preflight-id nil)
+         (completion-id nil)
+         (append-id nil)
          (backend
           (e-backend-create
            :name "response-preflight-order"
@@ -1908,12 +1911,14 @@
      :options '(:model "fake")
      :on-response-preflight
      (lambda (payload)
+       (setq preflight-id (plist-get payload :response-entry-id))
        (setq order (append order
                            (list (list 'preflight
                                        (plist-get payload :assistant-content)))))
        'prepared-completion)
      :on-response-complete
      (lambda (payload)
+       (setq completion-id (plist-get payload :response-entry-id))
        (setq order (append order
                            (list (list 'complete
                                        (plist-get payload
@@ -1921,9 +1926,13 @@
      :on-event #'ignore
      :append-message
      (lambda (message)
+       (setq append-id (plist-get message :id))
        (setq order (append order
                            (list (list 'append
                                        (plist-get message :content)))))))
+    (should (stringp preflight-id))
+    (should (equal preflight-id completion-id))
+    (should (equal preflight-id append-id))
     (should (equal order
                    '((preflight "answer")
                      (append "answer")

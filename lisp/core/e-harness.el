@@ -3117,13 +3117,15 @@ fingerprints happen to be unchanged."
     context))
 
 (defun e-harness--lifetime-response-entry-id
-    (harness session-id turn-id fallback)
-  "Return the current durable response entry for TURN-ID.
+    (harness session-id turn-id &optional response-entry-id)
+  "Return the durable response entry identity for TURN-ID.
 
-Assistant and tool-call messages are the existing session representation of a
-completed provider response.  FALLBACK is used only by synthetic backends that
-returned no durable message; it remains an opaque runtime response identity."
-  (or (plist-get
+RESPONSE-ENTRY-ID is allocated before a non-tool completion preflight and is
+the identity the later assistant append must preserve.  Otherwise resolve the
+already-appended assistant or tool-call entry.  There is no provider-request
+identity fallback: a non-tool completion must carry its durable entry ID."
+  (or response-entry-id
+      (plist-get
        (car (last
              (seq-filter
               (lambda (entry)
@@ -3134,7 +3136,7 @@ returned no durable message; it remains an opaque runtime response identity."
               (e-session-current-path (e-harness-sessions harness)
                                       session-id))))
        :id)
-      fallback))
+      nil))
 
 (defun e-harness--lifetime-preflight-response
     (harness session-id turn-id active-entry payload)
@@ -3157,7 +3159,8 @@ frame."
            (response-id
             (e-harness--lifetime-response-entry-id
              harness session-id turn-id
-             (plist-get payload :provider-request-id))))
+             (and (not (plist-get payload :tool-called))
+                  (plist-get payload :response-entry-id)))))
       (unless (or (null effects) (= (length effects) 1))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :effect-count (length effects))))

@@ -6110,6 +6110,16 @@ an empty summary\"."
              (projection (e-session-context-lifetime-projection
                           store "session-1"))
              (curations (plist-get projection :curations))
+             (tool-call
+              (seq-find (lambda (message)
+                          (eq (plist-get message :role) 'tool-call))
+                        (e-harness-messages harness "session-1")))
+             (assistant
+              (car (last
+                    (seq-filter
+                     (lambda (message)
+                       (eq (plist-get message :role) 'assistant))
+                     (e-harness-messages harness "session-1")))))
              (next-context
               (let ((e-context-lifetime-shadow-projection-enabled t))
                 (e-harness-turn-context
@@ -6117,6 +6127,10 @@ an empty summary\"."
              (next-messages (plist-get next-context :messages))
              (printed (prin1-to-string next-messages)))
         (should (= (length curations) 1))
+        (should (equal (plist-get (car curations) :response-entry-id)
+                       (plist-get assistant :id)))
+        (should-not (equal (plist-get (car curations) :response-entry-id)
+                           (plist-get tool-call :id)))
         (should
          (equal (plist-get projection :promotion-messages)
                 '((:role system :content "selected from tool result"))))
@@ -6307,6 +6321,131 @@ an empty summary\"."
                      (eq (plist-get message :role) 'assistant))
                    (e-harness-messages harness "completion-preflight")))))))
 
+(ert-deftest e-harness-test-context-lifetime-assistant-curation-preserves-response-entry-id ()
+  "A prepared curation and its assistant share one durable response identity."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((directory (make-temp-file "e-harness-response-id-" t))
+           (store (e-session-persistent-store-create directory))
+           (captured-frame nil)
+           (consumed-frame nil)
+           (events nil)
+           (backend
+            (e-backend-create
+             :name "context-lifetime-assistant-response-id"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery request-local-replaceable
+               :reserved-effect-carrier context-curate-wire)
+             :stream
+             (cl-function
+              (lambda (&key on-item &allow-other-keys)
+                (funcall on-item
+                         '(:type context-curate :arguments (:keep (1))))
+                (funcall on-item
+                         '(:type assistant-message :content "selected"))
+                (funcall on-item '(:type done :reason stop))))))
+           (provider
+            (e-context-provider-create
+             :name 'assistant-response-id-source
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "SOURCE-FOR-RESPONSE-ID")))))
+           (capability
+            (e-capability-create
+             :id 'assistant-response-id-capability
+             :context-providers (list provider)))
+           (harness
+            (e-harness-create
+             :backend backend
+             :sessions store
+             :intrinsic-capabilities (list capability)))
+           (make-frame
+            (symbol-function 'e-context-lifetime-frame-create-from-segments))
+           (complete-frame
+             (symbol-function
+              'e-context-lifetime-frame-complete-for-consumer)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'e-context-lifetime-frame-create-from-segments)
+                       (lambda (&rest arguments)
+                         (setq captured-frame (apply make-frame arguments))
+                         captured-frame))
+                      ((symbol-function 'e-context-lifetime-frame-complete-for-consumer)
+                       (lambda (&rest arguments)
+                         (setq consumed-frame (apply complete-frame arguments)))))
+              (e-harness--install-activity-sink
+               harness (lambda (event) (push event events))
+               :session-id "assistant-response-id")
+              (let ((e-context-lifetime-shadow-projection-enabled t))
+                (e-harness-create-session harness :id "assistant-response-id")
+                (e-harness-test-prompt-batch
+                 harness "assistant-response-id" "curate this source")))
+            (e-session-flush-write-queue store)
+            (let* ((messages (e-harness-messages harness "assistant-response-id"))
+                   (assistant (car (last (seq-filter
+                                          (lambda (message)
+                                            (eq (plist-get message :role) 'assistant))
+                                          messages))))
+                   (record (car (e-session-context-curations
+                                 store "assistant-response-id")))
+                   (event (seq-find
+                           (lambda (entry)
+                             (eq (plist-get entry :type)
+                                 'context-frame-consumed))
+                           events))
+                   (response-id (plist-get assistant :id))
+                   (reopened (e-session-persistent-store-create directory)))
+              (should (stringp response-id))
+              (should (equal response-id (plist-get record :response-entry-id)))
+              (should (equal response-id
+                             (e-context-lifetime-frame-consuming-response-entry-id
+                              consumed-frame)))
+              (should (equal response-id
+                             (plist-get (plist-get event :payload)
+                                        :response-entry-id)))
+              (should captured-frame)
+              (should consumed-frame)
+              (should (e-context-lifetime-frame-consumed-p consumed-frame))
+              (let* ((reopened-record
+                      (car (e-session-context-curations
+                            reopened "assistant-response-id")))
+                     (reopened-assistant
+                      (seq-find (lambda (message)
+                                  (equal (plist-get message :id) response-id))
+                                (e-session-messages reopened
+                                                     "assistant-response-id")))
+                     (fork (e-session-fork reopened "assistant-response-id"))
+                     (fork-id (plist-get fork :id))
+                     (fork-projection
+                      (e-session-context-lifetime-projection reopened fork-id))
+                     (fork-generation (plist-get fork-projection :generation))
+                     (source-record-after-fork
+                      (car (e-session-context-curations
+                            reopened "assistant-response-id")))
+                     (source-assistant-after-fork
+                      (seq-find (lambda (message)
+                                  (equal (plist-get message :id) response-id))
+                                (e-session-messages reopened
+                                                     "assistant-response-id"))))
+                (should (equal response-id
+                               (plist-get reopened-record :response-entry-id)))
+                (should (equal response-id (plist-get reopened-assistant :id)))
+                (should (equal response-id
+                               (plist-get source-assistant-after-fork :id)))
+                (should (equal response-id
+                               (plist-get source-record-after-fork
+                                          :response-entry-id)))
+                (should (member '(:role system :content "SOURCE-FOR-RESPONSE-ID")
+                                (e-context-lifetime-generation-checkpoint
+                                 fork-generation)))
+                (should-not
+                 (string-match-p "\\[1, ~"
+                                 (prin1-to-string
+                                  (e-context-lifetime-generation-checkpoint
+                                   fork-generation))))
+                (should (stringp fork-id)))))
+        (delete-directory directory t)))))
+
 (ert-deftest e-harness-test-context-lifetime-zero-curation-consumes-frame ()
   "A response with no curation drops its live frame without a durable record."
   (let* ((harness (e-harness-create
@@ -6323,6 +6462,7 @@ an empty summary\"."
          harness "session-1" "turn-1" entry
          (list :frame frame
                :provider-request-id "response-1"
+               :response-entry-id "response-1"
                :curation-effects nil)))))
     (should (e-context-lifetime-frame-consumed-p
              (plist-get entry :context-frame)))
@@ -6356,6 +6496,7 @@ an empty summary\"."
              harness "session-1" "turn-1" entry
              (list :frame frame-a
                    :provider-request-id "response-a"
+                   :response-entry-id "response-a"
                    :curation-effects
                    (list (list :type 'context-curate
                                :arguments '(:keep (1))))))))
@@ -6402,6 +6543,7 @@ an empty summary\"."
              harness "session-1" "turn-1" entry
              (list :frame frame-a
                    :provider-request-id "response-a-zero"
+                   :response-entry-id "response-a-zero"
                    :curation-effects nil))))
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a-zero"))
     (should (eq (plist-get entry :context-frame) frame-b))
@@ -6421,10 +6563,10 @@ an empty summary\"."
        (e-harness--lifetime-commit-response
         harness "session-1" "turn-1" entry
         (list :frame frame
-              :provider-request-id "response-1"
-              :curation-effects
-              (list (list :type 'context-curate
-                          :arguments '(:keep (2))))) )
+               :provider-request-id "response-1"
+               :curation-effects
+               (list (list :type 'context-curate
+                           :arguments '(:keep (2))))) )
        :type 'e-context-lifetime-invalid-record))
     (should (eq (plist-get entry :context-frame) frame))
     (should-not (e-context-lifetime-frame-consumed-p frame))
@@ -6466,6 +6608,7 @@ an empty summary\"."
          harness "session-1" "turn-1" entry
          (list :frame frame
                :provider-request-id "response-1"
+               :response-entry-id "response-1"
                :curation-effects
                (list (list :type 'context-curate
                            :arguments '(:keep (1))))))))

@@ -38,11 +38,18 @@
       (e-dev-profile-measure-thunk event options thunk)
     (funcall thunk)))
 
-(defun e-loop--assistant-message (content &optional metadata)
-  "Return an assistant message with CONTENT and optional METADATA."
-  (list :role 'assistant
-        :content content
-        :metadata metadata))
+(defun e-loop--assistant-message
+    (content &optional metadata response-entry-id)
+  "Return an assistant message with CONTENT, METADATA, and optional ID.
+
+RESPONSE-ENTRY-ID is allocated before completion preflight so that a pure
+preflight and the subsequent durable append share one identity."
+  (let ((message (list :role 'assistant
+                       :content content
+                       :metadata metadata)))
+    (when response-entry-id
+      (plist-put message :id response-entry-id))
+    message))
 
 (cl-defun e-loop--emit (&key on-event type payload)
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
@@ -432,6 +439,7 @@ completion value for ON-RESPONSE-COMPLETE."
                   (response-preflight-run nil)
                   (response-preflight-result nil)
                   (response-curation-effects nil)
+                  (response-entry-id nil)
                   (provider-request-causes next-request-causes)
                   (provider-request-lifetime-frame active-lifetime-frame)
                   (provider-request-projection-identity
@@ -511,6 +519,7 @@ completion value for ON-RESPONSE-COMPLETE."
                           :provider-request-ordinal provider-request-ordinal
                           :curation-effects
                           (copy-tree response-curation-effects)
+                          :response-entry-id response-entry-id
                           :assistant-content (response-text)
                           :tool-called tool-called
                           :reason done-reason))
@@ -1055,13 +1064,16 @@ completion value for ON-RESPONSE-COMPLETE."
                                                         ;; here is handled by
                                                         ;; the existing provider
                                                         ;; failure boundary.
+                                                        (setq response-entry-id
+                                                              (e-session-generate-ulid))
                                                         (run-response-preflight)
                                                       (e-loop--assistant-message
                                                        (response-text)
                                                        (when pending-provider-replay-items
                                                          (list
                                                           :provider-replay-items
-                                                          pending-provider-replay-items))))))
+                                                          pending-provider-replay-items))
+                                                       response-entry-id))))
                                                  (setq turn-messages
                                                        (append turn-messages
                                                                (list message)))
