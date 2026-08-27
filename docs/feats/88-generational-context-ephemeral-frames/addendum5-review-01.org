@@ -1,0 +1,396 @@
+#+title: Feature 88 Addendum 5 Specification Review 01
+#+date: 2026-08-27
+#+startup: overview
+
+* Result
+
+This independent rebaseline specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum5.org= at exact
+revision =821f486d12ac9b175eaf72cf1fc2b9366660f3de=.
+
+Addendum 5 has not reached a specification fixed point and is not ready for
+implementation.
+
+Findings:
+
+- P0: none.
+- P1: three.
+- P2: one.
+- P3: one.
+
+The stronger source and reserved-carrier guidance is feasible at the existing
+core, harness, and OpenAI adapter owners.  The naturalistic adoption scenario
+is also feasible by extending the current ordinary tool, request capture,
+curation audit, and external-evidence runner at their existing owners.
+Implementation is blocked by an
+impossible prompt constraint, a telemetry/evidence contradiction, outcome
+classes that cannot localize model adoption from repository composition, and
+an absent freshness/reuse rule.  The minimum-acceptance section also duplicates
+the sole normative matrix and imports review workflow into the proposal.
+
+No Addendum 5 external success is claimed.  Autonomous adoption remains
+=capability-unconfirmed=.  The existing configured Responses HTTP observations
+precede the proposed material marker and tool-description revisions and cannot
+serve as post-implementation =F88A3-CACHE= evidence.  Exact built-in
+ChatGPT/WebSocket scope remains separately =capability-unconfirmed=.
+
+* Reviewed revision and scope
+
+Review mode: rebaseline specification review.
+
+The review inspected Addendum 5, accepted Addenda 3 and 4, the Feature 88 plan
+and implementation review, =docs/agents/review.org=,
+=docs/references/runtime_concepts.org=, current core lifetime, harness, OpenAI
+adapter, and E2E owners, and their focused tests.
+
+Addendum 5 extends accepted Addendum 4.  Addendum 4 continues to supersede
+Addendum 3 only for promotion/curation conflicts.  This review treats
+=F88A5-AFFORDANCE=, =F88A5-ADOPTION=, and the affected =F88A3-CACHE= row as
+the complete Addendum 5 authority; unchanged Addendum 4 contracts and inherited
+Addendum 3 joins remain referenced rather than redefined.
+
+The runtime vocabulary is consistent with the project glossary: the harness
+owns session and turn orchestration, core and a context provider supply
+provider-neutral context, =context-curate= is a reserved model-facing carrier,
+and the OpenAI backend adapter owns its provider request shape.
+
+The reviewer changed only this review artifact, made no provider request,
+contacted no running Emacs, and created no commit.  The unrelated dirty
+=docs/feats/87-sqlite-session-board-persistence/plan.org= was preserved.
+
+* Normalized contract-and-evidence matrix
+
+| Contract cell | Observable boundary | Owner and composition | Evidence topology | Review disposition |
+|---------------+---------------------+-----------------------+-------------------+--------------------|
+| =F88A5-AFFORDANCE= | Curatable values receive a labeled ephemeral-source marker; the reserved carrier states exact retention, durable summary, omission-as-drop, and useful no-call meanings. | Core owns detached source presentation; the harness owns late-frontier placement; the OpenAI backend adapter owns the Responses tool description and strict schema. | Deterministic literal owner/request-shape tests plus presentation/schema identity fencing. | clear |
+| =F88A5-ADOPTION= | In an isolated session, a future-turn intent prompt that does not command curation leads the configured model to preserve one ordinary-tool source, after which the next turn receives only the durable replacement and can return the sentinel. | The model chooses; core validates/prepares; the loop and harness commit; session projection supplies the next ordinary turn; the backend adapter and E2E runner execute and observe. | Deterministic prompt/capture/classification gates plus one fresh identity-complete configured-provider observation. | open: P1-01, P1-02, P1-03, P2-04 |
+| affected =F88A3-CACHE= | Semantic correctness remains independent of cache behavior; changed material guidance invalidates earlier cache evidence. | Existing OpenAI request-identity and E2E evidence boundary. | Rerun configured canonical warm-prefix and tool-heavy scenarios after the material revision; keep exact ChatGPT/WebSocket separate. | specification clear; future external refresh required |
+
+* Required-cell ledger
+
+| Required cell | Disposition | Evidence or dependency |
+|---------------+-------------+------------------------|
+| Normative authority | open | P3-05: the matrix declares sole authority, but =Minimum acceptance= restates requirements and review mechanics. |
+| Durable boundary | clear | Addendum 5 adds no durable shape or runtime state; accepted Addendum 4 v3 preparation, session append/projection, and v2 read compatibility remain authoritative. |
+| Scenario diagnosability | open | P1-03: one top-level class currently combines model, prompt-control, carrier, projection, and raw-exclusion failures. |
+| Evidence topology | open | P1-02 and P1-03: required per-run adoption evidence is called telemetry, and the proposed record cannot substantiate its claimed localization. |
+| External identity | clear | Captured endpoint, store mode, model, transport, native requester, material shape, revision, scenario, and result are required and supported by the current bounded recorder. |
+| External freshness | open | P2-04: no adoption freshness window or dependency-sensitive reuse rule is stated. |
+| External failure classification | open | P1-03: failure ownership and the shared runner's stable result vocabulary are unresolved. |
+| Telemetry role | open | P1-02: population observations and acceptance evidence are conflated. |
+| Exact-limit justification | clear | No runtime bound changes; inherited curation limits remain authoritative.  One success is explicitly an existential initial capability observation, not a population claim. |
+| Workflow boundary | open | P3-05 imports implementation-Tick mechanics into the product proposal. |
+| Test stability | open | P1-03: new spellings for shared runner outcomes lack a schema/version or compatibility disposition.  The retain/strengthen/add/rerun/delete ledger otherwise covers the impact cone. |
+| Architecture ownership | clear | The change strengthens existing core/harness/adapter surfaces and E2E evidence; it adds no state, interface, reverse dependency, or provider policy in core. |
+
+No required coverage is merely unknown: each open cell has a concrete
+source-proven specification defect below.
+
+* Findings
+
+** TODO P1-01: =F88A5-ADOPTION= makes its naturalistic prompt impossible
+
+*** Contract cell
+
+=F88A5-ADOPTION= prompt boundary.
+
+*** Observed source fact
+
+The representative first prompt says “Keep that value available”
+(=addendum5.org:100-104=), while the immediately following negative inventory
+forbids the actual prompt from containing =keep= (=addendum5.org:106-109=).
+
+*** Consequence
+
+No prompt can satisfy both requirements.  An implementer must either weaken the
+negative inventory or silently replace the specified prompt, so deterministic
+evidence cannot prove the intended non-commanding scenario.
+
+*** Minimal correction
+
+Replace the quoted prompt with this exact semantic shape:
+
+#+begin_quote
+Use the deterministic lookup tool to obtain the current adoption sentinel.
+I will ask about that value in my next message.  Do not reveal it yet; reply
+only READY.
+#+end_quote
+
+Apply the negative inventory case-insensitively to the actual prompt after its
+ordinary-tool name is substituted.
+
+*** Acceptance evidence
+
+- a deterministic assertion proves the final prompt contains the intended
+  future-turn request and ordinary-tool name;
+- the same assertion rejects every forbidden carrier, schema, disposition, and
+  numeric-label term; and
+- the configured scenario records the prompt's bounded material identity, not
+  its content.
+
+** TODO P1-02: =F88A5-ADOPTION= classifies required adoption evidence as observational telemetry
+
+*** Contract cell
+
+=F88A5-ADOPTION= evidence topology and telemetry.
+
+*** Observed source fact
+
+The normative matrix calls “invocation choice” observational
+(=addendum5.org:53=), but the same row and scenario require one valid autonomous
+reserved effect to establish adoption (=addendum5.org:111-116,130=).  The result
+table also makes absent “provider usage” =unavailable=
+(=addendum5.org:133=), while token and cache usage are expressly observational
+(=addendum5.org:144-148=).
+
+Current request identity is computed from captured request bodies and metadata,
+not token-usage payloads (=e2e/e-live-e2e-test.el:498-534=).  Therefore a run can
+conclusively observe adoption while token/cache usage is absent.
+
+*** Consequence
+
+A conforming runner could either treat the acceptance event as non-decisive or
+downgrade a conclusive adoption observation because optional cost/cache
+telemetry is missing.
+
+*** Minimal correction
+
+Replace the =F88A5-ADOPTION= telemetry cell with:
+
+#+begin_quote
+Population-level invocation frequency, exact-versus-summary distribution,
+token/cache usage, and latency are observational.  Whether this acceptance
+scenario produced one valid reserved effect is contract evidence, not
+telemetry.
+#+end_quote
+
+Replace the =unavailable= row with:
+
+#+begin_quote
+Required capability identity or request/curation capture was absent.  Missing
+token or cache usage leaves those observational fields unavailable without
+changing an otherwise conclusive adoption result.
+#+end_quote
+
+*** Acceptance evidence
+
+- valid adoption with missing usage remains conclusive and records unavailable
+  telemetry fields;
+- missing capability identity or request/curation capture is =unavailable=;
+  and
+- aggregate invocation/disposition/cost/latency observations cannot change the
+  single-scenario result.
+
+** TODO P1-03: the adoption record cannot distinguish model selection from repository composition failures
+
+*** Contract cell
+
+=F88A5-ADOPTION= scenario diagnosability, failure classification, and test
+stability.
+
+*** Observed source fact
+
+The =product-contract-failure= row combines no valid reserved effect, early
+sentinel disclosure, lost follow-up state, and consumed-source leakage
+(=addendum5.org:125-142=).  Those outcomes have different owners: model
+selection, prompt control, durable commit/projection, and inherited
+=F88A3-SEM=.  Yet the scenario portfolio claims the shared record distinguishes
+model non-adoption from carrier, commit, projection, and provider failure
+(=addendum5.org:152-157=).
+
+The current shared finalizer has only semantic and cache subresults and emits
+the established values =configuration-unavailable= and
+=provider/infrastructure-failure= (=e2e/e-live-e2e-test.el:720-788=).  Addendum
+5 instead introduces =authentication-or-configuration-failure= and
+=provider-or-infrastructure-failure= without specifying a record-schema
+revision, migration, or replacement of the retained cache evidence tests.
+
+*** Consequence
+
+A model non-adoption observation can be confused with a repository regression,
+or a repository projection/leak defect can falsely disprove autonomous model
+selection.  The result-spelling change also forces unnecessary shared-record
+and historical-evidence churn.
+
+*** Minimal correction
+
+Insert before the result table:
+
+#+begin_quote
+The content-free record carries bounded =adoption-result= and
+=composition-result= fields plus a bounded =failure-stage=.
+=adoption-result= classifies whether, after a valid ordinary-tool source and
+carrier presentation, the model emitted one valid effect whose exact or summary
+replacement preserves the sentinel.  =composition-result= independently
+classifies prompt control, carrier presence, audit linkage, commit, next-turn
+projection, raw-source exclusion, and the follow-up answer.  =failure-stage=
+is one of =none=, =ordinary-tool=, =prompt-control=, =model-selection=,
+=carrier=, =commit=, =projection=, =raw-exclusion=, or
+=follow-up-answer=; it contains no prompt, sentinel, or model content.
+#+end_quote
+
+Replace the non-pass rows with:
+
+| Result | Meaning |
+|--------+---------|
+| =product-contract-failure= | An identity-complete run validly presented the ordinary-tool source and carrier, but the model emitted no valid reserved effect or chose a replacement that did not preserve the sentinel. |
+| =semantic-failure= | A prompt-control, carrier, audit, commit, projection, raw-exclusion, or follow-up assertion failed; the bounded subresults and =failure-stage= identify the boundary. |
+| =unavailable= | Required capability identity or request/curation capture was absent. |
+| =configuration-unavailable= | The request could not start with valid authentication or provider configuration. |
+| =provider/infrastructure-failure= | External provider or infrastructure health prevented a valid observation. |
+| =inconclusive-timeout= | The scenario exceeded its declared deadline. |
+
+Retain these established shared-runner result spellings.  If a later proposal
+needs different machine-readable values, it must version the evidence schema
+and state compatibility for prior Feature 88 records and tests.
+
+*** Acceptance evidence
+
+- deterministic partitions cover no effect, malformed/insufficient model
+  effect, early reveal, absent carrier, audit/commit failure, missing durable
+  projection, raw replay, wrong follow-up answer, configuration failure,
+  provider failure, and timeout;
+- every run emits exactly one top-level result while preserving both bounded
+  subresults and the original failure; and
+- existing cache evidence values and tests remain stable.
+
+** TODO P2-04: adoption evidence has no freshness or dependency-sensitive reuse rule
+
+*** Contract cell
+
+=F88A5-ADOPTION= external identity and freshness.
+
+*** Observed source fact
+
+Addendum 5 requires an identity-complete record and says one successful
+observation initially confirms the capability (=addendum5.org:138-148=), but it
+does not say when that observation becomes stale or which owner changes prevent
+reuse.  Inherited Feature 88 evidence uses a seven-calendar-day window and
+invalidates reuse on identity, material-shape, or affected-owner changes
+(=addendum3.org:223-227=).
+
+*** Consequence
+
+An old success could remain “confirmed” after the prompt, marker, reserved-tool
+description, model, adapter, or runner changes—the exact dependencies this
+addendum is intended to test.
+
+*** Minimal correction
+
+Insert after the one-success paragraph:
+
+#+begin_quote
+Adoption evidence inherits Addendum 3's seven-calendar-day freshness window.
+Reuse requires equality of provider/profile, effective endpoint/base URL,
+transport, store mode, native requester, model, material request shape,
+affordance/presentation revisions, and scenario prompt identity, with no changed
+core, harness, loop, backend-adapter, or runner owner in the scenario's
+dependency cone.  Otherwise the evidence is =stale=; a non-success availability
+class leaves autonomous adoption =capability-unconfirmed=.
+#+end_quote
+
+*** Acceptance evidence
+
+- exact seven-day and one-over freshness classification;
+- reuse with identical identity, shape, prompt identity, and dependency cone;
+- immediate staleness after each listed identity/material/owner change; and
+- separate configured Responses and exact ChatGPT/WebSocket capability status.
+
+** TODO P3-05: =Minimum acceptance= duplicates authority and imports review workflow
+
+*** Contract cell
+
+Normative authority and workflow boundary.
+
+*** Observed source fact
+
+The addendum declares its matrix the sole normative authority
+(=addendum5.org:19-21=), then restates five acceptance requirements and makes a
+“zero-finding implementation Tick” part of the proposal's completion prose
+(=addendum5.org:203-223=).
+
+*** Consequence
+
+Future edits can leave two requirement lists inconsistent, and a product
+specification becomes coupled to one review procedure rather than its evidence
+and status boundary.
+
+*** Minimal correction
+
+Replace =Minimum acceptance= with:
+
+#+begin_quote
+* Minimum acceptance
+
+Clear =F88A5-AFFORDANCE=, =F88A5-ADOPTION=, and the affected
+=F88A3-CACHE= row using only the evidence and statuses named in the normative
+matrix.  All unchanged Addendum 4 contracts and inherited Addendum 3 joins
+remain referenced, not redefined here.
+
+Repository-controlled acceptance and external capability status remain
+separate.  Repository-controlled acceptance does not confirm either autonomous
+adoption or exact ChatGPT/WebSocket capability.  Feature 88 remains =In-review=
+and is not =Done= while either required external scope is
+=capability-unconfirmed=.
+#+end_quote
+
+*** Acceptance evidence
+
+- one normative matrix owns every Addendum 5 requirement;
+- explanatory sections only refine or name evidence for matrix rows; and
+- review mechanics remain in review artifacts while the proposal states only
+  product evidence and status boundaries.
+
+* Feasibility and architecture disposition
+
+The current implementation supplies the required seams:
+
+- core builds detached source descriptors and a stable revision identity at
+  =lisp/core/e-context-lifetime.el:695-711,721-807=;
+- the harness inserts one marker immediately before each raw tool result in
+  both full and immediate-follow-up projections at
+  =lisp/core/e-harness.el:2974-3044= and keeps marker material at the late
+  frontier at =lisp/core/e-harness.el:3096-3101=;
+- the OpenAI backend adapter owns the existing minimal description, strict
+  schema, optional reserved carrier, and prompt-layout fence at
+  =lisp/adapters/openai/e-openai.el:739-752,1496-1521,1531-1570=; and
+- the E2E owner already records bounded request shapes and captured capability
+  identity at =e2e/e-live-e2e-test.el:498-713=.
+
+The ordinary deterministic model-facing tool can return a unique bounded
+sentinel without a new tool or capability boundary.  The new scenario may
+parameterize that existing E2E fixture and inspect existing session/audit
+surfaces.  It requires no persistent scenario state, public interface,
+provider-specific core dependency, automatic retention policy, or UI/board
+owner.
+
+If this package stopped after implementation, the existing curation mechanism
+would be more legible and independently measurable.  It moves toward
+model-directed bounded context lifetime.  Guidance and scenario wording remain
+local and revisable; stable curation semantics, session durability, and bounds
+remain in their accepted owners.  Coupling and ordinary-turn request count do
+not increase.  No architecture follow-up is required once the specification
+findings are corrected.
+
+* Verification
+
+Source inspection established feasibility and the exact ownership joins above.
+Five focused existing tests passed with zero unexpected results:
+
+- 3/3 core/OpenAI tests for curation revision identity, material-layout
+  fencing, and optional strict reserved-carrier shape; and
+- 2/2 deterministic E2E tests for bounded identity-complete evidence and
+  provider-failure capture/finalization.
+
+Batch =org-element-parse-buffer= parsing passed.  The new artifact has no
+trailing whitespace, and =git diff --no-index --check= emitted no whitespace
+diagnostics.  HEAD remained the exact reviewed revision.  Running Emacs was
+unchanged, and no external capability run was made.
+
+* Implementation readiness
+
+Implementation should not start until P1-01 through P3-05 are resolved and a
+fresh independent Tick clears every required cell.  External execution remains
+separate: a corrected implementation may reach repository-controlled fixed
+point before either configured autonomous adoption or exact ChatGPT/WebSocket
+capability is confirmed.
