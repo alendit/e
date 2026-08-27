@@ -573,6 +573,94 @@ call must have exactly one matching empty output in causal order."
          (integerp output-index)
          (< call-index output-index))))
 
+(defun e-live-e2e--adoption-source-bearing-request-index (bodies sentinel)
+  "Return the unique source-bearing continuation index in chronological BODIES.
+SENTINEL is the exact ordinary-tool result.  A candidate must be after an
+ordinary e2e_deterministic call, contain its matching output, and place an
+ephemeral source marker immediately before that output.  Later bodies that
+replay a context-curate call are acknowledgements, not new candidates.  Return
+nil for an absent or ambiguous candidate; the caller then cannot turn model
+selection into a product-contract observation."
+  (let (candidates)
+    (cl-labels
+        ((input-items (body)
+           (append (plist-get body :input) nil))
+         (ordinary-call-p (item)
+           (and (member (plist-get item :type)
+                        '("function_call" function_call
+                          "tool_call" tool_call))
+                (equal (format "%s" (plist-get item :name))
+                       "e2e_deterministic")
+                (stringp (plist-get item :call_id))))
+         (source-marker-p (item)
+           (let* ((content (plist-get item :content))
+                  (blocks
+                   (cond
+                    ((vectorp content) (append content nil))
+                    ((and (listp content) (keywordp (car content)))
+                     (list content))
+                    ((listp content) content))))
+             (and (equal (plist-get item :type) "message")
+                  (seq-some
+                   (lambda (block)
+                     (and (stringp (plist-get block :text))
+                          (string-match-p
+                           "^\\[ephemeral context source [0-9]+, ~[0-9]+ tokens\\]$"
+                           (plist-get block :text))))
+                   blocks))))
+         (curation-replay-p (body)
+           (seq-some
+            (lambda (item)
+              (and (member (plist-get item :type)
+                           '("function_call" function_call
+                             "tool_call" tool_call))
+                   (equal (format "%s" (plist-get item :name))
+                          "context-curate")))
+            (input-items body)))
+         (source-bearing-p (body prior-call-ids)
+           (let* ((input (input-items body))
+                  (ordinary-calls
+                   (cl-loop for item in input
+                            for position from 0
+                            when (ordinary-call-p item)
+                            collect (cons (plist-get item :call_id)
+                                          position)))
+                  (matching-output-count 0))
+             (cl-loop for item in input
+                      for position from 0
+                      when (and (member (plist-get item :type)
+                                        '("function_call_output"
+                                          function_call_output))
+                                (equal (plist-get item :output) sentinel)
+                                (stringp (plist-get item :call_id)))
+                      do (let ((call-id (plist-get item :call_id)))
+                           (when (and (> position 0)
+                                      (or (member call-id prior-call-ids)
+                                          (seq-some
+                                           (lambda (call)
+                                             (and (equal (car call) call-id)
+                                                  (< (cdr call) position)))
+                                           ordinary-calls))
+                                      (source-marker-p
+                                       (nth (1- position) input)))
+                             (setq matching-output-count
+                                   (1+ matching-output-count))))
+                      finally return (= matching-output-count 1)))))
+      (cl-loop for body in bodies
+               for index from 0
+               do (let ((prior-call-ids
+                         (cl-loop for prior-body in (seq-take bodies index)
+                                  append
+                                  (cl-loop for item in (input-items prior-body)
+                                           when (ordinary-call-p item)
+                                           collect (plist-get item :call_id)))))
+                    (when (and (> index 0)
+                               (not (curation-replay-p body))
+                               (source-bearing-p body prior-call-ids))
+                      (push index candidates))))
+      (when (= (length candidates) 1)
+        (car candidates)))))
+
 (defun e-live-e2e--turn-retrying-events (harness session-id turn-id)
   "Return durable retry events for TURN-ID in SESSION-ID."
   (seq-filter
@@ -665,6 +753,87 @@ RETRY-EVENTS must already be restricted to the captured turn."
                  initial-body (list duplicate-body) nil))
     (should-not (e-live-e2e--captured-turn-extras-valid-p
                  initial-body (list mutated-body) (list retry-event)))))
+
+(ert-deftest e-live-e2e-test-adoption-carrier-localizes-to-source-continuation ()
+  "Only the linked ordinary result continuation can satisfy the carrier gate."
+  (let* ((sentinel "ADOPTION-SOURCE")
+         (call (list :type "function_call" :name "e2e_deterministic"
+                     :call_id "ordinary-call"))
+         (marker
+          (list :type "message" :role "developer"
+                :content
+                (vector
+                 (list :type "input_text"
+                       :text "[ephemeral context source 1, ~5 tokens]"))))
+         (output
+          (list :type "function_call_output"
+                :call_id "ordinary-call" :output sentinel))
+         (initial
+          (list :tools (list (list :type "function"
+                                    :name "context-curate"))
+                :input (list call)))
+         (source-without-carrier
+          (list :tools nil :input (list marker output)))
+         (source-with-carrier
+          (list :tools (list (list :type "function"
+                                    :name "context-curate"))
+                :input (list marker output)))
+         (curation-call
+          (list :type "function_call" :name "context-curate"
+                :call_id "curation-call"))
+         (curation-output
+          (list :type "function_call_output" :call_id "curation-call"
+                :output ""))
+         (reserved-ack
+          (list :tools (list (list :type "function"
+                                    :name "context-curate"))
+                :input (list call marker output curation-call curation-output)))
+         (other-with-carrier
+          (list :tools (list (list :type "function"
+                                    :name "context-curate"))
+                :input '((:type "message"
+                          :content [(:type "input_text"
+                                     :text "ordinary continuation")])))))
+    ;; A carrier on the initial request is irrelevant when the source-bearing
+    ;; continuation does not carry it.
+    (should (equal
+             (e-live-e2e--adoption-source-bearing-request-index
+              (list initial source-without-carrier) sentinel)
+             1))
+    (should-not (seq-some (lambda (tool)
+                            (equal (plist-get tool :name) "context-curate"))
+                          (append (plist-get source-without-carrier :tools)
+                                  nil)))
+    ;; The same causal continuation clears the carrier gate when the carrier
+    ;; is present there, regardless of an unrelated later declaration.
+    (should (equal
+             (e-live-e2e--adoption-source-bearing-request-index
+              (list initial source-with-carrier other-with-carrier) sentinel)
+             1))
+    (should
+     (seq-some (lambda (tool)
+                 (equal (plist-get tool :name) "context-curate"))
+               (append (plist-get source-with-carrier :tools) nil)))
+    ;; A later reserved acknowledgement replays the ordinary bundle, but is
+    ;; not another source-bearing continuation.
+    (should (equal
+             (e-live-e2e--adoption-source-bearing-request-index
+              (list initial source-with-carrier reserved-ack) sentinel)
+             1))
+    ;; Wrong linkage and two source-bearing continuations are not safe
+    ;; evidence for model selection.
+    (should-not
+     (e-live-e2e--adoption-source-bearing-request-index
+      (list initial
+            (list :tools (list (list :name "context-curate"))
+                  :input (list marker
+                                (plist-put (copy-sequence output)
+                                           :call_id "wrong-call"))))
+      sentinel))
+    (should-not
+     (e-live-e2e--adoption-source-bearing-request-index
+      (list initial source-with-carrier source-with-carrier)
+      sentinel))))
 
 (defun e-live-e2e--request-diagnostics (metadata)
   "Return diagnostics from request METADATA, or METADATA when already plain."
@@ -2923,13 +3092,19 @@ provider turn to settle without an implicit local deadline."
                  (let* ((ordered-bodies
                          (mapcar (lambda (entry) (plist-get entry :body))
                                  (reverse request-bodies)))
+                        (source-bearing-index
+                         (e-live-e2e--adoption-source-bearing-request-index
+                          ordered-bodies raw-tool-output))
+                        (source-bearing-body
+                         (and (integerp source-bearing-index)
+                              (nth source-bearing-index ordered-bodies)))
                         (carrier-present-p
-                         (seq-some (lambda (body)
-                                    (body-has-tool-p body "context-curate"))
-                                  ordered-bodies)))
+                         (and source-bearing-body
+                              (body-has-tool-p source-bearing-body
+                                               "context-curate"))))
                    (require-gate carrier-present-p
                                  "carrier"
-                                 "The reserved curation carrier was absent from captured requests."))
+                                 "The reserved curation carrier was absent from the source-bearing continuation."))
                  (let* ((curations
                          (e-session-context-curations
                           (e-harness-sessions harness) session-id))
