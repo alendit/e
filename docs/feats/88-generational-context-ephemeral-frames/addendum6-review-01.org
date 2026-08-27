@@ -1,0 +1,500 @@
+#+title: Feature 88 Addendum 6 Specification Review 01
+#+date: 2026-08-27
+#+startup: overview
+
+* Result
+
+This independent rebaseline specification Tick reviewed the committed
+=docs/feats/88-generational-context-ephemeral-frames/addendum6.org= at exact
+revision =97978563a3d9d53777c23b89930cb26e2455dd7f=.
+
+Addendum 6 has not reached a specification fixed point and is not ready for
+implementation.
+
+Findings:
+
+- P0: none.
+- P1: three.
+- P2: two.
+- P3: none.
+
+The central direction is sound.  Responses requests should explicitly opt in
+to =reasoning.summary: "auto"=, with =detailed= reserved for diagnosis; returned
+summaries are not raw reasoning and have no semantic decision power.  A strict,
+structured =drop= disposition is also the necessary distinction between a
+source the model considered and rejected and a source it never noticed.  More
+generic narration is neither required nor permitted.
+
+Implementation is blocked by an escape hatch that can omit the required
+summary request, an incomplete option/compatibility contract, an exhaustive
+partition that current frames with more than 16 sources cannot express, and a
+drop-only durability promise that contradicts the existing checkpoint owner.
+The negative scenario also fails to prove current-turn use, and the proposed
+slice order advertises =drop= before core can accept it.
+
+No Addendum 6 external success is claimed.  Both configured Responses HTTP and
+exact built-in ChatGPT/WebSocket evidence for the new material identity remain
+=capability-unconfirmed=.  This is required future evidence, not a repository
+finding.
+
+* Reviewed revision and scope
+
+Review mode: rebaseline specification review.
+
+The review inspected the exact committed Addendum 6 draft, accepted Addenda 3
+through 5, the Feature 88 plan, architecture and review guidance, the selected
+project glossary =docs/references/runtime_concepts.org=, and current core,
+harness, session, OpenAI adapter, and E2E owners and tests.  The official OpenAI
+reasoning guide was checked at the proposal's cited URL: raw reasoning is not
+exposed; a summary is returned only after opt-in; =auto= selects the most
+detailed summarizer available; and =detailed= is not a future-stable synonym
+for =auto=.
+
+Addendum 6 extends Addendum 5 and supersedes omission-as-negative evidence.  It
+does not reopen accepted Addendum 4 durability or Addendum 3 layout, delivery,
+tool, cleanup, and cache semantics except at the explicitly affected curation
+schema, request identity, adoption, and evidence joins.
+
+The runtime vocabulary remains consistent with the glossary: core owns the
+provider-neutral live frame and disposition semantics; the harness owns turn
+composition and commit; the session owns durable records and checkpoint
+replay; the OpenAI backend adapter owns Responses request translation; and E2E
+owns external evidence rather than product state.
+
+The reviewer changed only this review artifact, made no provider request,
+contacted no running Emacs, and created no commit.  Concurrent post-target E2E
+owner work and uncommitted Feature 87 and =limitations.org= work were excluded
+from the review and preserved.
+
+* Normalized contract-and-evidence matrix
+
+| Contract cell | Observable boundary | Owner and composition | Evidence topology | Review disposition |
+|---------------+---------------------+-----------------------+-------------------+--------------------|
+| =F88A6-R1= reasoning request | Every OpenAI Responses body contains selected effort plus =summary: "auto"=; only an explicit diagnostic choice may select =detailed=; summary prose never affects semantics. | The OpenAI adapter resolves and translates provider options; core and harness do not inspect summary output. | Literal HTTP/WebSocket bodies, effective-option identity, parser presence/empty/absence, a minimal compatible-endpoint probe, then composed scenarios. | open: P1-01 |
+| =F88A6-D1= exhaustive disposition | Required =keep=, =summaries=, and =drop= keys partition every presented label exactly once. | Adapter supplies the strict wire schema; core normalizes and binds labels to the live frame. | Schema and exact/duplicate/unknown/missing/mixed/drop-only owner tests. | open: P1-02 |
+| =F88A6-D2= drop-only effect | A valid drop-only reserved response has no semantic promotion, appends the existing audit control, and consumes the matching frame only after pure validation. | Core prepares the validated no-record result; harness commits; session persists only existing activity shapes. | Pure failure/no-mutation, control/consumption linkage, descendant safety, reopen and exact checkpoint-tail behavior. | open: P1-03 |
+| =F88A6-E1= positive adoption | One naturalistic future-use run produces exact/summary retention and next-turn use without raw replay. | Existing Addendum 5 model/runner/core/harness/session composition. | Updated exhaustive arguments, independent adoption/composition classifications, fresh identity-complete external run. | specification clear; future external refresh required |
+| =F88A6-E2= negative adoption | One naturalistic current-answer run uses a tool source and then emits one exhaustive drop-only effect; no invocation remains distinguishable. | Configured model selects; repository validates, commits, observes, and classifies. | Prompt negative inventory, current-answer assertion, exact causal carrier/effect/control/consumption joins, content-free record. | open: P2-04 |
+| affected =F88A3-CACHE= | Semantics remain independent of cache behavior; the reasoning field and carrier schema/guidance invalidate prior material identity. | Existing OpenAI request-identity and E2E evidence boundary. | Revised request/tool/layout identities plus fresh warm-prefix and tool-heavy runs. | specification clear; future external refresh required |
+| =F88A6-W1= delivery order | Every accepted slice leaves advertised interfaces substitutable and repository behavior coherent. | Core semantic support precedes adapter exposure; evidence follows composed behavior. | Focused owner tests at each slice and contradiction scan at each Tick. | open: P2-05 |
+
+* Required-cell ledger
+
+| Required specification cell | Disposition |
+|-----------------------------+-------------|
+| Normative authority | open: P1-01 leaves the required =auto= rule in conflict with a disable escape hatch; P1-02 leaves the inherited bound's new meaning unresolved. |
+| Durable boundary | open: P1-03 calls a runtime-frame/activity-tail relation durable although drop-only has no promotion that can pin its control through checkpointing. |
+| Scenario diagnosability | open: P2-04 has no assertion that the allegedly current-use source affected the visible answer and no resulting failure boundary. |
+| Evidence topology | open: P1-01 lacks a separately classified endpoint-acceptance observation; P2-04 does not independently prove current use and disposition. |
+| External identity | clear in principle: inherited provider/profile, effective endpoint, transport, store mode, native requester, model, material shape, scenario, and revision fields remain required. |
+| External freshness | clear by inheritance: Addendum 5's seven-calendar-day and dependency-cone rule applies; all Addendum 6 material changes make older adoption/cache records stale. |
+| External failure classification | open: P1-01 does not classify a compatible Responses identity that rejects the required =auto= field, and P2-04 lacks a current-answer semantic stage. |
+| Telemetry role | clear: summary presence/text, aggregate disposition rates, tokens, cache use, and latency are observational; structured per-run dispositions and semantic assertions are contract evidence. |
+| Exact-limit justification | open: P1-02 carries the old 16-disposed-source ceiling into a complete partition without bounding presentation or separating retained from dropped cardinality. |
+| Workflow boundary | clear: implementation/review work remains outside the product contract, and external execution is a later evidence phase. |
+| Test stability | open: P2-05 makes an intermediate advertised provider schema incompatible with the still-current core contract. |
+| Architecture ownership | clear in decomposition, open in delivery: the named owners and dependency direction are correct, but P1-03 and P2-05 require a coherent state-lifetime and slice boundary. |
+
+No remaining required coverage is merely unknown: every open repository cell
+has an actionable source-proven specification defect below.  External
+capability execution remains separately unknown until implementation exists.
+
+* Findings
+
+** TODO P1-01: =F88A6-R1= permits omitting =auto= and does not define its existing option join
+
+*** Contract cell
+
+=F88A6-REASONING-SUMMARY= request option, compatibility, identity, and external
+failure classification.
+
+*** Observed source fact
+
+The matrix requires OpenAI Responses requests to explicitly send
+=reasoning.summary: "auto"= (=addendum6.org:47=), but the decision permits an
+option to disable summaries when a provider capability requires it
+(=addendum6.org:57-61=).  This conflicts with the corrected requirement: a
+profile that rejects =auto= is unconfirmed for this contract, not a reason to
+silently omit it.
+
+The current adapter also has two established effort inputs.  An explicit
+=:reasoning= plist replaces the entire default object, while otherwise
+=:reasoning-effort= or the adapter default constructs =(:effort ...)=
+(=lisp/adapters/openai/e-openai.el:1532-1543=).  Existing tests protect that
+whole-object precedence (=test/e-openai-test.el:1509-1525=).  Addendum 6 says
+only “request/profile option” and “option/default precedence”; it does not
+define how summary selection composes with this public input, which values are
+valid, what wins, whether =:reasoning nil= remains legal, or how the effective
+choice enters request/continuation identity.  Current harness fingerprints
+=:reasoning= and =:reasoning-effort= but has no summary option
+(=lisp/core/e-harness.el:3553-3569=).
+
+*** Consequence
+
+Two conforming-looking implementations can send different wire bodies: one can
+drop the required opt-in through the disable escape or an explicit
+=:reasoning= plist, while another overwrites caller effort.  A reused provider
+anchor or external record can then claim the wrong material request shape.
+An endpoint that rejects =auto= also has no precise capability classification.
+
+*** Minimal correction
+
+Replace =Request reasoning summaries explicitly= with:
+
+#+begin_quote
+Every OpenAI Responses request contains =reasoning.effort= and
+=reasoning.summary=.  The effective summary value is ="auto"= unless the
+request explicitly selects ="detailed"= for diagnosis.  ="auto"= and
+="detailed"= are the only valid values; nil, false, omission as an override,
+and unknown values fail before transport.  A profile may supply the diagnostic
+=detailed= default, but may not disable the field.  Request choice overrides
+profile choice, which overrides the adapter default =auto=.
+
+The existing =:reasoning= request plist remains the highest-precedence source
+for =effort=.  Its other supported fields are preserved, but an absent
+=summary= is filled with the effective value above and a present =summary= must
+obey the same two-value contract.  State explicitly whether the diagnostic
+profile field is normalized into that plist or has one named adapter option;
+there must be one effective authority.  Chat Completions behavior is unchanged.
+
+The effective effort and summary value participate in HTTP request identity,
+WebSocket request-property/continuation compatibility, captured diagnostics,
+and external evidence identity.  A configured Responses endpoint that rejects
+the required =auto= request is =unavailable= and remains
+=capability-unconfirmed= for that identity; it is not retried without the field
+and is not a product-contract or repository-semantic failure.  A successful
+response with a present, empty, or absent returned summary remains semantically
+eligible because returned summary content is diagnostic only.
+#+end_quote
+
+*** Acceptance evidence
+
+- literal HTTP and WebSocket bodies cover default =auto=, request diagnostic
+  =detailed=, profile diagnostic =detailed=, request-over-profile precedence,
+  explicit =:reasoning= effort preservation, invalid/disable rejection, and
+  unchanged Chat Completions;
+- anchor/request/evidence identity changes with the effective summary value;
+- parser tests accept present, empty, and absent returned summary arrays without
+  changing semantic results or copying prose into evidence; and
+- a minimal configured Responses probe separately classifies accepted =auto=,
+  explicit unsupported capability, configuration failure, provider failure,
+  and timeout before the composed adoption/cache scenarios run.
+
+** TODO P1-02: =F88A6-D1= cannot exhaustively partition a current frame with more than 16 sources
+
+*** Contract cell
+
+=F88A6-DISPOSITION= exact bounds and current-source feasibility.
+
+*** Observed source fact
+
+Addendum 6 requires the union of =keep=, =summaries[*].sources=, and =drop= to
+equal every presented label and describes =drop= as an array “like =keep=”
+(=addendum6.org:47-49,70-84=).  The inherited Addendum 4 ceiling is 16 distinct
+labels with dispositions (=addendum4.org:235-247=).
+
+Current frame construction creates one curatable source for every independently
+rendered observation and does not cap the source count
+(=lisp/core/e-context-lifetime.el:592-672,721-807=).  Core then rejects more
+than 16 submitted labels (=lisp/core/e-context-lifetime.el:840-902=), while an
+owner test deliberately constructs a 17-source frame and proves that its 17
+labels are rejected (=test/e-context-lifetime-test.el:624-638=).
+
+*** Consequence
+
+A valid current request may present labels =1= through =17=, but no Addendum 6
+effect can cover them all.  No call becomes a product-contract failure in the
+new external scenario, while any attempted complete call becomes a repository
+semantic failure.  The model therefore has no successful protocol action for a
+state the repository already permits.
+
+*** Minimal correction
+
+Replace the bound language with:
+
+#+begin_quote
+The inherited limit of 16 applies to labels retained across =keep= and
+=summaries[*].sources=, not to labels explicitly dropped.  =drop= must contain
+every remaining presented label and has no independent fixed cardinality; its
+maximum is the exact number of labels in the live frame.  Core validates one
+linear complete partition, rejects duplicate/unknown/missing labels, rejects
+more than 16 retained labels, and continues to measure only the prepared
+exact/summary promotion record against 8,192 bytes.  Because dropped labels
+produce no durable record item, they do not consume the retained-source or
+prepared-record limits.  The schema and revision identity must reflect these
+distinct bounds.
+#+end_quote
+
+If a fixed total-partition bound is preferred instead, the proposal must first
+define and justify the same bound at frame construction/presentation and state
+what happens to observations beyond it; silently presenting undisposable
+sources is not acceptable.
+
+*** Acceptance evidence
+
+- exact 16/17 retained-label tests preserve the inherited boundary;
+- a substantially larger frame can validly drop every label, and a mixed call
+  can retain 16 while dropping all remaining labels;
+- missing, duplicate, unknown, and one-over-retained partitions fail before
+  session or frame mutation; and
+- partition work is linear in the presented source count and does not copy
+  dropped source bodies into the normalized effect, record, diagnostics, or
+  evidence.
+
+** TODO P1-03: =F88A6-D2= promises a durable drop audit that existing checkpoints discard
+
+*** Contract cell
+
+=F88A6-DROP= state lifetime, audit semantics, reopen, and cleanup.
+
+*** Observed source fact
+
+The proposal says the durable combination of reserved response control, absent
+promotion, and consumed matching frame distinguishes explicit retain-nothing
+and requires restart/reopen evidence (=addendum6.org:49,91-103=).
+
+Frames are runtime-only and only generation/promotions enter the context
+checkpoint (=lisp/core/e-session.el:1315-1353=).  The activity tail retains at
+most 64 events, and a curation response control is pinned beyond that tail only
+when an active version-3 promotion names its response ID
+(=lisp/core/e-session.el:117-119,1355-1425=).  A drop-only response deliberately
+has no such promotion.  Its control and =context-frame-consumed= activity can
+therefore both age out at checkpoint, and no live consumed frame is rebuilt on
+reopen.
+
+*** Consequence
+
+The stated durable relation cannot be implemented with the promised unchanged
+session schema and no negative ledger.  An implementer must either add or pin
+durable negative state contrary to the non-goal, or satisfy only short-tail
+tests while the specification continues to claim durable reopen evidence.
+
+*** Minimal correction
+
+Replace “durable combination” and the associated evidence wording with:
+
+#+begin_quote
+For drop-only, the existing reserved response control and matching
+=context-frame-consumed= activity form a persisted, content-free audit relation
+while both remain in the existing bounded activity tail.  They distinguish the
+live run and an immediate reopen from no invocation, but they are not promoted,
+pinned, or promised after checkpoint-tail eviction.  The separately finalized
+bounded E2E evidence record is the durable acceptance artifact for an observed
+external run.  No session schema, negative ledger, drop label, source body, or
+new checkpoint retention rule is added.
+#+end_quote
+
+Change =restart/reopen absence= to “immediate reopen with absent promotion and
+present bounded-tail audit relation, plus checkpoint-tail eviction without
+semantic residue.”
+
+*** Acceptance evidence
+
+- drop-only pure preflight precedes every mutation; invalid effects append no
+  control/event/record and leave the frame live;
+- valid commit appends exactly one control and one matching consumed event, no
+  promotion, then consumes the presented frame without overwriting a newer
+  descendant;
+- immediate reopen reconstructs the same content-free tail relation;
+- exact 63/64 and one-over tail tests show the declared bounded retention and no
+  special pin; and
+- clean fork and later projection contain no control, dropped label/body,
+  promotion, or negative ledger.
+
+** TODO P2-04: =F88A6-E2= proves a drop call but not that the source was useful in the current answer
+
+*** Contract cell
+
+=F88A6-ADOPTION= negative scenario semantics and failure localization.
+
+*** Observed source fact
+
+The contract calls the negative source useful only in the current turn
+(=addendum6.org:50,105-112=), but its pass gates require only the ordinary tool,
+carrier request, valid drop effect, audit/consumption, and content-free evidence
+(=addendum6.org:114-131=).  They never assert that the visible answer used the
+tool result.  A model can ignore the source, emit =drop=, and pass the claimed
+current-use scenario.
+
+*** Consequence
+
+The run would prove structured rejection after presentation, but not the more
+naturalistic and stronger boundary the proposal claims: use for the current
+answer followed by explicit rejection of future retention.  A wrong current
+answer also has no independent repository-versus-model failure stage.
+
+*** Minimal correction
+
+After the negative-scenario prompt paragraph, insert:
+
+#+begin_quote
+The prompt requires one deterministic, bounded transformation of the ordinary
+tool sentinel in the current visible answer, without naming any curation term,
+field, label, or reasoning summary.  The runner asserts that exact answer before
+redaction.  A missing or wrong visible answer is =semantic-failure= with
+=failure-stage current-answer=; it is not model non-adoption.  A pass records
+=adoption-result pass=, =composition-result pass=,
+=adoption-disposition drop=, and =failure-stage none=.  The evidence record
+contains only those bounded classifications, never the sentinel, prompt,
+answer, source, or returned reasoning-summary text.
+#+end_quote
+
+Add the current-answer assertion as a gate between source-bearing continuation
+and finalization.  Retain the case-insensitive prompt negative inventory,
+including =drop= and every other argument field after ordinary-tool
+substitution.
+
+*** Acceptance evidence
+
+- the exact substituted prompt contains an ordinary current-answer task but no
+  carrier, curation, argument, label, numeric-label, or reasoning-summary term;
+- partitions cover correct answer/drop, wrong answer/drop, correct answer/no
+  call, malformed/incomplete drop, configuration/provider failure, and timeout;
+- one exactly-once finalizer preserves independent adoption/composition results
+  and the original failure stage; and
+- raw prompt, sentinel, answer, source, authentication, and reasoning-summary
+  prose are absent from the record on every outcome.
+
+** TODO P2-05: =F88A6-W1= advertises =drop= one committed slice before core supports it
+
+*** Contract cell
+
+Implementation workflow boundary and architecture substitutability.
+
+*** Observed source fact
+
+Slice 1 changes the exposed reserved-carrier schema to require =drop=, while
+Slice 2 later extends core normalization and preparation
+(=addendum6.org:145-162=).  Current core accepts exactly =:keep= and
+=:summaries= and rejects every unknown key, including =:drop=
+(=lisp/core/e-context-lifetime.el:840-902=).  The project requires coherent
+semantic slices and interfaces whose implementations do not weaken or reject
+advertised behavior.
+
+*** Consequence
+
+After Slice 1, every model-generated call conforming to the newly advertised
+schema fails at the core owner.  The repository would expose an interface no
+implementation can satisfy until a later commit, making the first reviewable
+stopping point behaviorally worse and obscuring which owner failed.
+
+*** Minimal correction
+
+Replace the first two slices with this order:
+
+#+begin_quote
+Slice 1: add the Responses reasoning-summary request/default, response parsing
+regressions, effective identity, and capability classification without changing
+the curation carrier.
+
+Slice 2: extend core pure normalization/preparation for required exhaustive
+=keep=/=summaries=/=drop= partitions and validated no-record drop-only results,
+then extend harness/session composition and deterministic atomic/reopen/tail
+evidence.  Core may accept the new internal effect before it is advertised.
+
+Slice 3: expose the strict revised OpenAI carrier schema and concise
+schema-directed description, advance its revision identity, delete only the
+superseded omission/no-call guidance, and run captured HTTP/WebSocket composed
+request tests.  Do not add or strengthen generic narration in stable
+instructions, markers, prompts, or the carrier.
+#+end_quote
+
+Renumber the current evidence and configured-validation slices after these
+coherent owner slices.
+
+*** Acceptance evidence
+
+- every slice's focused suite passes and its exposed interfaces have a working
+  implementation at that same revision;
+- the pre-exposure core slice accepts exhaustive/drop-only inputs without
+  changing the current wire schema;
+- the exposure slice proves the adapter schema and core normalization agree
+  literally; and
+- captured requests contain one concise schema-directed carrier authority and
+  no repeated generic curation narration.
+
+* Cleared cells, unknowns, and non-goals
+
+The following joins are clear and should not be reopened without contradictory
+evidence:
+
+- returned reasoning summaries stay in the existing adapter parser and
+  presentation path; raw reasoning is unavailable, summary prose is neither
+  searched nor copied into evidence, and no semantic outcome depends on it;
+- structured =drop= is the only new considered-and-rejected evidence; no-call
+  still consumes the frame operationally but proves no model decision;
+- mixed calls persist only inherited exact/summary version-3 items, and v2/v3
+  readers, projection, compaction, and clean-fork semantics remain unchanged;
+- core owns complete frame-bound validation, harness owns commit, session owns
+  existing durable records, the adapter owns provider request shape, and the
+  E2E runner owns bounded external records; no dependency points from stable
+  core policy to OpenAI;
+- the reasoning field and schema/guidance revisions invalidate earlier cache
+  and adoption evidence together; semantic success remains independent of cache
+  warmth; and
+- the proposal correctly rejects generic narration, automatic retention,
+  reasoning-summary semantics, a second carrier, provider-specific core state,
+  and a durable negative-decision ledger.
+
+Repository feasibility is known at the reviewed revision.  External outcomes
+are intentionally unknown: the new code and material identity do not exist, so
+configured Responses HTTP and exact ChatGPT/WebSocket remain separately
+=capability-unconfirmed=.  Returned-summary presence is diagnostic even after a
+compatible request succeeds.  No external success may be reused from Addendum
+5 because the request field, tool schema/guidance, scenario prompt, and affected
+owners all change.
+
+* Architecture and design self-check
+
+The final direction remains beneficial: it replaces ambiguous omission with an
+explicit model decision while keeping provider diagnostics outside stable
+context policy.  The real stable contracts are the frame-local complete
+partition and atomic consume; summary mode and scenario wording remain
+adapter/E2E-local variation.  The proposed owners are cohesive, interfaces stay
+narrow, and side effects remain outside pure core preparation.
+
+P1-02 must prevent a legacy selected-source bound from becoming an accidental
+total-frame bound.  P1-03 must state the smallest true lifetime instead of
+introducing unbounded negative audit state.  P2-05 must restore dependency
+order so core semantics exist before provider exposure.  With those corrections
+the change adds no durable runtime state, reverse dependency, speculative
+abstraction, provider fallback, compatibility shim, or unsupported operation.
+
+Partition validation should remain linear in presented labels and must not
+visit dropped bodies after trusted label presentation.  Reasoning-summary
+generation can add provider work, but it is an explicit product requirement;
+token/cache/latency observations remain diagnostic until a thresholded contract
+exists.  Existing v2/v3 read compatibility remains real; omission-as-decision
+guidance and tests become removable.  Expected malformed partitions and
+unsupported endpoint capability receive named failures; unexpected owner and
+parser defects remain visible.  Narrow core, adapter, harness/session, and E2E
+tests localize future design changes without broad rewrites.
+
+* Verification
+
+The review used exact committed objects through =git show= rather than the
+dirty worktree for Addendum 6 and all inherited contracts.  Source inspection
+confirmed the current reasoning precedence, unrestricted frame source
+cardinality, 16-label curation rejection, runtime-only frame lifetime,
+64-activity checkpoint tail, promotion-dependent control pinning, and current
+provider-before-core slice incompatibility.
+
+No production test or external scenario was run because this is a
+pre-implementation specification review.  Batch Org parsing and whitespace/diff
+checks passed for this artifact.  The source audit remained pinned to committed
+objects at =97978563= through =git show=.  Concurrent work advanced =main= to
+=65023bce= after review began; the Addendum 6 object is byte-identical there and
+was not silently rebased into this review.  Running Emacs and unrelated dirty
+files were unchanged.
+
+The final clear-technical-writing pass used the project glossary and changed no
+finding, severity, owner, or evidence decision.
+
+* Implementation readiness
+
+Addendum 6 is not ready for supervised implementation.  Correct P1-01 through
+P2-05, obtain another independent specification Tick, and begin implementation
+only after every required repository cell is clear.  External execution follows
+repository-controlled implementation and review; inability to exercise a
+configured or exact ChatGPT/WebSocket identity remains a separately reported
+capability state rather than a repository finding.
