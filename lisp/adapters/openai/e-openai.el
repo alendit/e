@@ -1177,19 +1177,38 @@ object, while Responses input requires the field to contain an array."
     (when (member (plist-get normalized :type) '("reasoning" reasoning))
       ;; `json-parse-string' uses lists for both arrays and plists.  A
       ;; non-empty summary whose first element is a keyword is therefore an
-      ;; object-valued provider response, not an already-array-valued summary.
-      ;; Normalize that response shape without retaining or interpreting its
-      ;; diagnostic text.
+      ;; object-valued provider response; a list whose first element is itself
+      ;; a plist is an array-valued response.  Use a vector for both cases so
+      ;; `json-encode' cannot mistake the latter for one object whose fields
+      ;; are arrays.  Normalize that response shape without retaining or
+      ;; interpreting its diagnostic text.
       (setq normalized
             (plist-put normalized :summary
                        (cond
                         ((null summary) [])
                         ((vectorp summary) summary)
                         ((and (listp summary)
-                              (not (keywordp (car summary))))
-                         summary)
+                              (keywordp (car summary)))
+                         (vector summary))
+                        ((listp summary) (vconcat summary))
                         (t (vector summary))))))
     normalized))
+
+(defun e-openai-codex--normalize-input-items (items)
+  "Return Responses input ITEMS with reasoning replay shapes normalized.
+
+Most replay items enter through `e-openai-codex--message-replay-items', but
+opaque provider-compaction output is already an input-item sequence and takes a
+different path.  Normalize at this final adapter boundary as well; the helper
+is idempotent for vectors, so an already valid summary array is not wrapped a
+second time."
+  (vconcat
+   (mapcar (lambda (item)
+             (if (and (listp item)
+                      (member (plist-get item :type) '("reasoning" reasoning)))
+                 (e-openai-codex--input-replay-item item)
+               item))
+           (if (vectorp items) (append items nil) items))))
 
 (defun e-openai-codex--message-replay-items (message &optional immediate-followup-p)
   "Return input-safe OpenAI opaque replay items attached to MESSAGE.
@@ -1590,13 +1609,15 @@ retained response already carries the stable segment and its earlier marker."
                     stable-messages options nil)
                    nil)))
              (delta (plist-get options :provider-compaction-delta-messages)))
-        (vconcat (append output
-                         stable-items
-                         (mapcar #'e-openai-codex--input-message delta))))
-    (e-openai-codex--input-items
-     (e-openai-codex--request-input-messages messages options)
-     options
-     continuation-response-id)))
+        (e-openai-codex--normalize-input-items
+         (append output
+                 stable-items
+                 (mapcar #'e-openai-codex--input-message delta))))
+    (e-openai-codex--normalize-input-items
+     (e-openai-codex--input-items
+      (e-openai-codex--request-input-messages messages options)
+      options
+      continuation-response-id))))
 
 (defun e-openai-codex--without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."

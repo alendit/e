@@ -1260,6 +1260,64 @@
                      :encrypted_content "ciphertext"
                      :summary [(:type "summary_text" :text "kept")])))))
 
+(ert-deftest e-openai-test-replays-multiple-reasoning-items-across-tool-continuations ()
+  "Each successive tool continuation replays reasoning summaries as arrays."
+  (let* ((first-reasoning
+          '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext-1"
+            ;; This is the list representation produced for a JSON array by
+            ;; `e-openai-codex--parse-json'.
+            :summary ((:type "summary_text" :text "first"))))
+         (second-reasoning
+          '(:type "reasoning" :id "rs-2" :encrypted_content "ciphertext-2"
+            ;; This is the object representation observed from a provider that
+            ;; returned one summary object instead of an array.
+            :summary (:type "summary_text" :text "second")))
+         (body
+          (e-openai-codex-request-body
+           :messages
+           `((:role user :content "call both tools")
+             (:role tool-call
+              :content
+              (:type tool-call
+               :id "call-1"
+               :name "first"
+               :arguments (:value 1)
+               :provider-replay-items
+               ((:type provider-replay-item
+                 :provider-id openai
+                 :item ,first-reasoning))))
+             (:role tool
+              :content (:tool-call-id "call-1" :content "one")
+              :metadata nil)
+             (:role tool-call
+              :content
+              (:type tool-call
+               :id "call-2"
+               :name "second"
+               :arguments (:value 2)
+               :provider-replay-items
+               ((:type provider-replay-item
+                 :provider-id openai
+                 :item ,second-reasoning))))
+             (:role tool
+              :content (:tool-call-id "call-2" :content "two")
+              :metadata nil))
+           :options '(:model "gpt-5.6" :include-encrypted-reasoning t)))
+         (input (append (plist-get body :input) nil))
+         (reasoning-items
+          (seq-filter (lambda (item)
+                        (equal (plist-get item :type) "reasoning"))
+                      input)))
+    (should (equal (mapcar (lambda (item) (plist-get item :type)) input)
+                   '("message" "reasoning" "function_call"
+                     "function_call_output" "reasoning" "function_call"
+                     "function_call_output")))
+    (should (= (length reasoning-items) 2))
+    (should (equal (mapcar (lambda (item) (plist-get item :summary))
+                          reasoning-items)
+                   '([(:type "summary_text" :text "first")]
+                     [(:type "summary_text" :text "second")])))))
+
 (ert-deftest e-openai-test-gpt56-invalidates-legacy-layout-anchor ()
   "An anchor without the explicit-layout revision forces a safe full request."
   (let* ((body
