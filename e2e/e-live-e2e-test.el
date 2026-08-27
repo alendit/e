@@ -62,6 +62,9 @@
 
 This is runner configuration, not a Feature 88 semantic or cache contract.")
 
+(define-error 'e-live-e2e-scenario-timeout
+  "External E2E scenario deadline expired")
+
 (defconst e-live-e2e--external-evidence-schema-revision
   "e88-cache-evidence-v1"
   "Revision of the bounded machine-readable external evidence record.")
@@ -957,105 +960,119 @@ unavailable."
   (message "E88 external evidence: %s"
            (json-encode (e-live-e2e--json-plist record))))
 
+(defun e-live-e2e--cancel-newest-request (request-handles)
+  "Cancel the newest captured request in newest-first REQUEST-HANDLES."
+  (when-let ((request (car request-handles)))
+    (e-backend-cancel-request request)))
+
 (cl-defun e-live-e2e--run-external-scenario
-    (&key scenario provider profile model timeout started-at capture thunk)
+    (&key scenario provider profile model timeout started-at capture thunk cancel)
   "Run THUNK and emit exactly one bounded evidence record.
 CAPTURE is called after THUNK settles and returns the best state captured so
 far as a plist.  The original error or ERT skip is re-signalled after the
 record is emitted; configuration, semantic, cache, and overall results stay
-separate in that record."
+separate in that record.  CANCEL runs in an outer cleanup boundary after
+finalization, including when the original condition is re-signalled."
   (let (condition value configuration-unavailable)
-    (condition-case caught
-        (setq value
-              (progn
-                (unless (e-live-e2e--profile-auth-available-p profile)
-                  (setq configuration-unavailable t)
-                  (ert-skip
-                   (if (plist-get profile :requires-openai-auth)
-                       "ChatGPT Codex auth.json is unavailable."
-                     "Configured OpenAI token environment auth is unavailable.")))
-                (funcall thunk)))
-      (error (setq condition caught)))
-    (let* ((state (or (ignore-errors (funcall capture)) nil))
-           (condition-type (car condition))
-           (scenario-result-override
-            (and (or (null condition)
-                     (eq condition-type 'ert-test-failed))
-                 (plist-get state :scenario-result)))
-           (cache-result (or (plist-get state :cache-result)
-                             "unavailable"))
-           (condition-message
-            (and condition (ignore-errors (error-message-string condition))))
-           (semantic-result
-            (cond
-             (configuration-unavailable "unavailable")
-             ((and (eq condition-type 'ert-test-failed)
-                   (plist-member state :composition-result))
-              (or (plist-get state :semantic-result) "failure"))
-             ((and (eq condition-type 'ert-test-failed)
-                   (equal cache-result "product-contract-failure"))
-              (or (plist-get state :semantic-result) "pass"))
-             ((eq condition-type 'ert-test-failed) "failure")
-             (t (or (plist-get state :semantic-result) "unavailable"))))
-           (result
-            (cond
-             (configuration-unavailable "configuration-unavailable")
-             (scenario-result-override scenario-result-override)
-             ((and condition-message
-                   (string-match-p "inconclusive-timeout"
-                                   condition-message))
-              "inconclusive-timeout")
-             ((and condition
-                   (eq condition-type 'ert-test-failed)
-                   (equal cache-result "product-contract-failure"))
-              "product-contract-failure")
-             ((and condition (eq condition-type 'ert-test-failed))
-              "semantic-failure")
-             ((and condition (eq condition-type 'ert-test-skipped))
-              "unavailable")
-             (condition "provider/infrastructure-failure")
-             ((equal cache-result "warm") "pass")
-             ((equal cache-result "product-contract-failure")
-              "product-contract-failure")
-             (t "unavailable"))))
-      (ignore-errors
-        (e-live-e2e--report-external-evidence
-         (e-live-e2e--external-evidence-record
-          :scenario scenario
-          :provider (or provider e-openai-default-provider)
-          :profile profile
-          :model (or (plist-get state :model) model)
-          :request-bodies (plist-get state :request-bodies)
-          :request-metadata (plist-get state :request-metadata)
-          :usage-payloads (plist-get state :usage-payloads)
-          :timeout timeout
-          :started-at started-at
-          :ended-at (float-time)
-          :semantic-result semantic-result
-          :cache-result cache-result
-          :result result
-          :adoption-result (plist-get state :adoption-result)
-          :composition-result (plist-get state :composition-result)
-          :failure-stage (plist-get state :failure-stage)
-          :adoption-disposition (plist-get state :adoption-disposition)
-          :scenario-prompt-identity
-          (plist-get state :scenario-prompt-identity)
-          :affordance-revision (plist-get state :affordance-revision)
-          :presentation-revision
-          (plist-get state :presentation-revision)
-          :adoption-gates
-          (plist-get state :adoption-gates)))))
-    (if condition
-        (signal (car condition) (cdr condition))
-      value)))
+    (unwind-protect
+        (progn
+          (condition-case caught
+              (setq value
+                    (progn
+                      (unless (e-live-e2e--profile-auth-available-p profile)
+                        (setq configuration-unavailable t)
+                        (ert-skip
+                         (if (plist-get profile :requires-openai-auth)
+                             "ChatGPT Codex auth.json is unavailable."
+                           "Configured OpenAI token environment auth is unavailable.")))
+                      (funcall thunk)))
+            (error (setq condition caught)))
+          (let* ((state (or (ignore-errors (funcall capture)) nil))
+                 (condition-type (car condition))
+                 (scenario-result-override
+                  (and (or (null condition)
+                           (eq condition-type 'ert-test-failed))
+                       (plist-get state :scenario-result)))
+                 (cache-result (or (plist-get state :cache-result)
+                                   "unavailable"))
+                 (semantic-result
+                  (cond
+                   (configuration-unavailable "unavailable")
+                   ((and (eq condition-type 'ert-test-failed)
+                         (plist-member state :composition-result))
+                    (or (plist-get state :semantic-result) "failure"))
+                   ((and (eq condition-type 'ert-test-failed)
+                         (equal cache-result "product-contract-failure"))
+                    (or (plist-get state :semantic-result) "pass"))
+                   ((eq condition-type 'ert-test-failed) "failure")
+                   (t (or (plist-get state :semantic-result) "unavailable"))))
+                 (result
+                  (cond
+                   (configuration-unavailable "configuration-unavailable")
+                   (scenario-result-override scenario-result-override)
+                   ((eq condition-type 'e-live-e2e-scenario-timeout)
+                    "inconclusive-timeout")
+                   ((and condition
+                         (eq condition-type 'ert-test-failed)
+                         (equal cache-result "product-contract-failure"))
+                    "product-contract-failure")
+                   ((and condition (eq condition-type 'ert-test-failed))
+                    "semantic-failure")
+                   ((and condition (eq condition-type 'ert-test-skipped))
+                    "unavailable")
+                   (condition "provider/infrastructure-failure")
+                   ((equal cache-result "warm") "pass")
+                   ((equal cache-result "product-contract-failure")
+                    "product-contract-failure")
+                   (t "unavailable"))))
+            (ignore-errors
+              (e-live-e2e--report-external-evidence
+               (e-live-e2e--external-evidence-record
+                :scenario scenario
+                :provider (or provider e-openai-default-provider)
+                :profile profile
+                :model (or (plist-get state :model) model)
+                :request-bodies (plist-get state :request-bodies)
+                :request-metadata (plist-get state :request-metadata)
+                :usage-payloads (plist-get state :usage-payloads)
+                :timeout timeout
+                :started-at started-at
+                :ended-at (float-time)
+                :semantic-result semantic-result
+                :cache-result cache-result
+                :result result
+                :adoption-result (plist-get state :adoption-result)
+                :composition-result (plist-get state :composition-result)
+                :failure-stage (plist-get state :failure-stage)
+                :adoption-disposition (plist-get state :adoption-disposition)
+                :scenario-prompt-identity
+                (plist-get state :scenario-prompt-identity)
+                :affordance-revision (plist-get state :affordance-revision)
+                :presentation-revision
+                (plist-get state :presentation-revision)
+                :adoption-gates
+                (plist-get state :adoption-gates)))))
+          (if condition
+              (signal (car condition) (cdr condition))
+            value))
+      (when cancel
+        (ignore-errors (funcall cancel))))))
 
 (defun e-live-e2e--prompt-batch-before-deadline
     (harness session-id prompt deadline)
   "Run PROMPT with the remaining portion of a scenario DEADLINE."
   (let ((remaining (- deadline (float-time))))
     (when (<= remaining 0)
-      (error "inconclusive-timeout: external scenario deadline expired"))
-    (e-board-e2e-prompt-batch harness session-id prompt remaining)))
+      (signal 'e-live-e2e-scenario-timeout (list :deadline deadline)))
+    (condition-case caught
+        (e-board-e2e-prompt-batch harness session-id prompt remaining)
+      (error
+       (let ((entry (gethash session-id (e-harness-active-turns harness))))
+         (if (and (>= (float-time) deadline)
+                  (eq (plist-get entry :status) 'running))
+             (signal 'e-live-e2e-scenario-timeout
+                     (list :deadline deadline :cause caught))
+           (signal (car caught) (cdr caught))))))))
 
 (defconst e-live-e2e--adoption-negative-terms
   '("context-curate" "curate" "keep" "summary" "summaries"
@@ -2067,8 +2084,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                       'error)
                 (list "inconclusive-timeout"
                       (lambda ()
-                        (error "inconclusive-timeout: deadline expired"))
-                      'error)
+                        (signal 'e-live-e2e-scenario-timeout
+                                (list :deadline 120.0)))
+                      'e-live-e2e-scenario-timeout)
                 (list "semantic-failure"
                       (lambda () (ert-fail "semantic assertion"))
                       'ert-test-failed)))
@@ -2100,6 +2118,128 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                              "unavailable")))
             (should (equal (plist-get record :cache-result)
                            "unavailable"))))))))
+
+(ert-deftest e-live-e2e-test-prompt-batch-deadline-signals-typed-condition ()
+  "A running turn that consumes the deadline becomes a typed timeout."
+  (let* ((active-turns (make-hash-table :test #'equal))
+         (harness (e-harness--make :active-turns active-turns))
+        (clock '(0.0 11.0))
+        condition)
+    (puthash "session" '(:status running) active-turns)
+    (cl-letf (((symbol-function 'float-time)
+               (lambda (&optional _)
+                 (prog1 (car clock)
+                   (setq clock (cdr clock)))))
+              ((symbol-function 'e-board-e2e-prompt-batch)
+               (lambda (&rest _)
+                 (error "E2E turn did not settle within 10.0 seconds"))))
+      (condition-case caught
+          (e-live-e2e--prompt-batch-before-deadline
+           harness "session" "prompt" 10.0)
+        (error (setq condition caught))))
+    (should (eq (car condition) 'e-live-e2e-scenario-timeout))
+    (should (equal (plist-get (cdr condition) :deadline) 10.0))
+    (should (eq (car (plist-get (cdr condition) :cause)) 'error))))
+
+(ert-deftest e-live-e2e-test-external-finalizer-types-timeout-and-cancels-newest ()
+  "Typed timeout and provider error each finalize once and cancel newest."
+  (let (records)
+    (cl-letf (((symbol-function 'e-live-e2e--profile-auth-available-p)
+               (lambda (&rest _) t))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (dolist (case
+               (list
+                (list 'e-live-e2e-scenario-timeout
+                      "inconclusive-timeout"
+                      (lambda ()
+                        (signal 'e-live-e2e-scenario-timeout
+                                (list :deadline 120.0))))
+                (list 'error
+                      "provider/infrastructure-failure"
+                      (lambda ()
+                        (error "provider reported inconclusive-timeout")))))
+        (setq records nil)
+        (let (cancelled condition)
+          (let* ((old (e-backend-request-create
+                       :cancel (lambda ()
+                                 (push 'old cancelled)
+                                 t)))
+                 (new (e-backend-request-create
+                       :cancel (lambda ()
+                                 (push 'new cancelled)
+                                 t))))
+            (condition-case caught
+                (e-live-e2e--run-external-scenario
+                 :scenario 'responses-canonical-tool-heavy
+                 :provider 'configured-provider
+                 :profile '(:name "Configured Responses"
+                            :responses-transport http
+                            :requires-openai-auth t)
+                 :model "gpt-5.6-sol"
+                 :timeout 120.0
+                 :started-at 100.0
+                 :capture (lambda ()
+                            '(:semantic-result "unavailable"
+                              :cache-result "unavailable"))
+                 :cancel (lambda ()
+                           (e-live-e2e--cancel-newest-request
+                            (list new old)))
+                 :thunk (nth 2 case))
+              (error (setq condition caught))))
+          (should (eq (car condition) (nth 0 case)))
+          (should (= (length records) 1))
+          (should (equal cancelled '(new)))
+          (should (equal (plist-get (car records) :result)
+                         (nth 1 case))))))))
+
+(ert-deftest e-live-e2e-test-external-finalizer-preserves-adoption-checkpoint-after-late-failure ()
+  "A late failure preserves an already established exact or summary adoption."
+  (let (records)
+    (cl-letf (((symbol-function 'e-live-e2e--profile-auth-available-p)
+               (lambda (&rest _) t))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (dolist (case
+               (list
+                (list "exact" 'error "provider/infrastructure-failure"
+                      (lambda () (error "second-turn provider failure")))
+                (list "summary" 'e-live-e2e-scenario-timeout
+                      "inconclusive-timeout"
+                      (lambda ()
+                        (signal 'e-live-e2e-scenario-timeout
+                                (list :deadline 120.0))))))
+        (setq records nil)
+        (let (condition)
+          (condition-case caught
+              (e-live-e2e--run-external-scenario
+               :scenario 'responses-autonomous-curation-adoption
+               :provider 'configured-provider
+               :profile '(:name "Configured Responses"
+                          :responses-transport http
+                          :requires-openai-auth t)
+               :model "gpt-5.6-sol"
+               :timeout 120.0
+               :started-at 100.0
+               :capture (lambda ()
+                          (list :semantic-result "unavailable"
+                                :cache-result "unavailable"
+                                :adoption-result "pass"
+                                :composition-result "unavailable"
+                                :failure-stage "none"
+                                :adoption-disposition (nth 0 case)))
+               :thunk (nth 3 case))
+            (error (setq condition caught)))
+          (should (eq (car condition) (nth 1 case)))
+          (should (= (length records) 1))
+          (let ((record (car records)))
+            (should (equal (plist-get record :result) (nth 2 case)))
+            (should (equal (plist-get record :adoption-result) "pass"))
+            (should (equal (plist-get record :composition-result)
+                           "unavailable"))
+            (should (equal (plist-get record :failure-stage) "none"))
+            (should (equal (plist-get record :adoption-disposition)
+                           (nth 0 case)))))))))
 
 (ert-deftest e-live-e2e-test-provider-metrics-record-reports-bounded-scalars ()
   "Metric extraction preserves unavailable cache fields and reports once."
@@ -2637,6 +2777,8 @@ provider turn to settle without an implicit local deadline."
              :model e-openai-default-model
              :timeout scenario-timeout
              :started-at started-at
+             :cancel (lambda ()
+                       (e-live-e2e--cancel-newest-request request-handles))
              :capture
              (lambda ()
                (let* ((ordered-entries (reverse request-bodies))
@@ -2811,6 +2953,10 @@ provider turn to settle without an implicit local deadline."
                    events)
                   "commit"
                   "The autonomous curation audit/control linkage was incomplete.")
+                 ;; Adoption is independently established once the preserving
+                 ;; effect and its exact audit linkage have been verified.  A
+                 ;; later follow-up only establishes composition.
+                 (setq adoption-result "pass")
                  (setq second-request-count (length request-bodies))
                  (e-live-e2e--with-responses-request-capture
                      profile request-bodies request-handles
@@ -2866,9 +3012,7 @@ provider turn to settle without an implicit local deadline."
                     :valid-effect-p t :replacement-preserved-p t
                     :audit-linked-p t :projection-p t :raw-excluded-p t
                     :follow-up-p t))))
-            )
-            (e-backend-cancel-request
-             (car (last request-handles)))))))))
+            )))))))
 
 (ert-deftest e-live-e2e-test-responses-autonomous-curation-adoption ()
   "A configured Responses model autonomously curates a future-turn tool result."
@@ -2876,7 +3020,7 @@ provider turn to settle without an implicit local deadline."
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
   "The adoption runner passes only its declared keywords before cleanup."
-  (let (received cleanup-arguments request-attempted)
+  (let (received request-attempted)
     (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
                (lambda () t))
               ((symbol-function 'e-openai-provider-profile)
@@ -2905,9 +3049,6 @@ provider turn to settle without an implicit local deadline."
                (lambda (&rest arguments)
                  (setq received arguments)
                  'runner-stubbed))
-              ((symbol-function 'e-backend-cancel-request)
-               (lambda (&rest arguments)
-                 (setq cleanup-arguments arguments)))
               ((symbol-function 'e-board-e2e-prompt-batch)
                (lambda (&rest _)
                  (setq request-attempted t)
@@ -2919,10 +3060,10 @@ provider turn to settle without an implicit local deadline."
       (should (equal
                (cl-loop for (key _value) on received by #'cddr collect key)
                '(:scenario :provider :profile :model :timeout :started-at
-                 :capture :thunk)))
+                 :cancel :capture :thunk)))
       (should (functionp (plist-get received :capture)))
       (should (functionp (plist-get received :thunk)))
-      (should (equal cleanup-arguments '(nil)))
+      (should (functionp (plist-get received :cancel)))
       (should-not request-attempted))))
 
 (ert-deftest e-live-e2e-test-provider-lifecycle-events-are-durable ()
@@ -3272,6 +3413,8 @@ continuation and socket assertions used by the compatibility selector."
              :model e-openai-default-model
              :timeout scenario-timeout
              :started-at started-at
+             :cancel (lambda ()
+                       (e-live-e2e--cancel-newest-request request-handles))
              :capture
              (lambda ()
                (let ((ordered-entries (reverse request-bodies))
@@ -3437,7 +3580,6 @@ continuation and socket assertions used by the compatibility selector."
                                   collect body)))
                    (curation-ack-body (car curation-ack-bodies))
                    (warm-body (car warm-turn-bodies))
-                   (warm-handle (nth warm-turn-start-count ordered-handles))
                    (tool-followup-input
                     (append (plist-get tool-followup-body :input) nil))
                    (curation-ack-input
@@ -3749,7 +3891,7 @@ continuation and socket assertions used by the compatibility selector."
                (t
                 (ert-skip
                  "Cached-token usage was unavailable; external cache evidence is inconclusive.")))
-              (e-backend-cancel-request warm-handle))))))))))
+              )))))))))
 
 (ert-deftest e-live-e2e-test-chatgpt-canonical-tool-heavy ()
   "A tool turn has an immediate continuation and a canonical next request."
@@ -3906,6 +4048,8 @@ WebSocket and socket-replacement assertions."
            :model e-openai-default-model
            :timeout scenario-timeout
            :started-at started-at
+           :cancel (lambda ()
+                     (e-live-e2e--cancel-newest-request request-handles))
            :capture
            (lambda ()
              (let* ((ordered-entries (reverse request-bodies))
