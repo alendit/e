@@ -1,0 +1,204 @@
+#+title: Feature 88 Addendum 5 Specification Review 02
+#+date: 2026-08-27
+#+startup: overview
+
+* Result
+
+This independent incremental specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum5.org= at exact
+revision =4edfd2072790e7d815485db308d818bc0d870ae2=.
+
+Addendum 5 has reached a whole-specification fixed point and is ready for
+supervised implementation.
+
+Findings:
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: none.
+
+Review 01 P1-01, P1-02, P1-03, P2-04, and P3-05 are closed at their owning
+contract and evidence boundaries.  Every required specification cell is clear;
+none remains unknown.
+
+External execution remains separate.  No Addendum 5 external success exists,
+so autonomous adoption remains =capability-unconfirmed=.  Existing configured
+Responses HTTP observations describe the currently implemented Addendum 3/4
+material shape and cannot be reused after Addendum 5 changes that shape.  Exact
+ChatGPT/WebSocket scope also remains separately =capability-unconfirmed=.
+
+* Reviewed delta and scope
+
+Review mode: incremental specification review.
+
+- Review 01 target: =821f486d12ac9b175eaf72cf1fc2b9366660f3de=
+- Review 01 artifact commit: =24f04046=
+- current target: =4edfd2072790e7d815485db308d818bc0d870ae2=
+
+The remediation delta changes only Addendum 5.  Production source, tests,
+accepted Addenda 3 and 4, and their implementation evidence are unchanged from
+the Review 01 feasibility baseline.  This Tick independently audited the five
+promised closures, invalidated their affected =F88A5-ADOPTION= and evidence
+cells, and contradiction-scanned =F88A5-AFFORDANCE=, affected
+=F88A3-CACHE=, and the inherited semantic, tool, durability, compatibility,
+and cleanup joins.
+
+The selected glossary remains =docs/references/runtime_concepts.org=.  The
+material terms retain their established meanings: the harness owns sessions and
+turns; a context provider contributes backend-neutral context; ordinary
+model-facing tools use the harness tool lifecycle; and a backend adapter owns
+provider-specific request, authentication, retry, streaming, and response
+translation.  The reserved =context-curate= carrier remains distinct from an
+ordinary model-facing tool.
+
+The reviewer changed only this review artifact, made no provider request,
+contacted no running Emacs, and created no commit.  The unrelated dirty Feature
+87 plan was preserved.
+
+* Review 01 finding dispositions
+
+** DONE P1-01: the prompt and its negative inventory are simultaneously satisfiable
+
+The first prompt now expresses future-turn intent without =keep= or other
+curation/schema vocabulary (=addendum5.org:101-105=).  The actual prompt's
+case-insensitive negative inventory is applied after ordinary-tool substitution
+(=addendum5.org:107-112=).  It still commands the reproducible ordinary tool,
+not the reserved curation carrier.  The target naturalistic boundary is exact
+and deterministically checkable.  P1-01 is closed.
+
+** DONE P1-02: acceptance evidence and observational telemetry are separated
+
+The normative =F88A5-ADOPTION= row now makes the scenario's one valid reserved
+effect contract evidence while population-level invocation frequency,
+disposition distribution, token/cache usage, and latency remain observational
+(=addendum5.org:54=).  The =unavailable= result requires missing capability
+identity or request/curation capture; absent token/cache usage leaves only those
+observational fields unavailable (=addendum5.org:147=).  The explanatory
+telemetry paragraph agrees (=addendum5.org:158-162=).  P1-02 is closed.
+
+** DONE P1-03: adoption and repository composition have independent bounded diagnostics
+
+The content-free record now separates =adoption-result= from
+=composition-result= and uses a bounded =failure-stage= to localize ordinary
+tool, prompt-control, model-selection, carrier, commit, projection,
+raw-exclusion, and follow-up boundaries (=addendum5.org:128-138=).
+
+Only a valid, identity-complete model-selection contradiction becomes
+=product-contract-failure=.  Prompt, carrier, audit, commit, projection,
+raw-exclusion, and follow-up defects become =semantic-failure= with their
+bounded localization (=addendum5.org:140-150=).  The shared runner's established
+=configuration-unavailable= and =provider/infrastructure-failure= spellings are
+retained.  Slice 2 and the test ledger require exactly-once finalization,
+independent subresults, stable top-level values, and content exclusion
+(=addendum5.org:191-199,210-224=).
+
+These fields serve a real evidence consumer: they prevent a repository defect
+from falsely disproving autonomous model selection.  They add no runtime or
+session state and do not expose prompt, sentinel, or model content.  P1-03 is
+closed.
+
+** DONE P2-04: adoption evidence has an explicit freshness and reuse boundary
+
+Adoption evidence inherits the seven-calendar-day window and requires equality
+of provider/profile, effective endpoint/base URL, transport, store mode, native
+requester, model, material shape, affordance/presentation revisions, and prompt
+identity.  A change in the core, harness, loop, backend-adapter, or runner
+dependency cone invalidates reuse immediately (=addendum5.org:164-170=).
+
+Stale or unavailable evidence leaves adoption =capability-unconfirmed= rather
+than passing or disproving it.  Configured Responses and exact
+ChatGPT/WebSocket identities remain separate.  P2-04 is closed.
+
+** DONE P3-05: the matrix is the sole normative authority and workflow remains external
+
+=Minimum acceptance= now references the three authoritative rows instead of
+restating their requirements (=addendum5.org:226-231=).  Its remaining prose
+states only the product evidence/status boundary: repository-controlled
+acceptance does not confirm either external scope, and Feature 88 remains
+=In-review= and not =Done= while either required scope is
+=capability-unconfirmed=
+(=addendum5.org:233-237=).  Tick numbering, commits, reviewer selection, and
+stop mechanics no longer appear in the feature contract.  P3-05 is closed.
+
+* Contract and required-cell disposition
+
+| Contract cell | Current disposition | Status |
+|---------------+---------------------+--------|
+| =F88A5-AFFORDANCE= | Provider-neutral markers and the OpenAI reserved-carrier description strengthen the existing presentation at their accepted owners; deterministic shape and revision fencing remain sufficient. | clear |
+| =F88A5-ADOPTION= | The non-commanding prompt, model-selection result, composed semantic result, identity, freshness, failure classes, and observational telemetry now form one diagnosable external contract. | clear; initial capability unconfirmed |
+| affected =F88A3-CACHE= | Cache remains independent of semantics; post-implementation configured warm-prefix and tool-heavy refresh is required under the new material identity. | specification clear; future external refresh required |
+
+| Required specification cell | Disposition |
+|-----------------------------+-------------|
+| Normative authority | clear: the matrix owns the three rows; other sections refine their evidence without redefining outcomes. |
+| Durable boundary | clear: Addendum 5 changes no durable curation record, session state, or compatibility reader. |
+| Scenario diagnosability | clear: independent adoption/composition results and a bounded failure stage identify the responsible boundary. |
+| Evidence topology | clear: deterministic construction, external compatibility, and observational telemetry have distinct decision effects. |
+| External identity | clear: provider/profile and captured request-derived capability identity are required. |
+| External freshness | clear: seven days plus exact identity/material/dependency-cone reuse. |
+| External failure classification | clear: only a valid product contradiction disproves adoption; availability classes leave it unconfirmed. |
+| Telemetry decision power | clear: all unthresholded population, usage, cache, and latency measures are observational. |
+| Exact-limit justification | clear: no runtime limit changes; one canonical success is an existential initial observation, not a population claim. |
+| Workflow boundary | clear: product targets and the independent-review requirement remain; fixpoint phase, commit, and stop mechanics are absent. |
+| Test stability | clear: accepted Addendum 4 coverage is retained, affected owner/evidence tests are strengthened or added, cache scenarios rerun, and stable runner values remain. |
+| Architecture ownership | clear: core, harness/loop/session, backend adapter, and E2E runner retain cohesive responsibilities and correct dependency direction. |
+
+No required specification coverage is unknown.  There are no actionable P0-P3
+findings.
+
+* Contradiction scan, feasibility, and architecture
+
+Current source remains feasible for the accepted slice order:
+
+- core owns detached source presentation and revision identity at
+  =lisp/core/e-context-lifetime.el:695-711,721-807=;
+- the harness owns provider-neutral late-frontier marker placement at
+  =lisp/core/e-harness.el:2974-3044,3096-3101=;
+- the OpenAI backend adapter owns the reserved Responses wire description,
+  strict schema, and material prompt-layout fence at
+  =lisp/adapters/openai/e-openai.el:739-752,1496-1521=; and
+- the E2E owner already captures bounded request-derived capability identity
+  and preserves current top-level failure outcomes at
+  =e2e/e-live-e2e-test.el:498-713,720-791=.
+
+The Addendum 5 delta does not alter Addendum 4 curation semantics, atomicity,
+bounds, v3 durability, v2 read compatibility, or inherited Addendum 3
+projection, continuation, cleanup, and cache independence.  It adds no
+automatic curation, second context-management tool, durable instruction, UI or
+board owner, provider-specific core dependency, fallback, compatibility shim,
+or ordinary-turn provider request.
+
+The bounded diagnostic fields are evidence state at the E2E runner, not runtime
+state or a public harness/session interface.  Guidance wording and scenario
+wording remain local variation points; stable curation semantics and durability
+remain unchanged.  The implementation slices move from owner presentation to
+evidence composition and then external validation without reversing a
+dependency.  No architectural follow-up is required.
+
+* Verification
+
+Five focused tests passed on the exact reviewed revision with zero unexpected
+results:
+
+- 3/3 core/OpenAI tests for curation revision identity, material-layout
+  fencing, and the optional strict reserved-carrier shape; and
+- 2/2 deterministic E2E tests for bounded identity-complete evidence and
+  provider-failure capture/finalization.
+
+Production source, tests, and accepted Addenda 3 and 4 have no diff from the
+Review 01 feasibility baseline.  Batch Org parsing and whitespace/diff checks
+passed.  HEAD remained the exact reviewed revision.  Running Emacs was
+unchanged, and no external provider request was made.
+
+The final clear-technical-writing pass used the selected project glossary and
+changed no finding, severity, owner, or evidence decision.
+
+* Implementation readiness
+
+Addendum 5 is ready for supervised implementation in its stated slice order.
+Repository-controlled implementation and independent review must precede
+authoritative external acceptance.  Until fresh Addendum 5 evidence exists,
+autonomous adoption and exact ChatGPT/WebSocket capability remain
+=capability-unconfirmed=, and Feature 88 remains =In-review= rather than
+=Done=.
