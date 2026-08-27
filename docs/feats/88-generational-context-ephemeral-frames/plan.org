@@ -18,7 +18,7 @@ tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; the persisted =context-promotion= family remains readable as version 2
 only.  The repository-controlled implementation is at deterministic fixed point
-through =2118041f=, while the external cache capability remains unconfirmed.
+through =0f67b992=, while the external cache capability remains unconfirmed.
 
 * Goal
 
@@ -1085,8 +1085,9 @@ latency: that mechanism is outside this feature.
 - External cache behavior remains unconfirmed.  The two bounded selectors now
   emit identity-complete records, but the 2026-08-27 run skipped before a
   request because =/Users/dvorona/.codex/auth.json= was unavailable.
-- The run's records identify =bec4c0d6= while the current implementation is
-  =2118041f=; they are therefore not reusable acceptance evidence.
+- The current records identify exact implementation revision =0f67b992=, but
+  contain no requests or usage because authentication was unavailable; they
+  are diagnostic evidence, not external capability acceptance evidence.
 - Existing session audit may retain more provenance than model projection
   needs.  SQLite retention can define that later without changing semantics.
 - Cache counters are evidence when exposed, not a correctness dependency.

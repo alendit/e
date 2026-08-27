@@ -4,12 +4,12 @@
 
 * Status
 
-In-review.  Implementation Tock 1 resolved Tick 1's two defects in
-=da2b01ab016437d6b6373c93fd5e6890a9cfd800= and
-=0b7576250c99707725a39a0935b62d596afb1ed6=.  Fresh independent Tick 2 at
-exact revision =0b7576250c99707725a39a0935b62d596afb1ed6= found two P2
-impact-cone defects.  The implementation is not at a functional fixed point
-and is not ready for acceptance.
+In-review (=deterministic-fixed-point=; external
+=capability-unconfirmed=).  Implementation Tock 2 resolved Tick 2's two P2
+defects in =d7e2e9ae= and =0f67b992=.  Fresh independent Tick 3 at exact
+revision =0f67b992fd0ad4c012f8982c47d8f0b5f1aeb7fb= found zero actionable
+P0--P2 findings and no unknown required deterministic cell.  The repository
+implementation is ready for deterministic acceptance.
 
 External capability remains a separate state.  The current configured run was
 honestly =configuration-unavailable= because the built-in Codex authentication
@@ -19,28 +19,31 @@ capability proof.
 * Review boundary and decision
 
 The review covered the full Addendum 3/4 implementation and documentation
-range from the accepted Addendum 4 specification through =0b757625=, including
+range from the accepted Addendum 4 specification through =0f67b992=, including
 =159f4be4=, =626919bc=, =7bbbe09f=, =5983a612=, =77647733=,
-=bec4c0d6=, =2118041f=, =da2b01ab=, and =0b757625=.  Addendum 4 supersedes
+=bec4c0d6=, =2118041f=, =da2b01ab=, =0b757625=, =d7e2e9ae=, and
+=0f67b992=.  Addendum 4 supersedes
 Addendum 3 only for
 promotion/curation; Addendum 3's semantic reconstruction, layout, delivery,
 tool continuation/retry, cache evidence, cleanup, compaction, and compatibility
-contracts remain inherited.
+contracts remain inherited.  Tick 3 first re-audited both Tick 2 remediation
+impact cones and then contradiction-scanned the complete accepted contract.
 
 The source and deterministic suites clear source presentation, v3-only writes,
 v2 read compatibility, successful curation projection, producer-frame label
 binding, immediate tool follow-up, one-shot canonical retry, next-turn raw
 bundle exclusion, cleanup, mixed v2/v3 replay/fork/compaction, and unaffected
-transports.  The two findings below prevent fixed-point acceptance.
+transports.  The two Tick 2 findings below are closed; no new P0--P2 defect
+was found.
 
 | Contract cell | Disposition | Evidence |
 |---------------+-------------+----------|
 | =F88A4-PRESENT=, =F88A4-CURATE=, =F88A4-BOUNDS=, =F88A4-COST= | clear | core source/codec inspection and owner tests |
 | =F88A4-ATOMIC= / =F88A3-SEM= | clear for =F88A4.I1= | pure completion preflight and failure no-mutation evidence |
-| =F88A4-DURABLE= provenance join | blocked by =F88A4.I3= | assistant/provider identity reproduction |
+| =F88A4-DURABLE= provenance join | clear; =F88A4.I3= closed | durable assistant/tool-call identity, event, reopen, and fork evidence |
 | =F88A3-LAYOUT=, =F88A3-DELIVERY=, =F88A3-TOOL= | clear | literal adapter, loop, integration, and E2E evidence |
 | =F88A3-CACHE= result finalization | clear for =F88A3.I2= | outcome matrix and preserved-condition tests |
-| =F88A3-CACHE= captured request identity | blocked by =F88A3.I4= | partial-capture reproduction |
+| =F88A3-CACHE= captured request identity | clear; =F88A3.I4= closed | one shape per captured body with optional indexed metadata |
 | =F88A3-CACHE= external capability | =capability-unconfirmed= | current identity-complete =configuration-unavailable= records |
 | =F88A3-CLEANUP=, =F88A3-COMPAT= | clear | negative inventory, session, compaction, and full regression suite |
 
@@ -164,7 +167,7 @@ missing-record defect; the distinct partial-capture defect is =F88A3.I4= below.
 
 * Implementation Tick 2 findings
 
-** TODO P2 =F88A4.I3=: assistant curation provenance binds a transient request ID
+** DONE P2 =F88A4.I3=: assistant curation provenance binds a transient request ID
 
 Contract cell: =F88A4-DURABLE=, joined to =F88A4-ATOMIC=.
 
@@ -196,7 +199,24 @@ consumption event response ID are identical before and after reopen/fork.
 Retain the unknown-label and exact 8,192/8,193-byte no-mutation gates and prove
 the correctly bound preparation still precedes append and later dispatch.
 
-** TODO P2 =F88A3.I4=: a captured request body disappears when metadata is absent
+Tock 2 / Tick 3 resolution: =d7e2e9ae= allocates the non-tool assistant ULID
+before pure preflight and preserves it on append
+(=lisp/core/e-loop.el:1057-1081=).  The harness accepts that explicit ID only
+for a non-tool response and otherwise resolves the already durable assistant or
+tool-call entry; the provider-request fallback is gone
+(=lisp/core/e-harness.el:3119-3182=).  Commit uses the prepared ID for the v3
+record, consumed runtime frame, and consumption event
+(=lisp/core/e-harness.el:3184-3231=).  Owner tests prove preflight/append/
+completion use the same ID (=test/e-loop-test.el:1890-1939=), and persistent
+integration proves assistant/record/frame/event identity plus reopen and fork
+projection without introducing durable frame-settlement state
+(=test/e-harness-test.el:6324-6447=).  The final response after a tool-result
+follow-up binds to its assistant, not the earlier tool call
+(=test/e-harness-test.el:6060-6145=).  An independent tool-producing response
+probe confirmed the producing curation still binds to its durable tool-call
+entry rather than the later assistant.  Tick 3 closes the finding.
+
+** DONE P2 =F88A3.I4=: a captured request body disappears when metadata is absent
 
 Contract cell: =F88A3-CACHE= deterministic evidence identity.
 
@@ -226,29 +246,58 @@ content-free material shape with its hashes, counts, roles/types, wire keys,
 tool identity, and metadata fields explicitly unavailable.  Also cover a
 multi-request prefix whose metadata list is shorter by one.
 
+Tock 2 / Tick 3 resolution: =0f67b992= iterates every captured body by index
+and joins the corresponding diagnostic when present
+(=e2e/e-live-e2e-test.el:312-343=).  A body with no metadata therefore retains
+its bounded hashes, counts, role/type, wire-key, and tool shape while the
+metadata-derived fields are explicitly nil.  The provider-start regression
+proves one captured body, one shape, exactly one classified record, and
+preservation of the original error; the indexed-join regression proves three
+bodies with two metadata entries still yield three ordered shapes
+(=e2e/e-live-e2e-test.el:569-675=).  The shared finalizer matrix continues to
+prove exactly one record and the original success, skip, ERT failure, timeout,
+or provider condition (=e2e/e-live-e2e-test.el:676-720=).  Tick 3 closes the
+finding.
+
+* Implementation Tick 3 disposition
+
+| Tick 2 finding | Disposition | Acceptance evidence |
+|----------------+-------------+---------------------|
+| =F88A4.I3= | closed | one durable response identity across append, v3 record, runtime frame/event, reopen/fork; tool boundaries preserved |
+| =F88A3.I4= | closed | one bounded shape per captured body; shorter/missing metadata does not truncate; original outcome preserved |
+
+The full rebaseline cleared =F88A4-PRESENT=, =F88A4-CURATE=,
+=F88A4-BOUNDS=, =F88A4-ATOMIC=, =F88A4-DURABLE=, and =F88A4-COST=, plus
+inherited =F88A3-SEM=, =F88A3-LAYOUT=, =F88A3-DELIVERY=, =F88A3-TOOL=,
+=F88A3-CACHE= deterministic runner, =F88A3-CLEANUP=, and =F88A3-COMPAT=.
+No changed cone contradicted the accepted one-curation-per-response rule,
+canonical next-turn exclusion, immediate tool follow-up/retry ordering,
+compaction fence, cleanup, v3-only writes/v2 reads, bounded preparation, or
+performance contract.  External cache capability remains a distinct unproved
+cell, not a repository defect.
+
 * Verification performed
 
-- =eldev test=: 2,360 tests; 2,352 passed, six sandbox-denied loopback tests,
+- =eldev test=: 2,361 tests; 2,353 passed, six sandbox-denied loopback tests,
   and two unrelated display skips.  All six loopback tests passed 6/6 when
   rerun with socket permission, leaving no repository-suite failure.
-- Focused loop/harness/context-lifetime execution passed 216/216, including
-  both preflight failure classes, completion ordering, tool races, canonical
-  next-turn exclusion, compaction fencing, and performance evidence.
-- =eldev test -f e2e/e-context-lifetime-e2e-test.el=: 4/4 passed, including
-  observe-curate-forget, multi-tool one-shot delivery, capability profiles,
-  compaction fencing, and the bounded performance record.
-- External record/finalizer/metric owner tests passed 3/3.  Additional
-  deterministic injected execution proved one record and preserved outcome for
-  warm success, explicit-zero product failure, and missing-usage skip; the
-  checked-in tests cover auth, timeout, provider error, and semantic failure.
+- Focused loop/harness/context-lifetime execution passed 217/217, including
+  response-ID allocation and ordering, reopen/fork, both preflight failure
+  classes, tool races, canonical next-turn exclusion, compaction fencing, and
+  performance evidence.
+- External record/finalizer/metric owner tests passed 5/5, including body
+  capture before a provider-start failure and the shorter-metadata indexed
+  join.  The finalizer matrix covers auth/configuration, timeout, provider
+  error, semantic failure, missing usage, explicit zero usage, and success with
+  exactly one record and preserved outcome.
 - The exact configured cache selectors at the reviewed revision emitted one
   bounded record each with exact profile/endpoint/model/transport/store,
-  repository revision =0b7576250c99707725a39a0935b62d596afb1ed6=, zero
+  repository revision =0f67b992fd0ad4c012f8982c47d8f0b5f1aeb7fb=, zero
   requests, semantic/cache =unavailable=, and
   =configuration-unavailable=; both then skipped.
-- Read-only reproductions established the two Tick 2 findings: the provider
-  request/assistant entry IDs differ, and one body with no metadata yields one
-  request but zero material shapes.
+- A read-only integration probe confirmed a tool-producing response's curation
+  ID equals the durable tool-call entry ID and differs from the later final
+  assistant ID.
 - Negative production inventory found no =context-promote= carrier,
   =append-context-promotion= API, or v2 promotion writer.  The retained v2
   decoder/projection is read-only compatibility.
@@ -261,17 +310,17 @@ change.
 
 * Architecture and design self-check
 
-1. The package is a useful step only after =F88A4.I3= and =F88A3.I4= are
-   resolved; the current successful semantic path otherwise moves toward the
-   accepted canonical durable-context design.
+1. The package is now a useful deterministic stopping point and moves directly
+   toward the accepted canonical durable-context design; external capability
+   proof remains independently gated.
 2. Stable behavior is direct: core owns source/curation semantics, session owns
    durability, loop owns response ordering, harness composes them, and OpenAI
    owns wire continuation and the reserved carrier.
 3. Provider cache capability remains explicitly uncertain, local to the
    adapter/evidence boundary, and reversible without changing core semantics.
-4. Responsibilities remain cohesive; =F88A4.I3= requires the loop/session join
-   to expose the durable response identity without moving curation policy out
-   of core/harness.
+4. Responsibilities remain cohesive: the loop allocates and preserves response
+   identity, session owns durable entries, and curation policy stays in
+   core/harness.
 5. Interfaces remain narrow and consumer-shaped; the review found no new
    provider-to-core dependency or unused generalized interface.
 6. Dependencies still point from adapter/harness orchestration toward stable
@@ -293,15 +342,19 @@ change.
 13. Expected malformed curation now surfaces before semantic mutation;
     unexpected provider and evidence failures remain visible.
 14. Owner, composed, persistence, retry, compaction, external-record, and full
-    repository tests are broad, but the two Tick 2 identity regressions are
-    required before the next independent Tick.
+    repository tests now cover the two former identity gaps at their owning
+    joins; the review found no broad mock or order-fragile substitute.
 
 * Fixed-point disposition
 
-Changes requested.  Remediate =F88A4.I3= and =F88A3.I4=, run their focused
-regressions plus the affected loop/harness/OpenAI/E2E suites, and submit the
-exact resulting revision for a fresh independent implementation Tick.  Do not
-mark Addendum 4 or Feature 88 Done on repository evidence alone; even after a
-zero-finding deterministic Tick, external cache capability remains separately
-=capability-unconfirmed= until current credentialed evidence satisfies the
-documented identity and freshness gates.
+Deterministic fixed point at exact revision
+=0f67b992fd0ad4c012f8982c47d8f0b5f1aeb7fb=: zero actionable P0--P2 findings,
+no unknown required deterministic cell, both prior impact-cone defects closed,
+and implementation ready for repository acceptance.  No further code
+remediation is requested by this review.
+
+Do not mark Addendum 4 or Feature 88 Done on repository evidence alone.
+External cache capability remains separately =capability-unconfirmed= until a
+current credentialed run satisfies the documented identity and freshness
+gates; the present honest =configuration-unavailable= evidence neither proves
+nor disproves that external capability.

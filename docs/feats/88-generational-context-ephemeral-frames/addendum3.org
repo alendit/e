@@ -71,6 +71,10 @@ the following dependency order:
 | =77647733= | read-only legacy version-2 durable records |
 | =bec4c0d6= | removal of obsolete promotion carrier/writer and diagnostics |
 | =2118041f= | bounded retained/replacement cache-evidence runners |
+| =da2b01ab= | pure response preflight before assistant/session mutation |
+| =0b757625= | exactly-once external evidence finalization |
+| =d7e2e9ae= | durable assistant identity across preflight and append |
+| =0f67b992= | body-complete evidence shapes with optional transport metadata |
 
 The 2026-08-27 configured run exercised both named external selectors with the
 exact built-in ChatGPT Codex profile: base URL
@@ -80,8 +84,9 @@ Codex authentication file was unreadable/absent at
 =/Users/dvorona/.codex/auth.json=.  Each selector emitted one identity-complete
 bounded evidence record with no request or token usage, semantic/cache results
 =unavailable=, and overall result =configuration-unavailable= before skipping.
-The records report =bec4c0d6= because the run preceded the =2118041f= commit;
-that revision mismatch also prevents reuse as current external evidence.
+The records report exact implementation revision =0f67b992=.  They are current
+identity-complete diagnostics, but cannot prove cache capability because
+authentication failed before any request or usage observation.
 
 Thus every repository-controlled row is accepted, including the =F88A3-CACHE=
 specification and runners, while external cache capability remains explicitly

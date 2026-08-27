@@ -6,7 +6,7 @@
 
 In-review (deterministic-fixed-point; external capability-unconfirmed).  This
 document records the remaining external limitation after Addenda 3 and 4.  The
-repository-controlled implementation is accepted through =2118041f=, but the
+repository-controlled implementation is accepted through =0f67b992=, but the
 credentialed cache capability is not confirmed, so this is not a Done decision.
 
 * Purpose
@@ -64,6 +64,10 @@ fixed point in this dependency order:
 | =77647733= | read-only legacy version-2 durable records |
 | =bec4c0d6= | obsolete promotion carrier/writer and diagnostic cleanup |
 | =2118041f= | bounded retained/replacement cache-evidence runners |
+| =da2b01ab= | pure response preflight before assistant/session mutation |
+| =0b757625= | exactly-once external evidence finalization |
+| =d7e2e9ae= | durable assistant identity across preflight and append |
+| =0f67b992= | body-complete evidence shapes with optional transport metadata |
 
 The exact configured run on 2026-08-27 invoked both
 =e-live-e2e-test-chatgpt-canonical-warm-prefix= and
@@ -75,8 +79,9 @@ scenario timeout.  Both selectors reached the identity gate, found
 identity-complete bounded record with an empty material request shape, no
 requests or token usage, semantic/cache results =unavailable=, and overall
 result =configuration-unavailable=, then skipped.  The records report
-=bec4c0d6= because the run preceded the =2118041f= commit; they are not current
-or reusable external acceptance evidence.
+=0f67b992=, matching the deterministic fixed-point implementation.  They are
+current identity-complete diagnostics, but are not reusable external capability
+acceptance evidence because no request or usage observation occurred.
 
 Deterministic semantics remain accepted independently of this unavailable
 external run.  The cache specification and runners are accepted, while
@@ -591,9 +596,10 @@ but found the configured auth file unreadable/absent.  Each emitted one
 identity-complete bounded record with the endpoint, WebSocket transport,
 =store=false=, model, revision, timeout, empty request shape, and no request
 or token usage; semantic/cache were =unavailable= and the overall result was
-=configuration-unavailable=.  The records report =bec4c0d6= because the run
-preceded =2118041f=, so they are not reusable current capability evidence.
-Until that command is rerun with credentials and a clean matching revision,
+=configuration-unavailable=.  The records report matching implementation
+revision =0f67b992=, but remain diagnostic rather than capability evidence
+because no request or usage observation occurred.  Until that command is rerun
+with credentials at a clean matching revision,
 =F88A3-CACHE= remains capability-unconfirmed and this document remains
 In-review rather than Done.
 
