@@ -517,6 +517,59 @@ that turn later emits continuation requests."
        (mapcar (lambda (entry) (plist-get entry :body))
                (reverse request-bodies))))
 
+(defun e-live-e2e--captured-bodies-between
+    (request-bodies start-count end-count)
+  "Return chronological captured bodies in the half-open COUNT range.
+REQUEST-BODIES is newest-first.  The range is deliberately count-based: the
+first body is the request that starts a user turn, while later bodies must be
+validated as bounded same-turn continuations by the caller."
+  (seq-subseq
+   (mapcar (lambda (entry) (plist-get entry :body))
+           (reverse request-bodies))
+   start-count end-count))
+
+(defun e-live-e2e--context-curation-ack-body-p (body)
+  "Return non-nil when BODY contains one linked context-curate acknowledgement.
+Other already-replayed items may be present in the request, but the reserved
+call must have exactly one matching empty output in causal order."
+  (let* ((input (append (plist-get body :input) nil))
+         (curation-calls
+          (seq-filter
+           (lambda (item)
+             (and (member (plist-get item :type)
+                          '("function_call" function_call))
+                  (member (plist-get item :name)
+                          '("context-curate" context-curate))))
+           input))
+         (curation-call (car curation-calls))
+         (call-id (and curation-call
+                       (plist-get curation-call :call_id)))
+         (matching-outputs
+          (and call-id
+               (seq-filter
+                (lambda (item)
+                  (and (member (plist-get item :type)
+                               '("function_call_output"
+                                 function_call_output))
+                       (equal (plist-get item :call_id) call-id)
+                       (equal (plist-get item :output) "")))
+                input)))
+         (call-index (and curation-call
+                          (cl-position-if
+                           (lambda (item) (eq item curation-call))
+                           input)))
+         (output-index (and (= (length matching-outputs) 1)
+                            (cl-position-if
+                             (lambda (item)
+                               (eq item (car matching-outputs)))
+                             input))))
+    (and (= (length curation-calls) 1)
+         (= (length matching-outputs) 1)
+         (stringp call-id)
+         (integerp call-index)
+         (integerp output-index)
+         (< call-index output-index))))
+
 (ert-deftest e-live-e2e-test-adoption-composition-uses-turn-boundary ()
   "Select the composed request before a later continuation body."
   (let* ((durable "DURABLE-ADOPTION")
@@ -544,6 +597,33 @@ that turn later emits continuation requests."
     (should-not (string-match-p
                  "tool-call-id\\|function_call\\|provider-replay-item"
                  printed))))
+
+(ert-deftest e-live-e2e-test-cache-turn-boundaries-allow-only-curation-acks ()
+  "Turn starts remain selectable when a reserved curation ack follows them."
+  (let* ((first-body '(:input ((:role user :content "first"))))
+         (second-body '(:input ((:role user :content "second"))))
+         (ack-body
+          '(:input ((:type "function_call" :name "context-curate"
+                     :call_id "curation-call")
+                    (:type "function_call_output" :call_id "curation-call"
+                     :output ""))))
+         (unrelated-body
+          '(:input ((:type "function_call" :name "e2e_deterministic"
+                     :call_id "unrelated-call"))))
+         ;; Capture is newest-first, while turn ranges are chronological.
+         (request-bodies
+          (list (list :body ack-body)
+                (list :body second-body)
+                (list :body first-body)))
+         (second-turn-bodies
+          (e-live-e2e--captured-bodies-between request-bodies 1 3)))
+    (should (equal
+             (car (e-live-e2e--captured-bodies-between request-bodies 0 1))
+             first-body))
+    (should (equal (car second-turn-bodies) second-body))
+    (should (equal (cadr second-turn-bodies) ack-body))
+    (should (e-live-e2e--context-curation-ack-body-p ack-body))
+    (should-not (e-live-e2e--context-curation-ack-body-p unrelated-body))))
 
 (defun e-live-e2e--request-diagnostics (metadata)
   "Return diagnostics from request METADATA, or METADATA when already plain."
@@ -3141,6 +3221,8 @@ continuation and socket assertions used by the compatibility selector."
                  first-turn-id
                  tool-turn-id
                  warm-turn-id
+                 tool-turn-start-count
+                 warm-turn-start-count
                  (cache-result nil)
                  (semantic-result "unavailable"))
             (e-live-e2e--run-external-scenario
@@ -3195,6 +3277,7 @@ continuation and socket assertions used by the compatibility selector."
                            (e-live-e2e--contains-p
                             (e-live-e2e--assistant-content first-result)
                             old-marker)))
+                        (setq tool-turn-start-count (length request-bodies))
                         (let ((tool-result
                                (e-live-e2e--prompt-batch-before-deadline
                                 harness session-id
@@ -3210,6 +3293,7 @@ continuation and socket assertions used by the compatibility selector."
                                    (string-trim
                                     (e-live-e2e--assistant-content tool-result))
                                    "LIVE-R2-READY")))
+                        (setq warm-turn-start-count (length request-bodies))
                         (setq current-state new-marker)
                         (let ((warm-result
                                (e-live-e2e--prompt-batch-before-deadline
@@ -3271,14 +3355,24 @@ continuation and socket assertions used by the compatibility selector."
                             ordered-entries))
                    (ordered-handles (reverse request-handles))
                    (response-ids (reverse completed-response-ids))
-                   (first-body (nth 0 ordered-bodies))
-                   (tool-body (nth 1 ordered-bodies))
-                   (tool-followup-body (nth 2 ordered-bodies))
-                   (curation-ack-body
-                    (and (> (length ordered-bodies) 4)
-                         (nth 3 ordered-bodies)))
-                   (warm-body (car (last ordered-bodies)))
-                   (warm-handle (car (last ordered-handles)))
+                   (first-turn-bodies
+                    (e-live-e2e--captured-bodies-between
+                     request-bodies 0 tool-turn-start-count))
+                   (tool-turn-bodies
+                    (e-live-e2e--captured-bodies-between
+                     request-bodies tool-turn-start-count
+                     warm-turn-start-count))
+                   (warm-turn-bodies
+                    (e-live-e2e--captured-bodies-between
+                     request-bodies warm-turn-start-count
+                     (length ordered-bodies)))
+                   (first-body (car first-turn-bodies))
+                   (tool-body (car tool-turn-bodies))
+                   (tool-followup-body (nth 1 tool-turn-bodies))
+                   (curation-ack-bodies (nthcdr 2 tool-turn-bodies))
+                   (curation-ack-body (car curation-ack-bodies))
+                   (warm-body (car warm-turn-bodies))
+                   (warm-handle (nth warm-turn-start-count ordered-handles))
                    (tool-followup-input
                     (append (plist-get tool-followup-body :input) nil))
                    (curation-ack-input
@@ -3296,10 +3390,10 @@ continuation and socket assertions used by the compatibility selector."
                      (nth 0 request-metadata)))
                    (tool-followup-diagnostics
                     (e-live-e2e--request-diagnostics
-                     (nth 2 request-metadata)))
+                     (nth (1+ tool-turn-start-count) request-metadata)))
                    (warm-diagnostics
                     (e-live-e2e--request-diagnostics
-                     (nth (1- (length request-metadata))
+                     (nth warm-turn-start-count
                           request-metadata)))
                    (warm-finished-events
                     (seq-filter
@@ -3318,23 +3412,31 @@ continuation and socket assertions used by the compatibility selector."
                       harness session-id 'token-usage)))
                    (warm-cache-result
                     (e-live-e2e--cache-result
-                     (mapcar (lambda (event) (plist-get event :payload))
-                             warm-usage-events)))
+                     (when warm-usage-events
+                       (list (plist-get (car warm-usage-events) :payload)))))
                    (warm-metrics nil))
               (setq cache-result warm-cache-result)
-              (if (eq transport 'http)
-                  (progn
-                    (should (= (length ordered-bodies) 5))
-                    (should (= (length ordered-handles) 5))
-                    (should curation-ack-body))
-                (progn
-                  (should (member (length ordered-bodies) '(4 5)))
-                  (should (= (length ordered-handles)
-                             (length ordered-bodies)))
-                  (should (= (length response-ids)
-                             (length ordered-bodies)))
-                  (when (= (length ordered-bodies) 5)
-                    (should curation-ack-body))))
+              (should first-body)
+              (should tool-body)
+              (should tool-followup-body)
+              (should warm-body)
+              (should (= (length ordered-handles)
+                         (length ordered-bodies)))
+              (when (eq transport 'websocket)
+                (should (= (length response-ids)
+                           (length ordered-bodies))))
+              ;; The tool turn has one ordinary tool continuation.  Any
+              ;; further request in that same turn, and any extra request in
+              ;; another turn, must be the linked reserved acknowledgement.
+              (should (= (length tool-turn-bodies)
+                         (+ 2 (length curation-ack-bodies))))
+              (dolist (body curation-ack-bodies)
+                (should (e-live-e2e--context-curation-ack-body-p body)))
+              (dolist (body (append (cdr first-turn-bodies)
+                                    (cdr warm-turn-bodies)))
+                (should (e-live-e2e--context-curation-ack-body-p body)))
+              (when (eq transport 'http)
+                (should curation-ack-body))
               (should (string-match-p (regexp-quote old-marker)
                                       (prin1-to-string first-body)))
               (should (string-match-p (regexp-quote old-marker)
@@ -3416,9 +3518,7 @@ continuation and socket assertions used by the compatibility selector."
                      (curation-output
                       (and curation-output-index
                            (nth curation-output-index curation-ack-input))))
-                (when (or (eq transport 'http)
-                          (and (eq transport 'websocket)
-                               (= (length ordered-bodies) 5)))
+                (when curation-ack-bodies
                   (should (integerp curation-call-index))
                   (should (integerp curation-output-index))
                   (should (< curation-call-index curation-output-index))
@@ -3717,6 +3817,11 @@ WebSocket and socket-replacement assertions."
                (deadline (+ started-at scenario-timeout))
                request-bodies
                request-handles
+               first-turn-id
+               middle-turn-id
+               latest-turn-id
+               middle-turn-start-count
+               latest-turn-start-count
                (cache-result nil)
                (semantic-result "unavailable"))
           (e-live-e2e--run-external-scenario
@@ -3755,23 +3860,34 @@ WebSocket and socket-replacement assertions."
            (lambda ()
              (e-live-e2e--with-responses-request-capture
                  profile request-bodies request-handles
-               (e-live-e2e--prompt-batch-before-deadline
-                harness session-id "Reply with exactly: CROSS-TURN-ONE" deadline)
+               (let ((first-result
+                      (e-live-e2e--prompt-batch-before-deadline
+                       harness session-id
+                       "Reply with exactly: CROSS-TURN-ONE" deadline)))
+                 (setq first-turn-id (plist-get first-result :id)))
+               (setq middle-turn-start-count (length request-bodies))
                (setq current-state "live state two")
-               (e-live-e2e--prompt-batch-before-deadline
-                harness session-id "Reply with exactly: CROSS-TURN-TWO" deadline)
+               (let ((middle-result
+                      (e-live-e2e--prompt-batch-before-deadline
+                       harness session-id
+                       "Reply with exactly: CROSS-TURN-TWO" deadline)))
+                 (setq middle-turn-id (plist-get middle-result :id)))
                ;; Only WebSocket profiles have a retained connection to
                ;; replace.  Each HTTP request is already an independent pair.
                (when (eq transport 'websocket)
                  (when-let ((session
                              (plist-get (car (last request-bodies)) :session)))
                    (e-openai-codex--websocket-session-close session)))
+               (setq latest-turn-start-count (length request-bodies))
                (setq current-state "live state three")
-               (e-live-e2e--prompt-batch-before-deadline
-                harness session-id "Reply with exactly: CROSS-TURN-THREE" deadline))
+               (let ((latest-result
+                      (e-live-e2e--prompt-batch-before-deadline
+                       harness session-id
+                       "Reply with exactly: CROSS-TURN-THREE" deadline)))
+                 (setq latest-turn-id (plist-get latest-result :id))))
           (let* ((requests (e-live-e2e--activity-of-type
                             harness session-id 'provider-request-started))
-                 (latest (car (last requests)))
+                 (latest (nth latest-turn-start-count requests))
                  (diagnostics
                   (plist-get (plist-get latest :payload) :diagnostics))
                  (ordered-entries (reverse request-bodies))
@@ -3779,17 +3895,31 @@ WebSocket and socket-replacement assertions."
                   (mapcar (lambda (entry) (plist-get entry :body))
                           ordered-entries))
                  (ordered-handles (reverse request-handles))
-                 (first-body (nth 0 ordered-bodies))
-                 (middle-body (nth 1 ordered-bodies))
-                 (latest-body (nth 2 ordered-bodies))
+                 (first-turn-bodies
+                  (e-live-e2e--captured-bodies-between
+                   request-bodies 0 middle-turn-start-count))
+                 (middle-turn-bodies
+                  (e-live-e2e--captured-bodies-between
+                   request-bodies middle-turn-start-count
+                   latest-turn-start-count))
+                 (latest-turn-bodies
+                  (e-live-e2e--captured-bodies-between
+                   request-bodies latest-turn-start-count
+                   (length ordered-bodies)))
+                 (first-body (car first-turn-bodies))
+                 (middle-body (car middle-turn-bodies))
+                 (latest-body (car latest-turn-bodies))
                  (request-metadata
                   (mapcar #'e-backend-request-metadata ordered-handles))
                  (first-diagnostics
-                  (e-live-e2e--request-diagnostics (nth 0 request-metadata)))
+                  (e-live-e2e--request-diagnostics
+                   (nth 0 request-metadata)))
                  (middle-diagnostics
-                  (e-live-e2e--request-diagnostics (nth 1 request-metadata)))
+                  (e-live-e2e--request-diagnostics
+                   (nth middle-turn-start-count request-metadata)))
                  (latest-diagnostics
-                  (e-live-e2e--request-diagnostics (nth 2 request-metadata)))
+                  (e-live-e2e--request-diagnostics
+                   (nth latest-turn-start-count request-metadata)))
                  (first-breakpoint
                   (e-live-e2e--input-block-with-property
                    (plist-get first-body :input)
@@ -3815,8 +3945,20 @@ WebSocket and socket-replacement assertions."
                    (append (plist-get latest-body :input) nil)))
                  (usage-events (e-live-e2e--activity-of-type
                                 harness session-id 'token-usage))
-                 (retained-usage (plist-get (nth 1 usage-events) :payload))
-                 (replacement-usage (plist-get (nth 2 usage-events) :payload))
+                 (retained-usage-events
+                  (seq-filter
+                   (lambda (event)
+                     (equal (plist-get event :turn-id) middle-turn-id))
+                   usage-events))
+                 (replacement-usage-events
+                  (seq-filter
+                   (lambda (event)
+                     (equal (plist-get event :turn-id) latest-turn-id))
+                   usage-events))
+                 (retained-usage
+                  (plist-get (car retained-usage-events) :payload))
+                 (replacement-usage
+                  (plist-get (car replacement-usage-events) :payload))
                  (retained-cache-result
                   (e-live-e2e--cache-result (list retained-usage)))
                  (replacement-cache-result
@@ -3829,8 +3971,15 @@ WebSocket and socket-replacement assertions."
                    first-body latest-body)))
             (ert-info ((format "Responses diagnostics: %S; tool differences: %S"
                                diagnostics tool-differences))
-              (should (= (length ordered-bodies) 3))
-              (should (= (length ordered-handles) 3))
+              (should first-body)
+              (should middle-body)
+              (should latest-body)
+              (should (= (length ordered-handles)
+                         (length ordered-bodies)))
+              (dolist (body (append (cdr first-turn-bodies)
+                                    (cdr middle-turn-bodies)
+                                    (cdr latest-turn-bodies)))
+                (should (e-live-e2e--context-curation-ack-body-p body)))
               (should (stringp (plist-get first-body :prompt_cache_key)))
               (should (equal (plist-get first-body :prompt_cache_key)
                              (plist-get middle-body :prompt_cache_key)))
