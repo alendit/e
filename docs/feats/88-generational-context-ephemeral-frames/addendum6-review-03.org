@@ -1,0 +1,171 @@
+#+title: Feature 88 Addendum 6 Specification Review 03
+#+date: 2026-08-27
+#+startup: overview
+
+* Result
+
+This independent incremental specification Tick reviewed
+=docs/feats/88-generational-context-ephemeral-frames/addendum6.org= at exact
+revision =52f60e7bf5a2f2c5c24ddebcd50c7564a247de4e=.
+
+Addendum 6 has reached a whole-specification fixed point and is ready for
+implementation.  The review found exactly zero P0, P1, P2, or P3 findings and
+no unknown repository-controlled contract cell.
+
+Review 02 P2-06 and P3-07 are closed.  The summary-capability probe now has one
+bounded content-free result per invocation, exact terminal classifications,
+effective capability and request identity, seven-calendar-day freshness with
+owner-cone invalidation, and separate configured Responses HTTP and exact
+ChatGPT/WebSocket scope.  The feature artifact no longer contains numbered
+review-round, Tick/Tock, reviewer-selection, phase-commit, or stop mechanics.
+Its remaining uses of “commit” describe the harness's semantic atomic commit.
+
+No Addendum 6 external success is claimed.  Configured Responses HTTP and exact
+built-in ChatGPT/WebSocket evidence for the future material identity remain
+separately =capability-unconfirmed= until implementation and fresh execution.
+
+* Reviewed delta and scope
+
+Review mode: incremental specification review with a whole-specification
+contradiction and coverage scan.
+
+- prior target: =c901d38f60583f22f479c35a6549c17d2e584aa6=
+- prior review: =addendum6-review-02.org=
+- current target: =52f60e7bf5a2f2c5c24ddebcd50c7564a247de4e=
+
+The candidate changes Addendum 6 only after the Review 02 artifact.  Relevant
+core, harness, session, OpenAI-adapter, E2E, Addenda 3–5, architecture, and
+runtime-glossary blobs are identical to the prior feasibility baseline.  The
+review therefore invalidated the probe evidence cells and workflow boundary,
+then contradiction-scanned every =F88A6-REASONING-SUMMARY=,
+=F88A6-DISPOSITION=, =F88A6-DROP=, =F88A6-ADOPTION=, and affected
+=F88A3-CACHE= join.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Its material
+terms retain their established meanings: the backend adapter owns provider
+request and response translation; core owns provider-neutral frame-bound
+policy; the harness owns turn orchestration and durable records; a session owns
+durable conversation state; and a model-facing tool runs through the harness
+lifecycle.  The reserved curation carrier remains distinct from an ordinary
+model-facing tool.
+
+The reviewer changed only this review artifact, made no provider request,
+contacted no running Emacs, and created no commit.  Uncommitted Feature 87 and
+=limitations.org= work was ignored and preserved.
+
+* Review 02 finding dispositions
+
+** DONE P2-06: the summary-capability probe has a complete reusable evidence contract
+
+The selector emits exactly one bounded, content-free record per invocation.
+Its identity includes scenario, provider/profile, effective endpoint/base URL,
+transport, store mode, requester, model, effective effort/summary, material and
+probe request identities, timestamp, repository revision, timeout, and elapsed
+duration.  Only bounded =present=, =empty=, or =absent= summary presence is
+recorded; prompts, response and summary text, credentials, headers, and other
+provider content are excluded (=addendum6.org:86-93=).
+
+The result partition is exact: a terminal successful smallest valid =auto=
+request is =pass= regardless of returned-summary presence; explicit field
+rejection is =unavailable=/=capability-unconfirmed= without fallback;
+authentication/configuration, provider/infrastructure, and deadline outcomes
+are =configuration-unavailable=, =provider/infrastructure-failure=, and
+=inconclusive-timeout=; missing or mismatched identity and malformed material
+request shape are =semantic-failure=.  Exactly-one finalization preserves the
+original outcome on every path (=addendum6.org:95-104=).
+
+Evidence remains reusable only for seven calendar days when all recorded
+capability/request identity fields match and the adapter, native requester,
+capture, finalizer, and probe-runner owner cone is unchanged; otherwise it is
+=stale=.  Configured Responses HTTP and exact ChatGPT/WebSocket are reported
+separately and never confirm each other (=addendum6.org:106-111=).  Returned
+summary presence remains diagnostic and cannot change semantic, adoption, or
+capability results (=addendum6.org:37-41,81-84=).  P2-06 is closed.
+
+** DONE P3-07: product and review workflow boundaries are separate
+
+The status now states only the product's independent-review gate
+(=addendum6.org:4-7=).  Slice 2 calls its coherent stopping point an
+“intermediate slice boundary” and retains the substantive core-before-exposure
+and Slice 3 cleanup requirements (=addendum6.org:217-236=).
+
+A whole-file search found no review number, Tick/Tock name, reviewer selection,
+phase commit, fixed-point stop procedure, or “intermediate commit.”  Remaining
+uses of =commit= describe atomic harness semantics in the contract matrix,
+scenario portfolio, and design self-check (=addendum6.org:48,200,301=).
+P3-07 is closed.
+
+* Contract and required-cell disposition
+
+| Contract cell | Disposition | Status |
+|---------------+-------------+--------|
+| =F88A6-REASONING-SUMMARY= | Every Responses request has validated effective effort plus non-disableable =auto= or diagnostic =detailed= summary; explicit =:reasoning= composition, HTTP/WebSocket identity, parsing, no fallback, and a separately diagnosable reusable capability probe are exact. | clear |
+| =F88A6-DISPOSITION= | Required =keep=, =summaries=, and =drop= form one exhaustive partition; the justified 16-label ceiling applies only to retention, drop is bounded by the live frame, and only the prepared semantic record has the inherited 8,192-byte bound. | clear |
+| =F88A6-DROP= | Valid drop-only appends existing bounded-tail control/consumption activity, no promotion and no persistent negative state; immediate reopen, exact eviction, and invalid-effect atomicity are named evidence. | clear |
+| =F88A6-ADOPTION= | Positive future-use and negative current-use scenarios independently prove causal request shape, current answer, disposition, composition, raw exclusion, and failure classification. | specification clear; future external execution required |
+| affected =F88A3-CACHE= | Both material request changes invalidate prior evidence after implementation; semantic and cache outcomes remain independent, and HTTP/WebSocket scopes remain separate. | specification clear; future external refresh required |
+| implementation delivery | Adapter summary visibility precedes provider-neutral core/drop work; core precedes wire exposure; the exposure slice removes the temporary and obsolete paths atomically. | clear |
+
+| Required specification cell | Disposition |
+|-----------------------------+-------------|
+| Single normative authority | clear: the five matrix rows own Addendum 6 requirements and supersede only the named Addendum 5 meanings. |
+| Durable contract boundary | clear: drop and summary diagnostics add no durable semantic state; existing bounded audit and promotion lifetimes remain explicit. |
+| Scenario diagnosability | clear: deterministic request/core/harness gates, the minimal capability probe, composed adoption, and cache scenarios have distinct observable invariants. |
+| Evidence topology | clear: repository gates, external capability/adoption/cache evidence, and observational telemetry have separate decision roles. |
+| External identity | clear: the probe records effective endpoint, profile, transport, store, requester, model, effort/summary, and material/probe request identity. |
+| External freshness | clear: seven-calendar-day reuse requires exact identity equality and an unchanged named owner cone. |
+| External failure classification | clear: success, unsupported, configuration, provider, timeout, and identity failures are exact and finalize once without changing the original outcome. |
+| Telemetry decision power | clear: returned summaries, disposition populations, tokens/cache, and latency are diagnostic or observational; structural per-run outcomes decide scenarios. |
+| Exact-limit justification | clear: inherited 16-retained and 8,192-byte record bounds keep their accepted roles; drop cardinality derives from the exact live frame; probe freshness inherits the accepted seven-day evidence boundary. |
+| Workflow boundary | clear: product status, coherent slices, and semantic atomic commit remain; review-round and phase mechanics do not. |
+| Test stability | clear: durable codecs/projection/tool/session compatibility remains; request, partition, bounds, atomic/reopen, and evidence tests strengthen; superseded omission/no-call witnesses are removed. |
+| Architecture ownership | clear: adapter, core, harness, session, and E2E responsibilities remain cohesive; provider output does not control stable policy and no dependency reverses. |
+
+* Findings
+
+Exactly zero P0, P1, P2, or P3 findings.
+
+* External status and unknowns
+
+There are no unknown repository-controlled specification cells.  External
+execution is intentionally future evidence rather than current specification
+proof:
+
+- configured Responses HTTP summary capability, positive adoption, negative
+  drop adoption, and refreshed cache scenarios: =capability-unconfirmed= for
+  the future Addendum 6 identity;
+- exact built-in ChatGPT/WebSocket capability and composition:
+  =capability-unconfirmed= and independently reportable; and
+- returned reasoning-summary presence: diagnostic only, never an acceptance
+  prerequisite or semantic result.
+
+These external unknowns do not block implementation readiness.  A fresh
+identity-complete run after implementation is required before claiming external
+success.
+
+* Verification and architecture disposition
+
+- Inspected the exact =c901d38f..52f60e7b= remediation and the complete target
+  Addendum 6.
+- Confirmed unchanged blobs for the current core, harness, session,
+  OpenAI-adapter, E2E, Addenda 3–5, architecture, and selected glossary owners.
+- Rechecked the changed probe record, result partition, freshness/reuse, and
+  HTTP/WebSocket separation against inherited external-evidence contracts.
+- Contradiction-scanned Addendum 6 authority, limits, durability,
+  compatibility/cleanup, non-goals, implementation slices, evidence topology,
+  and architecture ownership.
+- Ran Org parsing and whitespace validation for this review artifact; both
+  passed.
+
+The architecture classification is =local-and-contained=: Addendum 6 keeps
+provider request variation in the OpenAI adapter and E2E evidence boundary,
+keeps exhaustive frame validation in provider-neutral core, keeps commit
+orchestration in the harness, and adds no session schema, durable negative
+ledger, compatibility shim, or provider-specific core branch.
+
+The design self-check remains satisfied.  The package is useful if stopped
+after its coherent slices, moves toward explicit model-directed lifetime
+decisions, keeps uncertain summary verbosity and scenario wording local, uses
+narrow real interfaces, adds only frame-local transient data, preserves legacy
+record readability, deletes obsolete omission semantics, and supplies narrow
+owner tests plus separately classified external evidence.
