@@ -2697,12 +2697,64 @@ provider turn to settle without an implicit local deadline."
                     :valid-effect-p t :replacement-preserved-p t
                     :audit-linked-p t :projection-p t :raw-excluded-p t
                     :follow-up-p t))))
+            )
             (e-backend-cancel-request
-             (car (last request-handles))))))))))
+             (car (last request-handles)))))))))
 
 (ert-deftest e-live-e2e-test-responses-autonomous-curation-adoption ()
   "A configured Responses model autonomously curates a future-turn tool result."
   (e-live-e2e--run-autonomous-curation-adoption))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
+  "The adoption runner passes only its declared keywords before cleanup."
+  (let (received cleanup-arguments request-attempted)
+    (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
+               (lambda () t))
+              ((symbol-function 'e-openai-provider-profile)
+               (lambda (&rest _)
+                 '(:name "Responses test" :wire-api responses
+                   :responses-transport http)))
+              ((symbol-function 'e-openai--provider-wire-api)
+               (lambda (&rest _) 'responses))
+              ((symbol-function 'e-live-e2e--make-harness)
+               (lambda (&rest _)
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+              ((symbol-function 'e-board-e2e-create-session)
+               (lambda (&rest _) "test-session"))
+              ((symbol-function 'e-harness--install-activity-sink)
+               (lambda (&rest _) 'test-subscription))
+              ((symbol-function 'e-harness-set-intrinsic-capabilities)
+               (lambda (&rest _) nil))
+              ((symbol-function 'e-harness--remove-activity-sink)
+               (lambda (&rest _) nil))
+              ((symbol-function 'make-temp-file)
+               (lambda (&rest _) "/private/tmp/e-adoption-runner-test"))
+              ((symbol-function 'delete-directory)
+               (lambda (&rest _) nil))
+              ((symbol-function 'e-live-e2e--run-external-scenario)
+               (lambda (&rest arguments)
+                 (setq received arguments)
+                 'runner-stubbed))
+              ((symbol-function 'e-backend-cancel-request)
+               (lambda (&rest arguments)
+                 (setq cleanup-arguments arguments)))
+              ((symbol-function 'e-board-e2e-prompt-batch)
+               (lambda (&rest _)
+                 (setq request-attempted t)
+                 (error "provider request should not run")))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (&rest _) nil)))
+      (let ((e-openai-default-provider 'test-provider))
+        (e-live-e2e--run-autonomous-curation-adoption))
+      (should (equal
+               (cl-loop for (key _value) on received by #'cddr collect key)
+               '(:scenario :provider :profile :model :timeout :started-at
+                 :capture :thunk)))
+      (should (functionp (plist-get received :capture)))
+      (should (functionp (plist-get received :thunk)))
+      (should (equal cleanup-arguments '(nil)))
+      (should-not request-attempted))))
 
 (ert-deftest e-live-e2e-test-provider-lifecycle-events-are-durable ()
   "Live provider start and finish events are emitted and persisted."
