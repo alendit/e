@@ -508,6 +508,43 @@ back to the repository revision."
           :prompt-cache-retention-present
           (and (plist-member body :prompt_cache_retention) t))))
 
+(defun e-live-e2e--captured-body-at-boundary (request-bodies prior-count)
+  "Return the first chronological BODY captured after PRIOR-COUNT bodies.
+REQUEST-BODIES is newest-first, as maintained by the native capture helpers;
+the boundary therefore identifies the first request of the next turn even when
+that turn later emits continuation requests."
+  (nth prior-count
+       (mapcar (lambda (entry) (plist-get entry :body))
+               (reverse request-bodies))))
+
+(ert-deftest e-live-e2e-test-adoption-composition-uses-turn-boundary ()
+  "Select the composed request before a later continuation body."
+  (let* ((durable "DURABLE-ADOPTION")
+         (first-body '(:input ((:role user :content "first turn"))))
+         (composed-body
+          '(:input ((:role system :content "DURABLE-ADOPTION"))))
+         (continuation-body
+          '(:input ((:type "function_call" :name "context-curate"
+                     :arguments "RAW-EPHEMERAL")
+                    (:type "function_call_output"
+                     :output "RAW-EPHEMERAL")
+                    (:type "message"
+                     :content "[ephemeral context source 1]"))))
+         (request-bodies
+          (list (list :body continuation-body)
+                (list :body composed-body)
+                (list :body first-body)
+                (list :body '(:input ((:role assistant :content "first"))))))
+         (body (e-live-e2e--captured-body-at-boundary request-bodies 2))
+         (input (plist-get body :input))
+         (printed (prin1-to-string input)))
+    (should (equal body composed-body))
+    (should (string-match-p (regexp-quote durable) printed))
+    (should-not (string-match-p "\\[ephemeral context source [0-9]+" printed))
+    (should-not (string-match-p
+                 "tool-call-id\\|function_call\\|provider-replay-item"
+                 printed))))
+
 (defun e-live-e2e--request-diagnostics (metadata)
   "Return diagnostics from request METADATA, or METADATA when already plain."
   (or (plist-get metadata :diagnostics) metadata))
@@ -2465,6 +2502,7 @@ provider turn to settle without an implicit local deadline."
                  request-handles
                  first-result
                  second-result
+                 second-request-count
                  curation-record
                  adoption-disposition
                  (adoption-result "unavailable")
@@ -2650,11 +2688,12 @@ provider turn to settle without an implicit local deadline."
                          (e-live-e2e--adoption-record-disposition
                           curation-record raw-tool-output)))
                  (require-gate
-                 (e-live-e2e--adoption-audit-linked-p
+                  (e-live-e2e--adoption-audit-linked-p
                    (e-harness-sessions harness) session-id curation-record
                    events)
                   "commit"
                   "The autonomous curation audit/control linkage was incomplete.")
+                 (setq second-request-count (length request-bodies))
                  (e-live-e2e--with-responses-request-capture
                      profile request-bodies request-handles
                    (setq second-result
@@ -2670,33 +2709,32 @@ provider turn to settle without an implicit local deadline."
                            (plist-get item :text)))
                         (promotion-messages
                          (plist-get projection :promotion-messages))
-                        (final-body
-                         (car (last
-                               (mapcar (lambda (entry) (plist-get entry :body))
-                                       (reverse request-bodies)))))
-                        (final-input (and final-body
-                                          (append (plist-get final-body :input)
+                        (composed-body
+                         (e-live-e2e--captured-body-at-boundary
+                          request-bodies second-request-count))
+                        (composed-input (and composed-body
+                                             (append (plist-get composed-body :input)
                                                   nil)))
-                        (final-printed (prin1-to-string final-input)))
+                        (composed-printed (prin1-to-string composed-input)))
                    (require-gate
                     (and (stringp expected)
                          (seq-some
                           (lambda (message)
                             (equal (plist-get message :content) expected))
                           promotion-messages)
-                         (e-live-e2e--contains-p final-printed expected))
+                         (e-live-e2e--contains-p composed-printed expected))
                     "projection"
                     "The next request did not contain the selected durable replacement." )
                    (require-gate
-                    (and final-input
+                    (and composed-input
                          (not (string-match-p
                                "\\[ephemeral context source [0-9]+"
-                               final-printed))
-                         (not (input-has-role-p final-input '(tool tool-call
-                                                               "tool" "tool-call")))
+                               composed-printed))
+                         (not (input-has-role-p composed-input '(tool tool-call
+                                                                  "tool" "tool-call")))
                          (not (string-match-p
                                "tool-call-id\\|function_call\\|provider-replay-item"
-                               final-printed)))
+                               composed-printed)))
                     "raw-exclusion"
                     "The next request replayed the consumed raw source or marker." )
                    (require-gate
