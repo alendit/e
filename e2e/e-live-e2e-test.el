@@ -3833,7 +3833,7 @@ evidence record on every terminal path."
           e-live-e2e--reasoning-summary-evidence-schema-revision
           :semantic-result semantic-result
           :scenario-result scenario-result
-          :terminal-result terminal-result))))
+          :terminal-result terminal-result)))
      :thunk
      (lambda ()
        (unless (eq (e-openai--provider-wire-api profile) 'responses)
@@ -3910,7 +3910,7 @@ evidence record on every terminal path."
                      scenario-result classification)
                (unless (equal classification "pass")
                  (ert-fail
-                  "The captured Responses reasoning probe was invalid.")))))))))
+                  "The captured Responses reasoning probe was invalid."))))))))))
 
 (ert-deftest e-live-e2e-test-responses-reasoning-summary-capability ()
   "Probe the configured Responses backend for reasoning-summary support."
