@@ -4,7 +4,7 @@
 
 * Status
 
-In-review (deterministic-fixed-point; external capability-unconfirmed).
+In-review (repository implementation through I6; Tick 5 pending; external capability-unconfirmed).
 
 This addendum corrects the performance objective used by Addendum 2.  The
 Feature 88 semantic lifetime model remains authoritative: observations are
@@ -59,8 +59,8 @@ evidence; they refer to these IDs and do not add independent requirements.
 
 * Implementation and acceptance status
 
-The repository-controlled implementation reached a deterministic fixed point in
-the following dependency order:
+The repository-controlled implementation is complete through the current
+remediation revision; Tick 5 review remains pending.  The dependency order is:
 
 | Commit | Delivered boundary |
 |--------+--------------------|
@@ -76,17 +76,28 @@ the following dependency order:
 | =d7e2e9ae= | durable assistant identity across preflight and append |
 | =0f67b992= | body-complete evidence shapes with optional transport metadata |
 | =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
+| =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
+| =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
+
+The final remediation keeps reserved-only curation audit identity separate from
+the preceding tool call and later assistant, and makes the external evidence
+record derive its endpoint, store, model, transport, and native requester from
+the captured material request rather than optional profile declarations.
 
 The 2026-08-27 configured run exercised the two canonical scenarios with the
-compatible Responses provider/profile =eng-ai-gateway-gpt=, Responses HTTP
-transport, =:json-false= store mode, model =gpt-5.6-sol=, and a predeclared
+compatible Responses provider/profile =eng-ai-gateway-gpt=, exact base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Responses HTTP transport, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and a predeclared
 120-second timeout.  The identity-complete records at revision
-=3a287d885c8b527e7934ef18217011dc86457ecc= report:
+=031bd2a92e63f66e420cc9a4eb7984357e2dd843= report identity =pass= and:
+The captured endpoint is that base URL with the Responses =/responses= suffix;
+all five identity fields agree across each scenario's material requests.
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
@@ -213,8 +224,8 @@ convergence, and targeted cleanup.  They do not require credentials.
 
 Cached-input ratio, provider latency, and live warm/cold frequency are
 observational telemetry.  The historical 4,864/5,450 result is an observational
-baseline, not a percentage gate.  The package may reach
-=deterministic-fixed-point= while a transport-specific external scope is
+baseline, not a percentage gate.  The package may be implementation-complete
+while a transport-specific external scope is
 unavailable.  The configured compatible Responses HTTP evidence is current,
 while the strict ChatGPT/WebSocket scope remains =capability-unconfirmed=;
 the addendum is not =Done= until that remaining scope is =current= or

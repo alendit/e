@@ -3,7 +3,7 @@
 
 * Status
 
-In-review (deterministic-fixed-point; external capability-unconfirmed).
+In-review (repository implementation through I6; Tick 5 pending; external capability-unconfirmed).
 
 This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
 semantic context visibility, model-directed curation, and cache-safe canonical
@@ -17,19 +17,26 @@ Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
 tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; the persisted =context-promotion= family remains readable as version 2
-only.  The repository-controlled implementation is at deterministic fixed point
-through =3a287d885c8b527e7934ef18217011dc86457ecc=.  A configured compatible
+only.  The repository-controlled implementation is complete through
+=031bd2a92e63f66e420cc9a4eb7984357e2dd843=; Tick 5 review remains pending.
+The final remediation
+commits are =81bf0f08= for a distinct durable audit identity on reserved-only
+curation responses and =031bd2a92= for evidence identity derived from captured
+requests.  A configured compatible
 Responses HTTP profile has current cache evidence; ChatGPT/WebSocket-specific
 continuation and retained/replacement-socket behavior remain unconfirmed.
 
-The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=,
-Responses HTTP transport, =:json-false= store mode, model =gpt-5.6-sol=, and
-the bounded scenario runners at the exact revision above:
+The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=, exact
+base URL =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Responses HTTP transport, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and the bounded
+scenario runners at the exact revision above.  The captured endpoint adds
+=/responses=; identity and scenario results are =pass=:
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
 
 This is current external compatibility evidence for that configured Responses
 profile.  It does not exercise the exact built-in ChatGPT Codex WebSocket
@@ -1102,10 +1109,10 @@ latency: that mechanism is outside this feature.
 
 - The configured =eng-ai-gateway-gpt= Responses HTTP profile has current
   identity-complete cache evidence: warm-prefix is 3 requests with 6,204 total
-  and 4,087 cached input tokens; tool-heavy is 5 requests with 14,506 total
-  and 11,230 cached input tokens.  Both runs report semantic =pass=, cache
-  =warm=, and result =pass= at revision
-  =3a287d885c8b527e7934ef18217011dc86457ecc=.
+  and 4,087 cached input tokens; tool-heavy is 5 requests with 14,453 total
+  and 11,240 cached input tokens.  Both runs report identity and semantic
+  =pass=, cache =warm=, and result =pass= at revision
+  =031bd2a92e63f66e420cc9a4eb7984357e2dd843=; Tick 5 review remains pending.
 - The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
   response-continuation claims were not exercised by that HTTP run and remain
   unconfirmed; this keeps the plan =In-review= rather than =Done=.

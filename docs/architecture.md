@@ -426,6 +426,10 @@ current for the configured compatible Responses HTTP profile, independently of
 the still-unconfirmed ChatGPT/WebSocket-specific scope and deterministic
 semantic acceptance.
 
+A reserved-only curation response gets an audit-only session activity identity
+after pure preflight, while the E2E evidence boundary derives its identity from
+the captured material request rather than profile declarations.
+
 ### Agent Loop And Backend Adapter
 
 `lisp/core/e-loop.el` owns one turn. It receives backend-neutral messages, tools,

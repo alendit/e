@@ -4,7 +4,7 @@
 
 * Status
 
-In-review (deterministic-fixed-point; external capability-unconfirmed).
+In-review (repository implementation through I6; Tick 5 pending; external capability-unconfirmed).
 
 This addendum replaces only Feature 88's promotion contract.  The model can
 keep an ephemeral input exactly, replace selected inputs with a smaller durable
@@ -47,8 +47,8 @@ current profile-aware records are listed below.
 
 * Implementation and acceptance status
 
-The repository-controlled implementation reached a deterministic fixed point in
-the following dependency order:
+The repository-controlled implementation is complete through the current
+remediation revision; Tick 5 review remains pending.  The dependency order is:
 
 | Commit | Delivered boundary |
 |--------+--------------------|
@@ -64,17 +64,30 @@ the following dependency order:
 | =d7e2e9ae= | durable assistant identity across preflight and append |
 | =0f67b992= | body-complete evidence shapes with optional transport metadata |
 | =3a287d885c8b527e7934ef18217011dc86457ecc= | profile-aware configured Responses evidence and cache-scenario acceptance |
+| =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
+| =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
+
+The I5 durable correction gives a reserved-only curation response its own
+audit-resolvable control entry, binding that entry consistently to the v3
+record, consumed frame, and consumption event while keeping it out of model
+projection.  The I6 evidence correction derives endpoint, store, model,
+transport, and native requester from captured material requests and rejects
+identity drift or declaration mismatch as acceptance evidence.
 
 The 2026-08-27 configured run exercised the two canonical scenarios with the
-compatible Responses provider/profile =eng-ai-gateway-gpt=, Responses HTTP
-transport, =:json-false= store mode, model =gpt-5.6-sol=, and a predeclared
+compatible Responses provider/profile =eng-ai-gateway-gpt=, exact base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Responses HTTP transport, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and a predeclared
 120-second timeout.  The identity-complete records at revision
-=3a287d885c8b527e7934ef18217011dc86457ecc= report:
+=031bd2a92e63f66e420cc9a4eb7984357e2dd843= report identity =pass= and:
+The captured endpoint is that base URL with the Responses =/responses= suffix;
+all five identity fields agree across each scenario's material requests.
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,506 | 11,230 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
