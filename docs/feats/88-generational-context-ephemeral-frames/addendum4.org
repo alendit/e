@@ -25,7 +25,10 @@ the exact built-in ChatGPT Codex WebSocket scope remains
 =capability-unconfirmed=.  Repository-controlled curation semantics do not
 depend on external evidence.  The material prompt and reserved-tool change
 invalidated earlier =F88A3-CACHE= evidence by request-shape identity; the
-current profile-aware records are listed below.
+current profile-aware records are listed below.  Addendum 5's self-explaining
+marker and reserved-carrier guidance changed material request identity; the
+configured Responses HTTP cache scenarios were refreshed under that identity
+at =317be237=.
 
 * Normative contract matrix
 
@@ -41,7 +44,7 @@ current profile-aware records are listed below.
 | =F88A3-LAYOUT= | inherited | Curation source presentation is late-frontier input.  Stable policy and reserved schema remain stable-prefix-compatible; presentation/schema revisions fence anchors and cache evidence. | unchanged harness/OpenAI layout owners | literal request order, prefix, and fingerprint tests | not applicable | accepted inherited implementation join |
 | =F88A3-DELIVERY= | inherited | Affected frontier observations remain inherited under continuation and contaminated descendants remain immediate-followup-only. | unchanged capability/anchor owners | retained delivery and anchor-safety scenarios | not applicable | accepted inherited contract |
 | =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | configured compatible Responses tool-heavy run reports continuation and cache separately; ChatGPT/WebSocket-specific continuation remains unconfirmed | accepted inherited implementation join |
-| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | configured compatible Responses HTTP profile is current; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | accepted specification/runner; HTTP external evidence current; ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | configured compatible Responses HTTP profile is current under the Addendum 5 material identity; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | accepted specification/runner; current Responses HTTP evidence at =317be237=; ChatGPT/WebSocket capability-unconfirmed |
 | =F88A3-CLEANUP= | inherited | No response graph or durable recovery machinery returns; the old model-facing =context-promote= carrier and writers are removed. | adapter/core/session negative inventory | negative source inventory and lifecycle tests | not applicable | accepted |
 | =F88A3-COMPAT= | inherited | V2 durable context records, generic anchors/branches, compaction, and unrelated transports remain valid. | core/session plus unaffected adapters | mixed v2/v3 reopen and regressions | not applicable | accepted inherited contract |
 
@@ -84,25 +87,29 @@ validation at =f991f895= is =eldev test= with 2,367 total tests, 2,365
 expected passes, 0 unexpected, and 2 expected skips; =eldev compile= passed and
 the focused checkpoint test passed 1/1.
 
-The 2026-08-27 configured run exercised the two canonical scenarios with the
-compatible Responses provider/profile =eng-ai-gateway-gpt=, exact base URL
+The 2026-08-27 configured run, after the Addendum 5 material affordance change,
+exercised the two canonical scenarios with the compatible Responses
+provider/profile =eng-ai-gateway-gpt=, exact base URL
 =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP transport, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and a predeclared
-120-second timeout.  The identity-complete records at revision
-=031bd2a92e63f66e420cc9a4eb7984357e2dd843= report identity =pass= and:
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The
+warm-prefix selector used a predeclared 180-second bound and the tool-heavy
+selector used a predeclared 300-second bound.  The identity-complete records at revision
+=317be2378997aea38bc0114006a8a7d8c00b5a4f= report identity =pass= and:
 The captured endpoint is that base URL with the Responses =/responses= suffix;
 all five identity fields agree across each scenario's material requests.
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | pass | warm | pass |
 
-The later =f991f895= change is session-checkpoint-only and does not alter
-request/evidence owners, so this configured Responses HTTP proof remains
-reusable/current.  Independent Tick 6 at exact candidate =835ba655= closed
-=F88A4.I5= with zero P0-P3 repository findings and zero deterministic unknowns.
+The prior =031bd2a9= cache record is historical and was not reused after the
+Addendum 5 material marker and reserved-tool guidance changed the request
+identity.  The current proof is the =317be237= record above.  The later
+=f991f895= session-checkpoint change remains independent of request/evidence
+owners, and independent Tick 6 at exact candidate =835ba655= closed =F88A4.I5=
+with zero P0-P3 repository findings and zero deterministic unknowns.
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex

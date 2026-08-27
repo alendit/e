@@ -4,8 +4,11 @@
 
 * Status
 
-Planned.  Review 01 findings are remediated in the current candidate; a fresh
-independent specification Tick remains required before implementation.
+In-review.  Slice 1 is accepted at =3fdcf799= and Slice 2's bounded adoption
+runner and deterministic gates are at =317be237=.  The configured Responses
+HTTP adoption and cache evidence recorded below is capability-confirmed/current
+for that profile; the exact built-in ChatGPT/WebSocket capability remains
+unconfirmed.
 
 This addendum extends Addendum 4 without changing its curation semantics.  It
 adds a model-facing affordance contract and a naturalistic external adoption
@@ -50,9 +53,9 @@ or its schema.
 
 | Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External compatibility evidence | Telemetry | Status |
 |-------------+--------------+---------------------+-----------------------+------------------------+---------------------------------+-----------+--------|
-| =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, what omission means, and when no curation call is useful. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | proposed |
-| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= for the configured compatible Responses profile; exact ChatGPT/WebSocket scope remains separate | population-level invocation frequency, exact-versus-summary distribution, token/cache usage, and latency are observational; whether this acceptance scenario produced one valid reserved effect is contract evidence | proposed; initial external evidence required |
-| =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker and reserved-tool description revise material request identity, so prior warm-prefix evidence is not reused until the configured canonical scenarios pass with the new identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | rerun configured Responses HTTP canonical warm-prefix and tool-heavy scenarios; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | inherited contract; external evidence stale after implementation |
+| =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, what omission means, and when no curation call is useful. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | accepted at =3fdcf799= |
+| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= passed for the configured compatible Responses HTTP profile; exact ChatGPT/WebSocket scope remains separate | population-level invocation frequency, exact-versus-summary distribution, token/cache usage, and latency are observational; whether this acceptance scenario produced one valid reserved effect is contract evidence | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker and reserved-tool description revise material request identity; the configured canonical scenarios were rerun under that identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | configured Responses HTTP warm-prefix and tool-heavy scenarios passed; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | accepted specification/runner; current Responses HTTP evidence at =317be237=; exact ChatGPT/WebSocket capability-unconfirmed |
 
 * Decision
 
@@ -169,6 +172,50 @@ changed core, harness, loop, backend-adapter, or runner owner in the scenario's
 dependency cone.  Otherwise the evidence is =stale=; a non-success availability
 class leaves autonomous adoption =capability-unconfirmed=.
 
+* Current implementation and external evidence
+
+Slice 1 is accepted at =3fdcf799641557079a22937aeccf5b58c8943f65=.
+Slice 2's isolated naturalistic runner, deterministic partitions, and
+content-free finalization are at =317be2378997aea38bc0114006a8a7d8c00b5a4f=.
+The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=,
+the configured Responses HTTP transport, =:json-false= store mode, model
+=gpt-5.6-sol=, and the native HTTP requester
+=e-openai-codex--http-request-start=.  The captured base URL was
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=;
+the request endpoint adds =/responses=.  The adoption record also carried
+prompt identity
+=060813089ddb687bb81272c21985545c7fc9b6a4bf0a4a94cf811d528d06fd40=,
+dependency-cone identity
+=2f123773fa3df136484bd2dc5d0ee0392886e782200c459dadddfef5f30b069b=,
+presentation =context-curation-presentation-v2=, and schema
+=context-curate-v2=.  These identity values are hashes or revisions; the
+record contains no prompt, sentinel, or model content.
+
+The isolated naturalistic adoption record reported identity, scenario,
+semantic, adoption, composition, and top-level result =pass=, with
+=failure-stage none= and disposition =exact=.  It captured five requests and
+1,712 total input tokens.  The adoption selector used a predeclared
+180-second bound; the warm-prefix selector also used 180 seconds, and the
+tool-heavy selector used 300 seconds.  The provider reported zero cached input
+tokens for the adoption scenario, so its raw cache result was
+=product-contract-failure=; that classification is observational here and
+does not gate adoption.  The model retained the exact unique sentinel and
+returned it on the following ordinary turn; the record itself remained
+content-free.
+
+| Scenario | Requests | Total input | Cached input | Adoption | Composition | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+----------+-------------+----------+-------+--------|
+| =responses-autonomous-curation-adoption= | 5 | 1,712 | 0 (observational) | pass | pass | pass | product-contract-failure (observational; does not gate adoption) | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | n/a | n/a | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | n/a | n/a | pass | warm | pass |
+
+The canonical warm-prefix and tool-heavy scenarios were rerun under the
+Addendum 5 material identity and both passed semantically with warm cache
+results.  The adoption result proves autonomous use only for this recorded
+configured Responses HTTP identity.  It does not exercise the exact built-in
+ChatGPT Codex WebSocket retained/replaced-socket or continuation scope, which
+remains =capability-unconfirmed=.
+
 * Scenario portfolio
 
 | Scenario | Contracts | Observable invariant | Evidence class | Capture and localization |
@@ -186,7 +233,8 @@ Revise the provider-neutral source marker and the OpenAI reserved-tool
 description at their existing owners.  Fence the changed presentation and
 request shape, retain the strict schema, and add owner plus captured-request
 tests for =F88A5-AFFORDANCE=.  Do not add another context provider, durable
-instruction, automatic policy hook, or adapter-to-core dependency.
+instruction, automatic policy hook, or adapter-to-core dependency.  Accepted at
+=3fdcf799=.
 
 ** Slice 2: Naturalistic adoption evidence
 
@@ -196,7 +244,8 @@ deterministic tool and existing curation/audit/request instrumentation.  Keep
 the user prompts free of carrier and schema vocabulary, classify all external
 outcomes exactly once with independent adoption/composition subresults and a
 bounded failure stage, retain the shared runner's established result spellings,
-and keep sentinel/content data out of the evidence record.
+and keep sentinel/content data out of the evidence record.  Implemented at
+=317be237=; the configured Responses HTTP run is recorded above.
 
 ** Slice 3: Configured validation and evidence refresh
 
@@ -215,7 +264,7 @@ changes.  Preserve the separate exact ChatGPT/WebSocket status.
 | strengthen | core marker presentation and OpenAI literal request-shape tests to cover source lifetime wording, decision guidance, stable/frontier placement, and revised identity |
 | strengthen | external evidence finalization and identity tests with independent adoption/composition results, bounded failure stage, established top-level result spellings, freshness, and a content-free record |
 | add | isolated configured =responses-autonomous-curation-adoption= scenario and deterministic unavailable/failure classifications |
-| rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change |
+| rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change; both passed at =317be237= |
 | delete | none planned |
 
 Tests may assert the accepted material prompt text where it is the behavior
@@ -230,10 +279,11 @@ Clear =F88A5-AFFORDANCE=, =F88A5-ADOPTION=, and the affected
 matrix.  All unchanged Addendum 4 contracts and inherited Addendum 3 joins
 remain referenced, not redefined here.
 
-Repository-controlled acceptance and external capability status remain
-separate.  Repository-controlled acceptance does not confirm either autonomous
-adoption or exact ChatGPT/WebSocket capability.  Feature 88 remains =In-review=
-and is not =Done= while either required external scope is
+Repository-controlled acceptance and profile-scoped external capability status
+remain separate.  The configured Responses HTTP run confirms autonomous
+adoption and warm cache behavior for its recorded identity.  It does not
+confirm the exact built-in ChatGPT/WebSocket capability.  Feature 88 remains
+=In-review= and is not =Done= while that exact scope is
 =capability-unconfirmed=.
 
 * Non-goals

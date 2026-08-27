@@ -4,8 +4,8 @@
 
 * Status
 
-In-review (repository-controlled deterministic fixed point; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).  This document
-records the remaining external limitation after Addenda 3 and 4.  The
+In-review (repository-controlled deterministic fixed point; configured Responses HTTP autonomous-adoption and cache capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).  This document
+records the remaining external limitation after Addenda 3, 4, and 5.  The
 repository-controlled implementation is at deterministic fixed point.
 Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
 closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
@@ -61,7 +61,7 @@ response retention
 
 * Current implementation and external evidence
 
-The repository-controlled Addendum 3/4 implementation is at deterministic
+The repository-controlled Addendum 3/4/5 implementation is at deterministic
 fixed point.  Independent Tick 6 at exact candidate =835ba655=
 (implementation =f991f895=) closed =F88A4.I5= with zero P0-P3 repository
 findings and zero deterministic unknowns.  I5 checkpoint-retention dependency
@@ -85,21 +85,34 @@ remediation is at that implementation revision, while I6 remains closed at
 | =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
 | =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
 | =f991f895= | I5 checkpoint retention pins referenced curation audit controls beyond the bounded activity tail |
+| =3fdcf799= | Addendum 5 self-explaining source affordance and material revision fence |
+| =317be237= | Addendum 5 naturalistic adoption evidence and refreshed cache scenarios |
 
 The exact configured run on 2026-08-27 used provider/profile
 =eng-ai-gateway-gpt=, exact base URL
 =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP transport, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and a predeclared
-120-second timeout.  The identity-complete records at revision
-=031bd2a92e63f66e420cc9a4eb7984357e2dd843= report identity =pass= and:
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The
+warm-prefix selector used a predeclared 180-second bound and the tool-heavy
+selector used a predeclared 300-second bound.  The identity-complete records at revision
+=317be2378997aea38bc0114006a8a7d8c00b5a4f= report identity =pass= and:
 The captured endpoint is that base URL with the Responses =/responses= suffix;
 all five identity fields agree across each scenario's material requests.
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
 | =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | pass | warm | pass |
+
+The isolated =responses-autonomous-curation-adoption= record at the same
+revision also reported identity, scenario, semantic, adoption, composition,
+and result =pass=, with =failure-stage none= and disposition =exact=.  It
+captured five requests and 1,712 total input tokens; cached input was 0 and is
+observational only, with raw cache result
+=product-contract-failure=; that classification does not gate adoption.  Its
+prompt and dependency identities were recorded as
+hashes, with presentation =context-curation-presentation-v2= and schema
+=context-curate-v2=; no prompt, sentinel, or model content was emitted.
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
@@ -608,24 +621,35 @@ runners are accepted through the I6 revision recorded above; the I5
 checkpoint-retention remediation at =f991f895= was closed by independent Tick
 6 candidate =835ba655= with zero P0-P3 repository findings and zero
 deterministic unknowns.  The
-configured compatible Responses HTTP profile now has current external evidence;
-cache results remain separate from semantic results.
+configured compatible Responses HTTP profile now has current external
+adoption and cache evidence; cache results remain separate from semantic
+results.
 
 On 2026-08-27 the provider/profile =eng-ai-gateway-gpt= run used the exact base
 URL =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and a 120-second
-bound at revision =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The captured
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The
+warm-prefix selector used a predeclared 180-second bound and the tool-heavy
+selector used a predeclared 300-second bound at revision
+=317be2378997aea38bc0114006a8a7d8c00b5a4f=.  The captured
 endpoint adds =/responses=.  The warm-prefix scenario completed 3 requests
 with 6,204 total and 4,087 cached input tokens; the tool-heavy scenario
-completed 5 requests with 14,453 total and 11,240 cached input tokens.  Both
+completed 5 requests with 14,717 total and 11,414 cached input tokens.  Both
 report identity =pass=, semantic =pass=, cache =warm=, and result =pass=.
+
+The independent naturalistic adoption scenario at this revision completed 5
+requests with identity, scenario, semantic, adoption, composition, and result
+=pass=, =failure-stage none=, and disposition =exact=.  It recorded 1,712
+total input tokens and 0 cached input tokens (observational); its raw cache
+result was =product-contract-failure=, which does not gate adoption.  The model
+retained the exact unique sentinel and returned it on the following ordinary
+turn without re-emitting the raw source.
 
 Authoritative validation recorded at =f991f895= is =eldev test= with 2,367
 total tests, 2,365 expected passes, 0 unexpected, and 2 expected skips;
 =eldev compile= passed and the focused checkpoint test passed 1/1.  The
 session-checkpoint-only change does not alter request/evidence owners, so the
-configured proof at =031bd2a92= remains reusable/current.
+configured proof at =317be237= remains reusable/current.
 
 This evidence accepts the cache contract for that compatible Responses HTTP
 profile.  The exact built-in ChatGPT Codex WebSocket retained/replaced-socket
