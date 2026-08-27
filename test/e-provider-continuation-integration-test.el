@@ -1244,9 +1244,18 @@ ordinary-turn anchor."
                          "resp-r1"))
           (should (equal
                    (mapcar (lambda (item) (alist-get 'type item))
-                           followup-input)
-                   '("function_call_output")))
-          (let ((function-output (aref followup-input 0)))
+                           (append followup-input nil))
+                   '("message" "function_call_output")))
+          (let ((marker-message (aref followup-input 0))
+                (function-output (aref followup-input 1)))
+            (should (equal (alist-get 'type marker-message) "message"))
+            (should (equal (alist-get 'role marker-message) "developer"))
+            (should (string-match-p
+                     "\\[2, ~[0-9]+ tokens\\]"
+                     (json-encode marker-message)))
+            (should-not (string-match-p
+                         "frame:\\|generation:\\|observation:\\|fingerprint:\\|replay"
+                         (json-encode marker-message)))
             (should (equal (alist-get 'call_id function-output)
                            "call-canonical-inspect"))
             (should (equal (alist-get 'output function-output)
@@ -1281,6 +1290,15 @@ ordinary-turn anchor."
             d2-input))
           (should (= (length curations-at-next-request) 1))
           (let ((item (car (plist-get curation-record :items))))
+            (let ((source
+                   (seq-find
+                    (lambda (candidate)
+                      (equal (plist-get candidate :value) raw-result))
+                    (e-context-lifetime-frame-curation-sources
+                     captured-tool-frame))))
+              (should source)
+              (should (equal (plist-get item :source-fingerprints)
+                             (list (plist-get source :source-fingerprint)))))
             (should (eq (plist-get item :kind) 'summary))
             (should (equal (plist-get item :text)
                            "PROMOTED-CANONICAL-FACT"))

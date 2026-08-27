@@ -1083,15 +1083,22 @@ while Responses input requires the field to contain an array."
       (setq normalized (plist-put normalized :summary [])))
     normalized))
 
-(defun e-openai-codex--message-replay-items (message)
-  "Return input-safe OpenAI opaque replay items attached to MESSAGE."
+(defun e-openai-codex--message-replay-items (message &optional immediate-followup-p)
+  "Return input-safe OpenAI opaque replay items attached to MESSAGE.
+
+When IMMEDIATE-FOLLOWUP-P is non-nil, omit replay records marked
+`:full-replay-only'.  Such records are needed to reconstruct an unanchored
+Responses request, but an anchored response already contains them."
   (let* ((role (plist-get message :role))
          (carrier (if (eq role 'tool-call)
                       (plist-get message :content)
                     (plist-get message :metadata)))
          (records (plist-get carrier :provider-replay-items)))
     (cl-loop for record in records
-             when (member (plist-get record :provider-id) '(openai "openai"))
+             when (and (member (plist-get record :provider-id)
+                               '(openai "openai"))
+                       (or (not immediate-followup-p)
+                           (not (plist-get record :full-replay-only))))
              collect (e-openai-codex--input-replay-item
                       (plist-get record :item)))))
 
@@ -1432,9 +1439,25 @@ retained response already carries the stable segment and its earlier marker."
                    (e-openai-codex--system-message-p message))
           (setq stable-left (1- stable-left))
           (setq breakpoint-p (= stable-left 0)))
-        (dolist (replay-item (e-openai-codex--message-replay-items message))
-          (push replay-item items))
-        (push (e-openai-codex--input-message message breakpoint-p) items)))))
+        (let ((input-message
+               (e-openai-codex--input-message message breakpoint-p)))
+          (if (eq (plist-get message :role) 'tool)
+              (progn
+                ;; A tool result is the causal predecessor of replay items
+                ;; attached by a later reserved curation effect.  Full replay
+                ;; must therefore render the result before that call/output
+                ;; pair.  Assistant and tool-call carriers retain the
+                ;; established replay-before-carrier ordering.
+                (push input-message items)
+                (dolist (replay-item
+                         (e-openai-codex--message-replay-items
+                          message continuation-response-id))
+                  (push replay-item items)))
+            (dolist (replay-item
+                     (e-openai-codex--message-replay-items
+                      message continuation-response-id))
+              (push replay-item items))
+            (push input-message items)))))))
 
 (defun e-openai-codex--request-input-items
     (messages options continuation-response-id)
@@ -2668,15 +2691,33 @@ provider identity.  Core binds its labels to the live frame at completion."
     ;; session projection removes this replay metadata from later durable
     ;; context.
     (when (and (stringp call-id) (not (string-empty-p call-id)))
-      (setq effect
-            (plist-put
-             effect
-             :provider-replay-item
+      (let ((output-replay
              (list :type 'provider-replay-item
                    :provider-id 'openai
                    :item (list :type "function_call_output"
                                :call_id call-id
-                               :output "")))))
+                               :output "")))
+            (call-replay
+             (list :type 'provider-replay-item
+                   :provider-id 'openai
+                   ;; An anchored continuation already has this function call
+                   ;; in the provider response.  It is needed only when the
+                   ;; complete causal exchange is replayed statelessly.
+                   :full-replay-only t
+                   :item (list :type "function_call"
+                               :call_id call-id
+                               :name "context-curate"
+                               :arguments
+                               (json-encode
+                                (or arguments
+                                    (make-hash-table :test 'equal)))))))
+        ;; Retain the singular output field for existing consumers while the
+        ;; plural field carries the complete call/output pair for full replay.
+        (setq effect
+              (plist-put effect :provider-replay-item output-replay))
+        (setq effect
+              (plist-put effect :provider-replay-items
+                         (list call-replay output-replay)))))
     effect))
 
 (defun e-openai-codex--sequence-list (value)

@@ -5074,6 +5074,98 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                    "context-curate"))
                           input))))
 
+(ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()
+  "Full replay restores the curation call/output pair; anchors send output only."
+  (let* ((effect (e-openai-codex--context-curation-effect
+                  '(:keep (1)) "curation-call"))
+         (replays (plist-get effect :provider-replay-items))
+         (messages
+          `((:role user :content "prompt")
+            (:role tool
+             :content (:tool-call-id "tool-call" :content "result")
+             :metadata (:provider-replay-items ,replays))))
+         (full
+          (e-openai-codex-request-body
+           :messages messages
+           :options '(:model "gpt-test")
+           :tools nil))
+         (incremental
+          (e-openai-codex-request-body
+           :messages messages
+           :options
+           '(:model "gpt-test"
+             :provider-continuation t
+             :response-store t
+             :provider-anchor
+             (:provider-id openai :metadata (:response-id "resp-curation"))
+             :provider-anchor-delta-messages
+             ((:role tool
+               :content (:tool-call-id "tool-call" :content "result")
+               :metadata (:provider-replay-items
+                          ((:type provider-replay-item
+                            :provider-id openai
+                            :full-replay-only t
+                            :item (:type "function_call"
+                                   :call_id "curation-call"
+                                   :name "context-curate"
+                                   :arguments "{\"keep\":[1]}"))
+                           (:type provider-replay-item
+                            :provider-id openai
+                            :item (:type "function_call_output"
+                                   :call_id "curation-call"
+                                   :output "")))))))
+           :tools nil))
+         (full-input (append (plist-get full :input) nil))
+         (incremental-input (append (plist-get incremental :input) nil))
+         (full-call
+          (cl-position-if
+           (lambda (item)
+             (and (equal (plist-get item :type) "function_call")
+                  (equal (plist-get item :name) "context-curate")
+                  (equal (plist-get item :call_id) "curation-call")))
+           full-input))
+         (full-output
+          (cl-position-if
+           (lambda (item)
+             (and (equal (plist-get item :type) "function_call_output")
+                  (equal (plist-get item :call_id) "curation-call")))
+           full-input))
+         (full-ordinary-output
+          (cl-position-if
+           (lambda (item)
+             (and (equal (plist-get item :type) "function_call_output")
+                  (equal (plist-get item :call_id) "tool-call")))
+           full-input))
+         (incremental-output
+          (cl-position-if
+           (lambda (item)
+             (and (equal (plist-get item :type) "function_call_output")
+                  (equal (plist-get item :call_id) "curation-call")))
+           incremental-input))
+         (incremental-ordinary-output
+          (cl-position-if
+           (lambda (item)
+             (and (equal (plist-get item :type) "function_call_output")
+                  (equal (plist-get item :call_id) "tool-call")))
+           incremental-input)))
+    (should-not (plist-member full :previous_response_id))
+    (should (integerp full-ordinary-output))
+    (should (integerp full-call))
+    (should (integerp full-output))
+    (should (< full-ordinary-output full-call))
+    (should (< full-call full-output))
+    (should (equal (plist-get incremental :previous_response_id)
+                   "resp-curation"))
+    (should (integerp incremental-ordinary-output))
+    (should (integerp incremental-output))
+    (should (< incremental-ordinary-output incremental-output))
+    (should-not
+     (seq-find
+      (lambda (item)
+        (and (equal (plist-get item :type) "function_call")
+             (equal (plist-get item :name) "context-curate")))
+      incremental-input))))
+
 (ert-deftest e-openai-test-loop-late-curation-ack-joins-tool-followup ()
   "A late reserved curation ack joins the ordinary tool result on the wire."
   (let* ((request-count 0)
@@ -5192,7 +5284,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             (seq-filter (lambda (item)
                           (equal (plist-get item :type)
                                  "function_call_output"))
-                        input)))
+                        input))
+           (ordinary-output-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "call-ordinary")))
+             input))
+           (curation-output-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "curation-call")))
+             input)))
       ;; The actual adapter stream order is ordinary call, reserved control,
       ;; then completion; the reserved control never enters ordinary tools.
       (should (< (cl-position 'tool-call first-types)
@@ -5211,6 +5315,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                       "curation-call")
                                (equal (plist-get item :output) "")))
                         outputs))
+      (should (integerp ordinary-output-position))
+      (should (integerp curation-output-position))
+      (should (< ordinary-output-position curation-output-position))
       (should (equal (plist-get body :previous_response_id) "resp-A"))
       (should-not (string-match-p "provider-replay-item"
                                   (prin1-to-string durable-messages)))

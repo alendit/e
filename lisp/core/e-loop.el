@@ -273,7 +273,7 @@ CAUSES lists every completed tool call that induced a follow-up request."
             cancelled-p drain-pending-input segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
-            on-tool-observation)
+            on-tool-observation on-tool-observation-presentation)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
@@ -288,7 +288,10 @@ messages-only callback.  The provider request is started through
 supplied, otherwise through `e-tools-start'.  Provider I/O, tool I/O, and turn
 settlement are callback-driven.  ON-RESPONSE-PREFLIGHT, when supplied, runs
 before a non-tool assistant message is appended and returns a pure prepared
-completion value for ON-RESPONSE-COMPLETE."
+completion value for ON-RESPONSE-COMPLETE.  ON-TOOL-OBSERVATION-PRESENTATION,
+when supplied, receives the fresh frame and both in-memory provider message
+projections after a tool result is observed; it returns those projections with
+the frame-local presentation installed."
   (let ((turn-messages (copy-sequence messages))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
@@ -306,6 +309,10 @@ completion value for ON-RESPONSE-COMPLETE."
         (active-request nil)
         (provider-request-sequence 0)
         (next-request-causes nil)
+        ;; A reserved curation-only response gets at most one immediate
+        ;; provider continuation for its opaque function-call acknowledgement.
+        ;; This is turn-local protocol state, not durable response history.
+        (curation-only-followups 0)
         (active-lifetime-frame lifetime-frame))
     (cl-labels
         ((cancelled ()
@@ -485,7 +492,7 @@ completion value for ON-RESPONSE-COMPLETE."
                         provider-request-started-at
                         provider-request-causes))))
                   (promote-provider-anchor
-                   ()
+                   (&optional immediate-only-p)
                     (when (and provider-anchor-candidate
                                (or (not context-refreshed-p)
                                    (e-loop--continuation-projection-compatible-p
@@ -497,7 +504,7 @@ completion value for ON-RESPONSE-COMPLETE."
                              provider-anchor-candidate
                              (length turn-messages)
                              provider-followup-messages
-                             tool-called))
+                             (or immediate-only-p tool-called)))
                       ;; Only emit a candidate once this loop has accepted it
                       ;; for the current request projection.  Raw provider
                       ;; items are intentionally not durable ownership facts.
@@ -510,7 +517,7 @@ completion value for ON-RESPONSE-COMPLETE."
                         provider-request-projection-identity
                         provider-request-id
                         provider-request-ordinal
-                        tool-called))
+                        (or immediate-only-p tool-called)))
                       t))
                   (response-completion-payload
                     ()
@@ -587,7 +594,8 @@ completion value for ON-RESPONSE-COMPLETE."
                                    (cl-remove-if-not
                                     (lambda (message)
                                       (eq (plist-get message :role) 'tool))
-                                    provider-followup-messages)))))
+                                    (or provider-followup-messages
+                                        turn-messages))))))
                         (when tool-message
                           (let* ((request-message (copy-tree tool-message))
                                  (metadata
@@ -609,12 +617,20 @@ completion value for ON-RESPONSE-COMPLETE."
                                        message))
                                    turn-messages))
                             (setq provider-followup-messages
-                                  (mapcar
-                                   (lambda (message)
-                                     (if (eq message tool-message)
-                                         request-message
-                                       message))
-                                   provider-followup-messages))
+                                  (if provider-followup-messages
+                                      (mapcar
+                                       (lambda (message)
+                                         (if (eq message tool-message)
+                                             request-message
+                                           message))
+                                       provider-followup-messages)
+                                    ;; A curation-only response can follow a
+                                    ;; completed tool request whose bundle was
+                                    ;; already folded into TURN-MESSAGES.  Keep
+                                    ;; the replaced result as the immediate
+                                    ;; delta so a retained connection receives
+                                    ;; the opaque acknowledgement too.
+                                    (list request-message)))
                             (setq pending-provider-replay-items nil))))))
                    (fail-provider
                     (err)
@@ -641,6 +657,46 @@ completion value for ON-RESPONSE-COMPLETE."
                                :content (response-text))))
                       (attach-pending-provider-replay-items)
                       (promote-provider-anchor)
+                      (start-request)))
+                   (maybe-start-curation-followup
+                    ()
+                    ;; A provider may return the reserved curation call as
+                    ;; the complete response to an ordinary tool-result
+                    ;; follow-up, without an assistant text item.  It still
+                    ;; needs one immediate continuation carrying the opaque
+                    ;; function-call-output acknowledgement.  Keep this
+                    ;; separate from ordinary tool accounting.
+                    (when (and provider-done
+                               (not tool-called)
+                               response-curation-effects
+                               (string-empty-p (or (response-text) ""))
+                               (not followup-started)
+                               (not settled)
+                               (not (cancelled)))
+                      (when (> curation-only-followups 0)
+                        (signal 'e-context-lifetime-invalid-record
+                                (list 'curation
+                                      :repeated-empty-response
+                                      provider-request-id)))
+                      (unless
+                          (and pending-provider-replay-items
+                               (seq-some
+                                (lambda (message)
+                                  (eq (plist-get message :role) 'tool))
+                                turn-messages))
+                        (signal 'e-loop-empty-output
+                                (list 'curation :missing-ack-target)))
+                      (setq followup-started t)
+                      (setq curation-only-followups
+                            (1+ curation-only-followups))
+                      ;; Commit/consume through the existing completion
+                      ;; callback before dispatching the acknowledgement.
+                      (notify-response-complete)
+                      (attach-pending-provider-replay-items)
+                      ;; The response id is usable only for this immediate
+                      ;; acknowledgement continuation, even when the frame
+                      ;; makes it unsafe as a durable anchor.
+                      (promote-provider-anchor t)
                       (start-request)))
                    (current-tool-p
                     (token)
@@ -751,14 +807,40 @@ completion value for ON-RESPONSE-COMPLETE."
                       ;; tool/result bundle after it so a refreshed current
                       ;; state and the inherited result remain one frame.
                       (when on-tool-observation
-                        (setq active-lifetime-frame
-                              (funcall on-tool-observation
-                                       (list :tool-call tool-call
-                                             :result result
-                                             :message (or stored-message message)
-                                             :previous-frame
-                                             active-lifetime-frame)))
-                        (when active-lifetime-frame
+                        (let* ((previous-frame active-lifetime-frame)
+                               (observation-payload
+                                (list :tool-call tool-call
+                                      :result result
+                                      :message (or stored-message message)
+                                      :previous-frame previous-frame))
+                               (new-frame
+                                (funcall on-tool-observation
+                                         observation-payload)))
+                          (setq active-lifetime-frame new-frame)
+                          (when active-lifetime-frame
+                            (when on-tool-observation-presentation
+                              (let ((projection
+                                     (funcall
+                                      on-tool-observation-presentation
+                                      (append
+                                       observation-payload
+                                       (list :frame active-lifetime-frame
+                                             :turn-messages turn-messages
+                                             :provider-followup-messages
+                                             provider-followup-messages)))))
+                                (unless (and (listp projection)
+                                             (plist-member projection
+                                                           :turn-messages)
+                                             (plist-member projection
+                                                           :provider-followup-messages))
+                                  (signal 'wrong-type-argument
+                                          (list 'e-loop-tool-observation-presentation
+                                                projection)))
+                                (setq turn-messages
+                                      (plist-get projection :turn-messages)
+                                      provider-followup-messages
+                                      (plist-get projection
+                                                 :provider-followup-messages))))
                           ;; Provider options are a request snapshot.  Do not
                           ;; mutate the plist captured by the still-running
                           ;; provider callback while installing the descendant
@@ -766,7 +848,7 @@ completion value for ON-RESPONSE-COMPLETE."
                           (setq turn-options (copy-sequence turn-options))
                           (setq turn-options
                                 (plist-put turn-options
-                                           :lifetime-ephemerals-clean-p nil))))
+                                           :lifetime-ephemerals-clean-p nil)))))
                       (setq next-request-causes
                             (append next-request-causes (list tool-call)))
                       (start-next-tool)
@@ -886,14 +968,21 @@ completion value for ON-RESPONSE-COMPLETE."
                               ;; carrier.  It is replay metadata for the
                               ;; immediate wire continuation, never an
                               ;; ordinary model-facing tool or semantic fact.
-                              (when-let ((replay-item
-                                          (plist-get item
-                                                     :provider-replay-item)))
-                                (setq pending-provider-replay-items
-                                      (append pending-provider-replay-items
-                                              (list replay-item))))
+                              (let ((replay-items
+                                     (or (plist-get item
+                                                   :provider-replay-items)
+                                         (when-let ((replay-item
+                                                     (plist-get
+                                                      item
+                                                      :provider-replay-item)))
+                                           (list replay-item)))))
+                                (when replay-items
+                                  (setq pending-provider-replay-items
+                                        (append pending-provider-replay-items
+                                                (copy-tree replay-items)))))
                               (setq item (copy-sequence item))
                               (cl-remf item :provider-replay-item)
+                              (cl-remf item :provider-replay-items)
                               (let ((arguments (plist-get item :arguments)))
                                 (setq response-curation-effects
                                       (list
@@ -1047,13 +1136,15 @@ completion value for ON-RESPONSE-COMPLETE."
                                                  (maybe-start-followup))
                                              (if (string-empty-p
                                                   (or (response-text) ""))
-                                                 (progn
-                                                   (e-loop--emit
-                                                    :on-event on-event
-                                                    :type 'backend-empty-output
-                                                    :payload (list :reason
-                                                                   done-reason))
-                                                   (fail '(e-loop-empty-output)))
+                                                 (if response-curation-effects
+                                                     (maybe-start-curation-followup)
+                                                   (progn
+                                                     (e-loop--emit
+                                                      :on-event on-event
+                                                      :type 'backend-empty-output
+                                                      :payload (list :reason
+                                                                     done-reason))
+                                                     (fail '(e-loop-empty-output))))
                                                (let ((message
                                                       (progn
                                                         ;; Curation validation
@@ -1115,7 +1206,7 @@ completion value for ON-RESPONSE-COMPLETE."
             segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
-            on-tool-observation)
+            on-tool-observation on-tool-observation-presentation)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -1150,6 +1241,7 @@ and returns the pure completion value passed to ON-RESPONSE-COMPLETE."
      :on-response-preflight on-response-preflight
      :on-response-complete on-response-complete
      :on-tool-observation on-tool-observation
+     :on-tool-observation-presentation on-tool-observation-presentation
      :on-done (lambda (value)
                 (setq result value)
                 (setq done t))

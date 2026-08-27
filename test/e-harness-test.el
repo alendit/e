@@ -5994,7 +5994,78 @@ an empty summary\"."
                    "frame:|generation:|observation:|fingerprint:|backing|replay"
                    printed)))))
 
+(ert-deftest e-harness-test-context-lifetime-tool-marker-follows-all-prior-sources ()
+  "A descendant tool source follows every prior presented source."
+  (let* ((prior-observations
+          (list
+           (list :observation-id "observation:prior-one"
+                 :kind "dynamic-context"
+                 :source-entry-ref "context-source:prior-one"
+                 :source-fingerprint "fingerprint:prior-one"
+                 :effective-delivery "inherited"
+                 :body "PRIOR-SOURCE-ONE")
+           (list :observation-id "observation:prior-two"
+                 :kind "current-state"
+                 :source-entry-ref "context-source:prior-two"
+                 :source-fingerprint "fingerprint:prior-two"
+                 :effective-delivery "inherited"
+                 :body "PRIOR-SOURCE-TWO")))
+         (previous-frame
+          (e-context-lifetime-frame-create
+           :id "frame:prior"
+           :generation-id "generation:prior"
+           :consumer-request-id "consumer:prior"
+           :observations prior-observations))
+         (tool-message
+          '(:role tool
+            :content (:tool-call-id "call-descendant"
+                      :name "inspect"
+                      :status ok
+                      :content "DESCENDANT-TOOL-SOURCE")))
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame:descendant"
+           :generation-id "generation:prior"
+           :consumer-request-id "consumer:descendant"
+           :observations
+           (append prior-observations
+                   (list
+                    (list :observation-id "observation:descendant"
+                          :kind "tool-result"
+                          :source-entry-ref "context-source:tool"
+                          :source-fingerprint "fingerprint:tool"
+                          :effective-delivery "inherited"
+                          :body tool-message)))))
+         (messages (list (list :role 'system :content "STABLE") tool-message))
+         (projection
+          (e-harness--context-lifetime-present-tool-observation
+           (list :frame frame
+                 :previous-frame previous-frame
+                 :message tool-message
+                 :turn-messages messages
+                 :provider-followup-messages (copy-tree messages))))
+         (turn-messages (plist-get projection :turn-messages))
+         (followup-messages (plist-get projection
+                                      :provider-followup-messages)))
+    (should (equal
+             (mapcar (lambda (source) (plist-get source :label))
+                     (e-context-lifetime-frame-curation-presentation frame))
+             '(1 2 3)))
+    (dolist (projected (list turn-messages followup-messages))
+      (let ((contents (mapcar (lambda (message)
+                                (plist-get message :content))
+                              projected)))
+        (should (equal (car contents) "STABLE"))
+        (should (string-match-p "\\[3, ~[0-9]+ tokens\\]"
+                                (cadr contents)))
+        (should (equal
+                 (plist-get (plist-get (caddr projected) :content) :content)
+                 "DESCENDANT-TOOL-SOURCE"))
+        (should (= (cl-count (caddr projected) projected :test #'equal)
+                   1))))))
+
 (ert-deftest e-harness-test-context-lifetime-disabled-keeps-default-path ()
+  "The opt-in boundary leaves the existing path without a runtime frame."
   "The opt-in boundary leaves the existing path without a runtime frame."
   (let* ((captured-options nil)
          (backend
@@ -6096,8 +6167,17 @@ an empty summary\"."
                               messages-b))
              (options-b (plist-get request-b :options))
              (curation-arguments (plist-get curation-input :arguments)))
-        (should (equal roles-b '(user system system tool-call tool)))
+        (should (equal roles-b '(user system system tool-call system tool)))
         (should (string-match-p raw-result (prin1-to-string messages-b)))
+        (let ((tool-position
+               (cl-position 'tool roles-b :from-end t)))
+          (should (equal (plist-get (nth (1- tool-position) messages-b)
+                                    :role)
+                         'system))
+          (should (string-match-p
+                   "\\[2, ~[0-9]+ tokens\\]"
+                   (plist-get (nth (1- tool-position) messages-b)
+                              :content))))
         (should (equal curation-arguments
                        '(:summaries
                          ((:sources (2)

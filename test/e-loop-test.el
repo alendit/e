@@ -1887,6 +1887,292 @@
                           messages))
     (should (equal (plist-get (car messages) :content) "answer"))))
 
+(ert-deftest e-loop-test-curation-only-response-continues-with-opaque-ack ()
+  "A reserved-only response commits, acknowledges, then permits one answer."
+  (let* ((request-count 0)
+         (requests nil)
+         (started-tools nil)
+         (curation-payloads nil)
+         (backend
+          (e-backend-create
+           :name "curation-only-followup"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (setq request-count (1+ request-count))
+              (pcase request-count
+                (1
+                 (funcall on-item
+                          '(:type tool-call :id "inspect-call"
+                            :name "inspect" :arguments nil))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id openai
+                            :metadata (:response-id "response-tool")))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (2
+                 (funcall on-item
+                          '(:type context-curate
+                            :arguments (:keep (1))
+                            :provider-replay-item
+                            (:type provider-replay-item
+                             :provider-id openai
+                             :item (:type "function_call_output"
+                                    :call_id "curation-call"
+                                    :output ""))))
+                 (funcall on-item
+                          '(:type provider-anchor-candidate
+                            :provider-id openai
+                            :metadata (:response-id "response-curation")))
+                 (funcall on-item '(:type done :reason stop)))
+                (3
+                 (funcall on-item
+                          '(:type assistant-message :content "answer"))
+                 (funcall on-item '(:type done :reason stop))))))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (push (plist-get tool-call :name) started-tools)
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name (plist-get tool-call :name)
+                             :status 'ok :content "inspected"))
+              nil))))
+         (durable-messages nil)
+         (options '(:model "gpt-test"
+                    :provider-continuation t
+                    :provider-anchor-provider-id openai
+                    :context-lifetime-enabled t
+                    :context-capabilities
+                    (:continuation linear
+                     :observation-delivery request-local-replaceable
+                     :reserved-effect-carrier context-curate-wire))))
+    (e-loop-run-turn-batch
+     :session-id "session-curation-only"
+     :turn-id "turn-curation-only"
+     :messages '((:role user :content "inspect"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :tool-lifecycle tool-lifecycle
+     :options options
+     :on-response-complete
+     (lambda (payload)
+       (when (plist-get payload :curation-effects)
+         (push payload curation-payloads)))
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq durable-messages
+             (append durable-messages (list (copy-tree message))))))
+    (should (= request-count 3))
+    (should (equal started-tools '("inspect")))
+    (should (= (length curation-payloads) 1))
+    (let* ((third (nth 2 (nreverse requests)))
+           (body (e-openai-codex-request-body
+                  :messages (plist-get third :messages)
+                  :options (plist-get third :options)
+                  :tools nil))
+           (input (append (plist-get body :input) nil))
+           (ack (seq-find (lambda (item)
+                           (and (equal (plist-get item :type)
+                                       "function_call_output")
+                                (equal (plist-get item :call_id)
+                                       "curation-call")))
+                         input)))
+      (should (equal (plist-get body :previous_response_id)
+                     "response-curation"))
+      (should ack)
+      (should (equal (plist-get ack :call_id) "curation-call"))
+      (should (equal (plist-get ack :output) "")))
+    (should-not (string-match-p "function_call_output"
+                                (prin1-to-string durable-messages)))
+    (should (equal (plist-get (car (last durable-messages)) :content)
+                   "answer"))))
+
+(ert-deftest e-loop-test-curation-only-response-bounds-repeated-empty-followup ()
+  "A reserved-only response cannot start an unbounded acknowledgement loop."
+  (let* ((request-count 0)
+         (completion-count 0)
+         (backend
+          (e-backend-create
+           :name "repeated-curation-only"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (setq request-count (1+ request-count))
+              (funcall on-item
+                       '(:type context-curate
+                         :arguments (:keep (1))
+                         :provider-replay-item
+                         (:type provider-replay-item
+                          :provider-id openai
+                          :item (:type "function_call_output"
+                                 :call_id "curation-call"
+                                 :output ""))))
+              (funcall on-item
+                       '(:type provider-anchor-candidate
+                         :provider-id openai
+                         :metadata (:response-id "response-curation")))
+              (funcall on-item '(:type done :reason stop)))))))
+    (should-error
+     (e-loop-run-turn-batch
+      :session-id "session-repeated-curation"
+      :turn-id "turn-repeated-curation"
+      :messages '((:role tool
+                   :content (:tool-call-id "inspect-call"
+                             :name "inspect" :content "inspected")))
+      :backend backend
+      :tools (e-tools-registry-create)
+      :options '(:model "fake"
+                 :context-lifetime-enabled t
+                 :context-capabilities
+                 (:continuation none
+                  :observation-delivery inherited
+                  :reserved-effect-carrier context-curate-wire))
+      :on-response-complete
+      (lambda (payload)
+        (when (plist-get payload :curation-effects)
+          (setq completion-count (1+ completion-count))))
+      :on-event #'ignore
+      :append-message #'ignore)
+     :type 'e-context-lifetime-invalid-record)
+    (should (= request-count 2))
+    (should (= completion-count 1))))
+
+(ert-deftest e-loop-test-stateless-curation-replays-call-and-ack-only-once ()
+  "Stateless curation replay includes its call/output pair, then drops it."
+  (let* ((request-count 0)
+         (requests nil)
+         (started-tools nil)
+         (curation-count 0)
+         (durable-messages nil)
+         (backend
+          (e-backend-create
+           :name "stateless-curation-replay"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (setq request-count (1+ request-count))
+              (pcase request-count
+                (1
+                 (funcall on-item
+                          '(:type tool-call :id "inspect-call"
+                            :name "inspect" :arguments nil))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (2
+                 (dolist
+                     (item
+                      (e-openai-codex-parse-stream
+                       (mapconcat
+                        (lambda (event)
+                          (format "data: %s\n\n" (json-encode event)))
+                        (list
+                         '(:type "response.output_item.done"
+                           :item (:type "function_call"
+                                  :call_id "curation-call"
+                                  :name "context-curate"
+                                  :arguments "{\"keep\":[1]}"))
+                         '(:type "response.completed"
+                           :response (:id "response-curation")))
+                        "")))
+                   (funcall on-item item)))
+                (3
+                 (funcall on-item
+                          '(:type assistant-message :content "answer"))
+                 (funcall on-item '(:type done :reason stop))))))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (push (plist-get tool-call :name) started-tools)
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name (plist-get tool-call :name)
+                             :status 'ok :content "inspected"))
+              nil))))
+         (options '(:model "gpt-test"
+                    :provider-continuation nil
+                    :context-lifetime-enabled t
+                    :context-capabilities
+                    (:continuation none
+                     :observation-delivery inherited
+                     :reserved-effect-carrier context-curate-wire))))
+    (e-loop-run-turn-batch
+     :session-id "session-stateless-curation"
+     :turn-id "turn-stateless-curation"
+     :messages '((:role user :content "inspect"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :tool-lifecycle tool-lifecycle
+     :options options
+     :on-response-complete
+     (lambda (payload)
+       (when (plist-get payload :curation-effects)
+         (setq curation-count (1+ curation-count))))
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq durable-messages
+             (append durable-messages (list (copy-tree message))))))
+    (should (= request-count 3))
+    (should (= curation-count 1))
+    (should (equal started-tools '("inspect")))
+    (let* ((third (nth 2 (nreverse requests)))
+           (body (e-openai-codex-request-body
+                  :messages (plist-get third :messages)
+                  :options (plist-get third :options)
+                  :tools nil))
+           (input (append (plist-get body :input) nil))
+           (call-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call")
+                    (equal (plist-get item :name) "context-curate")
+                    (equal (plist-get item :call_id) "curation-call")))
+             input))
+           (ack-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "curation-call")
+                    (equal (plist-get item :output) "")))
+             input))
+           (ordinary-output-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "inspect-call")))
+             input)))
+      (should-not (plist-member body :previous_response_id))
+      (should (integerp ordinary-output-position))
+      (should (integerp call-position))
+      (should (integerp ack-position))
+      (should (< ordinary-output-position call-position))
+      (should (< call-position ack-position)))
+    (let* ((next-body
+            (e-openai-codex-request-body
+             :messages durable-messages
+             :options options
+             :tools nil))
+           (next-input (append (plist-get next-body :input) nil)))
+      (should-not
+       (seq-some
+        (lambda (item)
+          (and (member (plist-get item :type)
+                       '("function_call" "function_call_output"))
+               (or (equal (plist-get item :name) "context-curate")
+                   (equal (plist-get item :call_id) "curation-call"))))
+        next-input)))))
+
 (ert-deftest e-loop-test-response-preflight-precedes-assistant-append ()
   "A completion preflight runs before the assistant append callback."
   (let* ((order nil)

@@ -2985,6 +2985,64 @@ binding and never cross the model-facing boundary."
            :content (copy-sequence (plist-get source :marker))))
    (e-context-lifetime-frame-curation-presentation frame)))
 
+(defun e-harness--context-lifetime-present-tool-observation (payload)
+  "Add the fresh tool source marker to both request projections in PAYLOAD.
+
+The loop owns the two in-memory message sequences; the harness owns the
+provider-neutral presentation.  Keep the raw tool envelope in place and add
+only the marker immediately before its matching result so full/stateless and
+continuation-delta requests expose the same label-to-frame binding."
+  (let* ((frame (plist-get payload :frame))
+         (previous-frame (plist-get payload :previous-frame))
+         (previous-presentation
+          (when (and (e-context-lifetime-frame-p previous-frame)
+                     (not (e-context-lifetime-frame-consumed-p previous-frame)))
+            (e-context-lifetime-frame-curation-presentation previous-frame)))
+         (previous-count (length previous-presentation))
+         (source
+          (nth previous-count
+               (e-context-lifetime-frame-curation-presentation frame)))
+         (marker (and source
+                      (list :role 'system
+                            :content (copy-sequence
+                                      (plist-get source :marker)))))
+         (message (plist-get payload :message))
+         (tool-call-id
+          (plist-get (plist-get message :content) :tool-call-id)))
+    (unless (and marker (e-context-lifetime-frame-p frame))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-source :missing-tool-presentation)))
+    (cl-labels
+        ((insert-marker (messages)
+           (let (result found)
+             (dolist (candidate messages)
+               (if (and (not found)
+                        (eq (plist-get candidate :role) 'tool)
+                        (or (eq candidate message)
+                            (and tool-call-id
+                                 (equal
+                                  (plist-get
+                                   (plist-get candidate :content)
+                                   :tool-call-id)
+                                  tool-call-id))))
+                   (progn
+                     (unless (and result (equal (car result) marker))
+                       (push (copy-tree marker) result))
+                     (push candidate result)
+                     (setq found t))
+                 (push candidate result)))
+             (unless found
+               (signal 'e-context-lifetime-invalid-record
+                       (list 'curation-source
+                             :tool-result-presentation-target-missing
+                             tool-call-id)))
+             (nreverse result))))
+      (list :turn-messages
+            (insert-marker (plist-get payload :turn-messages))
+            :provider-followup-messages
+            (insert-marker
+             (plist-get payload :provider-followup-messages))))))
+
 (defun e-harness--context-lifetime-apply-projection
     (harness session-id turn-id context capabilities)
   "Apply the opted-in semantic projection to CONTEXT for TURN-ID.
@@ -4081,7 +4139,7 @@ request emits no candidate at all."
     (harness session-id turn-id &key on-request-start on-done on-error
              cancelled-p append-message on-event context drain-pending-input
              on-context-refresh on-response-preflight on-response-complete
-             on-tool-observation)
+             on-tool-observation on-tool-observation-presentation)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -4103,6 +4161,7 @@ request emits no candidate at all."
         :on-response-preflight on-response-preflight
         :on-response-complete on-response-complete
         :on-tool-observation on-tool-observation
+        :on-tool-observation-presentation on-tool-observation-presentation
          :turn-work-handle (plist-get
                             (gethash session-id
                              (e-harness-active-turns harness))
@@ -4461,6 +4520,12 @@ cancellation.  SESSION-ID identifies the session."
                              (not (plist-get entry :cancelled)))
                     (e-harness--lifetime-tool-observation-frame
                      harness session-id turn-id entry payload)))
+                :on-tool-observation-presentation
+                (lambda (payload)
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (e-harness--context-lifetime-present-tool-observation
+                     payload)))
                 :context context)))
 	            (start-auto-compaction
 	             (context)
