@@ -1,290 +1,264 @@
-#+title: Addendum 5: Explicit Tool-Output Context Erasure
+#+title: Addendum 5: Autonomous Context Curation Adoption
 #+date: 2026-08-27
 #+startup: overview
 
 * Status
 
-Planned.
+Planned.  This addendum is awaiting independent specification review.
+
+This addendum extends Addendum 4 without changing its curation semantics.  It
+adds a model-facing affordance contract and a naturalistic external adoption
+scenario.  Addendum 4 remains authoritative for frame-local labels, exact and
+summary dispositions, omission-as-drop, atomic completion, bounds, durable
+records, and compatibility.  Addendum 3 remains authoritative for canonical
+request layout, inherited observation delivery, continuation, cache evidence,
+and cleanup.  Where wording conflicts, this addendum supersedes only Addendum
+4's assumption that exposing the reserved carrier is sufficient guidance for
+spontaneous model use.
+
+The matrix below is this addendum's sole normative authority.  Other sections
+explain its rows or name their evidence; they do not create additional
+requirements.
+
+* Motivation and evidence baseline
+
+The curation mechanism is operational, but current model-facing presentation
+does not explain its lifetime or decision.  The OpenAI adapter describes
+=context-curate= only as “Keep or summarize bounded values from ephemeral
+context.”  Core presents a source with a marker such as =[1, ~120 tokens]=.
+The description names operations but not when they are useful, the marker does
+not identify the following value as an ephemeral source, and neither surface
+connects a user's future-use intent to the reserved effect.
+
+The 2026-08-27 Grimoire Daily session is observational motivation, not an
+acceptance gate.  Across 15 provider requests the configured model received the
+curation carrier and ephemeral source presentation but made zero
+=context-curate= calls.  That session also reproduced an unrelated restored
+board-participant routing defect, so it cannot serve as a controlled adoption
+test.  It establishes only that carrier availability does not by itself imply
+autonomous use.
+
+Existing credentialed acceptance explicitly tells the model to call
+=context-curate= and supplies the exact =keep= and =summaries= arguments.  It
+proves carrier and curation mechanics, not spontaneous selection.  This
+addendum retains that mechanism evidence and adds a separate isolated scenario
+whose prompt expresses a future-turn need without naming the curation carrier
+or its schema.
+
+* Normative contract matrix
+
+| Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External compatibility evidence | Telemetry | Status |
+|-------------+--------------+---------------------+-----------------------+------------------------+---------------------------------+-----------+--------|
+| =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, what omission means, and when no curation call is useful. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | proposed |
+| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= for the configured compatible Responses profile; exact ChatGPT/WebSocket scope remains separate | invocation choice, disposition kind, token usage, and latency are observational | proposed; initial external evidence required |
+| =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker and reserved-tool description revise material request identity, so prior warm-prefix evidence is not reused until the configured canonical scenarios pass with the new identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | rerun configured Responses HTTP canonical warm-prefix and tool-heavy scenarios; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | inherited contract; external evidence stale after implementation |
 
 * Decision
 
-Add an explicit =erase= disposition to Feature 88 context curation for an
-ephemeral tool-result source that must leave no automatic trace in later model
-context.
+Make the existing affordance self-explanatory instead of adding automatic
+retention policy.  The late source marker identifies the value that follows as
+an ephemeral context source and carries its existing local label and size hint.
+A representative rendering is:
 
-Erasure is a model-context decision, not deletion.  The transcript, durable
-activity history, and session-scoped temporary details remain unchanged.  A
-later explicit read of that stored history is a new observation; it does not
-make the erased source part of ordinary context again.
+#+begin_example
+[ephemeral context source 1, ~120 tokens]
+<exact source value>
+#+end_example
 
-This addendum owns erasure because Feature 88 owns semantic model-context
-lifetime.  [[file:../90-tool-invocation-receipts/plan.org][Feature 90]] owns invocation receipts and temporary details, but it
-only consumes Feature 88's erasure authority when deciding whether a receipt is
-eligible for context projection.
+The marker remains a detached provider-neutral system message immediately
+before its source.  It does not contain durable, frame, generation,
+observation, request, provider, or backing-object identity.  It does not tell
+the model whether the value deserves retention; it only makes the value's
+lifetime and label legible.
 
-* Why omission is no longer sufficient
+The Responses =context-curate= description explains the decision at the
+carrier that performs it.  Its meaning is:
 
-Addendum 4 defines omission as dropping the exact ephemeral source.  That is
-sufficient while no other context projection is derived from the source.
+- call after using an ephemeral source when the user or task is likely to need
+  its exact value or a compact replacement in a later turn;
+- use =keep= for exact retention and =summaries= for smaller durable
+  replacement text;
+- a source omitted from a successful call is dropped; and
+- make no call when nothing from the frame should remain available.
 
-Feature 90 introduces a distinct compact receipt projection.  Under that
-feature, omitting a tool source still drops its exact arguments and result, but
-normally leaves a receipt containing the tool, status, stated purpose, and
-temporary details URI.  The receipt is useful by default, but it means omission
-can no longer express "leave no trace in later model context."
+The implementation may refine the sentence structure, but it must preserve all
+four meanings without adding hidden policy, automatic selection, or another
+instruction authority.  The strict Addendum 4 JSON schema remains unchanged
+and continues to provide field-level shapes.
 
-=erase= restores that explicit choice.  It does not duplicate a generic drop
-list: it suppresses derived context projections that ordinary omission
-deliberately permits.
+The marker is late-frontier input.  The reserved-tool definition is stable
+request material.  Both changes revise the applicable presentation or schema
+fingerprint so an earlier anchor or cache-evidence record cannot silently
+claim the new shape.
 
-* Model-facing contract
+* Naturalistic adoption scenario
 
-The reserved =context-curate= effect accepts exactly the optional keys =keep=,
-=summaries=, and =erase=.  Feature 88 exposes this contract independently of
-whether Feature 90 receipt projection is active.
+=responses-autonomous-curation-adoption= runs in an isolated session with the
+configured compatible Responses profile and the existing deterministic E2E
+tool.  The first user prompt has this semantic shape:
 
-#+begin_src json
-{
-  "keep": [1],
-  "summaries": [
-    {"sources": [2], "text": "The retained semantic conclusion."}
-  ],
-  "erase": [3]
-}
-#+end_src
+#+begin_quote
+Use the deterministic lookup tool to obtain the current adoption sentinel.
+Keep that value available for a question in my next message, do not reveal it
+yet, and reply only READY.
+#+end_quote
 
-=erase= is an ordered array of positive integer frame-local source labels.  An
-omitted key is an empty list.  Unknown keys remain invalid.
+The actual prompt may name the ordinary deterministic tool so the source is
+reproducible.  It must not contain =context-curate=, =curate=, =keep=,
+=summary=, =summaries=, =source label=, or a numeric source reference.  The
+ordinary tool returns a unique bounded sentinel as one curatable source.
 
-Every label in =erase= must identify an ordinary tool-result source in the
-active consumer-bound frame.  Erasing a non-tool source is invalid because
-ordinary omission already removes it without producing a receipt.  The model
-submits only frame labels; core derives the tool call identity and all durable
-provenance.
+The valid first turn must call the ordinary tool and then autonomously emit one
+valid reserved curation effect disposing that source.  Either exact retention
+or a summary that preserves the sentinel is acceptable; the model still owns
+that choice.  The final visible answer is =READY= and does not reveal the
+sentinel.  The runner records the selected disposition and verifies the
+curation record's existing audit/control linkage.
 
-A source has at most one disposition:
+A second ordinary user turn asks for the retained sentinel without naming the
+carrier.  Its captured request must contain the durable exact or summary item,
+must not contain the consumed raw tool-result envelope or presentation marker,
+and the assistant must return the exact sentinel.  This proves adoption and
+the existing semantic composition separately from mere function-call
+serialization.
 
-- =keep= retains its exact bounded model-visible value;
-- a =summaries= entry retains submitted replacement text;
-- =erase= retains no source-derived model-context value;
-- omission drops the exact source but permits separately owned derived context,
-  including a Feature 90 receipt.
+The scenario emits one bounded, content-free, identity-complete evidence
+record.  A valid run has one of these outcomes:
 
-Labels may not overlap across =keep=, any summary's =sources=, and =erase=.
-Unknown, repeated, overlapping, or non-tool erase labels reject the entire
-curation before durable or frame mutation.
+| Result | Meaning |
+|--------+---------|
+| =pass= | The model autonomously curated the source and the follow-up semantic assertions passed. |
+| =product-contract-failure= | A valid configured run completed but made no valid reserved effect, revealed the sentinel early, lost it on the next turn, or leaked the consumed raw source. |
+| =semantic-failure= | The model or product violated another named scenario assertion that does not isolate autonomous selection. |
+| =unavailable= | Required provider usage or evidence fields were absent. |
+| =authentication-or-configuration-failure= | The configured request could not start with valid provider configuration. |
+| =provider-or-infrastructure-failure= | External health prevented a valid observation. |
+| =inconclusive-timeout= | The scenario exceeded its declared deadline. |
 
-An erase-only effect is valid.  After normalization, at least one distinct
-source must have a keep, summary, or erase disposition.  The existing maximum
-of 16 disposed labels includes erased labels.  The existing 8,192-byte prepared
-record bound includes exact values, summary text, and erasure provenance.
+Only =pass= confirms autonomous adoption for the recorded capability identity.
+Only =product-contract-failure= disproves the contract.  Availability failures
+leave it unconfirmed.  The record carries captured endpoint, store mode, model,
+transport, native requester, material request identity, revision, and result,
+but never the sentinel or model content.
 
-This addendum supersedes only Addendum 4's exact =context-curate= object shape,
-its statement that a separate drop list has no meaning, and its requirement
-that at least one source be kept or summarized.  All other Addendum 4
-presentation, provenance, atomicity, compatibility, and bound rules remain.
+One canonical successful observation is sufficient for initial capability
+confirmation, matching the existing Feature 88 external capability policy.
+Invocation frequency, exact-versus-summary choice, token usage, cache usage,
+and latency remain observational until a separate contract supplies a
+population, baseline, and decision threshold.
 
-* Erasure semantics
+* Scenario portfolio
 
-For each successfully erased tool source, every later ordinary model-context
-projection excludes:
-
-- the tool call and its arguments;
-- the tool result and result metadata;
-- any Feature 90 invocation receipt;
-- the stated purpose;
-- the temporary details URI;
-- any count, summary, latest-item marker, or other aggregate whose only evidence
-  is the erased source.
-
-The source remains available during the provider invocation that consumed it.
-Erasure cannot retroactively alter an already-sent request or the immediate
-tool-result continuation that made the decision possible.
-
-Erasure does not delete or rewrite:
-
-- transcript tool-call or tool-result entries;
-- durable tool activity records;
-- any temporary invocation-details resources;
-- provider audit or replay metadata already retained under its independent
-  transport lifetime;
-- user-visible shell history.
-
-Consequently, "completely" means complete absence from automatically assembled
-future model context.  It does not mean storage destruction or audit erasure.
-
-An explicit later transcript, activity, session-resource, or =tmp://= read may
-surface the stored details again.  The read result is a new ephemeral
-observation with its own Feature 88 lifetime and does not revoke the original
-erasure record.
-
-* Durable erasure authority
-
-Core prepares one durable =context-erasure= record for a successful curation
-that contains erased sources:
-
-#+begin_src emacs-lisp
-(:record-version 1
- :type context-erasure
- :id ERASURE-ID
- :frame-id FRAME-ID
- :generation-id GENERATION-ID
- :consumer-request-id CONSUMER-ID
- :response-entry-id RESPONSE-ID
- :sources
- ((:source-observation-id OBSERVATION-ID
-   :source-ref SOURCE-REF
-   :source-fingerprint SOURCE-FINGERPRINT
-   :tool-call-id TOOL-CALL-ID)))
-#+end_src
-
-The record contains no source value, arguments, result, purpose, receipt,
-temporary URI, provider item, replay envelope, or backing object.  Core derives
-every identity from the matching live frame; the model cannot submit durable
-identifiers.
-
-=context-erasure= is semantic suppression authority, not transcript content or
-an activity event.  It has no direct model-visible projection.  Context
-providers query the canonical session projection for erased tool-call
-identities and exclude matching derived values.
-
-The record survives reopen, branch selection, checkpointing, and compaction for
-as long as a matching durable receipt or other derived projection could
-otherwise reappear.  Implementations may prune an erasure only after proving
-that no eligible context projection can reference its subject.  They must not
-infer safety merely from temporary-resource expiry.
-
-When one curation contains exact, summary, and erase dispositions, preparation
-validates all of them before mutation.  Harness/session append the version-3
-=context-promotion= record when exact or summary items exist and the
-=context-erasure= record when erase items exist, then consume the frame.  A
-failure in either append follows the existing curation failure boundary; no
-partial curation becomes visible.
-
-* Receipt integration boundary
-
-Feature 90's receipt provider receives the canonical erased-tool-call set from
-the harness/session context projection.  It filters receipts before ordering,
-counting, byte budgeting, omitted-count calculation, or latest-item selection.
-An erased receipt therefore leaves no indirect aggregate mark.
-
-Feature 90 does not parse =context-curate=, derive erasure identities, write
-=context-erasure= records, or decide whether erasure is allowed.  Feature 88
-does not generate receipts, invocation details, or temporary resources.
-
-This dependency flows from the optional receipt projection toward Feature 88's
-stable semantic-lifetime contract.  Feature 88 core remains independent of the
-receipt implementation.
-
-* Provider and cache identity
-
-Adding =erase= changes the reserved =context-curate= schema and therefore the
-material tool-schema and prompt-layout identity.  Existing anchors and cache
-evidence recorded against the Addendum 4 schema are not valid evidence for this
-shape.  Schema fingerprints must invalidate incompatible anchors, and the
-configured cache scenarios must be rerun after implementation.
-
-This requirement is about request-shape identity and semantic correctness, not
-wire-size reduction.  No request-byte target is introduced.
+| Scenario | Contracts | Observable invariant | Evidence class | Capture and localization |
+|----------+-----------+----------------------+----------------+--------------------------|
+| =curation-affordance-request-shape= | =F88A5-AFFORDANCE= | every source marker identifies the following value as ephemeral while preserving its local label/count, and the reserved tool explains all four decision meanings without changing its strict schema | deterministic repository | literal core presentation plus captured OpenAI request localizes marker, tool definition, schema, placement, and fingerprint failures |
+| =responses-autonomous-curation-adoption= | =F88A5-ADOPTION= | an uncommanded reserved effect preserves a normal tool result for the next turn without raw-source replay | external compatibility | shared request, curation, audit, usage, and identity capture distinguishes model non-adoption from carrier, commit, projection, or provider failure |
+| =responses-canonical-warm-prefix= | =F88A3-CACHE= | the configured canonical pair reports nonzero cached input under the revised material identity | external compatibility | existing cache evidence runner |
+| =responses-canonical-tool-heavy= | =F88A3-CACHE=, inherited =F88A3-TOOL= | tool continuation and semantic assertions pass and cache status is reported independently under the revised material identity | external compatibility | existing tool-heavy evidence runner |
 
 * Implementation slices
 
-** Slice 1: pure erase preparation
+** Slice 1: Self-explaining source and carrier affordances
 
-Extend the core curation schema and preparation logic with =erase=.  Validate
-tool-source eligibility, exclusivity, the shared 16-label bound, the prepared
-8,192-byte bound, and core-derived provenance without mutating frame or session
-state.
+Revise the provider-neutral source marker and the OpenAI reserved-tool
+description at their existing owners.  Fence the changed presentation and
+request shape, retain the strict schema, and add owner plus captured-request
+tests for =F88A5-AFFORDANCE=.  Do not add another context provider, durable
+instruction, automatic policy hook, or adapter-to-core dependency.
 
-** Slice 2: durable erasure record
+** Slice 2: Naturalistic adoption evidence
 
-Add the versioned =context-erasure= codec, session append/replay, branch,
-checkpoint, compaction, and retention behavior.  Expose a narrow canonical
-query for erased tool-call identities without projecting the record as model
-content.
+Add one isolated configured Responses selector and shared bounded evidence
+capture for =responses-autonomous-curation-adoption=.  Reuse the ordinary
+deterministic tool and existing curation/audit/request instrumentation.  Keep
+the user prompts free of carrier and schema vocabulary, classify all external
+outcomes exactly once, and keep sentinel/content data out of the evidence
+record.
 
-** Slice 3: atomic curation application
+** Slice 3: Configured validation and evidence refresh
 
-Join promotion and erasure preparation at the existing provider-completion
-boundary.  Prove keep-only, summary-only, erase-only, mixed valid, mixed
-invalid, append failure, and duplicate-effect behavior.
+Run the new adoption scenario and the inherited canonical warm-prefix and
+tool-heavy scenarios against the configured compatible Responses profile.
+Record request-derived capability identity and revision-specific results.
+Update Addenda 3 and 4, their implementation review, =limitations.org=, and the
+Feature 88 status only where their distinct evidence or completion state
+changes.  Preserve the separate exact ChatGPT/WebSocket status.
 
-** Slice 4: derived-context integration
+* Test disposition
 
-Make Feature 90 receipt projection consume the canonical erased identity set.
-Prove filtering happens before every bound and aggregate.  Preserve transcript,
-activity, and temporary details exactly.
+| Disposition | Evidence |
+|-------------+----------|
+| retain | all Addendum 4 curation schema, atomicity, bounds, durability, compatibility, continuation, and cleanup scenarios |
+| strengthen | core marker presentation and OpenAI literal request-shape tests to cover source lifetime wording, decision guidance, stable/frontier placement, and revised identity |
+| strengthen | external evidence finalization and identity tests with the autonomous-adoption result classes and content-free record |
+| add | isolated configured =responses-autonomous-curation-adoption= scenario and deterministic unavailable/failure classifications |
+| rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change |
+| delete | none planned |
 
-** Slice 5: end-to-end and cache evidence
+Tests may assert the accepted material prompt text where it is the behavior
+under test.  They must not expose private curation record layout as a new
+public contract or require one exact model-selected disposition when either
+exact retention or a sufficient summary satisfies =F88A5-ADOPTION=.
 
-Run one credential-free tool turn for ordinary omission and one for explicit
-erasure.  Refresh material schema identity and the configured cache evidence
-after deterministic repository validation passes.
+* Minimum acceptance
 
-* Acceptance criteria
+1. A model receiving a curatable source can identify the following value as
+   ephemeral and relate its local label to the reserved curation carrier.
+2. The carrier describes when to retain, exact versus summary choice,
+   omission-as-drop, and the useful no-call case without changing Addendum 4's
+   strict schema or semantic owner.
+3. Deterministic request-shape, placement, fingerprint, and regression tests
+   pass on the accepted implementation revision.
+4. The isolated external adoption prompt contains no carrier, schema, or label
+   instructions; a successful run records autonomous invocation, durable
+   follow-up recall, and raw-source exclusion.
+5. Existing configured cache scenarios are refreshed under the changed
+   material request identity, and exact ChatGPT/WebSocket evidence remains
+   separately classified.
 
-- =context-curate= accepts an optional =erase= list of active frame-local
-  ordinary tool-result labels.
-- Keep, summary, and erase dispositions are mutually exclusive per source, and
-  an erase-only effect is valid.
-- Ordinary omission still removes the exact source but permits a Feature 90
-  receipt; explicit erase permits no source-derived automatic context value.
-- Later context after erase contains no tool call, arguments, result, receipt,
-  purpose, details URI, or aggregate mark derived solely from that source.
-- Transcript, durable activity, shell history, and temporary details remain
-  unchanged and inspectable.
-- A later explicit read creates a new ephemeral observation rather than
-  silently restoring the erased source.
-- The durable erasure record contains only core-derived identity and provenance,
-  never source content or provider artifacts.
-- Erasure survives reopen, branch selection, checkpointing, and compaction while
-  any matching derived projection remains eligible.
-- Mixed curation appends promotion and erasure authority atomically before frame
-  consumption.
-- Receipt filtering occurs before ordering, budgets, omitted counts, and other
-  aggregates.
-- Provider continuation and anchor cleanliness remain conservative; erasing a
-  later projection does not make a tool-contaminated response a clean anchor.
-- Schema identity invalidates Addendum 4-era anchors and cache evidence, and
-  fresh deterministic and configured evidence is recorded.
+Repository-controlled fixed point and external capability status remain
+separate.  A zero-finding implementation Tick may establish deterministic
+fixed point while autonomous adoption or exact ChatGPT/WebSocket capability is
+unconfirmed, but Feature 88 is not =Done= until every required external scope
+is confirmed.
 
 * Non-goals
 
-- Deleting transcript, activity, temporary resources, or provider audit state.
-- Providing a model-controlled privacy or audit-erasure operation.
-- Changing exact keep or summary content semantics.
-- Treating ordinary omission as explicit erasure.
-- Making erased tool descendants eligible as clean provider anchors.
-- Adding an erasure option to ordinary tools or Feature 90's invocation
-  envelope.
+This addendum does not add heuristic or automatic curation, force a curation
+call on every frame, choose exact retention versus summarization for the model,
+change curation bounds or durable records, add a second context-management
+tool, create a board storage class, define population-level adoption rates, or
+claim that one external success predicts all prompts or future model versions.
 
-* Design self-check
+* Architecture self-check
 
-1. This addendum preserves useful default receipts while restoring a precise
-   way to leave no source-derived mark in later model context.
-2. It moves toward explicit, provenance-backed context lifetime without
-   conflating context projection with transcript storage.
-3. Erasure semantics and provenance are stable.  Retention pruning remains
-   local and conservative until a real safe condition is proven.
-4. Feature 88 owns the decision because it owns semantic context lifetime;
-   Feature 90 only consumes the result.
-5. The interface is one additional curation disposition and one narrow erased
-   identity query, not a tool-specific callback.
-6. Core policy does not depend on a provider adapter, receipt renderer, shell,
-   transcript store, or temporary-resource implementation.
-7. Transcript and resource side effects stay with their existing owners; pure
-   curation preparation remains side-effect free.
-8. Erasure adds only compact durable suppression provenance.  Full details stay
-   at their existing transcript and temporary lifetimes.
-9. Filtering adds one bounded identity lookup per candidate receipt.  Cache
-   evidence is refreshed because schema shape changes, not because wire size is
-   an objective.
-10. =erase= has one substitutable meaning: no source-derived automatic future
-    model context.
-11. Existing v2/v3 promotion records remain readable.  New erasure records are
-    additive and do not reinterpret stored history.
-12. No existing transcript or temporary-detail path is removed.
-13. Invalid erasure fails through the existing curation boundary; unexpected
-    append, replay, or projection errors surface visibly.
-14. Pure preparation, session codec, atomic harness, receipt integration, and
-    E2E tests isolate the changed contracts.
+1. The package is useful independently: it makes an already-operational
+   curation mechanism discoverable and supplies direct evidence of autonomous
+   use.
+2. It moves toward model-directed bounded context lifetime without moving the
+   semantic decision into UI, board, or provider code.
+3. Guidance wording and the external prompt may change and remain local;
+   curation semantics, owners, and durability remain stable.
+4. Core owns source lifetime presentation, the OpenAI adapter owns its wire
+   tool description, the model chooses a disposition, and existing core/
+   harness/session owners enforce it.
+5. It adds no interface.  Existing marker and reserved-carrier surfaces become
+   more legible.
+6. Stable policy does not depend on an adapter; the adapter continues to
+   serialize the existing provider-specific carrier.
+7. External execution and evidence capture remain in E2E adapters rather than
+   core policy.
+8. No runtime state is added.  Evidence is bounded and revision-scoped under
+   the existing runner policy.
+9. Runtime cost is limited to changed prompt text and one optional external
+   scenario; no additional provider request is added to ordinary turns.
+10. The affordance describes the real existing curation contract and does not
+    create an unsupported operation.
+11. Addendum 4 compatibility remains unchanged; prior cache evidence is
+    invalidated rather than silently reused across material prompt text.
+12. No legacy path becomes necessary.
+13. Expected external failures are classified at the runner; unexpected core
+    and carrier failures remain visible.
+14. Deterministic tests cover request construction; the naturalistic external
+    scenario tests model choice and composed behavior without freezing one
+    private implementation.
