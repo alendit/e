@@ -570,6 +570,31 @@ call must have exactly one matching empty output in causal order."
          (integerp output-index)
          (< call-index output-index))))
 
+(defun e-live-e2e--turn-retrying-events (harness session-id turn-id)
+  "Return durable retry events for TURN-ID in SESSION-ID."
+  (seq-filter
+   (lambda (event) (equal (plist-get event :turn-id) turn-id))
+   (e-live-e2e--activity-of-type harness session-id 'turn-retrying)))
+
+(defun e-live-e2e--captured-turn-extras-valid-p
+    (initial-body extra-bodies retry-events)
+  "Validate same-turn EXTRA-BODIES after INITIAL-BODY.
+Each extra is either a linked context-curate acknowledgement or an exact
+duplicate of INITIAL-BODY.  Duplicate retries require a matching retry event;
+RETRY-EVENTS must already be restricted to the captured turn."
+  (let ((duplicate-count 0))
+    (and
+     (cl-every
+      (lambda (body)
+        (cond
+         ((e-live-e2e--context-curation-ack-body-p body) t)
+         ((equal body initial-body)
+          (setq duplicate-count (1+ duplicate-count))
+          t)
+         (t nil)))
+      extra-bodies)
+     (<= duplicate-count (length retry-events)))))
+
 (ert-deftest e-live-e2e-test-adoption-composition-uses-turn-boundary ()
   "Select the composed request before a later continuation body."
   (let* ((durable "DURABLE-ADOPTION")
@@ -624,6 +649,19 @@ call must have exactly one matching empty output in causal order."
     (should (equal (cadr second-turn-bodies) ack-body))
     (should (e-live-e2e--context-curation-ack-body-p ack-body))
     (should-not (e-live-e2e--context-curation-ack-body-p unrelated-body))))
+
+(ert-deftest e-live-e2e-test-cache-turn-boundaries-require-retry-evidence ()
+  "Identical extra bodies require a matching durable retry event."
+  (let* ((initial-body '(:input ((:role user :content "same"))))
+         (duplicate-body (copy-tree initial-body))
+         (mutated-body '(:input ((:role user :content "changed"))))
+         (retry-event '(:turn-id "turn-1" :event-type turn-retrying)))
+    (should (e-live-e2e--captured-turn-extras-valid-p
+             initial-body (list duplicate-body) (list retry-event)))
+    (should-not (e-live-e2e--captured-turn-extras-valid-p
+                 initial-body (list duplicate-body) nil))
+    (should-not (e-live-e2e--captured-turn-extras-valid-p
+                 initial-body (list mutated-body) (list retry-event)))))
 
 (defun e-live-e2e--request-diagnostics (metadata)
   "Return diagnostics from request METADATA, or METADATA when already plain."
@@ -3366,10 +3404,37 @@ continuation and socket assertions used by the compatibility selector."
                     (e-live-e2e--captured-bodies-between
                      request-bodies warm-turn-start-count
                      (length ordered-bodies)))
+                   (first-turn-retry-events
+                    (e-live-e2e--turn-retrying-events
+                     harness session-id first-turn-id))
+                   (tool-turn-retry-events
+                    (e-live-e2e--turn-retrying-events
+                     harness session-id tool-turn-id))
+                   (warm-turn-retry-events
+                    (e-live-e2e--turn-retrying-events
+                     harness session-id warm-turn-id))
+                   (tool-followup-index
+                    (cl-loop for body in (cdr tool-turn-bodies)
+                             for index from 1
+                             unless (equal body (car tool-turn-bodies))
+                             return index))
+                   (tool-retry-bodies
+                    (seq-filter
+                     (lambda (body)
+                       (equal body (car tool-turn-bodies)))
+                     (cdr tool-turn-bodies)))
                    (first-body (car first-turn-bodies))
                    (tool-body (car tool-turn-bodies))
-                   (tool-followup-body (nth 1 tool-turn-bodies))
-                   (curation-ack-bodies (nthcdr 2 tool-turn-bodies))
+                   (tool-followup-body
+                    (and tool-followup-index
+                         (nth tool-followup-index tool-turn-bodies)))
+                   (curation-ack-bodies
+                    (and tool-followup-index
+                         (cl-loop for body in
+                                  (nthcdr (1+ tool-followup-index)
+                                          tool-turn-bodies)
+                                  unless (equal body (car tool-turn-bodies))
+                                  collect body)))
                    (curation-ack-body (car curation-ack-bodies))
                    (warm-body (car warm-turn-bodies))
                    (warm-handle (nth warm-turn-start-count ordered-handles))
@@ -3427,13 +3492,21 @@ continuation and socket assertions used by the compatibility selector."
                            (length ordered-bodies))))
               ;; The tool turn has one ordinary tool continuation.  Any
               ;; further request in that same turn, and any extra request in
-              ;; another turn, must be the linked reserved acknowledgement.
+              ;; another turn, must be either evidenced retry or a linked
+              ;; reserved acknowledgement.
               (should (= (length tool-turn-bodies)
-                         (+ 2 (length curation-ack-bodies))))
+                         (+ 2 (length tool-retry-bodies)
+                            (length curation-ack-bodies))))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       first-body (cdr first-turn-bodies)
+                       first-turn-retry-events))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       tool-body tool-retry-bodies
+                       tool-turn-retry-events))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       warm-body (cdr warm-turn-bodies)
+                       warm-turn-retry-events))
               (dolist (body curation-ack-bodies)
-                (should (e-live-e2e--context-curation-ack-body-p body)))
-              (dolist (body (append (cdr first-turn-bodies)
-                                    (cdr warm-turn-bodies)))
                 (should (e-live-e2e--context-curation-ack-body-p body)))
               (when (eq transport 'http)
                 (should curation-ack-body))
@@ -3906,6 +3979,15 @@ WebSocket and socket-replacement assertions."
                   (e-live-e2e--captured-bodies-between
                    request-bodies latest-turn-start-count
                    (length ordered-bodies)))
+                 (first-turn-retry-events
+                  (e-live-e2e--turn-retrying-events
+                   harness session-id first-turn-id))
+                 (middle-turn-retry-events
+                  (e-live-e2e--turn-retrying-events
+                   harness session-id middle-turn-id))
+                 (latest-turn-retry-events
+                  (e-live-e2e--turn-retrying-events
+                   harness session-id latest-turn-id))
                  (first-body (car first-turn-bodies))
                  (middle-body (car middle-turn-bodies))
                  (latest-body (car latest-turn-bodies))
@@ -3976,10 +4058,15 @@ WebSocket and socket-replacement assertions."
               (should latest-body)
               (should (= (length ordered-handles)
                          (length ordered-bodies)))
-              (dolist (body (append (cdr first-turn-bodies)
-                                    (cdr middle-turn-bodies)
-                                    (cdr latest-turn-bodies)))
-                (should (e-live-e2e--context-curation-ack-body-p body)))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       first-body (cdr first-turn-bodies)
+                       first-turn-retry-events))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       middle-body (cdr middle-turn-bodies)
+                       middle-turn-retry-events))
+              (should (e-live-e2e--captured-turn-extras-valid-p
+                       latest-body (cdr latest-turn-bodies)
+                       latest-turn-retry-events))
               (should (stringp (plist-get first-body :prompt_cache_key)))
               (should (equal (plist-get first-body :prompt_cache_key)
                              (plist-get middle-body :prompt_cache_key)))
