@@ -4,11 +4,13 @@
 
 * Status
 
-In-review (Tick 6 candidate; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).  This document
+In-review (repository-controlled deterministic fixed point; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).  This document
 records the remaining external limitation after Addenda 3 and 4.  The
-repository-controlled implementation is at candidate revision =f991f895= for
-the I5 checkpoint-retention dependency, awaiting independent Tick 6 review; I6
-remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  Because this
+repository-controlled implementation is at deterministic fixed point.
+Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
+closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
+unknowns; I6 remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.
+Because this
 later change is session-checkpoint-only and does not alter request/evidence
 owners, the configured Responses HTTP proof at that I6 revision remains
 reusable/current.  A compatible configured
@@ -59,11 +61,12 @@ response retention
 
 * Current implementation and external evidence
 
-The repository-controlled Addendum 3/4 implementation is at the Tick 6
-candidate revision =f991f895=; independent Tick 6 review remains pending.  I5
-checkpoint-retention dependency remediation is at that revision, while I6
-remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency
-order is:
+The repository-controlled Addendum 3/4 implementation is at deterministic
+fixed point.  Independent Tick 6 at exact candidate =835ba655=
+(implementation =f991f895=) closed =F88A4.I5= with zero P0-P3 repository
+findings and zero deterministic unknowns.  I5 checkpoint-retention dependency
+remediation is at that implementation revision, while I6 remains closed at
+=031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order is:
 
 | Commit | Boundary |
 |--------+----------|
@@ -602,8 +605,9 @@ canonical OpenAI profiles.
 
 Repository-side semantics, compatibility, cleanup, and bounded evidence
 runners are accepted through the I6 revision recorded above; the I5
-checkpoint-retention candidate is =f991f895= and independent Tick 6 review
-remains pending.  The
+checkpoint-retention remediation at =f991f895= was closed by independent Tick
+6 candidate =835ba655= with zero P0-P3 repository findings and zero
+deterministic unknowns.  The
 configured compatible Responses HTTP profile now has current external evidence;
 cache results remain separate from semantic results.
 

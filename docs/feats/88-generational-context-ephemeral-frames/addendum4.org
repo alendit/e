@@ -4,7 +4,7 @@
 
 * Status
 
-In-review (Tick 6 candidate; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
+In-review (repository-controlled deterministic fixed point; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
 
 This addendum replaces only Feature 88's promotion contract.  The model can
 keep an ephemeral input exactly, replace selected inputs with a smaller durable
@@ -47,10 +47,12 @@ current profile-aware records are listed below.
 
 * Implementation and acceptance status
 
-The repository-controlled implementation is at the Tick 6 candidate revision
-=f991f895=; independent Tick 6 review remains pending.  The I5 checkpoint
-dependency is the candidate at that revision, and I6 remains closed at
-=031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order is:
+The repository-controlled implementation is at deterministic fixed point.
+Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
+closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
+unknowns.  The I5 checkpoint dependency is at that implementation revision,
+and I6 remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The
+dependency order is:
 
 | Commit | Delivered boundary |
 |--------+--------------------|
@@ -99,7 +101,8 @@ all five identity fields agree across each scenario's material requests.
 
 The later =f991f895= change is session-checkpoint-only and does not alter
 request/evidence owners, so this configured Responses HTTP proof remains
-reusable/current.  Independent Tick 6 review remains pending.
+reusable/current.  Independent Tick 6 at exact candidate =835ba655= closed
+=F88A4.I5= with zero P0-P3 repository findings and zero deterministic unknowns.
 
 This is current external compatibility evidence for the configured Responses
 HTTP profile.  It does not exercise the exact built-in ChatGPT Codex

@@ -4,19 +4,21 @@
 
 * Status
 
-In-review (=deterministic-fixed-point=; external
-=capability-unconfirmed=).  Implementation Tock 2 resolved Tick 2's two P2
-defects in =d7e2e9ae= and =0f67b992=.  Fresh independent Tick 3 at exact
-revision =0f67b992fd0ad4c012f8982c47d8f0b5f1aeb7fb= found zero actionable
-P0--P2 findings and no unknown required deterministic cell.  The repository
-implementation is ready for deterministic acceptance.
+In-review (=deterministic-fixed-point=; configured Responses HTTP
+=capability-confirmed=; exact ChatGPT/WebSocket =capability-unconfirmed=).
+Fresh independent implementation Tick 6 at exact candidate revision
+=835ba6554addc335f8bb1f54cd90f0e5bce08f87= closes =F88A4.I5= with zero
+actionable P0--P3 repository findings and no unknown required deterministic
+cell.  The repository-controlled Addendum 3/4 implementation is at fixed
+point; Feature 88 remains =In-review= only for the separate external scope.
 
-External capability remains a separate state.  The current configured run was
-honestly =configuration-unavailable= because the built-in Codex authentication
-file was absent; that state is not a repository finding and supplies no cache
-capability proof.
+The 2026-08-27 configured =eng-ai-gateway-gpt= Responses HTTP records at
+implementation revision =031bd2a92e63f66e420cc9a4eb7984357e2dd843= are
+positive current external evidence for that exact profile.  They do not
+exercise the separately required exact built-in ChatGPT Codex WebSocket scope.
+No external =product-contract-failure= was observed.
 
-* Review boundary and decision
+* Tick 3 review boundary and decision
 
 The review covered the full Addendum 3/4 implementation and documentation
 range from the accepted Addendum 4 specification through =0f67b992=, including
@@ -276,7 +278,7 @@ compaction fence, cleanup, v3-only writes/v2 reads, bounded preparation, or
 performance contract.  External cache capability remains a distinct unproved
 cell, not a repository defect.
 
-* Verification performed
+* Tick 3 verification performed
 
 - =eldev test=: 2,361 tests; 2,353 passed, six sandbox-denied loopback tests,
   and two unrelated display skips.  All six loopback tests passed 6/6 when
@@ -308,7 +310,7 @@ Graphical validation was not applicable: this range changes core/session/loop
 and provider request semantics without a presentation-shell or redisplay
 change.
 
-* Architecture and design self-check
+* Tick 3 architecture and design self-check
 
 1. The package is now a useful deterministic stopping point and moves directly
    toward the accepted canonical durable-context design; external capability
@@ -345,7 +347,7 @@ change.
     repository tests now cover the two former identity gaps at their owning
     joins; the review found no broad mock or order-fragile substitute.
 
-* Fixed-point disposition
+* Tick 3 fixed-point disposition
 
 Deterministic fixed point at exact revision
 =0f67b992fd0ad4c012f8982c47d8f0b5f1aeb7fb=: zero actionable P0--P2 findings,
@@ -358,3 +360,519 @@ External cache capability remains separately =capability-unconfirmed= until a
 current credentialed run satisfies the documented identity and freshness
 gates; the present honest =configuration-unavailable= evidence neither proves
 nor disproves that external capability.
+
+* Implementation Tick 4 rebaseline
+
+** Decision and boundary
+
+Not at a repository-controlled fixed point.  This review covers Addenda 3 and
+4 together at exact ledger revision
+=9eae2ff5c8928763f60325d69853f201a333ecf6=, with Addendum 4 superseding only
+Addendum 3's promotion/curation contract.  The implementation owner is exact
+revision =3a287d885c8b527e7934ef18217011dc86457ecc=; the later commit changes
+only Feature 88 ledgers.  The changed source range is =bd49dbd9= and
+=3a287d88=.  The review rebaselined every owner/evidence join affected by the
+new profile-aware runner, curation-only continuation, stateless replay,
+tool-source presentation, and configured HTTP evidence.  Unaffected cells were
+carried only after a source and contradiction scan.
+
+The configured HTTP evidence is positive and fresh for the exact reviewed
+implementation: =responses-canonical-tool-heavy= reports five requests,
+14,506 total input tokens, 11,230 cached input tokens, semantic =pass=, cache
+=warm=, and result =pass=; =responses-canonical-warm-prefix= reports three
+requests, 6,204 total input tokens, 4,087 cached input tokens, semantic =pass=,
+cache =warm=, and result =pass=.  Both records identify
+=eng-ai-gateway-gpt=, Responses HTTP, =:json-false=, and =gpt-5.6-sol=.
+They clear the configured HTTP capability only.
+
+** Prior finding dispositions
+
+| Prior finding | Tick 4 disposition | Rebaseline evidence |
+|---------------+--------------------+---------------------|
+| =F88A4.I1= failed curation mutation | remains closed | pure preflight still precedes assistant append; invalid owner gates retain no-mutation |
+| =F88A3.I2= missing classified evidence | remains closed | shared finalizer owner matrix passed 6/6; supplied live selectors emitted one preserved outcome each |
+| =F88A4.I3= assistant response identity | remains closed in its assistant-bearing and tool-producing scope | preallocated assistant ID and durable tool-call bindings remain covered; the reserved-only branch below is a distinct newly added response shape |
+| =F88A3.I4= missing body shape | remains closed | one shape is still derived per captured body with optional indexed metadata |
+
+** Contract and evidence coverage
+
+| Contract cell | Tick 4 disposition | Evidence/status |
+|---------------+--------------------+-----------------|
+| =F88A4-PRESENT=, =F88A4-CURATE=, =F88A4-BOUNDS=, =F88A4-COST= | clear | bounded source splitting/labels, canonical value separation, one effect, exact limits, and estimator owners unchanged; configured tool-heavy record joins the captured tool source to v3 curation |
+| =F88A4-ATOMIC= | clear, with remediation preservation required by =F88A4.I5= | curation-only commit precedes acknowledgement dispatch; repeated empty curation is bounded; invalid paths retain the pure preflight boundary |
+| =F88A4-DURABLE= / =F88A3-COMPAT= provenance join | open: =F88A4.I5= | reserved-only response binds its record/frame/event to an unrelated earlier transcript entry |
+| =F88A3-SEM= | clear | full/stateless reconstruction contains curated durable content and new frontier while excluding consumed raw tool source, replay pair, and response lineage; focused composition and live HTTP semantic result pass |
+| =F88A3-LAYOUT=, =F88A3-DELIVERY= | clear | fresh tool marker uses the next frame-local label in both full and continuation projections; stable prefix/frontier and delivery capability remain profile-owned |
+| =F88A3-TOOL= | deterministic and configured HTTP joins clear | ordinary call/result precedes curation call/ack, acknowledgement is matching-immediate-only, one bounded canonical retry and next-turn exclusion remain covered |
+| =F88A3-CACHE= deterministic runner | open: =F88A3.I6= | result finalization and material-body capture are clear, but optional profile declarations can make effective identity fields false |
+| =F88A3-CACHE= configured Responses HTTP capability | =capability-confirmed= at =3a287d88= | two identity-matching records within the seven-day window; semantic and cache results both pass/warm |
+| =F88A3-CACHE= exact ChatGPT/WebSocket capability | required unknown: =capability-unconfirmed= | neither strict selector has exercised retained/replaced socket behavior or exact continuation scope |
+| =F88A3-CLEANUP= | clear | no durable acknowledgement/replay, response graph, settlement, retry, or old model-facing promotion writer returned |
+
+** Findings
+
+*** DONE P2 =F88A4.I5=: reserved-only curation reuses the preceding tool-call identity
+
+Contract cell: =F88A4-DURABLE=, joined to =F88A4-ATOMIC= and
+=F88A3-COMPAT=.
+
+Observed fact: the new reserved-only branch commits curation at
+=lisp/core/e-loop.el:661-700= without allocating the =response-entry-id= that
+the assistant-bearing branch allocates before preflight at
+=lisp/core/e-loop.el:1148-1167=.  The harness therefore resolves the latest
+same-turn durable assistant or tool-call entry
+(=lisp/core/e-harness.el:3177-3197=) and writes that ID into the v3 record,
+consumed frame, and event (=lisp/core/e-harness.el:3199-3240= and
+=3242-3288=).  In the canonical curation-only sequence, that latest entry is
+the ordinary tool call produced by the preceding provider response, not the
+response that produced =context-curate=.
+
+An exact-revision disposable composed harness probe completed the same three
+request shape with durable roles =(user tool-call tool assistant)= and
+returned =:record-binds-prior-tool-call t= and
+=:record-binds-final-assistant nil=.  The focused loop test proves the
+acknowledgement continuation and bound, but does not inspect the persisted
+response binding.
+
+Consequence: the selected semantic value is correct, but durable provenance
+falsely attributes curation and frame consumption to another provider
+response.  Reopen/fork can preserve that false audit link, and the previous
+assistant/tool-call identity remediation does not cover the live HTTP response
+shape that caused this review to be reopened.
+
+Minimal correction: give a successful reserved-only response its own truthful,
+audit-resolvable durable response/control entry after pure preparation succeeds
+and before the curation commit.  Pass that one preallocated ID through the v3
+record, consumed runtime frame, and consumption event.  Keep the control entry
+out of model-facing projection and ordinary tools; do not bind to the previous
+tool call or later assistant, and do not persist acknowledgement/replay,
+open-frame, settlement, or retry state.  Failed preparation or a rejected
+repeated/missing acknowledgement must append neither the control entry nor a
+curation record.
+
+Acceptance evidence: a persistent composed tool -> reserved-only curation ->
+acknowledgement -> final-assistant test must prove that the v3 record, consumed
+frame, and event share the reserved response's resolvable durable entry ID and
+differ from both the earlier tool-call and later assistant IDs across reopen
+and fork.  Assert one curation commit, bounded request count, call-before-ack
+wire order, and absence of the control entry, raw source, acknowledgement,
+replay metadata, and provider response IDs from the next ordinary projection.
+Retain the invalid/repeated/missing-ack no-mutation gates.
+
+*** DONE P2 =F88A3.I6=: external records can report declared rather than effective request identity
+
+Contract cell: =F88A3-CACHE= deterministic evidence identity and freshness.
+
+Observed fact: the record contract requires exact base URL, store mode, and
+model identity (=addendum3.org:182-200=), but the record builder prefers the
+profile base URL, reads the optional raw profile =:response-store=, and prefers
+its caller-supplied model over the captured body
+(=e2e/e-live-e2e-test.el:432-453=).  The adapter independently computes an
+effective store default (=lisp/adapters/openai/e-openai.el:643-652=), and only
+copies =:response-store= into effective options when the profile explicitly
+contains it (=lisp/adapters/openai/e-openai.el:3290-3294=).  A valid compatible
+HTTP profile may therefore omit the field while its wire body sends
+=:store :json-false=.
+
+An exact-revision probe using such a profile returned
+=(:wire-store :json-false :recorded-store "nil")=.  The passing runner identity
+tests always supply matching declarations, so they do not cover effective
+defaults or backend URL/model overrides.  The current =eng-ai-gateway-gpt=
+records explicitly identify =:json-false= and matching model/endpoint, so this
+generic runner defect does not reclassify those two observed outcomes.
+
+Consequence: another compatible configured Responses run can look
+identity-complete while naming a different store, endpoint, or model from the
+requests whose cache usage it classifies.  Such a record cannot support the
+seven-day equality/freshness decision and can create a false cache acceptance
+or invalidation.
+
+Minimal correction: derive endpoint, store mode, and model from the effective
+captured request body/metadata used by the native requester, using the adapter's
+transport default only when the wire legitimately omits an implicit value.
+Profile declarations may identify the selected profile but must not override a
+different effective request.  Require all material requests in one scenario to
+agree on these identity fields or classify the record as invalid/unavailable;
+retain content-free shapes, exactly-one finalization, and the original outcome.
+
+Acceptance evidence: add HTTP and WebSocket record tests with omitted store
+configuration plus backend URL/model overrides.  Assert the record matches the
+effective captured requester identity, store, endpoint, and model; inject a
+declared/effective mismatch and a multi-request identity change and prove they
+cannot emit a passing identity-complete record.  Retain the existing auth,
+timeout, provider, semantic, missing-usage, zero-usage, success, and partial-
+capture outcome matrix.  Because the evidence owner changes, rerun both
+configured HTTP selectors after remediation.
+
+** Verification performed
+
+- Supplied neutral gates at implementation revision =3a287d88=: compilation
+  passed; full ERT ran 2,366 tests with 2,364 expected passes, zero unexpected,
+  and two unrelated display skips.
+- Focused owner/composition command passed 8/8: curation-only continuation and
+  bound, stateless call/ack replay, tool marker/source join, tool-result
+  curation, assistant response identity, OpenAI replay ordering, and canonical
+  observe-curate-forget.
+- Focused external record/auth/finalizer execution passed 6/6.  The additional
+  effective-store probe exposed =F88A3.I6=; the composed persistent provenance
+  probe exposed =F88A4.I5=.
+- The supplied exact live records at =3a287d88= each have one outcome, nonzero
+  request count, semantic =pass=, cache =warm=, and matching configured HTTP
+  identity.  They were reused rather than duplicated because no source owner
+  changed after that implementation revision.
+- Source inspection cleared curation-only bound, full versus continuation
+  projection, immediate replay lifetime, marker/label agreement, next-turn
+  exclusion, v2 read/v3 write compatibility, cleanup, compaction fencing, and
+  absence of additional provider calls beyond the one bounded acknowledgement.
+- The unrelated modified Feature 87 plan was preserved.  The user's running
+  Emacs was not contacted, reloaded, or changed.  Graphical validation is not
+  applicable to this core/session/adapter/evidence range.
+
+** Architecture classification and follow-up delta
+
+Both findings are local boundary defects, not reasons for a broader framework.
+For =F88A4.I5=, the loop still owns response ordering and preallocation, session
+owns the smallest durable audit fact, and harness composes preparation/commit;
+the correction must not turn provider replay or runtime frame settlement into
+durable semantic state.  For =F88A3.I6=, effective request identity belongs at
+the outer adapter/evidence boundary and should be derived from the request that
+actually crossed that boundary, not duplicated from optional configuration.
+Dependency direction, core side-effect isolation, provider-neutral portable
+messages, bounded 16-source/8,192-byte preparation, v2 read-only compatibility,
+and general socket ownership remain sound.  No new =AGENTS.md= architectural
+guidance is warranted.
+
+The current Addendum 3, Addendum 4, plan, limitations, architecture, and index
+status text correctly separates configured HTTP success from the unconfirmed
+ChatGPT/WebSocket scope, but their =deterministic-fixed-point= and accepted-
+runner claims are stale while =F88A4.I5= and =F88A3.I6= remain open.  Update
+those ledgers after remediation and fresh evidence; do not describe the exact
+ChatGPT/WebSocket unknown as a repository or product failure.
+
+** Fixed-point disposition
+
+Two actionable P2 findings remain.  =F88A4-DURABLE=/=F88A3-COMPAT= provenance
+and the generic =F88A3-CACHE= identity runner are not cleared, so the
+repository-controlled implementation is not at fixed point at
+=9eae2ff5c8928763f60325d69853f201a333ecf6=.  The configured Responses HTTP
+capability is independently =capability-confirmed= by current positive records.
+The exact ChatGPT Codex WebSocket retained/replaced-socket and continuation
+scope remains required but =capability-unconfirmed=; keeping Feature 88
+=In-review= until that scope is current or reusable matches the normative
+contract.  Once the two repository findings are closed, deterministic fixed
+point may again be reported separately from that external completion gate.
+
+* Implementation Tick 5 incremental closure review
+
+** Decision and exact boundary
+
+Not at deterministic fixed point.  This incremental review covers exact ledger
+revision =ac6a1d6d00b7ed503345f65f87e003d294093f30=, implementation commits
+=81bf0f08= and =031bd2a92e63f66e420cc9a4eb7984357e2dd843=, and only the
+contract/evidence joins invalidated by Tick 4's =F88A4.I5= and =F88A3.I6=.
+Addendum 4 continues to supersede Addendum 3 only for promotion/curation.
+Previously cleared cells remain carried after a dependency contradiction scan.
+
+=F88A3.I6= is closed at its evidence owner.  =F88A4.I5= is correct on the
+immediate composed path but incomplete across the session's existing bounded
+resume checkpoint: the retained v3 record can outlive the audit entry that its
+=:response-entry-id= names.  One actionable P2 therefore remains.
+
+** Glossary and prose authority
+
+The selected glossary is =docs/references/runtime_concepts.org=.  This review
+accessed its =harness=, =session=, =turn=, =model-facing tool=, and =backend
+adapter= entries; Addenda 3 and 4 remain authoritative for Feature 88 frame,
+curation, continuation, and evidence semantics.  No glossary term changed or
+was added.  Terminology remains continuous with Tick 4, and one
+=clear-technical-writing= pass was applied after the findings and evidence
+dispositions were fixed.
+
+** Prior-finding disposition and affected coverage
+
+| Cell/finding | Tick 5 disposition | Current evidence |
+|--------------+--------------------+------------------|
+| =F88A4.I5= / =F88A4-DURABLE= / =F88A3-COMPAT= | incomplete; P2 remains | distinct control ID is correct through immediate record/frame/event and reopen, but bounded checkpoint retention can remove the control while retaining its v3 reference |
+| =F88A4-ATOMIC= / =F88A3-TOOL= | clear after impact scan | pure preflight precedes control/curation mutation; one commit precedes acknowledgement dispatch; repeated/missing acknowledgement paths append neither; focused loop/harness composition passes |
+| =F88A3-SEM= / projection | clear after impact scan | control entry, raw source, call/ack replay, and provider lineage remain absent from later ordinary and fork projections |
+| =F88A3.I6= / =F88A3-CACHE= runner | closed | effective captured endpoint/base/model/store/transport/requester own acceptance; incomplete, declaration-mismatched, and drifting identities cannot produce a passing record |
+| =F88A3-CACHE= configured Responses HTTP | =capability-confirmed= | two fresh exact identity/scenario/semantic/cache =pass/pass/pass/warm= records at =031bd2a9= |
+| =F88A3-CACHE= exact ChatGPT/WebSocket | required unknown: =capability-unconfirmed= | strict retained/replaced-socket and continuation selectors remain unexercised; this is neither a repository finding nor a product failure |
+| Other A3/A4 cells | carried clear | neither remediation changes source presentation, curation values/bounds, delivery, cleanup, v2 read compatibility, compaction semantics, or unrelated transports |
+
+** Finding
+
+*** =F88A4.I5= incomplete closure: checkpoint retention can orphan the reserved-response audit identity
+
+Contract cell: =F88A4-DURABLE= joined to =F88A3-COMPAT=.  This is incomplete
+closure of Tick 4's finding, not a separate defect identity.
+
+Observed fact: =81bf0f08= correctly reserves the curation-only response ID
+before pure preflight (=lisp/core/e-loop.el:661-707=), carries it through the
+prepared v3 record, and appends one audit-only =context-curation-response=
+activity entry before the semantic record and frame-consumption event
+(=lisp/core/e-harness.el:3199-3305=;
+=lisp/core/e-session.el:3486-3552=).  The public composed test proves that the
+control, record, runtime frame, and event share the ID and that neither the
+prior tool call nor later assistant does (=test/e-harness-test.el:6092-6363=).
+
+The session checkpoint owner, however, retains only the latest 64 ordinary
+activity events (=lisp/core/e-session.el:117-120= and =1355-1365=).  Active
+generation and curation entries are pinned independently, but their
+=:response-entry-id= dependency is not added to the checkpoint's required IDs
+(=lisp/core/e-session.el:1379-1403=).  An exact-revision reproduction appended
+an active generation, reserved-response control, matching v3 curation, and 65
+later activity events, then wrote a resume checkpoint and reopened it.  The
+result was:
+
+#+begin_example
+(:record-response-id "reserved-response"
+ :control-resolves nil
+ :activity-count 64)
+#+end_example
+
+Consequence: semantic curation still reopens correctly, but its promised
+audit-resolvable durable response provenance becomes a dangling ID after
+ordinary checkpoint pressure.  Immediate reopen/fork evidence therefore does
+not establish the required state lifetime.
+
+Minimal correction: make resume-checkpoint retention close over the dependency
+from every retained active v3 curation to a matching
+=context-curation-response= entry.  Pin only those referenced audit entries in
+addition to the ordinary activity tail; do not raise the global activity limit,
+retain all activity, copy controls into clean forks, or introduce frame,
+acknowledgement, settlement, retry, or crash-recovery state.
+
+Acceptance evidence: at the default limit, prove the exact 63/64 later-event
+boundary and a larger tail through checkpoint write and persistent reopen.  A
+retained active v3 record's response ID must resolve to exactly one audit-only
+control with matching payload; unrelated old activity remains bounded, the
+record and portable projection remain unchanged, and clean fork projection
+contains neither the control nor its ID.  Retain the existing invalid,
+repeated, and missing-ack no-mutation tests.
+
+** =F88A3.I6= closure evidence
+
+The record builder now derives each request identity from captured body and
+request metadata, requires endpoint/model/store completeness, rejects
+cross-request drift and profile-declaration mismatch, and changes an otherwise
+passing scenario to =identity-unavailable= or =identity-invalid= when required
+(=e2e/e-live-e2e-test.el:87-219= and =498-713=).  Partial body capture still
+produces one content-free shape and one classified record; auth, timeout,
+provider, semantic, usage-unavailable, explicit-zero, and successful outcomes
+remain distinct and preserve their original test outcome.
+
+The fresh exact configured records at implementation revision =031bd2a9= use
+base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+endpoint =/responses=, Responses HTTP, =:json-false=,
+=e-openai-codex--http-request-start=, and =gpt-5.6-sol=.  Both report identity,
+scenario, semantic, and result =pass= with cache =warm=:
+
+| Scenario | Requests | Total input | Cached input |
+|----------+----------+-------------+--------------|
+| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 |
+| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 |
+
+These records are current for the configured HTTP capability under the
+seven-day freshness rule.  They do not supply evidence for the strict
+ChatGPT/WebSocket scope.
+
+** Verification
+
+- Neutral exact-owner gates: compile passed; full ERT ran 2,366 tests with
+  2,364 expected passes, zero unexpected, and two unrelated display skips.
+- Deterministic E2E ran 34 tests: 15 passed, 19 expected live skips, zero
+  unexpected.
+- Independent focused I5 impact-cone execution passed 14/14 across harness,
+  loop, session codecs, canonical composition, and retry.  The checkpoint-
+  pressure reproduction above then proved the remaining lifetime defect.
+- Independent I6 evidence/auth/finalizer execution passed 12/12, including
+  effective HTTP/WebSocket identity, legitimate implicit/default handling,
+  incomplete capture, declaration mismatch, drift, bounded content, and
+  exactly-one outcome preservation.
+- The exact live HTTP records were reused rather than duplicated; they are at
+  the current implementation owner revision and the later ledger commit changes
+  no source/evidence owner.
+- The unrelated modified Feature 87 plan was preserved.  The user's running
+  Emacs was not contacted, reloaded, or changed.  Graphical validation is not
+  applicable to this session/adapter/evidence boundary.
+
+** Architecture and follow-up disposition
+
+The audit control uses the existing session activity family, remains outside
+the transcript/model projection, and adds no provider request or response
+graph.  That ownership is cohesive and the state lifetime is the smallest
+accepted durable audit lifetime.  The incomplete part is local to the session
+checkpoint dependency closure: a retained record must retain the durable entry
+it names.  Correct that owner rather than broadening activity retention or
+adding a compatibility path.  The I6 correction remains properly isolated at
+the outer adapter/evidence boundary and introduces no core dependency.
+
+No architectural follow-up is created or accepted: =F88A4.I5= is a current
+contract defect and cannot be deferred to obtain fixed point.  No new
+=AGENTS.md= guidance is needed.  Current architecture and feature ledgers
+accurately describe the implementation and keep Tick 5 pending; after a later
+zero-finding Tick they must replace that pending status without conflating the
+still-unconfirmed ChatGPT/WebSocket scope with a product failure.
+
+** Fixed-point disposition
+
+One actionable P2 remains, so revision
+=ac6a1d6d00b7ed503345f65f87e003d294093f30= is not at deterministic fixed
+point.  =F88A3.I6= and the generic cache-evidence runner are cleared, and the
+configured Responses HTTP capability is independently =capability-confirmed=.
+The exact ChatGPT Codex WebSocket retained/replaced-socket and continuation
+scope remains required but =capability-unconfirmed=.  Feature 88 correctly
+remains =In-review= and must not be marked =Done=.
+
+* Implementation Tick 6 incremental closure review
+
+** Decision and exact boundary
+
+Deterministic fixed point.  This review covers exact candidate revision
+=835ba6554addc335f8bb1f54cd90f0e5bce08f87= and implementation remediation
+=f991f895cb65af4a7a15a9b5847f6da4814c1427=.  The candidate commit changes
+only Feature 88 status/evidence ledgers; the remediation changes only
+=lisp/core/e-session.el= and =test/e-session-test.el=.  The review therefore
+invalidated Tick 5's =F88A4.I5= checkpoint-lifetime evidence and its direct
+=F88A4-DURABLE=/=F88A3-COMPAT=, projection, fork, activity-bound, and
+compatibility joins.  All other cleared cells were carried after a dependency
+contradiction scan.
+
+=F88A4.I5= is closed.  Zero actionable P0--P3 repository findings remain, and
+there is no unknown required repository-controlled cell.  The exact built-in
+ChatGPT Codex WebSocket capability remains an external unknown and is not a
+repository finding or product-contract failure.
+
+** Glossary and prose authority
+
+The selected glossary remains =docs/references/runtime_concepts.org=; its
+=session=, =turn=, =harness=, and =backend adapter= meanings remain unchanged.
+Addenda 3 and 4 remain authoritative for Feature 88 curation, projection,
+continuation, and evidence terminology.  No glossary change is required.  A
+=clear-technical-writing= pass was applied after the evidence disposition was
+fixed.
+
+** Prior-finding disposition and affected coverage
+
+| Cell/finding | Tick 6 disposition | Current evidence |
+|--------------+--------------------+------------------|
+| =F88A4.I5= / =F88A4-DURABLE= / =F88A3-COMPAT= | closed | every retained active-v3 curation can retain only its exact matching audit control beyond the ordinary activity tail; checkpoint reopen resolves one matching ID and payload |
+| Activity bound and state lifetime | clear | 63 later events need no extra pin; at 64 and a 129-event later tail, exactly 64 ordinary events plus one referenced control remain; unrelated old activity is excluded |
+| =F88A3-SEM= / projection | clear | curation records and portable projection compare equal across reopen; the audit control does not become model input |
+| Fork/branch join | clear | a clean fork preserves selected semantic content but contains neither the source control nor its response ID |
+| V2 and other activity compatibility | clear | only active records whose version equals the v3 curation constant contribute dependency IDs; entry type, event type, path, ID, and payload must all match, so v2, inactive records, and unrelated activity are not pinned |
+| =F88A3.I6= / =F88A3-CACHE= runner | remains closed | the checkpoint-only remediation changes no adapter, request, scenario, finalizer, or evidence-identity owner |
+| Configured Responses HTTP capability | =capability-confirmed= | the current =031bd2a9= identity/semantic/result =pass= records with cache =warm= remain reusable |
+| Exact ChatGPT/WebSocket capability | required external unknown: =capability-unconfirmed= | retained/replaced-socket and exact continuation selectors remain unexercised; Feature status stays =In-review= |
+| Other Addendum 3/4 cells | carried clear | no changed dependency reaches presentation, curation values or bounds, atomic response ordering, tool continuation, cleanup, compaction semantics, or provider request construction |
+
+** =F88A4.I5= closure evidence
+
+The checkpoint owner retains the normal last-64 activity tail unchanged
+(=lisp/core/e-session.el:1355-1365=).  It now derives dependency IDs only from
+curation records on the active generation whose version is exactly the v3
+curation version (=lisp/core/e-session.el:1379-1394=).  It selects an additional
+entry only when that entry is an on-path =activity-event= with event type
+=context-curation-response=, its durable ID is referenced by the record, and
+its payload names that same ID (=lisp/core/e-session.el:1395-1425=).  The
+control then joins the existing checkpoint required-ID closure; the change does
+not alter session projection, the curation record, fork construction, global
+activity limits, or any provider owner.
+
+The persistent owner test exercises the default limit exactly
+(=test/e-session-test.el:1516-1704=).  With 63 later events the checkpoint has
+64 activity records and the control remains in the ordinary tail.  The 64th
+later event evicts it from that tail, after which the dependency pin yields 64
+ordinary records plus the one control.  After 129 later events the count remains
+65, the newest ordinary event is retained, and older unrelated activity is
+absent.  A written checkpoint then reopens with exactly one control whose ID
+and payload match the active v3 record.  The curation record and portable
+projection are unchanged.  A clean fork retains the selected meaning but has
+neither the control entry, its ID, nor a =context-curation-response= activity
+event.
+
+The explicit version predicate excludes v2 records from pinning, while the
+active-generation source excludes historical v3 records.  The exact event and
+payload predicates exclude all other activity.  This is the smallest durable
+dependency closure requested by Tick 5; it adds no broad retention,
+compatibility shim, frame settlement, acknowledgement/replay persistence, or
+response graph.
+
+** Findings
+
+None.  The incremental audit found zero actionable P0--P3 repository defects
+and no unknown required deterministic evidence cell.
+
+** Verification
+
+- Authoritative exact-owner evidence at =f991f895=: =eldev compile= passed;
+  full =eldev test= ran 2,367 tests with 2,365 expected passes, zero unexpected,
+  and two expected skips outside this boundary; the focused checkpoint test
+  passed 1/1.
+- Independent focused execution at candidate =835ba655= passed 3/3 with zero
+  unexpected results:
+
+  #+begin_example
+  eldev test e-session-test-checkpoint-pins-active-curation-response-control \
+    e-session-test-checkpoint-retains-model-path-and-bounds-audit-state \
+    e-session-test-context-v3-append-reopen-projection-and-fork
+  #+end_example
+
+  This covers the new dependency, the unchanged generic activity bound, and
+  mixed v2/v3 reopen/projection/fork compatibility.
+- Revision and diff inspection confirmed that =835ba655= is ledgers-only and
+  that no adapter, harness, loop, E2E scenario, request-identity, semantic, or
+  cache-classification owner changed after the current configured HTTP evidence
+  revision.  Reusing those records is therefore valid under the freshness and
+  identity rules.
+- The current configured records at =031bd2a9= remain: warm-prefix, 3 requests,
+  6,204 total input and 4,087 cached input; tool-heavy, 5 requests, 14,453 total
+  input and 11,240 cached input.  Both use =eng-ai-gateway-gpt=, Responses HTTP,
+  =:json-false=, and =gpt-5.6-sol= and report identity, semantic, and result
+  =pass= with cache =warm=.  They do not cover exact ChatGPT/WebSocket behavior.
+- The unrelated modified Feature 87 plan was preserved.  The user's running
+  Emacs was not contacted, reloaded, or changed.  Graphical validation is not
+  applicable to this core session-checkpoint boundary.
+
+** Architecture and follow-up disposition
+
+The correction is owned by =e-session=, where resume-checkpoint durability and
+the referenced audit entry already live.  It closes one real record-to-entry
+dependency without moving policy into the loop, harness, provider adapter, or
+presentation.  Core/provider dependency direction is unchanged, side effects
+remain at the persistent-session boundary, model-facing interfaces do not grow,
+and no dependency pin survives beyond the active v3 record that requires it;
+ordinary bounded activity retention remains independent.  The existing
+activity scan gains one narrowly filtered dependency selection; it
+does not raise the activity limit, add provider work, or change request cost.
+V2 remains a read-only decoder path rather than a new writer or compatibility
+alias, and malformed or missing candidates are neither synthesized nor used to
+broaden retention.
+
+The required design self-check therefore remains clear: this is a useful
+stopping point toward provider-neutral durable context; the stable
+record/control relation is modeled directly; session has one cohesive reason
+to own it; coupling, interfaces, and provider dependencies do not increase;
+there is no inward side effect, broader state lifetime, performance regression,
+unsupported substitute, new legacy path, or swallowed error; and the focused
+owner test changes narrowly with this design.  No =AGENTS.md= architecture
+guidance or deferred architecture follow-up is warranted.
+
+The feature ledgers now record the zero-finding Tick 6 closure while retaining
+=In-review= and the exact ChatGPT/WebSocket =capability-unconfirmed= status.
+Their repository-controlled fixed-point wording remains separate from the
+external gate and agrees with this review.
+
+** Fixed-point disposition
+
+Deterministic fixed point at exact candidate revision
+=835ba6554addc335f8bb1f54cd90f0e5bce08f87= (implementation owner
+=f991f895cb65af4a7a15a9b5847f6da4814c1427=): =F88A4.I5= is closed, zero
+actionable P0--P3 repository findings remain, and every affected deterministic
+cell is cleared.  The configured Responses HTTP capability remains independently
+=capability-confirmed=.  The exact built-in ChatGPT Codex WebSocket
+retained/replaced-socket and continuation scope remains
+=capability-unconfirmed=, so Feature 88 correctly remains =In-review= and must
+not be marked =Done=.

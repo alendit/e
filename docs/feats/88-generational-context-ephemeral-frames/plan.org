@@ -3,7 +3,7 @@
 
 * Status
 
-In-review (Tick 6 candidate; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
+In-review (repository-controlled deterministic fixed point; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
 
 This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
 semantic context visibility, model-directed curation, and cache-safe canonical
@@ -17,9 +17,10 @@ Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
 tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; the persisted =context-promotion= family remains readable as version 2
-only.  The repository-controlled implementation is at the Tick 6 candidate
-revision =f991f895=, which adds I5 checkpoint-retention dependency pinning and
-awaits independent Tick 6 review.  I6 remains closed at
+only.  The repository-controlled implementation is at deterministic fixed
+point.  Independent Tick 6 at exact candidate =835ba655= (implementation
+=f991f895=) closed =F88A4.I5= with zero P0-P3 repository findings and zero
+deterministic unknowns.  I6 remains closed at
 =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  Because this later change is
 session-checkpoint-only and does not alter request/evidence owners, the
 configured Responses HTTP proof at that revision remains reusable/current.
@@ -1121,7 +1122,9 @@ latency: that mechanism is outside this feature.
   =pass=, cache =warm=, and result =pass= at revision
   =031bd2a92e63f66e420cc9a4eb7984357e2dd843=; the later =f991f895=
   checkpoint-only change does not alter request/evidence owners, so this proof
-  remains reusable/current.  Independent Tick 6 review remains pending.
+  remains reusable/current.  Independent Tick 6 at exact candidate
+  =835ba655= closed =F88A4.I5= with zero P0-P3 repository findings and zero
+  deterministic unknowns.
 - The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
   response-continuation claims were not exercised by that HTTP run and remain
   unconfirmed; this keeps the plan =In-review= rather than =Done=.
