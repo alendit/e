@@ -65,9 +65,24 @@ This is runner configuration, not a Feature 88 semantic or cache contract.")
   "e88-cache-evidence-v1"
   "Revision of the bounded machine-readable external evidence record.")
 
-(defconst e-live-e2e--external-requester-identity
-  "e-openai-codex--websocket-request-start"
-  "Native requester named in external evidence records.")
+(defun e-live-e2e--profile-auth-available-p (profile)
+  "Return non-nil when PROFILE's adapter auth source is available.
+Codex-managed profiles use the auth file consumed by the adapter.  Other
+profiles use their declared non-empty environment-variable key; the token is
+never returned or recorded here."
+  (if (plist-get profile :requires-openai-auth)
+      (file-readable-p (e-openai-codex-auth-file))
+    (let ((env-key (plist-get profile :env-key)))
+      (and (stringp env-key)
+           (not (string-empty-p env-key))
+           (let ((token (getenv env-key)))
+             (and (stringp token) (not (string-empty-p token))))))))
+
+(defun e-live-e2e--responses-identity (profile)
+  "Return the truthful Responses transport/requester pair for PROFILE."
+  (if (eq (plist-get profile :responses-transport) 'websocket)
+      '("responses-websocket" . "e-openai-codex--websocket-request-start")
+    '("responses-http" . "e-openai-codex--http-request-start")))
 
 (defun e-live-e2e--cache-scenario-timeout ()
   "Return the predeclared total bound for a cache scenario."
@@ -323,6 +338,10 @@ unavailable."
          (request-metadata (or request-metadata nil))
          (diagnostics
           (mapcar #'e-live-e2e--request-diagnostics request-metadata))
+         (responses-identity (e-live-e2e--responses-identity profile))
+         (websocket-p
+          (equal (cdr responses-identity)
+                 "e-openai-codex--websocket-request-start"))
          (shapes
           (cl-loop for body in request-bodies
                    for index from 1
@@ -332,20 +351,29 @@ unavailable."
                    (append shape
                            (list :request-index index
                                  :connection-id
-                                 (plist-get metadata :websocket-connection-id)
+                                 (and websocket-p
+                                      (plist-get metadata
+                                                 :websocket-connection-id))
                                  :websocket-reused
-                                 (and (plist-get metadata :websocket-reused) t)
+                                 (and websocket-p
+                                      (plist-get metadata :websocket-reused)
+                                      t)
                                  :websocket-reuse-count
-                                 (plist-get metadata :websocket-reuse-count)
+                                 (and websocket-p
+                                      (plist-get metadata
+                                                 :websocket-reuse-count))
                                  :websocket-request-mode
-                                 (plist-get metadata :websocket-request-mode)
+                                 (and websocket-p
+                                      (plist-get metadata
+                                                 :websocket-request-mode))
                                  :prompt-layout-revision
                                  (plist-get metadata :prompt-layout-revision)))))
          (connection-ids
-          (delete-dups
-           (delq nil (mapcar (lambda (metadata)
-                               (plist-get metadata :websocket-connection-id))
-                             diagnostics))))
+          (when websocket-p
+            (delete-dups
+             (delq nil (mapcar (lambda (metadata)
+                                 (plist-get metadata :websocket-connection-id))
+                               diagnostics)))))
          (input-token-values
           (delq nil (mapcar (lambda (payload)
                               (and (numberp (plist-get payload :input-tokens))
@@ -381,9 +409,9 @@ unavailable."
           :provider-id (format "%s" provider)
           :profile-id profile-name
           :base-url-identity base-url
-          :transport "responses-websocket"
+          :transport (car responses-identity)
           :store-mode (format "%s" (plist-get profile :response-store))
-          :native-requester e-live-e2e--external-requester-identity
+          :native-requester (cdr responses-identity)
           :model-id (or model (plist-get (car request-bodies) :model)
                         "unavailable")
           :prompt-layout-revision (format "%S" prompt-layout-revision)
@@ -425,9 +453,12 @@ separate in that record."
     (condition-case caught
         (setq value
               (progn
-                (unless (file-readable-p (e-openai-codex-auth-file))
+                (unless (e-live-e2e--profile-auth-available-p profile)
                   (setq configuration-unavailable t)
-                  (ert-skip "ChatGPT Codex auth.json is unavailable."))
+                  (ert-skip
+                   (if (plist-get profile :requires-openai-auth)
+                       "ChatGPT Codex auth.json is unavailable."
+                     "Configured OpenAI token environment auth is unavailable.")))
                 (funcall thunk)))
       (error (setq condition caught)))
     (let* ((state (or (ignore-errors (funcall capture)) nil))
@@ -504,6 +535,7 @@ separate in that record."
               :provider 'codex
               :profile '(:name "ChatGPT Codex"
                          :base-url "https://chatgpt.example/codex"
+                         :responses-transport websocket
                          :response-store :json-false)
               :model "gpt-5.6-sol"
               :request-bodies
@@ -528,7 +560,7 @@ separate in that record."
                        "chatgpt-canonical-warm-prefix"))
         (should (equal (plist-get record :provider-id) "codex"))
         (should (equal (plist-get record :native-requester)
-                       e-live-e2e--external-requester-identity))
+                       "e-openai-codex--websocket-request-start"))
         (should (equal (plist-get record :prompt-cache-key-derivation-revision)
                        "e-harness-prompt-cache-key-pcctx2"))
         (should (equal (plist-get record :total-input-tokens) 10))
@@ -542,6 +574,8 @@ separate in that record."
             :provider 'codex
             :profile '(:name "ChatGPT Codex"
                        :base-url "https://chatgpt.example/codex"
+                       :responses-transport websocket
+                       :requires-openai-auth t
                        :response-store :json-false)
             :model "gpt-5.6-sol"
             :timeout 120.0
@@ -586,6 +620,8 @@ separate in that record."
            :provider 'codex
            :profile '(:name "ChatGPT Codex"
                       :base-url "https://chatgpt.example/codex"
+                      :responses-transport websocket
+                      :requires-openai-auth t
                       :response-store :json-false)
            :model "gpt-5.6-sol"
            :timeout 120.0
@@ -650,6 +686,7 @@ separate in that record."
            :provider 'codex
            :profile '(:name "ChatGPT Codex"
                       :base-url "https://chatgpt.example/codex"
+                      :responses-transport websocket
                       :response-store :json-false)
            :model "gpt-5.6-sol"
            :request-bodies bodies
@@ -672,6 +709,175 @@ separate in that record."
       (should-not (plist-get (nth 2 shapes) key)))
     (should (equal (plist-get record :socket-connection-ids)
                    '("socket-1")))))
+
+(ert-deftest e-live-e2e-test-external-scenario-uses-profile-token-auth ()
+  "A token-auth Responses profile does not require the Codex auth file."
+  (let ((process-environment (copy-sequence process-environment))
+        records
+        ran)
+    (setenv "ENG_AI_MODEL_GW_KEY" "gateway-test-secret")
+    (cl-letf (((symbol-function 'file-readable-p) (lambda (&rest _) nil))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (should
+       (equal
+        (e-live-e2e--run-external-scenario
+         :scenario 'gateway-auth
+         :provider 'eng-ai-gateway-gpt
+         :profile '(:name "Engineering AI gateway"
+                    :wire-api responses
+                    :responses-transport http
+                    :requires-openai-auth nil
+                    :env-key "ENG_AI_MODEL_GW_KEY")
+         :model "gpt-5.6-sol"
+         :timeout 120.0
+         :started-at 100.0
+         :capture (lambda () nil)
+         :thunk (lambda () (setq ran t) 'gateway-ran))
+        'gateway-ran)))
+    (should ran)
+    (should (= (length records) 1))
+    (should (equal (plist-get (car records) :result) "unavailable"))
+    (should-not
+     (string-match-p "gateway-test-secret"
+                     (json-encode
+                      (e-live-e2e--json-plist (car records)))))))
+
+(ert-deftest e-live-e2e-test-external-scenario-missing-token-is-configuration-unavailable ()
+  "A token profile with no usable declared environment key is unavailable."
+  (let ((process-environment (copy-sequence process-environment))
+        records
+        ran
+        condition)
+    (setenv "ENG_AI_MODEL_GW_KEY" nil)
+    (cl-letf (((symbol-function 'file-readable-p) (lambda (&rest _) nil))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (condition-case caught
+          (e-live-e2e--run-external-scenario
+           :scenario 'gateway-auth
+           :provider 'eng-ai-gateway-gpt
+           :profile '(:name "Engineering AI gateway"
+                      :wire-api responses
+                      :responses-transport http
+                      :requires-openai-auth nil
+                      :env-key "ENG_AI_MODEL_GW_KEY")
+           :model "gpt-5.6-sol"
+           :timeout 120.0
+           :started-at 100.0
+           :capture (lambda () nil)
+           :thunk (lambda () (setq ran t)))
+        (error (setq condition caught))))
+    (should condition)
+    (should (eq (car condition) 'ert-test-skipped))
+    (should-not ran)
+    (should (= (length records) 1))
+    (should (equal (plist-get (car records) :result)
+                   "configuration-unavailable"))))
+
+(ert-deftest e-live-e2e-test-external-scenario-codex-auth-still-uses-file ()
+  "Codex-managed profiles use their readable auth file, not token fallback."
+  (let ((process-environment (copy-sequence process-environment))
+        (file-readable nil)
+        records
+        ran
+        condition)
+    (setenv "ENG_AI_MODEL_GW_KEY" "must-not-be-used")
+    (cl-letf (((symbol-function 'file-readable-p)
+               (lambda (&rest _) file-readable))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (condition-case caught
+          (e-live-e2e--run-external-scenario
+           :scenario 'codex-auth
+           :provider 'codex
+           :profile '(:name "ChatGPT Codex"
+                      :wire-api responses
+                      :responses-transport websocket
+                      :requires-openai-auth t
+                      :env-key "ENG_AI_MODEL_GW_KEY")
+           :model "gpt-5.6-sol"
+           :timeout 120.0
+           :started-at 100.0
+           :capture (lambda () nil)
+           :thunk (lambda () (setq ran t) 'codex-ran))
+        (error (setq condition caught)))
+    (should condition)
+    (should (eq (car condition) 'ert-test-skipped))
+    (should-not ran)
+    (should (equal (plist-get (car records) :result)
+                   "configuration-unavailable"))
+    (setq file-readable t)
+    (setq records nil)
+    (setq condition nil)
+    (should
+     (equal
+      (e-live-e2e--run-external-scenario
+       :scenario 'codex-auth
+       :provider 'codex
+       :profile '(:name "ChatGPT Codex"
+                  :wire-api responses
+                  :responses-transport websocket
+                  :requires-openai-auth t
+                  :env-key "ENG_AI_MODEL_GW_KEY")
+       :model "gpt-5.6-sol"
+       :timeout 120.0
+       :started-at 100.0
+       :capture (lambda () nil)
+       :thunk (lambda () (setq ran t) 'codex-ran))
+      'codex-ran))
+    (should ran)
+    (should (= (length records) 1)))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-reports-profile-identity ()
+  "External records distinguish Responses HTTP and WebSocket identities."
+  (dolist (case
+           '((http "responses-http" "e-openai-codex--http-request-start")
+             (websocket "responses-websocket"
+                         "e-openai-codex--websocket-request-start")))
+    (let* ((transport (nth 0 case))
+           (body `(:model "gpt-5.6-sol"
+                    :input [(:type "message" :role "user"
+                             :content "private captured content")]
+                    :tools []))
+           (metadata
+            (if (eq transport 'websocket)
+                '((:diagnostics (:websocket-connection-id "socket-1"
+                               :websocket-reused t
+                               :websocket-reuse-count 1
+                               :websocket-request-mode full
+                               :prompt-layout-revision "layout-ws")))
+              '((:transport url-retrieve
+                 :websocket-connection-id "not-an-http-socket"
+                 :prompt-layout-revision "layout-http"))))
+           (record
+            (e-live-e2e--external-evidence-record
+             :scenario 'profile-identity
+             :provider 'profile-provider
+             :profile (list :name "Profile"
+                            :wire-api 'responses
+                            :responses-transport transport
+                            :base-url "https://provider.example"
+                            :response-store :json-false)
+             :model "gpt-5.6-sol"
+             :request-bodies (list body)
+             :request-metadata metadata
+             :timeout 120.0
+             :started-at 100.0
+             :ended-at 100.5))
+           (encoded (json-encode (e-live-e2e--json-plist record)))
+           (shape (car (plist-get record :material-request-shape))))
+      (should (equal (plist-get record :transport) (nth 1 case)))
+      (should (equal (plist-get record :native-requester) (nth 2 case)))
+      (if (eq transport 'websocket)
+          (progn
+            (should (equal (plist-get record :socket-connection-ids)
+                           '("socket-1")))
+            (should (equal (plist-get shape :connection-id) "socket-1")))
+        (should-not (plist-get record :socket-connection-ids))
+        (should (plist-member shape :connection-id))
+        (should-not (plist-get shape :connection-id)))
+      (should-not (string-match-p "private captured content" encoded)))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-classifies-injected-failures ()
   "The shared finalizer records failures before preserving their outcome."
@@ -699,6 +905,8 @@ separate in that record."
                :provider 'codex
                :profile '(:name "ChatGPT Codex"
                           :base-url "https://chatgpt.example/codex"
+                          :responses-transport websocket
+                          :requires-openai-auth t
                           :response-store :json-false)
                :model "gpt-5.6-sol"
                :timeout 120.0
