@@ -4,7 +4,8 @@
 
 * Status
 
-Planned.  This addendum is awaiting independent specification review.
+Planned.  Review 01 findings are remediated in the current candidate; a fresh
+independent specification Tick remains required before implementation.
 
 This addendum extends Addendum 4 without changing its curation semantics.  It
 adds a model-facing affordance contract and a naturalistic external adoption
@@ -50,7 +51,7 @@ or its schema.
 | Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External compatibility evidence | Telemetry | Status |
 |-------------+--------------+---------------------+-----------------------+------------------------+---------------------------------+-----------+--------|
 | =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, what omission means, and when no curation call is useful. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | proposed |
-| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= for the configured compatible Responses profile; exact ChatGPT/WebSocket scope remains separate | invocation choice, disposition kind, token usage, and latency are observational | proposed; initial external evidence required |
+| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= for the configured compatible Responses profile; exact ChatGPT/WebSocket scope remains separate | population-level invocation frequency, exact-versus-summary distribution, token/cache usage, and latency are observational; whether this acceptance scenario produced one valid reserved effect is contract evidence | proposed; initial external evidence required |
 | =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker and reserved-tool description revise material request identity, so prior warm-prefix evidence is not reused until the configured canonical scenarios pass with the new identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | rerun configured Responses HTTP canonical warm-prefix and tool-heavy scenarios; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | inherited contract; external evidence stale after implementation |
 
 * Decision
@@ -99,14 +100,16 @@ tool.  The first user prompt has this semantic shape:
 
 #+begin_quote
 Use the deterministic lookup tool to obtain the current adoption sentinel.
-Keep that value available for a question in my next message, do not reveal it
-yet, and reply only READY.
+I will ask about that value in my next message.  Do not reveal it yet; reply
+only READY.
 #+end_quote
 
 The actual prompt may name the ordinary deterministic tool so the source is
 reproducible.  It must not contain =context-curate=, =curate=, =keep=,
 =summary=, =summaries=, =source label=, or a numeric source reference.  The
 ordinary tool returns a unique bounded sentinel as one curatable source.
+The negative inventory is applied case-insensitively to the actual prompt after
+the ordinary-tool name is substituted.
 
 The valid first turn must call the ordinary tool and then autonomously emit one
 valid reserved curation effect disposing that source.  Either exact retention
@@ -123,16 +126,27 @@ the existing semantic composition separately from mere function-call
 serialization.
 
 The scenario emits one bounded, content-free, identity-complete evidence
-record.  A valid run has one of these outcomes:
+record.  The record carries bounded =adoption-result= and
+=composition-result= fields plus a bounded =failure-stage=.
+=adoption-result= classifies whether, after a valid ordinary-tool source and
+carrier presentation, the model emitted one valid effect whose exact or summary
+replacement preserves the sentinel.  =composition-result= independently
+classifies prompt control, carrier presence, audit linkage, commit, next-turn
+projection, raw-source exclusion, and the follow-up answer.  =failure-stage=
+is one of =none=, =ordinary-tool=, =prompt-control=, =model-selection=,
+=carrier=, =commit=, =projection=, =raw-exclusion=, or =follow-up-answer=; it
+contains no prompt, sentinel, or model content.
+
+A valid run has one of these top-level outcomes:
 
 | Result | Meaning |
 |--------+---------|
 | =pass= | The model autonomously curated the source and the follow-up semantic assertions passed. |
-| =product-contract-failure= | A valid configured run completed but made no valid reserved effect, revealed the sentinel early, lost it on the next turn, or leaked the consumed raw source. |
-| =semantic-failure= | The model or product violated another named scenario assertion that does not isolate autonomous selection. |
-| =unavailable= | Required provider usage or evidence fields were absent. |
-| =authentication-or-configuration-failure= | The configured request could not start with valid provider configuration. |
-| =provider-or-infrastructure-failure= | External health prevented a valid observation. |
+| =product-contract-failure= | An identity-complete run validly presented the ordinary-tool source and carrier, but the model emitted no valid reserved effect or chose a replacement that did not preserve the sentinel. |
+| =semantic-failure= | A prompt-control, carrier, audit, commit, projection, raw-exclusion, or follow-up assertion failed; the bounded subresults and =failure-stage= identify the boundary. |
+| =unavailable= | Required capability identity or request/curation capture was absent.  Missing token or cache usage leaves those observational fields unavailable without changing an otherwise conclusive adoption result. |
+| =configuration-unavailable= | The request could not start with valid authentication or provider configuration. |
+| =provider/infrastructure-failure= | External provider or infrastructure health prevented a valid observation. |
 | =inconclusive-timeout= | The scenario exceeded its declared deadline. |
 
 Only =pass= confirms autonomous adoption for the recorded capability identity.
@@ -143,9 +157,17 @@ but never the sentinel or model content.
 
 One canonical successful observation is sufficient for initial capability
 confirmation, matching the existing Feature 88 external capability policy.
-Invocation frequency, exact-versus-summary choice, token usage, cache usage,
-and latency remain observational until a separate contract supplies a
-population, baseline, and decision threshold.
+Population-level invocation frequency, exact-versus-summary distribution,
+token usage, cache usage, and latency remain observational until a separate
+contract supplies a population, baseline, and decision threshold.
+
+Adoption evidence inherits Addendum 3's seven-calendar-day freshness window.
+Reuse requires equality of provider/profile, effective endpoint/base URL,
+transport, store mode, native requester, model, material request shape,
+affordance/presentation revisions, and scenario prompt identity, with no
+changed core, harness, loop, backend-adapter, or runner owner in the scenario's
+dependency cone.  Otherwise the evidence is =stale=; a non-success availability
+class leaves autonomous adoption =capability-unconfirmed=.
 
 * Scenario portfolio
 
@@ -172,8 +194,9 @@ Add one isolated configured Responses selector and shared bounded evidence
 capture for =responses-autonomous-curation-adoption=.  Reuse the ordinary
 deterministic tool and existing curation/audit/request instrumentation.  Keep
 the user prompts free of carrier and schema vocabulary, classify all external
-outcomes exactly once, and keep sentinel/content data out of the evidence
-record.
+outcomes exactly once with independent adoption/composition subresults and a
+bounded failure stage, retain the shared runner's established result spellings,
+and keep sentinel/content data out of the evidence record.
 
 ** Slice 3: Configured validation and evidence refresh
 
@@ -190,7 +213,7 @@ changes.  Preserve the separate exact ChatGPT/WebSocket status.
 |-------------+----------|
 | retain | all Addendum 4 curation schema, atomicity, bounds, durability, compatibility, continuation, and cleanup scenarios |
 | strengthen | core marker presentation and OpenAI literal request-shape tests to cover source lifetime wording, decision guidance, stable/frontier placement, and revised identity |
-| strengthen | external evidence finalization and identity tests with the autonomous-adoption result classes and content-free record |
+| strengthen | external evidence finalization and identity tests with independent adoption/composition results, bounded failure stage, established top-level result spellings, freshness, and a content-free record |
 | add | isolated configured =responses-autonomous-curation-adoption= scenario and deterministic unavailable/failure classifications |
 | rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change |
 | delete | none planned |
@@ -202,25 +225,16 @@ exact retention or a sufficient summary satisfies =F88A5-ADOPTION=.
 
 * Minimum acceptance
 
-1. A model receiving a curatable source can identify the following value as
-   ephemeral and relate its local label to the reserved curation carrier.
-2. The carrier describes when to retain, exact versus summary choice,
-   omission-as-drop, and the useful no-call case without changing Addendum 4's
-   strict schema or semantic owner.
-3. Deterministic request-shape, placement, fingerprint, and regression tests
-   pass on the accepted implementation revision.
-4. The isolated external adoption prompt contains no carrier, schema, or label
-   instructions; a successful run records autonomous invocation, durable
-   follow-up recall, and raw-source exclusion.
-5. Existing configured cache scenarios are refreshed under the changed
-   material request identity, and exact ChatGPT/WebSocket evidence remains
-   separately classified.
+Clear =F88A5-AFFORDANCE=, =F88A5-ADOPTION=, and the affected
+=F88A3-CACHE= row using only the evidence and statuses named in the normative
+matrix.  All unchanged Addendum 4 contracts and inherited Addendum 3 joins
+remain referenced, not redefined here.
 
-Repository-controlled fixed point and external capability status remain
-separate.  A zero-finding implementation Tick may establish deterministic
-fixed point while autonomous adoption or exact ChatGPT/WebSocket capability is
-unconfirmed, but Feature 88 is not =Done= until every required external scope
-is confirmed.
+Repository-controlled acceptance and external capability status remain
+separate.  Repository-controlled acceptance does not confirm either autonomous
+adoption or exact ChatGPT/WebSocket capability.  Feature 88 remains =In-review=
+and is not =Done= while either required external scope is
+=capability-unconfirmed=.
 
 * Non-goals
 
