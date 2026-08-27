@@ -17,10 +17,12 @@ Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
 tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; the persisted =context-promotion= family remains readable as version 2
-only.  The repository-controlled implementation is at deterministic fixed
-point.  Independent Tick 6 at exact candidate =835ba655= (implementation
-=f991f895=) closed =F88A4.I5= with zero P0-P3 repository findings and zero
-deterministic unknowns.  I6 remains closed at
+only.  [[file:addendum5.org][Addendum 5]] is a separate planned extension that adds
+explicit tool-output context erasure; it is not part of the accepted
+implementation described below.  The repository-controlled implementation is
+at deterministic fixed point.  Independent Tick 6 at exact candidate
+=835ba655= (implementation =f991f895=) closed =F88A4.I5= with zero P0-P3
+repository findings and zero deterministic unknowns.  I6 remains closed at
 =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  Because this later change is
 session-checkpoint-only and does not alter request/evidence owners, the
 configured Responses HTTP proof at that revision remains reusable/current.

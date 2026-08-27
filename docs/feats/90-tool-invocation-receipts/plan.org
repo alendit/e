@@ -15,11 +15,13 @@ Every registered model-facing tool call carries a short model-authored stated
 purpose.  The harness removes that field before dispatch, records the complete
 provider-neutral invocation details in a session-scoped =tmp://= resource, and
 retains only a bounded receipt containing the tool, status, stated purpose, and
-details URI.
+details URI by default.  Feature 88 may explicitly erase that receipt from
+later model context without deleting transcript or resource history.
 
 This is a separate feature from [[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]].  Feature 88 decides which semantic
-observations remain in later context.  This feature records that an invocation
-happened even when its exact ephemeral tool bundle is no longer present.
+observations and derived marks remain in later context.  This feature records
+that an invocation happened when its exact ephemeral tool bundle is no longer
+present, unless [[file:../88-generational-context-ephemeral-frames/addendum5.org][Addendum 5]] explicitly erases its context projection.
 
 * User story
 
@@ -38,7 +40,9 @@ agent still sees a compact receipt such as:
 The receipt is sufficient to remember that the investigation occurred.  If the
 details resource is still live, the agent can read the complete normalized
 arguments and semantic result without carrying either through every later
-request.
+request.  If the agent explicitly erases the tool source through Feature 88,
+the later context contains no receipt or other trace; the transcript and stored
+details remain available for explicit inspection.
 
 * Terms
 
@@ -51,7 +55,8 @@ request.
 - Invocation details :: The complete provider-neutral executed arguments and
   semantic tool result stored in a session-scoped temporary resource.
 - Invocation receipt :: The bounded durable mark retained after the full
-  invocation details leave ordinary model context.
+  invocation details leave ordinary model context.  Its automatic context
+  projection remains subject to Feature 88 erasure.
 
 * Contract
 
@@ -219,12 +224,18 @@ A harness-owned context provider projects a bounded recent receipt list into
 ordinary model context.  This projection is separate from transcript messages
 and from Feature 88's exact or summarized curation items.
 
-The projection includes receipts whether or not Feature 88 later keeps,
-summarizes, or drops the matching exact tool source.  This uniform rule avoids
-coupling receipt existence to one curation implementation and guarantees that a
-dropped ephemeral bundle still leaves a mark.  Temporary duplication beside a
-still-visible exact result is acceptable because the receipt is small and has a
-different purpose.
+The projection includes receipts when Feature 88 keeps, summarizes, or merely
+omits the matching exact tool source.  Ordinary omission therefore drops the
+exact bundle but leaves its compact mark.  Feature 88 Addendum 5's explicit
+=erase= disposition suppresses the matching receipt completely.  Feature 90
+does not define, infer, or persist that decision; it consumes the canonical
+erased-tool-call set produced by Feature 88.
+
+Receipt filtering happens before ordering, entry and byte budgets, omitted
+counts, latest-item selection, or any other aggregate.  An erased invocation
+therefore leaves no indirect mark in automatically assembled model context.
+Temporary duplication beside a still-visible exact result is acceptable because
+the receipt is small and has a different purpose.
 
 The projection is ordered by durable activity sequence and bounded by both
 entry count and canonical UTF-8 bytes.  It includes an omitted count when older
@@ -267,8 +278,9 @@ not mutate or delete the durable receipt.
   session result file.
 - Backend adapters serialize the centrally decorated definitions and parse
   ordinary calls.  They do not invent stated purposes or invocation receipts.
-- Feature 88 remains the owner of semantic observation lifetime.  It neither
-  stores invocation details nor decides whether a receipt exists.
+- Feature 88 remains the owner of semantic observation lifetime and explicit
+  context erasure.  It supplies erased tool-call identities but neither stores
+  invocation details nor generates receipts.
 
 Dependencies continue from provider adapters and presentation capabilities
 toward stable =e-tools=, harness, session, and resource contracts.  Tool modules
@@ -302,16 +314,21 @@ complete in details and bounded in provider-visible output.
 
 Replace durable tool activity argument/result previews with compact receipt
 fields.  Add the bounded, late-frontier receipt context provider and resource
-liveness rendering.  Preserve activity ordering, checkpoint/reopen behavior,
-session resource projections, and presentation links.
+liveness rendering.  Consume Feature 88's canonical erased-tool-call set and
+filter before all bounds and aggregates.  Preserve activity ordering,
+checkpoint/reopen behavior, session resource projections, and presentation
+links.
 
 ** Slice 5: lifetime integration and system proof
 
-Exercise a complete Feature 88 turn where an ordinary tool bundle is consumed
+Exercise one complete Feature 88 turn where an ordinary tool bundle is consumed
 and omitted by curation.  Prove that later context lacks the arguments and
 result, retains the compact receipt, and can read the complete details while the
-tmp resource is live.  Then clean the resource and prove the receipt remains
-truthful without claiming readable details.
+tmp resource is live.  Exercise a second turn with Addendum 5 explicit erasure
+and prove later context contains no result, receipt, purpose, URI, or aggregate
+mark while transcript and stored details remain intact.  Then clean a live
+resource and prove an unerased receipt remains truthful without claiming
+readable details.
 
 * Acceptance criteria
 
@@ -330,8 +347,11 @@ truthful without claiming readable details.
   result preview.
 - Tool-output truncation reuses the invocation-details resource and does not
   write a second full session result.
-- Later ordinary context retains a bounded receipt after Feature 88 removes the
-  matching exact tool bundle.
+- Later ordinary context retains a bounded receipt after ordinary Feature 88
+  omission removes the matching exact tool bundle.
+- Feature 88 explicit erasure suppresses the matching receipt and every
+  receipt-derived aggregate without deleting transcript, activity, or temporary
+  details.
 - Receipt projection is count- and byte-bounded, reports omitted entries, and
   remains outside the stable prompt prefix.
 - Session reset, teardown, explicit cleanup, and expiry follow existing tmp
@@ -352,7 +372,8 @@ truthful without claiming readable details.
   provider-owned built-in tools, or host-authored nested tool calls.
 - Recording provider raw JSON, replay envelopes, or transport objects.
 - Changing Feature 88 curation choices, provider continuation, or prompt-cache
-  policy.
+  policy.  Explicit erasure is defined and persisted by Feature 88 Addendum 5;
+  this feature only honors its canonical result.
 - Adding a new resource scheme, blob store, or tool-specific descriptor API.
 - Building a new detailed invocation UI beyond existing resource links.
 
@@ -369,8 +390,8 @@ truthful without claiming readable details.
 * Design self-check
 
 1. If work stops after this feature, every tool invocation has useful bounded
-   provenance and inspectable temporary details without growing ordinary
-   context with full results.
+   transcript provenance and inspectable temporary details without growing
+   ordinary context with full results; Feature 88 may suppress its context mark.
 2. It moves toward explicit semantic context plus resource-backed details and
    small durable audit records.
 3. The stable decisions are central schema decoration, handler isolation, and
@@ -389,8 +410,9 @@ truthful without claiming readable details.
 9. The added per-call work is one bounded schema field, one serialization, and
    one local temp write.  Reusing the truncation resource prevents duplicate
    large-result writes.  Tool-heavy benchmarks must measure the remaining cost.
-10. Stated purpose and receipts are real contracts with one meaning; tool
-    handlers are not forced to consume or simulate them.
+10. Stated purpose and receipts are real contracts with one meaning; Feature 88
+    erasure controls projection eligibility without changing either record, and
+    tool handlers are not forced to consume or simulate them.
 11. Existing ordinary tool arguments and handlers remain compatible.  Provider
     built-ins and reserved effects are explicitly outside the first contract.
 12. Existing durable argument/result previews and duplicate session result files
