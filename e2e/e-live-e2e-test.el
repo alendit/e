@@ -963,25 +963,27 @@ separate in that record."
                (append (plist-get record :items) nil))))
     (format "%s" (plist-get item :kind))))
 
-(defun e-live-e2e--adoption-audit-linked-p (store session-id record)
-  "Return non-nil when RECORD has one exact durable response/control link.
-The context-curation response control is audit-only and shares the response
-entry id with RECORD; the consumed-frame event must additionally name RECORD."
+(defun e-live-e2e--adoption-audit-linked-p
+    (store session-id record sink-events)
+  "Return non-nil when RECORD has one exact response/control link.
+The context-curation response control and entry are durable; the consumed-frame
+event is a public sink event and is therefore checked in SINK-EVENTS, not the
+session activity ledger."
   (let* ((response-entry-id (plist-get record :response-entry-id))
          (curation-id (plist-get record :id))
-         (events (e-session-activity-events store session-id))
+         (durable-events (e-session-activity-events store session-id))
          (controls
           (seq-filter
            (lambda (event)
              (eq (plist-get event :event-type)
                  'context-curation-response))
-           events))
+           durable-events))
          (control (car controls))
          (control-payload (and control (plist-get control :payload)))
          (consumed
           (seq-find
            (lambda (event)
-             (and (eq (plist-get event :event-type)
+             (and (eq (plist-get event :type)
                       'context-frame-consumed)
                   (equal (plist-get (plist-get event :payload)
                                     :response-entry-id)
@@ -989,7 +991,7 @@ entry id with RECORD; the consumed-frame event must additionally name RECORD."
                   (equal (plist-get (plist-get event :payload)
                                     :curation-ids)
                          (list curation-id))))
-           events)))
+           sink-events)))
     (and (stringp response-entry-id)
          (stringp curation-id)
          (= (length controls) 1)
@@ -1315,28 +1317,29 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-audit-linkage-is-exact ()
   "The curation response, durable entry, and consumed frame share one link."
-  (let ((events
+  (let ((durable-events
          '((:id "response-1" :event-type context-curation-response
-            :payload (:response-entry-id "response-1"))
-           (:id "consumed-1" :event-type context-frame-consumed
+            :payload (:response-entry-id "response-1"))))
+        (sink-events
+         '((:id "consumed-1" :type context-frame-consumed
             :payload (:response-entry-id "response-1"
                       :curation-ids ("curation-1")))))
         (record '(:id "curation-1" :response-entry-id "response-1")))
     (cl-letf (((symbol-function 'e-session-activity-events)
-               (lambda (&rest _) events))
+               (lambda (&rest _) durable-events))
               ((symbol-function 'e-session-entry-by-id)
                (lambda (_store _session entry-id)
                  (and (equal entry-id "response-1")
                       (list :id entry-id)))))
       (should (e-live-e2e--adoption-audit-linked-p
-               'store "session-1" record))
-      (let ((bad-events (copy-tree events)))
-        (plist-put (cadr bad-events) :payload
+               'store "session-1" record sink-events))
+      (let ((bad-events (copy-tree sink-events)))
+        (plist-put (car bad-events) :payload
                    '(:response-entry-id "response-1"
                      :curation-ids ("other-curation")))
-        (setq events bad-events)
+        (setq sink-events bad-events)
         (should-not (e-live-e2e--adoption-audit-linked-p
-                     'store "session-1" record))))))
+                     'store "session-1" record sink-events))))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-preserves-adoption-partitions ()
   "The shared finalizer retains a model-selection product observation."
@@ -2116,14 +2119,17 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
 
 (defmacro e-live-e2e--with-harness (spec &rest body)
   "Run BODY with a live HARNESS and SESSION-ID.
-SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
+SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT EVENTS-VAR).
+When EVENTS-VAR is supplied, bind it to the newest-first public activity sink
+events collected during BODY."
   (declare (indent 1))
-  (let ((harness (nth 0 spec))
+  (let* ((harness (nth 0 spec))
         (session-id (nth 1 spec))
         (options (nthcdr 2 spec))
         (root (make-symbol "root"))
         (store (make-symbol "store"))
         (events (make-symbol "events"))
+        (events-var (plist-get options :events-var))
         (subscription (make-symbol "subscription")))
     `(progn
        (e-live-e2e--require-enabled)
@@ -2136,10 +2142,15 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
                (e-board-e2e-create-session
                 ,harness :metadata (list :project-root ,root)))
               (,events nil)
+              ,@(when events-var
+                  `((,events-var nil)))
               (,subscription
                (e-harness--install-activity-sink
                 ,harness
-                (lambda (event) (push event ,events))
+                (lambda (event)
+                  (push event ,events)
+                  ,@(when events-var
+                      `((push event ,events-var))))
                 :session-id ,session-id)))
          (unwind-protect
              (progn
@@ -2445,7 +2456,8 @@ provider turn to settle without an implicit local deadline."
             (e-live-e2e--deterministic-tool-output raw-tool-output))
         (e-live-e2e--with-harness
             (harness session-id
-                     :layers (list (e-live-e2e--deterministic-tool-layer)))
+                     :layers (list (e-live-e2e--deterministic-tool-layer))
+                     :events-var events)
           (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
                  (started-at (float-time))
                  (deadline (+ started-at scenario-timeout))
@@ -2638,8 +2650,9 @@ provider turn to settle without an implicit local deadline."
                          (e-live-e2e--adoption-record-disposition
                           curation-record raw-tool-output)))
                  (require-gate
-                  (e-live-e2e--adoption-audit-linked-p
-                   (e-harness-sessions harness) session-id curation-record)
+                 (e-live-e2e--adoption-audit-linked-p
+                   (e-harness-sessions harness) session-id curation-record
+                   events)
                   "commit"
                   "The autonomous curation audit/control linkage was incomplete.")
                  (e-live-e2e--with-responses-request-capture
