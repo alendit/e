@@ -1974,17 +1974,23 @@ external evidence."
              (eq (plist-get event :event-type)
                  'context-curation-response))
            events))
+         (control (car controls))
+         (control-payload (and control (plist-get control :payload)))
+         (response-entry-id (and control (plist-get control :id)))
          (consumed-events
           (seq-filter
            (lambda (event)
-             (eq (plist-get event :event-type)
-                 'context-frame-consumed))
+             (let ((payload (plist-get event :payload)))
+               (and (eq (plist-get event :event-type)
+                        'context-frame-consumed)
+                    (equal (plist-get payload :response-entry-id)
+                           response-entry-id)
+                    (null (plist-get payload :curation-ids))
+                    (equal (plist-get event :turn-id)
+                           (and control (plist-get control :turn-id))))))
            events))
-         (control (car controls))
          (consumed (car consumed-events))
-         (control-payload (and control (plist-get control :payload)))
          (consumed-payload (and consumed (plist-get consumed :payload)))
-         (response-entry-id (and control (plist-get control :id)))
          (frame-id (and consumed (plist-get consumed-payload :frame-id))))
     (when (and (= (length controls) 1)
                (= (length consumed-events) 1)
@@ -2722,6 +2728,35 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
         (setq sink-events bad-events)
         (should-not (e-live-e2e--adoption-audit-linked-p
                      'store "session-1" record sink-events))))))
+
+(ert-deftest e-live-e2e-test-autonomous-drop-audit-links-filter-unrelated-events ()
+  "Drop audit linkage ignores other consumed frames but rejects duplicates."
+  (let* ((control
+          '(:id "response-1" :turn-id "turn-2"
+            :event-type context-curation-response
+            :payload (:response-entry-id "response-1")))
+         (matching
+          '(:id "consumed-1" :turn-id "turn-2"
+            :event-type context-frame-consumed
+            :payload (:response-entry-id "response-1"
+                      :frame-id "frame-1" :curation-ids nil)))
+         (unrelated
+          '(:id "consumed-old" :turn-id "turn-1"
+            :event-type context-frame-consumed
+            :payload (:response-entry-id "response-old"
+                      :frame-id "frame-old" :curation-ids nil)))
+         (events (list unrelated control matching)))
+    (cl-letf (((symbol-function 'e-session-activity-events)
+               (lambda (&rest _) events))
+              ((symbol-function 'e-session-entry-by-id)
+               (lambda (_store _session entry-id)
+                 (and (equal entry-id "response-1")
+                      (list :id entry-id)))))
+      (should (e-live-e2e--autonomous-drop-audit-links
+               'store "session-1"))
+      (setq events (append events (list (copy-tree matching))))
+      (should-not (e-live-e2e--autonomous-drop-audit-links
+                   'store "session-1")))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-preserves-adoption-partitions ()
   "The shared finalizer retains a model-selection product observation."
