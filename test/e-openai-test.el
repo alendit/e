@@ -1232,7 +1232,7 @@
   "Stateless replay restores opaque reasoning before its function call."
   (let* ((reasoning-item
           '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext"
-            :summary [(:type "summary_text" :text "kept")]))
+            :summary (:type "summary_text" :text "kept")))
          (body
           (e-openai-codex-request-body
            :messages
@@ -1255,7 +1255,10 @@
     (should (equal (mapcar (lambda (item) (plist-get item :type)) input)
                    '("message" "reasoning" "function_call"
                      "function_call_output")))
-    (should (equal (nth 1 input) reasoning-item))))
+    (should (equal (nth 1 input)
+                   '(:type "reasoning" :id "rs-1"
+                     :encrypted_content "ciphertext"
+                     :summary [(:type "summary_text" :text "kept")])))))
 
 (ert-deftest e-openai-test-gpt56-invalidates-legacy-layout-anchor ()
   "An anchor without the explicit-layout revision forces a safe full request."
@@ -4987,7 +4990,9 @@ result from the canonical messages supplied by the caller."
                                          (:type "reasoning"
                                           :id "rs-websocket"
                                           :encrypted_content "ciphertext"
-                                          :summary nil)))))
+                                          :summary
+                                          (:type "summary_text"
+                                           :text "diagnostic"))))))
                                      (:role user :content "two"))
                          :options '(:model "gpt-test")
                          :on-item (lambda (item) (push item seen))
@@ -5011,18 +5016,20 @@ result from the canonical messages supplied by the caller."
                            (:type "reasoning"
                             :id "rs-websocket"
                             :encrypted_content "ciphertext"
-                            :summary nil)
+                            :summary ((:type "summary_text"
+                                       :text "diagnostic")))
                            (:type "message"
                             :role "assistant"
                             :content ((:type "output_text" :text "answer one")))
                            (:type "message"
                             :role "user"
                             :content ((:type "input_text" :text "two"))))))
-          ;; Empty JSON arrays decode as nil with `:array-type list', while
-          ;; JSON null decodes as `:json-null' above.
+          ;; The replayed reasoning summary is always an input array, even
+          ;; when the provider returned one object in its output item.
           (let ((reasoning (nth 1 (plist-get second-response :input))))
             (should (plist-member reasoning :summary))
-            (should-not (eq (plist-get reasoning :summary) :json-null))))
+            (should (equal (plist-get reasoning :summary)
+                           '((:type "summary_text" :text "diagnostic"))))))
         (should (seq-some (lambda (item)
                             (eq (plist-get item :type)
                                 'provider-anchor-candidate))

@@ -1170,12 +1170,25 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
 
 (defun e-openai-codex--input-replay-item (item)
   "Return an input-safe copy of opaque OpenAI replay ITEM.
-OpenAI Responses output may represent an empty reasoning summary as JSON null,
-while Responses input requires the field to contain an array."
-  (let ((normalized (copy-tree item)))
-    (when (and (member (plist-get normalized :type) '("reasoning" reasoning))
-               (null (plist-get normalized :summary)))
-      (setq normalized (plist-put normalized :summary [])))
+OpenAI Responses output may represent a reasoning summary as JSON null or one
+object, while Responses input requires the field to contain an array."
+  (let* ((normalized (copy-tree item))
+         (summary (plist-get normalized :summary)))
+    (when (member (plist-get normalized :type) '("reasoning" reasoning))
+      ;; `json-parse-string' uses lists for both arrays and plists.  A
+      ;; non-empty summary whose first element is a keyword is therefore an
+      ;; object-valued provider response, not an already-array-valued summary.
+      ;; Normalize that response shape without retaining or interpreting its
+      ;; diagnostic text.
+      (setq normalized
+            (plist-put normalized :summary
+                       (cond
+                        ((null summary) [])
+                        ((vectorp summary) summary)
+                        ((and (listp summary)
+                              (not (keywordp (car summary))))
+                         summary)
+                        (t (vector summary))))))
     normalized))
 
 (defun e-openai-codex--message-replay-items (message &optional immediate-followup-p)
