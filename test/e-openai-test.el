@@ -5165,12 +5165,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :call_id "curation-call"
              :name "context-curate"
              :arguments
-             "{\"keep\":[1],\"summaries\":[{\"sources\":[2,3],\"text\":\"selected\"}]}")))))
+             "{\"keep\":[1],\"summaries\":[{\"sources\":[2,3],\"text\":\"selected\"}],\"drop\":[]}")))))
     (should (eq (plist-get item :type) 'context-curate))
     (should-not (plist-member item :name))
     (should (equal (plist-get item :arguments)
                    '(:keep (1) :summaries
-                           ((:sources (2 3) :text "selected")))))
+                           ((:sources (2 3) :text "selected"))
+                     :drop nil)))
     (should-not (string-match-p
                  "frame\|observation\|fingerprint\|schema-version"
                  (prin1-to-string (plist-get item :arguments))))))
@@ -5195,31 +5196,39 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (= (length enabled-tools) 1))
     (should (equal (plist-get (aref enabled-tools 0) :name)
                    "context-curate"))
-    ;; The carrier is the exact optional keep/summaries shape.  Internal
+    ;; The carrier is the exact exhaustive partition shape.  Internal
     ;; frame/source identities do not belong in the provider schema.
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "For ephemeral context sources shown with labels, call this after using a source when it may be needed later: use keep with a label for exact retention or summaries with labels for a compact durable replacement; omitted sources are dropped after a successful call, and make no call when nothing should remain."))
+      "Partition every presented source label exactly once: use keep for exact retention, summaries for durable replacements, and drop for every other source."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
            (summary-properties
            (plist-get (plist-get summary-schema :items) :properties))
            (source-schema (plist-get summary-properties :sources))
-           (text-schema (plist-get summary-properties :text)))
+           (text-schema (plist-get summary-properties :text))
+           (drop-schema (plist-get properties :drop)))
       (should (equal (sort (copy-sequence
                             (cl-loop for (key value) on properties by #'cddr
                                      collect key))
                            (lambda (left right)
                              (string< (symbol-name left)
                                       (symbol-name right))))
-                     '(:keep :summaries)))
-      (should-not (plist-member parameters :required))
+                     '(:drop :keep :summaries)))
+      (should (equal (plist-get parameters :required)
+                     ["keep" "summaries" "drop"]))
       (should (equal (plist-get (plist-get properties :keep) :type)
                      "array"))
       (should (equal (plist-get (plist-get properties :summaries) :type)
                      "array"))
+      (should (equal (plist-get drop-schema :type) "array"))
+      (should-not (plist-member drop-schema :maxItems))
+      (should (equal (plist-get (plist-get properties :keep) :maxItems)
+                     16))
+      (should (equal (plist-get (plist-get properties :summaries) :maxItems)
+                     16))
       (should (equal (plist-get source-schema :minItems) 1))
       (should (equal (plist-get source-schema :maxItems) 16))
       (should (equal (plist-get text-schema :minLength) 1))
@@ -5229,6 +5238,100 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    "frame-id\\|source-observation-ids\\|schema-version"
                    (json-encode enabled))))
     (should-not (plist-member disabled :tools))))
+
+(ert-deftest e-openai-test-context-curation-schema-core-shape-agrees-on-transports ()
+  "HTTP and WebSocket requests expose the same exhaustive core shape."
+  (dolist (transport '(http websocket))
+    (let* ((body
+            (e-openai-codex-request-body
+             :messages '((:role user :content "prompt"))
+             :options
+             (list :model "gpt-test"
+                   :responses-transport transport
+                   :context-lifetime-enabled t
+                   :reserved-effect-carrier 'context-curate-wire)
+             :tools nil))
+           (tool (aref (plist-get body :tools) 0))
+           (parameters (plist-get tool :parameters))
+           (properties (plist-get parameters :properties))
+           (drop (plist-get properties :drop)))
+      (should (equal (plist-get parameters :required)
+                     ["keep" "summaries" "drop"]))
+      (should (eq (plist-get parameters :additionalProperties) :json-false))
+      (should (equal (plist-get drop :type) "array"))
+      (should-not (plist-member drop :maxItems))
+      (should (equal
+               (e-context-lifetime-normalize-curation-disposition
+                '(:keep (1) :summaries nil :drop (2)))
+               '(:keep (1) :summaries nil :drop (2))))
+      (should-error
+       (e-context-lifetime-normalize-curation-disposition
+        '(:keep (1) :summaries nil))
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-openai-test-context-curation-schema-is-captured-by-both-transports ()
+  "The native HTTP and WebSocket starts capture the same strict carrier."
+  (let* ((process-environment
+          (cons "E_OPENAI_TEST_TOKEN=test-token" process-environment)))
+    (dolist (transport '(http websocket))
+      (let* ((e-openai-model-providers
+              `((curation-transport-fixture
+                 :name "Curation transport fixture"
+                 :base-url "https://gateway.example.test/v1"
+                 :env-key "E_OPENAI_TEST_TOKEN"
+                 :wire-api responses
+                 :responses-transport ,transport
+                 :continuation nil
+                 :requires-openai-auth nil)))
+             captured-http captured-websocket request)
+        (cl-letf (((symbol-function 'e-openai-codex--http-request-start)
+                   (lambda (&rest arguments)
+                     (setq captured-http (plist-get arguments :body))
+                     (e-backend-request-create :cancel (lambda () t))))
+                  ((symbol-function 'e-openai-codex--websocket-request-start)
+                   (lambda (&rest arguments)
+                     (setq captured-websocket
+                           (plist-get arguments :body-data))
+                     (e-backend-request-create :cancel (lambda () t)))))
+          (let ((backend (e-openai-backend-create
+                          :provider 'curation-transport-fixture)))
+            (e-backend-start
+             backend
+             :messages '((:role user :content "prompt"))
+             :options (list :model "gpt-test"
+                            :context-lifetime-enabled t)
+             :on-item #'ignore
+             :on-done #'ignore
+             :on-error #'ignore
+             :on-request-start (lambda (value) (setq request value)))
+            (should (e-openai-test--wait-until
+                     (lambda () (or captured-http captured-websocket))
+                     0.2))
+            (let* ((body (if (eq transport 'http)
+                             (json-parse-string
+                              captured-http
+                              :object-type 'plist
+                              :array-type 'list
+                              :null-object nil
+                              :false-object :json-false)
+                           captured-websocket))
+                   (tool (car (append (plist-get body :tools) nil)))
+                   (parameters (plist-get tool :parameters))
+                   (properties (plist-get parameters :properties))
+                   (drop (plist-get properties :drop)))
+              (should body)
+              (should (equal (append (plist-get parameters :required) nil)
+                             '("keep" "summaries" "drop")))
+              (should (eq (plist-get parameters :additionalProperties)
+                          :json-false))
+              (should (equal (plist-get drop :type) "array"))
+              (should-not (plist-member drop :maxItems))
+              (should-error
+               (e-context-lifetime-normalize-curation-disposition
+                '(:keep nil :summaries nil))
+               :type 'e-context-lifetime-invalid-record)
+              (when request
+                (e-backend-cancel-request request)))))))))
 
 (ert-deftest e-openai-test-context-curation-carries-function-output-ack ()
   "A reserved Responses curation retains its opaque wire acknowledgement."
@@ -5240,7 +5343,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               :call_id "curation-call"
               :name "context-curate"
               :arguments
-              "{\"keep\":[1]}"))))
+              "{\"keep\":[1],\"summaries\":[],\"drop\":[]}"))))
          (replay (plist-get item :provider-replay-item))
          (wire-item (plist-get replay :item)))
     (should (equal (plist-get replay :provider-id) 'openai))
@@ -5252,7 +5355,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
   "The streaming Responses parser preserves the reserved call identity."
   (let* ((items
           (e-openai-codex-parse-stream
-           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"curation-call\",\"name\":\"context-curate\",\"arguments\":\"{\\\"keep\\\":[1]}\"}}\n\n"))
+           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"curation-call\",\"name\":\"context-curate\",\"arguments\":\"{\\\"keep\\\":[1],\\\"summaries\\\":[],\\\"drop\\\":[]}\"}}\n\n"))
          (item (car items))
          (replay (plist-get item :provider-replay-item)))
     (should (eq (plist-get item :type) 'context-curate))
@@ -5308,7 +5411,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()
   "Full replay restores the curation call/output pair; anchors send output only."
   (let* ((effect (e-openai-codex--context-curation-effect
-                  '(:keep (1)) "curation-call"))
+                  '(:keep (1) :summaries nil :drop nil) "curation-call"))
          (replays (plist-get effect :provider-replay-items))
          (messages
           `((:role user :content "prompt")
@@ -5342,7 +5445,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                             :item (:type "function_call"
                                    :call_id "curation-call"
                                    :name "context-curate"
-                                   :arguments "{\"keep\":[1]}"))
+                                   :arguments "{\"keep\":[1],\"summaries\":[],\"drop\":[]}"))
                            (:type provider-replay-item
                             :provider-id openai
                             :item (:type "function_call_output"
@@ -5409,7 +5512,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (first-items nil)
          (curation-arguments
           (json-encode
-           '(:keep [1])))
+           '(:keep [1] :summaries [] :drop [])))
          (first-response
           (mapconcat
            (lambda (event)

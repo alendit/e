@@ -126,22 +126,29 @@ covered by the adapter tests below."
                  (funcall on-item '(:type done :reason tool-use)))
                 (3
                  ;; B is the sole consumer of the paired call/result bundle.
-                 (let* ((source
+                 (let* ((sources
+                         (e-context-lifetime-frame-curation-sources
+                          captured-tool-frame))
+                        (source
                          (seq-find
                           (lambda (candidate)
                             (equal (plist-get candidate :value) raw-result))
-                          (e-context-lifetime-frame-curation-sources
-                           captured-tool-frame)))
-                        (label (and source (plist-get source :label))))
+                          sources))
+                        (label (and source (plist-get source :label)))
+                        (drop
+                         (cl-remove
+                          label (number-sequence 1 (length sources)))))
                    (should source)
                    (setq curation-input
                          (list
                           :type 'context-curate
                           :arguments
-                          (list :summaries
+                          (list :keep nil
+                                :summaries
                                 (list (list
                                        :sources (list label)
-                                       :text "selected from tool result")))))
+                                       :text "selected from tool result"))
+                                :drop drop)))
                    (funcall on-item curation-input))
                  (funcall on-item
                           '(:type assistant-message :content "B"))
@@ -1127,20 +1134,27 @@ ordinary-turn anchor."
                 ;; The curation carrier is a real streamed Responses item.
                 ;; Its source label is selected from the core-produced live
                 ;; frame; no frame or observation identity crosses the wire.
-                (let* ((source
+                (let* ((sources
+                        (e-context-lifetime-frame-curation-sources
+                         captured-tool-frame))
+                       (source
                         (seq-find
                          (lambda (candidate)
                            (equal (plist-get candidate :value) raw-result))
-                         (e-context-lifetime-frame-curation-sources
-                          captured-tool-frame)))
+                         sources))
                        (label (and source (plist-get source :label)))
+                       (drop
+                        (cl-remove
+                         label (number-sequence 1 (length sources))))
                        (curation-arguments
                         (json-encode
                          (list
+                          :keep (vector)
                           :summaries
                           (vector
                            (list :sources (vector label)
-                                 :text "PROMOTED-CANONICAL-FACT"))))))
+                                 :text "PROMOTED-CANONICAL-FACT"))
+                          :drop (vconcat drop)))))
                   (unless (and source label)
                     (error "Missing canonical curation frontier"))
                   (let ((response

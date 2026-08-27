@@ -4244,7 +4244,7 @@ continuation and socket assertions used by the compatibility selector."
                         (let ((tool-result
                                (e-live-e2e--prompt-batch-before-deadline
                                 harness session-id
-                                "Call e2e_deterministic exactly once. After its result arrives, call the reserved context-curate carrier exactly once. For context-curate, send keep as an empty array and exactly one summary object: its sources array must contain only the one numeric source label whose displayed exact value is the result returned by e2e_deterministic, and its text must be exactly LIVE-CURATED-FACT. Do not put that label in keep, do not add another summary, and do not call any other tool. Then reply with exactly LIVE-R2-READY and no other text."
+                                "Call e2e_deterministic exactly once. After its result arrives, call the reserved context-curate carrier exactly once. For context-curate, send keep as an empty array and exactly one summary object: its sources array must contain only the one numeric source label whose displayed exact value is the result returned by e2e_deterministic, and its text must be exactly LIVE-CURATED-FACT; send drop containing every other displayed source label exactly once. Do not put that label in keep, do not add another summary, and do not call any other tool. Then reply with exactly LIVE-R2-READY and no other text."
                                 deadline)))
                           (setq tool-turn-id (plist-get tool-result :id))
                           (setq curation-record

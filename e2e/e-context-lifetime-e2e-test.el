@@ -284,23 +284,30 @@ loop, session, and ordinary tool behavior remains production behavior."
                   (response . ((id . "resp-A")
                                (status . "completed"))))))
               (2
-               (let* ((source
+               (let* ((sources
+                       (e-context-lifetime-frame-curation-sources
+                        captured-tool-frame))
+                      (source
                        (seq-find
                         (lambda (candidate)
                           (and (stringp (plist-get candidate :value))
                                (string-prefix-p
                                 "OBSERVATION-ONE"
                                 (plist-get candidate :value))))
-                        (e-context-lifetime-frame-curation-sources
-                         captured-tool-frame)))
+                        sources))
                       (label (and source (plist-get source :label)))
+                      (drop
+                       (cl-remove
+                        label (number-sequence 1 (length sources))))
                       (curation-arguments
                        (json-encode
                         (list
+                         :keep (vector)
                          :summaries
                          (vector
                           (list :sources (vector label)
-                                :text "normalize-price"))))))
+                                :text "normalize-price"))
+                         :drop (vconcat drop)))))
                  (unless (and source label)
                    (error "Follow-up lacks trusted curation frontier"))
                  (setq curation-wire-arguments curation-arguments)
@@ -495,6 +502,8 @@ loop, session, and ordinary tool behavior remains production behavior."
           (let ((wire (e-context-lifetime-e2e--json-body
                        curation-wire-arguments)))
             (should (plist-get wire :summaries))
+            (should (plist-member wire :keep))
+            (should (plist-member wire :drop))
             (should-not (plist-member wire :frame))
             (should-not (plist-member wire :observation))
             (should-not (plist-member wire :ref))

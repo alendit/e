@@ -73,7 +73,7 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v2"
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v3"
   "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
@@ -81,7 +81,10 @@ version-3 curation codec and its complete-record bound.")
   "Stable revision of frame-local curation labels, lifetime, and size markers.")
 
 (defconst e-context-lifetime-curation-max-sources 16
-  "Maximum distinct frame-local sources disposed by one curation.")
+  "Maximum distinct frame-local sources retained by one curation.
+
+The bound applies to `:keep' and `:summaries' sources only.  A complete
+disposition's `:drop' labels are bounded by the live frame instead.")
 
 (defconst e-context-lifetime-curation-max-record-bytes 8192
   "Maximum canonical UTF-8 bytes in one prepared curation record.")
@@ -837,83 +840,17 @@ REQUIRE-NONEMPTY rejects an empty sequence when non-nil."
               (e-context-lifetime--curation-positive-label item kind))
             items)))
 
-(defun e-context-lifetime-normalize-curation-arguments (arguments)
-  "Normalize strict model-facing context-curate ARGUMENTS.
-
-The model-facing shape has only optional `:keep' and `:summaries' keys.  The
-normal form uses empty lists for omitted keys and carries no frame or provider
-identity.  Core binds labels and derives provenance only during preparation."
-  (unless (e-context-lifetime--keyword-plist-p arguments)
-    (signal 'e-context-lifetime-invalid-record
-            (list 'curation-arguments :not-keyword-plist arguments)))
-  (let ((keys nil)
-        (tail arguments))
-    (while tail
-      (let ((key (pop tail)))
-        (pop tail)
-        (when (member key keys)
-          (signal 'e-context-lifetime-invalid-record
-                  (list 'curation-effect :duplicate-key key)))
-        (unless (memq key '(:keep :summaries))
-          (signal 'e-context-lifetime-invalid-record
-                  (list 'curation-effect :unknown-key key)))
-        (push key keys))))
-  (let* ((keep (e-context-lifetime--curation-labels
-                (if (plist-member arguments :keep)
-                    (plist-get arguments :keep)
-                  nil)
-                'curation-keep))
-         (raw-summaries (e-context-lifetime--curation-sequence
-                         (if (plist-member arguments :summaries)
-                             (plist-get arguments :summaries)
-                           nil)
-                         'curation-summaries))
-         summaries
-         seen)
-    (dolist (label keep)
-      (when (member label seen)
-        (signal 'e-context-lifetime-invalid-record
-                (list 'curation :duplicate-label label)))
-      (push label seen))
-    (dolist (summary raw-summaries)
-      (e-context-lifetime--validate-exact-plist
-       summary '(:sources :text) 'curation-summary)
-      (let ((sources
-             (e-context-lifetime--curation-labels
-              (plist-get summary :sources) 'curation-summary-sources t))
-            (text (plist-get summary :text)))
-        (unless (and (stringp text) (not (string-empty-p text)))
-          (signal 'e-context-lifetime-invalid-record
-                  (list 'curation-summary :non-empty-text text)))
-        (dolist (label sources)
-          (when (member label seen)
-            (signal 'e-context-lifetime-invalid-record
-                    (list 'curation :duplicate-label label)))
-          (push label seen))
-        (push (list :sources sources
-                    :text (copy-sequence text))
-              summaries)))
-    (unless seen
-      (signal 'e-context-lifetime-invalid-record
-              (list 'curation :no-disposition)))
-    (when (> (length seen) e-context-lifetime-curation-max-sources)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'curation :source-count (length seen))))
-    (list :keep keep :summaries (nreverse summaries))))
-
 (defun e-context-lifetime-normalize-curation-disposition
     (arguments &optional source-count)
   "Normalize exhaustive curation ARGUMENTS for SOURCE-COUNT presented sources.
 
-Unlike the pre-exposure `e-context-lifetime-normalize-curation-arguments'
-compatibility path, this boundary requires all three disposition arrays.  The
-arrays may be empty, but their union must be non-empty, contain each positive
-source label exactly once, and, when SOURCE-COUNT is supplied, cover exactly
-the labels from one through SOURCE-COUNT.  Only labels and summary text are
-copied; dropped source bodies and provenance never enter the normalized value.
-When SOURCE-COUNT is nil, shape, duplicate, and retained-label validation still
-runs so a later frame-bound preparation can perform the complete partition
-check without trusting provider input."
+The arrays may be empty, but their union must be non-empty, contain each
+positive source label exactly once, and, when SOURCE-COUNT is supplied, cover
+exactly the labels from one through SOURCE-COUNT.  Only labels and summary text
+are copied; dropped source bodies and provenance never enter the normalized
+value.  When SOURCE-COUNT is nil, shape, duplicate, and retained-label
+validation still runs so a later frame-bound preparation can perform the
+complete partition check without trusting provider input."
   (e-context-lifetime--validate-exact-plist
    arguments '(:keep :summaries :drop) 'curation-disposition)
   (when (and source-count
@@ -1128,35 +1065,18 @@ FRAME and SOURCES are bound using NORMALIZED and RESPONSE-ENTRY-ID."
 
 (defun e-context-lifetime-prepare-curation
     (frame arguments response-entry-id &optional bytes-per-token)
-  "Prepare strict curation ARGUMENTS against live FRAME.
+  "Prepare an exhaustive curation RECORD against live FRAME.
 
-RESPONSE-ENTRY-ID is the runtime response binding.  The returned record is a
-pure version-3 `context-promotion' shape ready for a later session codec.  No
-frame/session mutation occurs here; exact values and provenance are detached
-before the complete canonical record is measured against the 8,192-byte bound."
-  (unless (e-context-lifetime-frame-p frame)
-    (signal 'wrong-type-argument
-            (list 'e-context-lifetime-frame-p frame)))
-  (when (e-context-lifetime-frame-consumed-p frame)
-    (signal 'e-context-lifetime-invalid-record
-            (list 'curation :frame-not-live
-                  (e-context-lifetime-frame-id frame))))
-  (let* ((response-entry-id
-          (e-context-lifetime--require-id response-entry-id
-                                           'response-entry))
-         (normalized
-          (e-context-lifetime-normalize-curation-arguments arguments))
-         (sources
-          (e-context-lifetime-frame-curation-sources
-           frame bytes-per-token))
-         (record
-          (e-context-lifetime--curation-record
-           frame normalized response-entry-id sources))
-         (bytes (e-context-lifetime--bytes record)))
-    (when (> bytes e-context-lifetime-curation-max-record-bytes)
-      (signal 'e-context-lifetime-invalid-record
-              (list 'curation :bytes bytes)))
-    record))
+RESPONSE-ENTRY-ID is the runtime response binding.  ARGUMENTS must contain the
+complete `:keep', `:summaries', and `:drop' partition; a missing `:drop' is an
+invalid model effect.  A drop-only disposition returns nil because it has no
+semantic promotion record.  No frame/session mutation occurs here; exact
+values and provenance are detached before the complete canonical record is
+measured against the 8,192-byte bound."
+  (plist-get
+   (e-context-lifetime-prepare-curation-disposition
+    frame arguments response-entry-id bytes-per-token)
+   :record))
 
 (defun e-context-lifetime--frame-retain-provenance
     (frame response-entry-id promotion-ids)

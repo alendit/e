@@ -379,7 +379,8 @@
           (e-context-lifetime-frame-curation-presentation frame 1.0))
          (record
           (e-context-lifetime-prepare-curation
-           frame '(:keep (1)) "response-curation" 1.0)))
+           frame '(:keep (1) :summaries nil :drop (2 3 4))
+           "response-curation" 1.0)))
     (should (= (length observation-ids)
                (length (delete-dups (copy-sequence observation-ids)))))
     (should (= (length fingerprints)
@@ -449,7 +450,7 @@
      :type 'e-context-lifetime-invalid-record)
     (should-error
      (e-context-lifetime-prepare-curation
-      frame '(:keep (1)) "response-1")
+      frame '(:keep (1) :summaries nil :drop (2)) "response-1")
      :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-segment-fingerprint-uses-semantic-tool-value ()
@@ -527,29 +528,37 @@
     (should (= (plist-get fallback :estimated-tokens)
                (ceiling (/ bytes 4.0))))))
 
-(ert-deftest e-context-lifetime-test-curation-arguments-are-strict ()
-  "Curation arguments accept only optional keep and summary dispositions."
+(ert-deftest e-context-lifetime-test-curation-disposition-arguments-are-strict ()
+  "Curation arguments require one exhaustive disposition shape."
   (let ((valid '(:keep (2)
-                 :summaries ((:sources (1 3) :text "combined fact")))))
-    (should (equal (e-context-lifetime-normalize-curation-arguments valid)
+                 :summaries ((:sources (1 3) :text "combined fact"))
+                 :drop nil)))
+    (should (equal (e-context-lifetime-normalize-curation-disposition valid)
                    valid))
     (should (equal
-             (e-context-lifetime-normalize-curation-arguments
-              '(:summaries [(:sources [1] :text "one")] :keep nil))
-             '(:keep nil :summaries ((:sources (1) :text "one")))))
+             (e-context-lifetime-normalize-curation-disposition
+              '(:summaries [(:sources [1] :text "one")]
+                :keep nil :drop (2 3)))
+             '(:keep nil :summaries ((:sources (1) :text "one"))
+               :drop (2 3))))
     (dolist (bad
              (list
+              '(:keep (1) :summaries nil)
               '(:keep ("1"))
               '(:keep 1)
               '(:keep (1 1))
-              '(:keep (1) :summaries ((:sources (1) :text "duplicate")))
-              '(:summaries ((:sources nil :text "missing-source")))
-              '(:summaries ((:sources (1) :text "")))
-              '(:summaries ((:sources (1) :text "ok" :extra t)))
+              '(:keep (1) :summaries ((:sources (1) :text "duplicate"))
+                :drop (2))
+              '(:summaries ((:sources nil :text "missing-source"))
+                :keep nil :drop (1))
+              '(:summaries ((:sources (1) :text ""))
+                :keep nil :drop (2))
+              '(:summaries ((:sources (1) :text "ok" :extra t))
+                :keep nil :drop (2))
               '(:unknown (1))
               '()))
       (should-error
-       (e-context-lifetime-normalize-curation-arguments bad)
+       (e-context-lifetime-normalize-curation-disposition bad)
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-context-lifetime-test-curation-prepares-v3-record-with-provenance ()
@@ -578,7 +587,8 @@
           (e-context-lifetime-prepare-curation
            frame
            '(:keep (1)
-             :summaries ((:sources (2 3) :text "durable replacement")))
+             :summaries ((:sources (2 3) :text "durable replacement"))
+             :drop nil)
            "response-1"
            1.0))
          (items (plist-get record :items)))
@@ -611,14 +621,14 @@
   (let ((frame (e-context-lifetime-test--frame)))
     (should-error
      (e-context-lifetime-prepare-curation
-      frame '(:keep (2)) "response-1")
+      frame '(:keep (2) :summaries nil :drop (1)) "response-1")
      :type 'e-context-lifetime-invalid-record)
     (let ((consumed
            (e-context-lifetime-frame-complete-for-consumer
             frame "consumer-1" "response-1")))
       (should-error
        (e-context-lifetime-prepare-curation
-        consumed '(:keep (1)) "response-2")
+        consumed '(:keep (1) :summaries nil :drop nil) "response-2")
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-context-lifetime-test-curation-source-and-byte-bounds ()
@@ -628,13 +638,16 @@
     (should (= (length (plist-get
                         (e-context-lifetime-prepare-curation
                          sixteen
-                         (list :keep (number-sequence 1 16))
+                         (list :keep (number-sequence 1 16)
+                               :summaries nil :drop nil)
                          "response-16")
                         :items))
                16))
     (should-error
      (e-context-lifetime-prepare-curation
-      seventeen (list :keep (number-sequence 1 17)) "response-17")
+      seventeen (list :keep (number-sequence 1 17)
+                      :summaries nil :drop nil)
+      "response-17")
      :type 'e-context-lifetime-invalid-record))
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
@@ -651,14 +664,16 @@
                    when (= (e-context-lifetime--bytes candidate) 8192)
                    return length)))
     (should length-at-limit)
-    (let ((effect (list :summaries
+      (let ((effect (list :keep nil :summaries
                         (list (list :sources '(1)
-                                    :text (make-string length-at-limit ?x)))))
-          (too-large (list :summaries
+                                    :text (make-string length-at-limit ?x)))
+                        :drop nil))
+          (too-large (list :keep nil :summaries
                            (list (list :sources '(1)
                                        :text
                                        (make-string (1+ length-at-limit)
-                                                    ?x))))))
+                                                    ?x)))
+                           :drop nil)))
       (should (= (e-context-lifetime--bytes
                   (e-context-lifetime-prepare-curation
                    frame effect "response-bytes" 1.0))
@@ -776,7 +791,7 @@
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v2"))
+                   "context-curate-v3"))
     (should (equal (plist-get first :presentation-revision)
                    "context-curation-presentation-v2"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))

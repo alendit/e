@@ -1596,31 +1596,42 @@ retained response already carries the stable segment and its earlier marker."
 
 (defun e-openai-codex--context-curation-tool-definition ()
   "Return the wire carrier for the core-owned curation effect."
-  (list :type "function"
-        :name "context-curate"
-        :description
-        "For ephemeral context sources shown with labels, call this after using a source when it may be needed later: use keep with a label for exact retention or summaries with labels for a compact durable replacement; omitted sources are dropped after a successful call, and make no call when nothing should remain."
-        :parameters
-        (list :type "object"
-              :additionalProperties :json-false
-              :properties
-              (list
-               :keep
-               (list :type "array" :maxItems 16
-                     :items (list :type "integer" :minimum 1))
-               :summaries
-               (list :type "array" :maxItems 16
-                     :items
-                     (list :type "object"
-                           :additionalProperties :json-false
-                           :required ["sources" "text"]
-                           :properties
-                           (list :sources
-                                 (list :type "array" :minItems 1 :maxItems 16
-                                       :items
-                                       (list :type "integer" :minimum 1))
-                                 :text (list :type "string"
-                                              :minLength 1))))))))
+  (list
+   :type "function"
+   :name "context-curate"
+   :description
+   "Partition every presented source label exactly once: use keep for exact retention, summaries for durable replacements, and drop for every other source."
+   :parameters
+   (list
+    :type "object"
+    :additionalProperties :json-false
+    :required ["keep" "summaries" "drop"]
+    :properties
+    (list
+     :keep
+     (list
+      :type "array"
+      :maxItems 16
+      :items (list :type "integer" :minimum 1))
+     :summaries
+     (list
+      :type "array"
+      :maxItems 16
+      :items
+      (list
+       :type "object"
+       :additionalProperties :json-false
+       :required ["sources" "text"]
+       :properties
+       (list
+        :sources
+        (list :type "array" :minItems 1 :maxItems 16
+              :items (list :type "integer" :minimum 1))
+        :text
+        (list :type "string" :minLength 1))))
+     :drop
+     (list :type "array"
+           :items (list :type "integer" :minimum 1))))))
 
 (defun e-openai-codex--text-verbosity (model options)
   "Return Responses text verbosity for MODEL under OPTIONS."

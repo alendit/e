@@ -990,20 +990,13 @@ the frame-local presentation installed."
                               (setq item (copy-sequence item))
                               (cl-remf item :provider-replay-item)
                               (cl-remf item :provider-replay-items)
-                              (let ((arguments (plist-get item :arguments)))
-                                (setq response-curation-effects
-                                      (list
-                                       (list
-                                        :type 'context-curate
-                                        :arguments
-                                        (if (and
-                                             (e-context-lifetime--keyword-plist-p
-                                              arguments)
-                                             (plist-member arguments :drop))
-                                            (e-context-lifetime-normalize-curation-disposition
-                                             arguments)
-                                          (e-context-lifetime-normalize-curation-arguments
-                                           arguments)))))))
+                              (setq response-curation-effects
+                                    (list
+                                     (list
+                                      :type 'context-curate
+                                      :arguments
+                                      (e-context-lifetime-normalize-curation-disposition
+                                       (plist-get item :arguments))))))
                              ('assistant-delta
                               (setq response-assistant-content
                                     (concat response-assistant-content

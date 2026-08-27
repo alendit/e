@@ -3239,17 +3239,12 @@ frame."
                            (not (e-context-lifetime-frame-consumed-p frame)))))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :frame-not-live)))
-      (let* ((prepared
-              (when (= (length effects) 1)
-                (let ((arguments (plist-get (car effects) :arguments)))
-                  (if (and (e-context-lifetime--keyword-plist-p arguments)
-                           (plist-member arguments :drop))
-                      (e-context-lifetime-prepare-curation-disposition
-                       frame arguments response-id)
-                    (list :record
-                          (e-context-lifetime-prepare-curation
-                           frame arguments response-id)
-                          :drop-only-p nil))))))
+      (let ((prepared
+             (when (= (length effects) 1)
+               (e-context-lifetime-prepare-curation-disposition
+                frame
+                (plist-get (car effects) :arguments)
+                response-id))))
         (list :frame frame
               :consumer-request-id
               (and (e-context-lifetime-frame-p frame)

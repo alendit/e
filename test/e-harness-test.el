@@ -4967,8 +4967,10 @@ Return request options, persisted anchors, and the final context."
              (curation
               (e-context-lifetime-prepare-curation
                frame
-               '(:summaries ((:sources (1)
-                              :text "selected durable fact")))
+               '(:keep nil
+                 :summaries ((:sources (1)
+                              :text "selected durable fact"))
+                 :drop nil)
                "response-portable-summary"
                1.0)))
         (e-session-append-context-curation store "session-1" curation))
@@ -5017,9 +5019,11 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
          (curation
           (e-context-lifetime-prepare-curation
            frame
-           (list :summaries
+           (list :keep nil
+                 :summaries
                  (list (list :sources '(1)
-                             :text (format "selected-%s" suffix))))
+                             :text (format "selected-%s" suffix)))
+                 :drop nil)
            response-id
            1.0)))
     (e-session-append-context-curation store session-id curation)))
@@ -5734,9 +5738,11 @@ an empty summary\"."
                       (setq curation-input
                             (list :type 'context-curate
                                   :arguments
-                                  '(:summaries
+                                  '(:keep nil
+                                    :summaries
                                     ((:sources (1)
-                                      :text "selected durable fact")))))
+                                      :text "selected durable fact"))
+                                    :drop nil)))
                       (funcall on-item curation-input)
                       (funcall on-item '(:type done :reason tool-use)))
                   (funcall on-item
@@ -6175,9 +6181,11 @@ an empty summary\"."
                    (setq curation-input
                          (list :type 'context-curate
                                :arguments
-                               '(:summaries
+                               '(:keep nil
+                                 :summaries
                                  ((:sources (2)
-                                   :text "selected from tool result")))
+                                   :text "selected from tool result"))
+                                 :drop (1))
                                :provider-replay-items
                                '((:type provider-replay-item
                                  :provider-id openai
@@ -6289,9 +6297,11 @@ an empty summary\"."
                          (plist-get (nth (1- tool-position) messages-b)
                                     :content))))
               (should (equal curation-arguments
-                             '(:summaries
+                             '(:keep nil
+                               :summaries
                                ((:sources (2)
-                                 :text "selected from tool result")))))
+                                 :text "selected from tool result"))
+                               :drop (1))))
               (should tool-message-c)
               (should (equal (mapcar (lambda (item)
                                        (plist-get (plist-get item :item) :type))
@@ -6431,7 +6441,9 @@ an empty summary\"."
                            :arguments nil))
                 (funcall on-item
                          '(:type context-curate
-                           :arguments (:keep (999))))
+                           :arguments (:keep (999)
+                                       :summaries nil
+                                       :drop nil)))
                 (funcall on-item
                          '(:type tool-call
                            :id "call-after-invalid-session"
@@ -6488,8 +6500,8 @@ an empty summary\"."
 (ert-deftest e-harness-test-context-lifetime-preflights-before-assistant-append ()
   "Completion-only curation failures do not append an assistant or consume its frame."
   (e-harness-test--with-empty-layer-registry
-    (dolist (case '((unknown-label . (:keep (2)))
-                    (oversized-record . (:keep (1)))))
+    (dolist (case '((unknown-label . (:keep (2) :summaries nil :drop nil))
+                    (oversized-record . (:keep (1) :summaries nil :drop nil))))
       (let* ((request-count 0)
              (source-value "PREFLIGHT-SOURCE")
              (captured-frame nil)
@@ -6530,9 +6542,11 @@ an empty summary\"."
                                          (make-string 26 ?r)
                                          sources))))
                                (setq prepared-bytes bytes)
-                               (list :summaries
+                               (list :keep nil
+                                     :summaries
                                      (list (list :sources '(1)
-                                                 :text text))))
+                                                 :text text))
+                                     :drop nil))
                            (cdr case))))
                     (funcall on-item
                              (list :type 'context-curate
@@ -6604,7 +6618,8 @@ an empty summary\"."
              (cl-function
               (lambda (&key on-item &allow-other-keys)
                 (funcall on-item
-                         '(:type context-curate :arguments (:keep (1))))
+                         '(:type context-curate
+                           :arguments (:keep (1) :summaries nil :drop nil)))
                 (funcall on-item
                          '(:type assistant-message :content "selected"))
                 (funcall on-item '(:type done :reason stop))))))
@@ -6889,7 +6904,8 @@ an empty summary\"."
                    :response-entry-id "response-a"
                    :curation-effects
                    (list (list :type 'context-curate
-                               :arguments '(:keep (1))))))))
+                               :arguments
+                               '(:keep (1) :summaries nil :drop nil)))))))
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a"))
     (should (eq (plist-get entry :context-frame) frame-b))
     (should-not (e-context-lifetime-frame-consumed-p frame-b))
@@ -6956,7 +6972,8 @@ an empty summary\"."
                :provider-request-id "response-1"
                :curation-effects
                (list (list :type 'context-curate
-                           :arguments '(:keep (2))))) )
+                           :arguments
+                           '(:keep (2) :summaries nil :drop nil)))))
        :type 'e-context-lifetime-invalid-record))
     (should (eq (plist-get entry :context-frame) frame))
     (should-not (e-context-lifetime-frame-consumed-p frame))
@@ -7001,7 +7018,8 @@ an empty summary\"."
                :response-entry-id "response-1"
                :curation-effects
                (list (list :type 'context-curate
-                           :arguments '(:keep (1))))))))
+                           :arguments
+                           '(:keep (1) :summaries nil :drop nil)))))))
     (should (equal order '(append consume)))
     (should (= (length (e-session-context-curations store "session-1")) 1))
     (should (e-context-lifetime-frame-consumed-p
@@ -7058,9 +7076,11 @@ an empty summary\"."
                              on-item
                              (list :type 'context-curate
                                    :arguments
-                                   '(:summaries
-                                     ((:sources (1)
-                                       :text "selected after B")))))
+                                   '(:keep nil
+                                     :summaries
+                                     ((:sources (2)
+                                       :text "selected after B"))
+                                     :drop (1))))
                               (funcall on-item
                                        '(:type assistant-message
                                          :content "B"))
