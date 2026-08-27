@@ -868,24 +868,126 @@ selection into a product-contract observation."
    (lambda (event) (equal (plist-get event :turn-id) turn-id))
    (e-live-e2e--activity-of-type harness session-id 'turn-retrying)))
 
+(defun e-live-e2e--retry-event-stage (event)
+  "Return an optional causal stage marker from retry EVENT.
+Current production retry events do not need to expose a stage.  Deterministic
+fixtures may provide one at the event or payload boundary so the validator can
+reject a retry attributed to a different stage."
+  (let ((payload (plist-get event :payload)))
+    (or (plist-get event :stage)
+        (plist-get event :retry-stage)
+        (and payload (plist-get payload :stage))
+        (and payload (plist-get payload :retry-stage)))))
+
+(defun e-live-e2e--stage-key (stage)
+  "Return a comparable string key for causal STAGE."
+  (and stage (format "%s" stage)))
+
+(defun e-live-e2e--captured-turn-stage-cardinality
+    (bodies stages retry-events)
+  "Validate chronological BODIES against logical STAGES and RETRY-EVENTS.
+Each stage has one logical request body followed by zero or more exact retry
+duplicates.  A retry event with an explicit stage must match that stage;
+untagged production retry events are assigned only to otherwise unmatched
+duplicate bodies.  The result reports logical and duplicate counts so a
+reserved acknowledgement retry remains one logical acknowledgement."
+  (catch 'invalid
+    (unless stages
+      (throw 'invalid nil))
+    (let ((remaining (copy-sequence bodies))
+          stage-results)
+      (dolist (stage stages)
+        (let* ((name (plist-get stage :stage))
+               (expected (plist-get stage :body))
+               (predicate (plist-get stage :predicate)))
+          (unless (and remaining
+                       (equal (car remaining) expected)
+                       (or (not predicate)
+                           (funcall predicate (car remaining))))
+            (throw 'invalid nil))
+          (pop remaining)
+          (let (duplicates)
+            (while (and remaining (equal (car remaining) expected))
+              (push (pop remaining) duplicates))
+            (push (list :stage name
+                        :body expected
+                        :duplicate-count (length duplicates)
+                        :duplicates (nreverse duplicates))
+                  stage-results))))
+      (when remaining
+        (throw 'invalid nil))
+      (setq stage-results (nreverse stage-results))
+      (let ((stage-event-counts (make-hash-table :test #'equal))
+            (untagged-events 0)
+            (retry-valid-p t)
+            (duplicate-count
+             (apply #'+ (or (mapcar (lambda (stage)
+                                      (plist-get stage :duplicate-count))
+                                    stage-results)
+                            '(0)))))
+        (dolist (event retry-events)
+          (let ((stage-key
+                 (e-live-e2e--stage-key
+                  (e-live-e2e--retry-event-stage event))))
+            (if stage-key
+                (if (seq-some
+                     (lambda (stage)
+                       (equal stage-key
+                              (e-live-e2e--stage-key
+                               (plist-get stage :stage))))
+                     stage-results)
+                    (puthash stage-key
+                             (1+ (gethash stage-key stage-event-counts 0))
+                             stage-event-counts)
+                  (setq retry-valid-p nil))
+              (setq untagged-events (1+ untagged-events)))))
+        ;; Every captured retry duplicate must have exactly one retry event;
+        ;; neither one-over events nor unaccounted duplicates are acceptable.
+        (unless (= duplicate-count (length retry-events))
+          (setq retry-valid-p nil))
+        (dolist (stage stage-results)
+          (let* ((stage-key
+                  (e-live-e2e--stage-key (plist-get stage :stage)))
+                 (duplicates (plist-get stage :duplicate-count))
+                 (tagged (gethash stage-key stage-event-counts 0))
+                 (needed (- duplicates tagged)))
+            (when (or (> tagged duplicates)
+                      (> (max 0 needed) untagged-events))
+              (setq retry-valid-p nil))
+            (when (> needed 0)
+              (setq untagged-events (- untagged-events needed)))))
+        (when (and retry-valid-p (= untagged-events 0))
+          (list :valid-p t
+                :stages stage-results
+                :logical-stage-count (length stage-results)
+                :logical-curation-count
+                (cl-count-if
+                 (lambda (stage)
+                   (equal (e-live-e2e--stage-key (plist-get stage :stage))
+                          "curation-ack"))
+                 stage-results)
+                :duplicate-count duplicate-count
+                :retry-count (length retry-events)))))))
+
 (defun e-live-e2e--captured-turn-extras-valid-p
     (initial-body extra-bodies retry-events)
   "Validate same-turn EXTRA-BODIES after INITIAL-BODY.
-Each extra is either a linked context-curate acknowledgement or an exact
-duplicate of INITIAL-BODY.  Duplicate retries require a matching retry event;
-RETRY-EVENTS must already be restricted to the captured turn."
-  (let ((duplicate-count 0))
-    (and
-     (cl-every
-      (lambda (body)
-        (cond
-         ((e-live-e2e--context-curation-ack-body-p body) t)
-         ((equal body initial-body)
-          (setq duplicate-count (1+ duplicate-count))
-          t)
-         (t nil)))
-      extra-bodies)
-     (<= duplicate-count (length retry-events)))))
+The wrapper retains the legacy initial-or-ack shape while applying the
+stage-aware logical retry validator.  Full tool turns provide every stage
+directly so an acknowledgement cannot stand in for an ordinary continuation."
+  (let ((ack-bodies
+         (seq-filter #'e-live-e2e--context-curation-ack-body-p extra-bodies)))
+    (plist-get
+     (e-live-e2e--captured-turn-stage-cardinality
+      (cons initial-body extra-bodies)
+      (if ack-bodies
+          (list (list :stage 'initial :body initial-body)
+                (list :stage 'curation-ack :body (car ack-bodies)
+                      :predicate
+                      #'e-live-e2e--context-curation-ack-body-p))
+        (list (list :stage 'initial :body initial-body)))
+      retry-events)
+     :valid-p)))
 
 (ert-deftest e-live-e2e-test-adoption-composition-uses-turn-boundary ()
   "Select the composed request before a later continuation body."
@@ -954,6 +1056,69 @@ RETRY-EVENTS must already be restricted to the captured turn."
                  initial-body (list duplicate-body) nil))
     (should-not (e-live-e2e--captured-turn-extras-valid-p
                  initial-body (list mutated-body) (list retry-event)))))
+
+(ert-deftest e-live-e2e-test-captured-turn-stage-cardinality-is-logical ()
+  "Retries preserve one logical request or acknowledgement per causal stage."
+  (let* ((initial-body '(:input ((:role user :content "initial"))))
+         (followup-body
+          '(:input ((:type "function_call_output"
+                     :call_id "ordinary-call" :output "TOOL"))))
+         (ack-body
+          '(:input ((:type "function_call" :name "context-curate"
+                     :call_id "curation-call")
+                    (:type "function_call_output" :call_id "curation-call"
+                     :output ""))))
+         (different-ack-body
+          '(:input ((:type "function_call" :name "context-curate"
+                     :call_id "other-curation")
+                    (:type "function_call_output" :call_id "other-curation"
+                     :output ""))))
+         (stages
+          (list (list :stage 'initial :body initial-body)
+                (list :stage 'tool-followup :body followup-body)
+                (list :stage 'curation-ack :body ack-body
+                      :predicate #'e-live-e2e--context-curation-ack-body-p)))
+         (retry-event '(:stage curation-ack)))
+    (let ((result
+           (e-live-e2e--captured-turn-stage-cardinality
+            (list initial-body followup-body ack-body ack-body)
+            stages
+            (list retry-event))))
+      (should (plist-get result :valid-p))
+      (should (= (plist-get result :logical-curation-count) 1))
+      (should (= (plist-get result :duplicate-count) 1))
+      (should (= (plist-get result :retry-count) 1)))
+    ;; Production retry events are currently untagged; exact body equality and
+    ;; one-for-one cardinality still make the duplicate bounded and logical.
+    (should (e-live-e2e--captured-turn-stage-cardinality
+             (list initial-body initial-body followup-body ack-body)
+             stages
+             (list '(:turn-id "turn-1"))))
+    ;; Two copied acknowledgements with one retry event are one-over and fail.
+    (should-not
+     (e-live-e2e--captured-turn-stage-cardinality
+      (list initial-body followup-body ack-body ack-body ack-body)
+      stages
+      (list retry-event)))
+    ;; An explicit retry attributed to another stage cannot authorize the ack.
+    (should-not
+     (e-live-e2e--captured-turn-stage-cardinality
+      (list initial-body followup-body ack-body ack-body)
+      stages
+      (list '(:stage tool-followup))))
+    ;; A second distinct curation call is not a retry duplicate.
+    (should-not
+     (e-live-e2e--captured-turn-stage-cardinality
+      (list initial-body followup-body ack-body different-ack-body)
+      stages
+      nil))
+    ;; A reserved acknowledgement cannot occupy the ordinary-tool stage or a
+    ;; no-curation first/warm turn.
+    (should-not
+     (e-live-e2e--captured-turn-stage-cardinality
+      (list initial-body ack-body)
+      (list (list :stage 'initial :body initial-body))
+      nil))))
 
 (ert-deftest e-live-e2e-test-adoption-carrier-localizes-to-source-continuation ()
   "Only the linked ordinary result continuation can satisfy the carrier gate."
@@ -1064,6 +1229,7 @@ RETRY-EVENTS must already be restricted to the captured turn."
           cache-result result adoption-result composition-result failure-stage
           adoption-disposition scenario-prompt-identity affordance-revision
           presentation-revision adoption-gates adoption-dependency-identity
+          drop-adoption-gates
           evidence-schema-revision reasoning-effort reasoning-summary
           probe-request-identity dependency-identity returned-summary-presence)
   "Return one bounded identity-complete external evidence RECORD.
@@ -1071,7 +1237,8 @@ REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
 or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
 lists matching those requests where available.  Each body receives one shape
 by request index; absent metadata leaves only its metadata-derived fields
-unavailable."
+unavailable.  DROP-ADOPTION-GATES selects the autonomous-drop classifier;
+otherwise ADOPTION-GATES retains the positive-adoption classifier."
   (let* ((request-bodies (or request-bodies nil))
          (request-metadata (or request-metadata nil))
          (diagnostics
@@ -1122,10 +1289,15 @@ unavailable."
            (identity-mismatches "invalid")
            (t "pass")))
          (adoption-classification
-          (and adoption-gates
-               (apply #'e-live-e2e--classify-autonomous-adoption
-                      (append (list :identity-result identity-result)
-                              adoption-gates))))
+          (cond
+           (drop-adoption-gates
+            (apply #'e-live-e2e--classify-autonomous-drop
+                   (append (list :identity-result identity-result)
+                           drop-adoption-gates)))
+           (adoption-gates
+            (apply #'e-live-e2e--classify-autonomous-adoption
+                   (append (list :identity-result identity-result)
+                           adoption-gates)))))
          (first-identity (car identities))
          (effective-base-url
           (or (plist-get first-identity :base-url) "unavailable"))
@@ -1313,7 +1485,8 @@ unavailable."
                               (or returned-summary-presence "unavailable")))
               record))
       (if (or adoption-result composition-result failure-stage
-              adoption-gates adoption-disposition scenario-prompt-identity
+              adoption-gates drop-adoption-gates adoption-disposition
+              scenario-prompt-identity
               affordance-revision presentation-revision
               adoption-dependency-identity)
           (append record
@@ -1332,7 +1505,10 @@ unavailable."
                             failure-stage
                             "none")
                         :adoption-disposition
-                        (or adoption-disposition "unavailable")
+                        (or (plist-get adoption-classification
+                                       :adoption-disposition)
+                            adoption-disposition
+                            "unavailable")
                         :scenario-prompt-identity
                         (or scenario-prompt-identity "unavailable")
                         :affordance-revision
@@ -1461,7 +1637,9 @@ finalization, including when the original condition is re-signalled."
                 :presentation-revision
                 (plist-get state :presentation-revision)
                 :adoption-gates
-                (plist-get state :adoption-gates)))))
+                (plist-get state :adoption-gates)
+                :drop-adoption-gates
+                (plist-get state :drop-adoption-gates)))))
           (if condition
               (signal (car condition) (cdr condition))
             value))
@@ -1486,7 +1664,8 @@ finalization, including when the original condition is re-signalled."
 
 (defconst e-live-e2e--adoption-negative-terms
   '("context-curate" "curate" "keep" "summary" "summaries"
-    "source label")
+    "curation" "drop" "retain" "source" "label" "numeric-label"
+    "carrier" "reasoning" "schema" "argument")
   "Case-insensitive words forbidden in the autonomous-adoption prompt.")
 
 (defconst e-live-e2e--adoption-freshness-seconds (* 7 24 60 60)
@@ -1545,6 +1724,151 @@ finalization, including when the original condition is re-signalled."
                (append (plist-get record :items) nil))))
     (format "%s" (plist-get item :kind))))
 
+(defun e-live-e2e--adoption-positive-effect-valid-p
+    (arguments source-count record sentinel)
+  "Return non-nil for an exhaustive positive adoption disposition.
+The disposition must cover exactly SOURCE-COUNT labels, retain SENTINEL by an
+exact or summary item, and contain at least one retained item.  Core remains
+the authority for strict shape and partition validation; this predicate only
+joins that result to the content-free evidence record."
+  (condition-case nil
+      (let* ((normalized
+              (e-context-lifetime-normalize-curation-disposition
+               arguments source-count))
+             (retained-p
+              (or (plist-get normalized :keep)
+                  (plist-get normalized :summaries)))
+             (disposition
+              (and record
+                   (e-live-e2e--adoption-record-disposition
+                    record sentinel))))
+        (and (integerp source-count)
+             (> source-count 0)
+             retained-p
+             (member disposition '("exact" "summary"))
+             (e-live-e2e--adoption-record-preserves-sentinel-p
+              record sentinel)))
+    (error nil)))
+
+(defun e-live-e2e--adoption-drop-effect-valid-p (arguments source-count)
+  "Return non-nil for an exhaustive drop-only disposition.
+The complete partition is validated by core; this predicate additionally
+requires that no semantic exact/summary item was selected."
+  (condition-case nil
+      (let ((normalized
+             (e-context-lifetime-normalize-curation-disposition
+              arguments source-count)))
+        (and (integerp source-count)
+             (> source-count 0)
+             (null (plist-get normalized :keep))
+             (null (plist-get normalized :summaries))
+             (= (length (plist-get normalized :drop)) source-count)))
+    (error nil)))
+
+(defun e-live-e2e--autonomous-drop-prompt (&optional tool-name)
+  "Return the naturalistic negative-adoption prompt for TOOL-NAME.
+The prompt describes current-answer use only and deliberately contains no
+carrier, curation, source-label, reasoning, schema, or argument vocabulary."
+  (format
+   "Call the %s lookup tool exactly once. The returned value is useful only for the current answer. Reverse every character of its returned sentinel exactly and reply with only that transformed value and no extra text."
+   (or tool-name "e2e_deterministic")))
+
+(cl-defun e-live-e2e--classify-autonomous-drop
+    (&key identity-result ordinary-tool-p prompt-control-p carrier-p
+          current-answer-p effect-present-p exact-partition-p drop-only-p
+          audit-linked-p consumed-p no-promotion-p reopened-p evicted-p
+          residue-free-p)
+  "Return bounded classification for explicit negative adoption.
+An absent effect is a product-contract observation, while a wrong current
+answer or malformed partition is semantic failure.  A valid exhaustive drop
+has one logical disposition and requires all audit, consumption, reopen,
+eviction, and residue gates before composition can pass."
+  (if (not (equal identity-result "pass"))
+      (list :adoption-result "unavailable"
+            :composition-result "unavailable"
+            :failure-stage "none"
+            :adoption-disposition "unavailable"
+            :result "unavailable")
+    (cond
+     ((not ordinary-tool-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "ordinary-tool"
+            :adoption-disposition "unavailable"
+            :result "semantic-failure"))
+     ((not prompt-control-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "prompt-control"
+            :adoption-disposition "unavailable"
+            :result "semantic-failure"))
+     ((not carrier-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "carrier"
+            :adoption-disposition "unavailable"
+            :result "semantic-failure"))
+     ((not current-answer-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "current-answer"
+            :adoption-disposition "unavailable"
+            :result "semantic-failure"))
+     ((not effect-present-p)
+      (list :adoption-result "product-contract-failure"
+            :composition-result "pass"
+            :failure-stage "model-selection"
+            :adoption-disposition "unavailable"
+            :result "product-contract-failure"))
+     ((not exact-partition-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "exact-partition"
+            :adoption-disposition "unavailable"
+            :result "semantic-failure"))
+     ((not drop-only-p)
+      (list :adoption-result "product-contract-failure"
+            :composition-result "pass"
+            :failure-stage "model-selection"
+            :adoption-disposition "unavailable"
+            :result "product-contract-failure"))
+     ((not (and audit-linked-p consumed-p))
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "commit"
+            :adoption-disposition "drop"
+            :result "semantic-failure"))
+     ((not no-promotion-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "no-promotion"
+            :adoption-disposition "drop"
+            :result "semantic-failure"))
+     ((not reopened-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "reopen"
+            :adoption-disposition "drop"
+            :result "semantic-failure"))
+     ((not evicted-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "eviction"
+            :adoption-disposition "drop"
+            :result "semantic-failure"))
+     ((not residue-free-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "residue"
+            :adoption-disposition "drop"
+            :result "semantic-failure"))
+     (t
+      (list :adoption-result "pass"
+            :composition-result "pass"
+            :failure-stage "none"
+            :adoption-disposition "drop"
+            :result "pass")))))
+
 (defun e-live-e2e--adoption-audit-linked-p
     (store session-id record sink-events)
   "Return non-nil when RECORD has one exact response/control link.
@@ -1582,6 +1906,50 @@ session activity ledger."
                 response-entry-id)
          (e-session-entry-by-id store session-id response-entry-id)
          consumed)))
+
+(defun e-live-e2e--autonomous-drop-audit-links (store session-id)
+  "Return bounded control/consumption identities for a drop-only response.
+The curation response control and consumed-frame event are durable activity;
+the nil curation-id list is intentional for a drop-only disposition.  Return
+only opaque identities so callers cannot accidentally put event content into
+external evidence."
+  (let* ((events (e-session-activity-events store session-id))
+         (controls
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type)
+                 'context-curation-response))
+           events))
+         (consumed-events
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type)
+                 'context-frame-consumed))
+           events))
+         (control (car controls))
+         (consumed (car consumed-events))
+         (control-payload (and control (plist-get control :payload)))
+         (consumed-payload (and consumed (plist-get consumed :payload)))
+         (response-entry-id (and control (plist-get control :id)))
+         (frame-id (and consumed (plist-get consumed-payload :frame-id))))
+    (when (and (= (length controls) 1)
+               (= (length consumed-events) 1)
+               (stringp response-entry-id)
+               (equal (plist-get control-payload :response-entry-id)
+                      response-entry-id)
+               (stringp frame-id)
+               (equal (plist-get consumed-payload :response-entry-id)
+                      response-entry-id)
+               (null (plist-get consumed-payload :curation-ids))
+               (equal (plist-get control :turn-id)
+                      (plist-get consumed :turn-id))
+               (condition-case nil
+                   (e-session-entry-by-id store session-id response-entry-id)
+                 (error nil)))
+      (list :response-entry-id response-entry-id
+            :frame-id frame-id
+            :control-p t
+            :consumed-p t))))
 
 (cl-defun e-live-e2e--classify-autonomous-adoption
     (&key identity-result ordinary-tool-p prompt-control-p carrier-p
@@ -1698,6 +2066,141 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                     (e-live-e2e--adoption-prompt-violations
                      "CONTEXT-CURATE is forbidden.")))))
 
+(ert-deftest e-live-e2e-test-autonomous-drop-prompt-negative-inventory ()
+  "The negative adoption prompt requests only a current-answer transformation."
+  (let ((prompt (e-live-e2e--autonomous-drop-prompt "e2e_deterministic")))
+    (should (string-match-p (regexp-quote "e2e_deterministic") prompt))
+    (should (string-match-p (regexp-quote "exactly once") prompt))
+    (should (string-match-p (regexp-quote "useful only for the current answer")
+                            prompt))
+    (should (string-match-p (regexp-quote "Reverse every character") prompt))
+    (should (string-match-p (regexp-quote "returned sentinel") prompt))
+    (should (string-match-p (regexp-quote "only that transformed value")
+                            prompt))
+    (should (string-match-p (regexp-quote "no extra text") prompt))
+    (should-not (e-live-e2e--adoption-prompt-violations prompt))
+    (dolist (term '("context-curate" "curation" "keep" "drop" "retain"
+                    "summary" "summaries" "reasoning" "schema" "source"
+                    "label" "numeric-label" "carrier" "argument"))
+      (should (member term
+                      (e-live-e2e--adoption-prompt-violations
+                       (concat prompt " " term)))))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-positive-effect-validation ()
+  "Positive adoption accepts exhaustive exact/summary retention only."
+  (let* ((sentinel "LIVE-ADOPTION-SENTINEL")
+         (exact-record (list :items
+                             (list (list :kind 'exact :value sentinel))))
+         (summary-record
+          (list :items
+                (list (list :kind 'summary
+                            :text (concat "Remember " sentinel)))))
+         (other-record
+          '(:items ((:kind exact :value "OTHER-SENTINEL"))))
+         (exact-arguments '(:keep (1) :summaries nil :drop (2)))
+         (summary-arguments
+          '(:keep nil
+            :summaries ((:sources (1) :text "Remember LIVE-ADOPTION-SENTINEL"))
+            :drop (2))))
+    (should (e-live-e2e--adoption-positive-effect-valid-p
+             exact-arguments 2 exact-record sentinel))
+    (should (e-live-e2e--adoption-positive-effect-valid-p
+             summary-arguments 2 summary-record sentinel))
+    (should-not (e-live-e2e--adoption-positive-effect-valid-p
+                 exact-arguments 2 other-record sentinel))
+    (should-not (e-live-e2e--adoption-positive-effect-valid-p
+                 summary-arguments 2 nil sentinel))
+    (dolist (bad
+             '((:keep (1) :summaries nil)
+               (:keep (1) :summaries nil :drop (1))
+               (:keep nil :summaries nil :drop (1 2))))
+      (should-not (e-live-e2e--adoption-positive-effect-valid-p
+                   bad 2 exact-record sentinel)))
+    ;; The independent drop partition has no positive adoption evidence.
+    (should-not (e-live-e2e--adoption-positive-effect-valid-p
+                 '(:keep nil :summaries nil :drop (1 2))
+                 2 exact-record sentinel))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-drop-effect-validation ()
+  "Drop validation accepts an exhaustive drop-only partition without a cap."
+  (should (e-live-e2e--adoption-drop-effect-valid-p
+           '(:keep nil :summaries nil :drop (1 2)) 2))
+  (should (e-live-e2e--adoption-drop-effect-valid-p
+           (list :keep nil :summaries nil :drop (number-sequence 1 17))
+           17))
+  (dolist (bad
+           '((:keep (1) :summaries nil :drop (2))
+             (:keep nil :summaries ((:sources (1) :text "fact")) :drop (2))
+             (:keep nil :summaries nil :drop (1))
+             (:keep nil :summaries nil :drop (1 1))
+             (:keep nil :summaries nil)))
+    (should-not (e-live-e2e--adoption-drop-effect-valid-p bad 2)))
+  ;; Drop has no independent sixteen-source ceiling; retained labels do.
+  (should-not
+   (e-live-e2e--adoption-drop-effect-valid-p
+    (list :keep (number-sequence 1 17) :summaries nil :drop nil)
+    17)))
+
+(ert-deftest e-live-e2e-test-autonomous-drop-classification-partitions ()
+  "Drop adoption and composition failures remain independently classified."
+  (let ((base '(:identity-result "pass"
+                :ordinary-tool-p t :prompt-control-p t :carrier-p t
+                :current-answer-p t :effect-present-p t
+                :exact-partition-p t :drop-only-p t
+                :audit-linked-p t :consumed-p t :no-promotion-p t
+                :reopened-p t :evicted-p t :residue-free-p t)))
+    (let ((passing (apply #'e-live-e2e--classify-autonomous-drop base)))
+      (should (equal passing
+                     '(:adoption-result "pass"
+                       :composition-result "pass"
+                       :failure-stage "none"
+                       :adoption-disposition "drop"
+                       :result "pass"))))
+    (dolist
+        (case
+         '((:ordinary-tool-p nil "unavailable" "failure" "ordinary-tool"
+            "unavailable" "semantic-failure")
+           (:prompt-control-p nil "unavailable" "failure" "prompt-control"
+            "unavailable" "semantic-failure")
+           (:carrier-p nil "unavailable" "failure" "carrier" "unavailable"
+            "semantic-failure")
+           (:current-answer-p nil "unavailable" "failure" "current-answer"
+            "unavailable" "semantic-failure")
+           (:effect-present-p nil "product-contract-failure" "pass"
+            "model-selection" "unavailable" "product-contract-failure")
+           (:exact-partition-p nil "unavailable" "failure" "exact-partition"
+            "unavailable" "semantic-failure")
+           (:drop-only-p nil "product-contract-failure" "pass"
+            "model-selection" "unavailable" "product-contract-failure")
+           (:audit-linked-p nil "pass" "failure" "commit" "drop"
+            "semantic-failure")
+           (:consumed-p nil "pass" "failure" "commit" "drop"
+            "semantic-failure")
+           (:no-promotion-p nil "pass" "failure" "no-promotion" "drop"
+            "semantic-failure")
+           (:reopened-p nil "pass" "failure" "reopen" "drop"
+            "semantic-failure")
+           (:evicted-p nil "pass" "failure" "eviction" "drop"
+            "semantic-failure")
+           (:residue-free-p nil "pass" "failure" "residue" "drop"
+            "semantic-failure")))
+      (let* ((arguments
+              (plist-put (copy-sequence base) (nth 0 case) (nth 1 case)))
+             (result (apply #'e-live-e2e--classify-autonomous-drop arguments)))
+        (should (equal (plist-get result :adoption-result) (nth 2 case)))
+        (should (equal (plist-get result :composition-result) (nth 3 case)))
+        (should (equal (plist-get result :failure-stage) (nth 4 case)))
+        (should (equal (plist-get result :adoption-disposition)
+                       (nth 5 case)))
+        (should (equal (plist-get result :result) (nth 6 case)))))
+    (let ((unavailable
+           (apply #'e-live-e2e--classify-autonomous-drop
+                  (plist-put (copy-sequence base)
+                             :identity-result "unavailable"))))
+      (should (equal (plist-get unavailable :adoption-result) "unavailable"))
+      (should (equal (plist-get unavailable :composition-result) "unavailable"))
+      (should (equal (plist-get unavailable :result) "unavailable")))))
+
 (ert-deftest e-live-e2e-test-autonomous-adoption-accepts-exact-or-summary ()
   "The adopted sentinel may be preserved by either supported disposition."
   (let ((sentinel "LIVE-ADOPTION-SENTINEL"))
@@ -1799,6 +2302,44 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
        base (plist-put (copy-sequence current) :material-request-shape
                        '((:body-sha256 "body-2")))
       "2026-08-30T00:00:00Z"))))
+
+(ert-deftest e-live-e2e-test-autonomous-drop-evidence-freshness-and-reuse ()
+  "Drop evidence reuses only within seven days and equal material identity."
+  (let* ((base
+          '(:scenario "responses-autonomous-curation-drop"
+            :provider-id "gateway" :profile-id "Responses"
+            :base-url-identity "https://gateway.example"
+            :endpoint-identity "https://gateway.example/responses"
+            :transport "responses-http" :store-mode "json-false"
+            :native-requester "e-openai-codex--http-request-start"
+            :model-id "gpt-5.6-sol"
+            :material-request-shape ((:body-sha256 "drop-body-1"))
+            :prompt-layout-revision "layout-1"
+            :prompt-cache-key-derivation-revision "cache-1"
+            :scenario-prompt-identity "drop-prompt-1"
+            :affordance-revision "context-curate-v3"
+            :presentation-revision "context-curation-presentation-v2"
+            :adoption-dependency-identity "drop-cone-1"
+            :repository-revision "repo-1"
+            :timestamp "2026-08-27T00:00:00Z"))
+         (current (copy-sequence base)))
+    (should
+     (e-live-e2e--adoption-evidence-reusable-p
+      base current "2026-08-30T00:00:00Z"))
+    ;; Repository provenance is retained but does not invalidate the material
+    ;; drop result by itself.
+    (should
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current) :repository-revision "repo-2")
+      "2026-08-30T00:00:00Z"))
+    (should-not
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current)
+                      :adoption-dependency-identity "drop-cone-2")
+      "2026-08-30T00:00:00Z"))
+    (should-not
+     (e-live-e2e--adoption-evidence-reusable-p
+      base current "2026-09-04T00:00:01Z"))))
 
 (ert-deftest e-live-e2e-test-reasoning-summary-capability-classification-partitions ()
   "Reasoning-summary capability outcomes have one bounded classification."
@@ -2182,6 +2723,96 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
       (should (equal (plist-get record :failure-stage)
                      "model-selection"))
       (should (equal (plist-get record :semantic-result) "pass")))))
+
+(ert-deftest e-live-e2e-test-external-finalizer-classifies-autonomous-drop-partitions ()
+  "The shared finalizer records autonomous-drop outcomes without content."
+  (let* ((profile '(:name "Configured Responses"
+                    :wire-api responses
+                    :responses-transport http
+                    :base-url "https://gateway.example/v1"
+                    :response-store :json-false))
+         (body '(:model "gpt-5.6-sol" :store :json-false
+                 :input [(:type "message" :role "user"
+                          :content "PRIVATE-DROP-SENTINEL")]))
+         (metadata '((:url "https://gateway.example/v1/responses"
+                      :transport url-retrieve)))
+         (base-gates '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                       :current-answer-p t :effect-present-p t
+                       :exact-partition-p t :drop-only-p t
+                       :audit-linked-p t :consumed-p t :no-promotion-p t
+                       :reopened-p t :evicted-p t :residue-free-p t))
+         (cases
+          (list
+           (list :gates base-gates :bodies (list body)
+                 :condition nil :result "pass" :adoption "pass"
+                 :composition "pass" :stage "none" :disposition "drop")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :effect-present-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "product-contract-failure"
+                 :adoption "product-contract-failure" :composition "pass"
+                 :stage "model-selection" :disposition "unavailable")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :current-answer-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "unavailable"
+                 :composition "failure" :stage "current-answer"
+                 :disposition "unavailable")
+           (list :gates base-gates :bodies nil :condition nil
+                 :result "identity-unavailable" :adoption "unavailable"
+                 :composition "unavailable" :stage "none"
+                 :disposition "unavailable"))))
+    (cl-letf (((symbol-function 'e-live-e2e--profile-auth-available-p)
+               (lambda (&rest _) t)))
+      (dolist (case cases)
+        (let (records condition)
+          (cl-letf (((symbol-function
+                      'e-live-e2e--report-external-evidence)
+                     (lambda (record) (push record records))))
+            (condition-case caught
+                (e-live-e2e--run-external-scenario
+                 :scenario 'responses-autonomous-curation-drop
+                 :provider 'configured-provider
+                 :profile profile
+                 :model "gpt-5.6-sol"
+                 :timeout 120.0
+                 :started-at 100.0
+                 :capture
+                 (lambda ()
+                   (list :request-bodies (plist-get case :bodies)
+                         :request-metadata
+                         (and (plist-get case :bodies) metadata)
+                         :drop-adoption-gates (plist-get case :gates)
+                         :adoption-disposition "drop"
+                         :semantic-result "pass"
+                         :cache-result "unavailable"))
+                 :thunk
+                 (lambda ()
+                   (if (plist-get case :condition)
+                       (ert-fail "autonomous drop gate failed")
+                     :drop-pass)))
+              (error (setq condition caught))))
+          (should (= (length records) 1))
+          (should (if (plist-get case :condition)
+                      (and condition
+                           (eq (car condition) 'ert-test-failed))
+                    (null condition)))
+          (let* ((record (car records))
+                 (encoded (json-encode (e-live-e2e--json-plist record))))
+            (should (equal (plist-get record :scenario)
+                           "responses-autonomous-curation-drop"))
+            (should (equal (plist-get record :result)
+                           (plist-get case :result)))
+            (should (equal (plist-get record :adoption-result)
+                           (plist-get case :adoption)))
+            (should (equal (plist-get record :composition-result)
+                           (plist-get case :composition)))
+            (should (equal (plist-get record :failure-stage)
+                           (plist-get case :stage)))
+            (should (equal (plist-get record :adoption-disposition)
+                           (plist-get case :disposition)))
+            (should-not (string-match-p
+                         (regexp-quote "PRIVATE-DROP-SENTINEL") encoded))))))))
 
 (ert-deftest e-live-e2e-test-external-evidence-record-is-bounded-and-complete ()
   "The external record is machine-readable, identity-complete, and content-free."
@@ -3538,6 +4169,9 @@ provider turn to settle without an implicit local deadline."
                  second-result
                  second-request-count
                  curation-record
+                 curation-arguments
+                 curation-source-count
+                 (curation-preparation-count 0)
                  adoption-disposition
                  (adoption-result "unavailable")
                  (composition-result "unavailable")
@@ -3672,11 +4306,29 @@ provider turn to settle without an implicit local deadline."
                   (null (e-live-e2e--adoption-prompt-violations follow-up-prompt))
                   "prompt-control"
                   "The follow-up prompt contains reserved vocabulary.")
-                 (e-live-e2e--with-responses-request-capture
-                     profile request-bodies request-handles
-                   (setq first-result
-                         (e-live-e2e--prompt-batch-before-deadline
-                          harness session-id prompt deadline)))
+                 (let ((original-prepare
+                        (symbol-function
+                         'e-context-lifetime-prepare-curation-disposition)))
+                   (cl-letf
+                       (((symbol-function
+                          'e-context-lifetime-prepare-curation-disposition)
+                         (lambda (frame arguments response-entry-id
+                                  &optional bytes-per-token)
+                           (setq curation-preparation-count
+                                 (1+ curation-preparation-count)
+                                 curation-arguments (copy-tree arguments)
+                                 curation-source-count
+                                 (length
+                                  (e-context-lifetime-frame-curation-sources
+                                   frame bytes-per-token)))
+                           (funcall original-prepare
+                                    frame arguments response-entry-id
+                                    bytes-per-token))))
+                     (e-live-e2e--with-responses-request-capture
+                         profile request-bodies request-handles
+                       (setq first-result
+                             (e-live-e2e--prompt-batch-before-deadline
+                              harness session-id prompt deadline)))))
                  (let ((tool-starts
                         (e-live-e2e--activity-of-type
                          harness session-id 'tool-started))
@@ -3722,10 +4374,12 @@ provider turn to settle without an implicit local deadline."
                               record-count)))
                    (setq curation-record (car curations))
                    (unless (and (= (plist-get curation-record :record-version) 3)
-                                (e-live-e2e--adoption-record-preserves-sentinel-p
+                                (= curation-preparation-count 1)
+                                (e-live-e2e--adoption-positive-effect-valid-p
+                                 curation-arguments curation-source-count
                                  curation-record raw-tool-output))
                      (model-selection-failure
-                      "The autonomous curation did not preserve the sentinel."))
+                      "The autonomous curation effect did not validate against its presented sources."))
                    (setq adoption-disposition
                          (e-live-e2e--adoption-record-disposition
                           curation-record raw-tool-output)))
@@ -3800,6 +4454,463 @@ provider turn to settle without an implicit local deadline."
   "A configured Responses model autonomously curates a future-turn tool result."
   (e-live-e2e--run-autonomous-curation-adoption))
 
+(defun e-live-e2e--run-autonomous-curation-drop ()
+  "Run the isolated naturalistic Responses drop-only scenario.
+The scenario makes one ordinary tool request, then verifies the curation-only
+response as an audit/consumption operation through persistence and bounded
+activity eviction.  Its evidence remains content-free; all source values and
+ provider arguments stay local to the scenario gates."
+  (e-live-e2e--require-enabled)
+  (let* ((provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+      (ert-skip "The configured provider is not a Responses profile."))
+    (let* ((tool-name "e2e_deterministic")
+           (raw-tool-output (format "LIVE-DROP-%s"
+                                   (e-live-e2e--nonce)))
+           (prompt (e-live-e2e--autonomous-drop-prompt tool-name))
+           (prompt-identity (e-live-e2e--sha256 prompt))
+           (affordance-revision
+            (format "%s" e-context-lifetime-curation-schema-revision))
+           (presentation-revision
+            (format "%s" e-context-lifetime-curation-presentation-revision)))
+      (let ((e-context-lifetime-shadow-projection-enabled t)
+            (e-live-e2e--deterministic-tool-output raw-tool-output))
+        (e-live-e2e--with-harness
+            (harness session-id
+                     :persistent t
+                     :layers (list (e-live-e2e--deterministic-tool-layer))
+                     :events-var events)
+          (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
+                 (started-at (float-time))
+                 (deadline (+ started-at scenario-timeout))
+                 request-bodies
+                 request-handles
+                 first-result
+                 curation-arguments
+                 curation-source-count
+                 (curation-preparation-count 0)
+                 ordered-bodies
+                 source-bearing-index
+                 source-bearing-body
+                 ack-index
+                 ack-body
+                 stage-cardinality
+                 response-entry-id
+                 (adoption-result "unavailable")
+                 (composition-result "unavailable")
+                 (failure-stage "none")
+                 (adoption-disposition "unavailable")
+                 (semantic-result "unavailable")
+                 (cache-result "unavailable")
+                 (scenario-result nil)
+                 drop-adoption-gates)
+            (e-live-e2e--run-external-scenario
+             :scenario 'responses-autonomous-curation-drop
+             :provider provider-id
+             :profile profile
+             :model e-openai-default-model
+             :timeout scenario-timeout
+             :started-at started-at
+             :cancel (lambda ()
+                       (e-live-e2e--cancel-newest-request request-handles))
+             :capture
+             (lambda ()
+               (let* ((entries (reverse request-bodies))
+                      (bodies
+                       (mapcar (lambda (entry)
+                                 (or (plist-get entry :full-body)
+                                     (plist-get entry :body)))
+                               entries))
+                      (handles (reverse request-handles))
+                      (metadata
+                       (mapcar (lambda (handle)
+                                 (ignore-errors
+                                   (e-backend-request-metadata handle)))
+                               handles))
+                      (usage-payloads
+                       (mapcar (lambda (event) (plist-get event :payload))
+                               (e-live-e2e--activity-of-type
+                                harness session-id 'token-usage))))
+                 (setq cache-result
+                       (if usage-payloads
+                           (e-live-e2e--cache-result usage-payloads)
+                         "unavailable"))
+                 (list :model (or (plist-get (car bodies) :model)
+                                  e-openai-default-model)
+                       :request-bodies bodies
+                       :request-metadata metadata
+                       :usage-payloads usage-payloads
+                       :semantic-result semantic-result
+                       :cache-result cache-result
+                       :adoption-result adoption-result
+                       :composition-result composition-result
+                       :failure-stage failure-stage
+                       :adoption-disposition adoption-disposition
+                       :drop-adoption-gates drop-adoption-gates
+                       :scenario-prompt-identity prompt-identity
+                       :affordance-revision affordance-revision
+                       :presentation-revision presentation-revision
+                       :scenario-result scenario-result)))
+             :thunk
+             (lambda ()
+               (cl-labels
+                   ((classify (gates)
+                      (setq drop-adoption-gates gates)
+                      (let ((classification
+                             (apply #'e-live-e2e--classify-autonomous-drop
+                                    (append (list :identity-result "pass")
+                                            gates))))
+                        (setq adoption-result
+                              (plist-get classification :adoption-result)
+                              composition-result
+                              (plist-get classification :composition-result)
+                              failure-stage
+                              (plist-get classification :failure-stage)
+                              adoption-disposition
+                              (plist-get classification :adoption-disposition)
+                              scenario-result
+                              (plist-get classification :result)
+                              semantic-result
+                              (if (member (plist-get classification :result)
+                                          '("pass"
+                                            "product-contract-failure"))
+                                  "pass"
+                                "failure"))
+                        classification))
+                    (gates-for-stage (stage)
+                      (let ((gates
+                             (list :ordinary-tool-p t
+                                   :prompt-control-p t
+                                   :carrier-p t
+                                   :current-answer-p t
+                                   :effect-present-p t
+                                   :exact-partition-p t
+                                   :drop-only-p t
+                                   :audit-linked-p t
+                                   :consumed-p t
+                                   :no-promotion-p t
+                                   :reopened-p t
+                                   :evicted-p t
+                                   :residue-free-p t)))
+                        (plist-put
+                         gates
+                         (pcase stage
+                           ("ordinary-tool" :ordinary-tool-p)
+                           ("prompt-control" :prompt-control-p)
+                           ("carrier" :carrier-p)
+                           ("current-answer" :current-answer-p)
+                           ("exact-partition" :exact-partition-p)
+                           ("no-promotion" :no-promotion-p)
+                           ("commit" :audit-linked-p)
+                           ("reopen" :reopened-p)
+                           ("eviction" :evicted-p)
+                           ("residue" :residue-free-p))
+                         nil)))
+                    (fail (stage message)
+                      (classify (gates-for-stage stage))
+                      (ert-fail message))
+                    (model-selection-failure (effect-p exact-p drop-p message)
+                      (classify
+                       (list :ordinary-tool-p t :prompt-control-p t
+                             :carrier-p t :current-answer-p t
+                             :effect-present-p effect-p
+                             :exact-partition-p exact-p
+                             :drop-only-p drop-p
+                             :audit-linked-p t :consumed-p t
+                             :no-promotion-p t :reopened-p t
+                             :evicted-p t :residue-free-p t))
+                      (ert-fail message))
+                    (require-gate (condition stage message)
+                      (unless condition
+                        (fail stage message)))
+                    (body-has-tool-p (body name)
+                      (seq-some
+                       (lambda (tool)
+                         (equal (format "%s" (plist-get tool :name)) name))
+                       (append (plist-get body :tools) nil)))
+                    (reasoning-auto-p (body)
+                      (let ((reasoning (plist-get body :reasoning)))
+                        (and (listp reasoning)
+                             (stringp (plist-get reasoning :effort))
+                             (equal (plist-get reasoning :summary) "auto"))))
+                    (strict-carrier-p (body)
+                      (seq-some
+                       (lambda (tool)
+                         (let* ((parameters (plist-get tool :parameters))
+                                (properties (plist-get parameters :properties))
+                                (drop (plist-get properties :drop))
+                                (keys (cl-loop for (key _value)
+                                               on properties by #'cddr
+                                               collect key)))
+                           (and (equal (plist-get tool :name) "context-curate")
+                                (equal (plist-get tool :type) "function")
+                                (equal (plist-get parameters :type) "object")
+                                (eq (plist-get parameters :additionalProperties)
+                                    :json-false)
+                                (equal (plist-get parameters :required)
+                                       ["keep" "summaries" "drop"])
+                                (equal (sort (copy-sequence keys)
+                                             (lambda (left right)
+                                               (string< (symbol-name left)
+                                                        (symbol-name right))))
+                                       '(:drop :keep :summaries))
+                                (equal (plist-get (plist-get properties :keep)
+                                                  :maxItems)
+                                       16)
+                                (equal (plist-get
+                                        (plist-get properties :summaries)
+                                        :maxItems)
+                                       16)
+                                (not (plist-member drop :maxItems)))))
+                       (append (plist-get body :tools) nil))))
+                 (require-gate
+                  (null (e-live-e2e--adoption-prompt-violations prompt))
+                  "prompt-control"
+                  "The naturalistic drop prompt contains reserved vocabulary.")
+                 (require-gate
+                  (and (string-match-p (regexp-quote tool-name) prompt)
+                       (= (length (split-string prompt tool-name t)) 2))
+                  "prompt-control"
+                  "The drop prompt did not name the ordinary tool exactly once.")
+                 (let ((original-prepare
+                        (symbol-function
+                         'e-context-lifetime-prepare-curation-disposition)))
+                   (condition-case caught
+                       (cl-letf
+                           (((symbol-function
+                              'e-context-lifetime-prepare-curation-disposition)
+                             (lambda (frame arguments response-entry-id
+                                      &optional bytes-per-token)
+                               (setq curation-preparation-count
+                                     (1+ curation-preparation-count)
+                                     curation-arguments (copy-tree arguments)
+                                     curation-source-count
+                                     (length
+                                      (e-context-lifetime-frame-curation-sources
+                                       frame bytes-per-token)))
+                               (funcall original-prepare
+                                         frame arguments response-entry-id
+                                         bytes-per-token))))
+                         (e-live-e2e--with-responses-request-capture
+                             profile request-bodies request-handles
+                           (setq first-result
+                                 (e-live-e2e--prompt-batch-before-deadline
+                                  harness session-id prompt deadline))))
+                     (e-context-lifetime-invalid-record
+                      ;; Convert the typed core failure into classified ERT
+                      ;; evidence while preserving its details in the message.
+                      (classify
+                       '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                         :current-answer-p t :effect-present-p t
+                         :exact-partition-p nil :drop-only-p nil
+                         :audit-linked-p t :consumed-p t :no-promotion-p t
+                         :reopened-p t :evicted-p t :residue-free-p t))
+                      (ert-fail
+                       (format "Invalid curation partition: %S" caught)))
+                     (error (signal (car caught) (cdr caught)))))
+                 (let ((tool-starts
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'tool-started))
+                       (tool-finishes
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'tool-finished))
+                       (assistant (e-live-e2e--assistant-content first-result)))
+                   (require-gate (= (length tool-starts) 1)
+                                 "ordinary-tool"
+                                 "The ordinary deterministic tool was not called once.")
+                   (require-gate (= (length tool-finishes) 1)
+                                 "ordinary-tool"
+                                 "The ordinary deterministic tool did not finish once.")
+                   (require-gate
+                    (equal (string-trim assistant)
+                           (concat (reverse raw-tool-output)))
+                    "current-answer"
+                    "The first answer was not the exact reversed sentinel."))
+                 (setq ordered-bodies
+                       (mapcar (lambda (entry) (plist-get entry :body))
+                               (reverse request-bodies)))
+                 (let* ((unique-bodies
+                         (cl-remove-duplicates ordered-bodies :test #'equal))
+                        (unique-index
+                         (e-live-e2e--adoption-source-bearing-request-index
+                          unique-bodies raw-tool-output)))
+                   (setq source-bearing-body
+                         (and (integerp unique-index)
+                              (nth unique-index unique-bodies))
+                         source-bearing-index
+                         (and source-bearing-body
+                              (cl-position source-bearing-body ordered-bodies
+                                           :test #'equal))))
+                 (let ((carrier-present-p
+                        (and source-bearing-body
+                             (strict-carrier-p source-bearing-body)
+                             (reasoning-auto-p source-bearing-body))))
+                   (require-gate carrier-present-p
+                                 "carrier"
+                                 "The source continuation lacked the strict carrier or reasoning auto."))
+                 (let* ((effect-present-p
+                         (= curation-preparation-count 1))
+                        (normalized
+                         (and effect-present-p
+                              (condition-case nil
+                                  (e-context-lifetime-normalize-curation-disposition
+                                   curation-arguments curation-source-count)
+                                (error nil))))
+                        (exact-partition-p (and normalized t))
+                        (drop-only-p
+                         (and normalized
+                              (null (plist-get normalized :keep))
+                              (null (plist-get normalized :summaries)))))
+                   (unless effect-present-p
+                     (model-selection-failure nil exact-partition-p drop-only-p
+                                              "The model did not select one curation effect."))
+                   (setq ack-index
+                         (cl-loop for body in
+                                  (nthcdr (1+ source-bearing-index)
+                                          ordered-bodies)
+                                  for index from (1+ source-bearing-index)
+                                  when (e-live-e2e--context-curation-ack-body-p
+                                        body)
+                                  return index))
+                   (setq ack-body (and ack-index (nth ack-index ordered-bodies)))
+                   (let* ((turn-id (plist-get first-result :id))
+                          (retry-events
+                           (and turn-id
+                                (e-live-e2e--turn-retrying-events
+                                 harness session-id turn-id))))
+                     (setq stage-cardinality
+                           (and source-bearing-index ack-body
+                                (e-live-e2e--captured-turn-stage-cardinality
+                                 ordered-bodies
+                                 (list
+                                  (list :stage 'initial
+                                        :body (car ordered-bodies))
+                                  (list :stage 'source-bearing
+                                        :body source-bearing-body)
+                                  (list :stage 'curation-ack :body ack-body
+                                        :predicate
+                                        #'e-live-e2e--context-curation-ack-body-p))
+                                 retry-events)))
+                     (require-gate
+                      (and (plist-get stage-cardinality :valid-p)
+                           (= (plist-get stage-cardinality
+                                         :logical-curation-count)
+                              1))
+                                   "carrier"
+                                   "The curation effect/ack was not one bounded causal stage."))
+                   (unless exact-partition-p
+                     (fail "exact-partition"
+                           "The curation effect did not exhaustively drop its presented sources."))
+                   (unless drop-only-p
+                     (model-selection-failure t exact-partition-p nil
+                                              "The selected disposition retained a source."))
+                   (let* ((store (e-harness-sessions harness))
+                          (links
+                           (e-live-e2e--autonomous-drop-audit-links
+                            store session-id)))
+                     (setq response-entry-id
+                           (plist-get links :response-entry-id))
+                     (require-gate (and links (plist-get links :control-p))
+                                   "commit"
+                                   "The drop response control was not linked exactly once.")
+                     (require-gate (and links (plist-get links :consumed-p))
+                                   "commit"
+                                   "The drop response did not consume its live frame." )
+                     (let ((printed
+                            (prin1-to-string
+                             (e-session-context-lifetime-projection
+                              store session-id))))
+                       (require-gate
+                        (and (null (e-session-context-curations store session-id))
+                             (null (e-session-context-promotions store session-id)))
+                        "no-promotion"
+                        "Drop-only curation left a promotion record.")
+                       (require-gate
+                        (not (string-match-p
+                              (regexp-quote raw-tool-output) printed))
+                        "residue"
+                        "Drop-only curation left a raw source residue."))
+                     (e-session-flush-write-queue store)
+                     (let* ((reopened
+                             (e-session-persistent-store-create
+                              (e-session-store-directory store)))
+                            (reopened-links
+                             (e-live-e2e--autonomous-drop-audit-links
+                              reopened session-id))
+                            (reopened-printed
+                             (prin1-to-string
+                              (e-session-context-lifetime-projection
+                               reopened session-id))))
+                       (require-gate
+                        (and reopened-links
+                             (equal (plist-get reopened-links
+                                               :response-entry-id)
+                                    response-entry-id)
+                             (null (e-session-context-curations
+                                    reopened session-id))
+                             (null (e-session-context-promotions
+                                    reopened session-id))
+                             (not (string-match-p
+                                   (regexp-quote raw-tool-output)
+                                   reopened-printed)))
+                        "reopen"
+                        "The drop-only audit or source residue did not survive reopen correctly."))
+                     (dotimes (index 65)
+                       (e-session-append-activity-event
+                        store session-id (or (plist-get first-result :id)
+                                            "turn-drop-tail")
+                        'tool-progress (list :index index)))
+                     (e-session-flush-write-queue store)
+                     (e-session--write-session-checkpoint-now store session-id)
+                     (let* ((evicted
+                             (e-session-persistent-store-create
+                              (e-session-store-directory store)))
+                            (activity (e-session-activity-events
+                                       evicted session-id))
+                            (entry-missing-p
+                             (condition-case nil
+                                 (null (e-session-entry-by-id
+                                        evicted session-id response-entry-id))
+                               (error t)))
+                            (projection-printed
+                             (prin1-to-string
+                              (e-session-context-lifetime-projection
+                               evicted session-id))))
+                       (require-gate
+                        (and (not (seq-some
+                                   (lambda (event)
+                                     (memq (plist-get event :event-type)
+                                           '(context-curation-response
+                                             context-frame-consumed)))
+                                   activity))
+                             entry-missing-p)
+                        "eviction"
+                        "Drop audit activity was not evicted from the bounded tail.")
+                       (let ((residue-free-p
+                              (and (null (e-session-context-curations
+                                          evicted session-id))
+                                   (null (e-session-context-promotions
+                                          evicted session-id))
+                                   (not (string-match-p
+                                         (regexp-quote raw-tool-output)
+                                         projection-printed))
+                                (not (string-match-p
+                                         "context-drop\\|curation-drop"
+                                         projection-printed)))))
+                         (classify
+                          (list :ordinary-tool-p t :prompt-control-p t
+                                :carrier-p t :current-answer-p t
+                                :effect-present-p t
+                                :exact-partition-p t :drop-only-p t
+                                :audit-linked-p t :consumed-p t
+                                :no-promotion-p t :reopened-p t
+                                :evicted-p t :residue-free-p residue-free-p)))))))))))))))
+
+(ert-deftest e-live-e2e-test-responses-autonomous-curation-drop ()
+  "A configured Responses model autonomously drops a current-turn source."
+  (e-live-e2e--run-autonomous-curation-drop))
+
 (ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
   "The adoption runner passes only its declared keywords before cleanup."
   (let (received request-attempted)
@@ -3839,6 +4950,56 @@ provider turn to settle without an implicit local deadline."
                (lambda (&rest _) nil)))
       (let ((e-openai-default-provider 'test-provider))
         (e-live-e2e--run-autonomous-curation-adoption))
+      (should (equal
+               (cl-loop for (key _value) on received by #'cddr collect key)
+               '(:scenario :provider :profile :model :timeout :started-at
+                 :cancel :capture :thunk)))
+      (should (functionp (plist-get received :capture)))
+      (should (functionp (plist-get received :thunk)))
+      (should (functionp (plist-get received :cancel)))
+      (should-not request-attempted))))
+
+(ert-deftest e-live-e2e-test-autonomous-drop-runner-keeps-cleanup-outside-call ()
+  "The drop runner passes only its declared keywords before cleanup."
+  (let (received request-attempted)
+    (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
+               (lambda () t))
+              ((symbol-function 'e-openai-provider-profile)
+               (lambda (&rest _)
+                 '(:name "Responses test" :wire-api responses
+                   :responses-transport http)))
+              ((symbol-function 'e-openai--provider-wire-api)
+               (lambda (&rest _) 'responses))
+              ((symbol-function 'e-live-e2e--make-harness)
+               (lambda (&rest _)
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+              ((symbol-function 'e-session-persistent-store-create)
+               (lambda (&rest _) (e-session-store-create)))
+              ((symbol-function 'e-board-e2e-create-session)
+               (lambda (&rest _) "test-session"))
+              ((symbol-function 'e-harness--install-activity-sink)
+               (lambda (&rest _) 'test-subscription))
+              ((symbol-function 'e-harness-set-intrinsic-capabilities)
+               (lambda (&rest _) nil))
+              ((symbol-function 'e-harness--remove-activity-sink)
+               (lambda (&rest _) nil))
+              ((symbol-function 'make-temp-file)
+               (lambda (&rest _) "/private/tmp/e-drop-runner-test"))
+              ((symbol-function 'delete-directory)
+               (lambda (&rest _) nil))
+              ((symbol-function 'e-live-e2e--run-external-scenario)
+               (lambda (&rest arguments)
+                 (setq received arguments)
+                 'runner-stubbed))
+              ((symbol-function 'e-board-e2e-prompt-batch)
+               (lambda (&rest _)
+                 (setq request-attempted t)
+                 (error "provider request should not run")))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (&rest _) nil)))
+      (let ((e-openai-default-provider 'test-provider))
+        (e-live-e2e--run-autonomous-curation-drop))
       (should (equal
                (cl-loop for (key _value) on received by #'cddr collect key)
                '(:scenario :provider :profile :model :timeout :started-at
@@ -4341,26 +5502,41 @@ continuation and socket assertions used by the compatibility selector."
                    (tool-followup-index
                     (cl-loop for body in (cdr tool-turn-bodies)
                              for index from 1
-                             unless (equal body (car tool-turn-bodies))
+                             unless (or (equal body (car tool-turn-bodies))
+                                        (e-live-e2e--context-curation-ack-body-p
+                                         body))
                              return index))
-                   (tool-retry-bodies
-                    (seq-filter
-                     (lambda (body)
-                       (equal body (car tool-turn-bodies)))
-                     (cdr tool-turn-bodies)))
                    (first-body (car first-turn-bodies))
                    (tool-body (car tool-turn-bodies))
                    (tool-followup-body
                     (and tool-followup-index
                          (nth tool-followup-index tool-turn-bodies)))
-                   (curation-ack-bodies
+                   (curation-ack-index
                     (and tool-followup-index
                          (cl-loop for body in
                                   (nthcdr (1+ tool-followup-index)
                                           tool-turn-bodies)
-                                  unless (equal body (car tool-turn-bodies))
-                                  collect body)))
+                                  for index from (1+ tool-followup-index)
+                                  when (e-live-e2e--context-curation-ack-body-p
+                                        body)
+                                  return index)))
+                   (curation-ack-bodies
+                    (and curation-ack-index
+                         (nthcdr curation-ack-index tool-turn-bodies)))
                    (curation-ack-body (car curation-ack-bodies))
+                   (tool-stage-cardinality
+                    (and tool-body tool-followup-body curation-ack-body
+                         (e-live-e2e--captured-turn-stage-cardinality
+                          tool-turn-bodies
+                          (list
+                           (list :stage 'initial :body tool-body)
+                           (list :stage 'tool-followup
+                                 :body tool-followup-body)
+                           (list :stage 'curation-ack
+                                 :body curation-ack-body
+                                 :predicate
+                                 #'e-live-e2e--context-curation-ack-body-p))
+                          tool-turn-retry-events)))
                    (warm-body (car warm-turn-bodies))
                    (tool-followup-input
                     (append (plist-get tool-followup-body :input) nil))
@@ -4416,20 +5592,27 @@ continuation and socket assertions used by the compatibility selector."
                            (length ordered-bodies))))
               ;; The tool turn has one ordinary tool continuation.  Any
               ;; further request in that same turn, and any extra request in
-              ;; another turn, must be either evidenced retry or a linked
-              ;; reserved acknowledgement.
-              (should (= (length tool-turn-bodies)
-                         (+ 2 (length tool-retry-bodies)
-                            (length curation-ack-bodies))))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       first-body (cdr first-turn-bodies)
-                       first-turn-retry-events))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       tool-body tool-retry-bodies
-                       tool-turn-retry-events))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       warm-body (cdr warm-turn-bodies)
-                       warm-turn-retry-events))
+              ;; another turn, must be an exact retry of its causal stage or
+              ;; the one logical reserved acknowledgement.
+              (should tool-stage-cardinality)
+              (should (plist-get tool-stage-cardinality :valid-p))
+              (should (= (plist-get tool-stage-cardinality
+                                    :logical-curation-count)
+                         1))
+              (should
+               (plist-get
+                (e-live-e2e--captured-turn-stage-cardinality
+                 first-turn-bodies
+                 (list (list :stage 'initial :body first-body))
+                 first-turn-retry-events)
+                :valid-p))
+              (should
+               (plist-get
+                (e-live-e2e--captured-turn-stage-cardinality
+                 warm-turn-bodies
+                 (list (list :stage 'initial :body warm-body))
+                 warm-turn-retry-events)
+                :valid-p))
               (dolist (body curation-ack-bodies)
                 (should (e-live-e2e--context-curation-ack-body-p body)))
               (when (eq transport 'http)
@@ -4483,6 +5666,10 @@ continuation and socket assertions used by the compatibility selector."
                    (format "curation arguments %S with captured tool sources %S do not match curation item %S"
                            captured-curation-arguments
                            captured-tool-sources item))))
+              (should (= (length (e-session-context-curations
+                                  (e-harness-sessions harness)
+                                  session-id))
+                         1))
               (should (seq-some
                        (lambda (item)
                          (and (equal (plist-get item :type)
@@ -4984,15 +6171,27 @@ WebSocket and socket-replacement assertions."
               (should latest-body)
               (should (= (length ordered-handles)
                          (length ordered-bodies)))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       first-body (cdr first-turn-bodies)
-                       first-turn-retry-events))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       middle-body (cdr middle-turn-bodies)
-                       middle-turn-retry-events))
-              (should (e-live-e2e--captured-turn-extras-valid-p
-                       latest-body (cdr latest-turn-bodies)
-                       latest-turn-retry-events))
+              (should
+               (plist-get
+                (e-live-e2e--captured-turn-stage-cardinality
+                 first-turn-bodies
+                 (list (list :stage 'initial :body first-body))
+                 first-turn-retry-events)
+                :valid-p))
+              (should
+               (plist-get
+                (e-live-e2e--captured-turn-stage-cardinality
+                 middle-turn-bodies
+                 (list (list :stage 'initial :body middle-body))
+                 middle-turn-retry-events)
+                :valid-p))
+              (should
+               (plist-get
+                (e-live-e2e--captured-turn-stage-cardinality
+                 latest-turn-bodies
+                 (list (list :stage 'initial :body latest-body))
+                 latest-turn-retry-events)
+                :valid-p))
               (should (stringp (plist-get first-body :prompt_cache_key)))
               (should (equal (plist-get first-body :prompt_cache_key)
                              (plist-get middle-body :prompt_cache_key)))
