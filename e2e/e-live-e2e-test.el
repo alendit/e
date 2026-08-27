@@ -316,14 +316,17 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
   "Return one bounded identity-complete external evidence RECORD.
 REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
 or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
-lists matching those requests where available."
-  (let* ((request-metadata (or request-metadata nil))
+lists matching those requests where available.  Each body receives one shape
+by request index; absent metadata leaves only its metadata-derived fields
+unavailable."
+  (let* ((request-bodies (or request-bodies nil))
+         (request-metadata (or request-metadata nil))
          (diagnostics
           (mapcar #'e-live-e2e--request-diagnostics request-metadata))
          (shapes
           (cl-loop for body in request-bodies
-                   for metadata in diagnostics
                    for index from 1
+                   for metadata = (nth (1- index) diagnostics)
                    for shape = (e-live-e2e--request-shape body)
                    collect
                    (append shape
@@ -562,6 +565,113 @@ separate in that record."
                        "\"cache-result\":\"unavailable\""
                        "\"result\":\"configuration-unavailable\""))
         (should (string-match-p (regexp-quote field) missing-line))))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-preserves-captured-body-on-provider-failure ()
+  "A provider-start failure still records the captured request shape once."
+  (let* ((body
+          '(:model "gpt-5.6-sol"
+            :store :json-false
+            :input [(:type "message" :role "system"
+                     :content "captured-provider-secret")]
+            :tools [(:type "function" :name "e2e_echo"
+                      :description "secret tool description")]))
+         (records nil)
+         (condition nil))
+    (cl-letf (((symbol-function 'file-readable-p) (lambda (&rest _) t))
+              ((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (condition-case caught
+          (e-live-e2e--run-external-scenario
+           :scenario 'chatgpt-canonical-tool-heavy
+           :provider 'codex
+           :profile '(:name "ChatGPT Codex"
+                      :base-url "https://chatgpt.example/codex"
+                      :response-store :json-false)
+           :model "gpt-5.6-sol"
+           :timeout 120.0
+           :started-at 100.0
+           :capture (lambda ()
+                      (list :request-bodies (list body)
+                            :request-metadata nil
+                            :usage-payloads nil))
+           :thunk (lambda () (error "websocket start failed")))
+        (error (setq condition caught))))
+    (should condition)
+    (should (eq (car condition) 'error))
+    (should (equal (cadr condition) "websocket start failed"))
+    (should (= (length records) 1))
+    (let* ((record (car records))
+           (shapes (plist-get record :material-request-shape))
+           (shape (car shapes))
+           (encoded (json-encode (e-live-e2e--json-plist record))))
+      (should (equal (plist-get record :result)
+                     "provider/infrastructure-failure"))
+      (should (= (plist-get record :request-count) 1))
+      (should (= (length shapes) 1))
+      (should (= (plist-get shape :request-index) 1))
+      (should (stringp (plist-get shape :body-sha256)))
+      (should (stringp (plist-get shape :input-sha256)))
+      (should (= (plist-get shape :input-item-count) 1))
+      (should (equal (plist-get shape :input-roles) '("system")))
+      (should (equal (plist-get shape :input-types) '("message")))
+      (should (equal (plist-get shape :wire-keys)
+                     '("model" "store" "input" "tools")))
+      (should (equal (plist-get shape :tool-names) '("e2e_echo")))
+      (dolist (key '(:connection-id :websocket-reused
+                     :websocket-reuse-count :websocket-request-mode
+                     :prompt-layout-revision))
+        (should (plist-member shape key))
+        (should-not (plist-get shape key)))
+      (should-not (string-match-p
+                   (regexp-quote "captured-provider-secret") encoded))
+      (should-not (string-match-p
+                   (regexp-quote "secret tool description") encoded)))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-joins-metadata-by-body-index ()
+  "Every captured body gets a shape when metadata is shorter than the prefix."
+  (let* ((bodies
+          '((:model "gpt-5.6-sol" :input [] :tools [])
+            (:model "gpt-5.6-sol" :input [(:type "message" :role "user")])
+            (:model "gpt-5.6-sol" :input [(:type "message" :role "assistant")])))
+         (metadata
+          '((:diagnostics (:websocket-connection-id "socket-1"
+                           :websocket-reused nil
+                           :websocket-reuse-count 0
+                           :websocket-request-mode full
+                           :prompt-layout-revision "layout-v1"))
+            (:diagnostics (:websocket-connection-id "socket-1"
+                           :websocket-reused t
+                           :websocket-reuse-count 1
+                           :websocket-request-mode delta
+                           :prompt-layout-revision "layout-v1"))))
+         (record
+          (e-live-e2e--external-evidence-record
+           :scenario 'chatgpt-canonical-warm-prefix
+           :provider 'codex
+           :profile '(:name "ChatGPT Codex"
+                      :base-url "https://chatgpt.example/codex"
+                      :response-store :json-false)
+           :model "gpt-5.6-sol"
+           :request-bodies bodies
+           :request-metadata metadata
+           :timeout 120.0
+           :started-at 100.0
+           :ended-at 100.5))
+         (shapes (plist-get record :material-request-shape)))
+    (should (= (plist-get record :request-count) 3))
+    (should (= (length shapes) 3))
+    (should (equal (mapcar (lambda (shape) (plist-get shape :request-index))
+                           shapes)
+                   '(1 2 3)))
+    (should (equal (plist-get (nth 0 shapes) :connection-id) "socket-1"))
+    (should (equal (plist-get (nth 1 shapes) :websocket-reuse-count) 1))
+    (dolist (key '(:connection-id :websocket-reused
+                   :websocket-reuse-count :websocket-request-mode
+                   :prompt-layout-revision))
+      (should (plist-member (nth 2 shapes) key))
+      (should-not (plist-get (nth 2 shapes) key)))
+    (should (equal (plist-get record :socket-connection-ids)
+                   '("socket-1")))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-classifies-injected-failures ()
   "The shared finalizer records failures before preserving their outcome."
