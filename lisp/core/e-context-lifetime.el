@@ -901,6 +901,140 @@ identity.  Core binds labels and derives provenance only during preparation."
               (list 'curation :source-count (length seen))))
     (list :keep keep :summaries (nreverse summaries))))
 
+(defun e-context-lifetime-normalize-curation-disposition
+    (arguments &optional source-count)
+  "Normalize exhaustive curation ARGUMENTS for SOURCE-COUNT presented sources.
+
+Unlike the pre-exposure `e-context-lifetime-normalize-curation-arguments'
+compatibility path, this boundary requires all three disposition arrays.  The
+arrays may be empty, but their union must be non-empty, contain each positive
+source label exactly once, and, when SOURCE-COUNT is supplied, cover exactly
+the labels from one through SOURCE-COUNT.  Only labels and summary text are
+copied; dropped source bodies and provenance never enter the normalized value.
+When SOURCE-COUNT is nil, shape, duplicate, and retained-label validation still
+runs so a later frame-bound preparation can perform the complete partition
+check without trusting provider input."
+  (e-context-lifetime--validate-exact-plist
+   arguments '(:keep :summaries :drop) 'curation-disposition)
+  (when (and source-count
+             (not (and (integerp source-count) (> source-count 0))))
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-disposition :source-count source-count)))
+  (let* ((keep
+          (e-context-lifetime--curation-labels
+           (plist-get arguments :keep) 'curation-keep))
+         (raw-summaries
+          (e-context-lifetime--curation-sequence
+           (plist-get arguments :summaries) 'curation-summaries))
+         (drop
+          (e-context-lifetime--curation-labels
+           (plist-get arguments :drop) 'curation-drop))
+         (seen (make-hash-table :test #'eql))
+         (retained-count 0)
+         summaries)
+    (cl-labels
+        ((record-label (label kind retained-p)
+           (when (and source-count (> label source-count))
+             (signal 'e-context-lifetime-invalid-record
+                     (list kind :unknown-label label source-count)))
+           (when (gethash label seen)
+             (signal 'e-context-lifetime-invalid-record
+                     (list 'curation-disposition :duplicate-label label)))
+           (puthash label t seen)
+           (when retained-p
+             (setq retained-count (1+ retained-count))))
+         (record-labels (labels kind retained-p)
+           (dolist (label labels)
+             (record-label label kind retained-p))))
+      (record-labels keep 'curation-keep t)
+      (dolist (summary raw-summaries)
+        (e-context-lifetime--validate-exact-plist
+         summary '(:sources :text) 'curation-summary)
+        (let ((sources
+               (e-context-lifetime--curation-labels
+                (plist-get summary :sources)
+                'curation-summary-sources t))
+              (text (plist-get summary :text)))
+          (unless (and (stringp text) (not (string-empty-p text)))
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'curation-summary :non-empty-text text)))
+          (record-labels sources 'curation-summary-sources t)
+          (push (list :sources (copy-sequence sources)
+                      :text (copy-sequence text))
+                summaries)))
+      (record-labels drop 'curation-drop nil)
+      (unless (> (hash-table-count seen) 0)
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-disposition :no-disposition)))
+      (when (> retained-count e-context-lifetime-curation-max-sources)
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-disposition :retained-source-count
+                      retained-count)))
+      (when source-count
+        (dotimes (index source-count)
+          (let ((label (1+ index)))
+            (unless (gethash label seen)
+              (signal 'e-context-lifetime-invalid-record
+                      (list 'curation-disposition :missing-label label)))))
+        (unless (= (hash-table-count seen) source-count)
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'curation-disposition :partition-size
+                        (hash-table-count seen) source-count))))
+      (list :keep keep
+            :summaries (nreverse summaries)
+            :drop drop))))
+
+(defun e-context-lifetime-prepare-curation-disposition
+    (frame arguments response-entry-id &optional bytes-per-token)
+  "Prepare exhaustive curation ARGUMENTS against live FRAME.
+
+The returned pure value contains the normalized complete disposition and a
+version-3 promotion RECORD only when at least one source is retained or
+summarized.  A drop-only disposition has a nil RECORD; its response control
+and frame consumption remain the harness/session responsibility.  Dropped
+source bodies and provenance are used only for the frame-bound label check and
+are not copied into the normalized disposition or durable record."
+  (unless (e-context-lifetime-frame-p frame)
+    (signal 'wrong-type-argument
+            (list 'e-context-lifetime-frame-p frame)))
+  (when (e-context-lifetime-frame-consumed-p frame)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation :frame-not-live
+                  (e-context-lifetime-frame-id frame))))
+  (let* ((response-entry-id
+          (e-context-lifetime--require-id response-entry-id
+                                           'response-entry))
+         (sources
+          (e-context-lifetime-frame-curation-sources
+           frame bytes-per-token))
+         (normalized
+          (e-context-lifetime-normalize-curation-disposition
+           arguments (length sources)))
+         (retained
+          (list :keep (plist-get normalized :keep)
+                :summaries (plist-get normalized :summaries)))
+         (drop-only-p
+          (and (null (plist-get normalized :keep))
+               (null (plist-get normalized :summaries))))
+         (record
+          (unless drop-only-p
+            (e-context-lifetime--curation-record
+             frame retained response-entry-id sources)))
+         (record-bytes
+          (and record (e-context-lifetime--bytes record))))
+    (when (and record-bytes
+               (> record-bytes e-context-lifetime-curation-max-record-bytes))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-disposition :bytes record-bytes)))
+    (list :arguments normalized
+          :record record
+          :drop-only-p drop-only-p
+          :source-count (length sources)
+          :retained-source-count
+          (+ (length (plist-get normalized :keep))
+             (cl-loop for summary in (plist-get normalized :summaries)
+                      sum (length (plist-get summary :sources)))))))
+
 (defun e-context-lifetime--curation-source-for-label (sources label)
   "Return trusted SOURCE from SOURCES matching positive local LABEL."
   (let ((source (nth (1- label) sources)))

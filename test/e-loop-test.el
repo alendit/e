@@ -1909,9 +1909,15 @@
                           '(:type tool-call :id "inspect-call"
                             :name "inspect" :arguments nil))
                  (funcall on-item
-                          '(:type provider-anchor-candidate
-                            :provider-id openai
-                            :metadata (:response-id "response-tool")))
+                          (list :type 'provider-anchor-candidate
+                                :provider-id 'openai
+                                :metadata
+                                (list
+                                 :response-id "response-tool"
+                                 :prompt-layout-revision
+                                 (e-openai-codex--prompt-layout-revision options)
+                                 :reasoning-identity
+                                 (e-openai-codex--reasoning-identity options))))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item
@@ -1924,9 +1930,15 @@
                                     :call_id "curation-call"
                                     :output ""))))
                  (funcall on-item
-                          '(:type provider-anchor-candidate
-                            :provider-id openai
-                            :metadata (:response-id "response-curation")))
+                          (list :type 'provider-anchor-candidate
+                                :provider-id 'openai
+                                :metadata
+                                (list
+                                 :response-id "response-curation"
+                                 :prompt-layout-revision
+                                 (e-openai-codex--prompt-layout-revision options)
+                                 :reasoning-identity
+                                 (e-openai-codex--reasoning-identity options))))
                  (funcall on-item '(:type done :reason stop)))
                 (3
                  (funcall on-item
@@ -2490,7 +2502,8 @@
            (cl-function
             (lambda (&key on-item &allow-other-keys)
               (funcall on-item
-                       '(:type context-curate :arguments (:keep (1))))
+                       '(:type context-curate
+                         :arguments (:keep nil :summaries nil :drop (1))))
               (funcall on-item
                        '(:type tool-call :id "call-after-curation"
                          :name "after-curation" :arguments nil)))))))
@@ -2600,10 +2613,18 @@ call; stateless fallback carries the complete call/result pair."
                       (progn
                         (when with-anchor
                           (funcall on-item
-                                   '(:type provider-anchor-candidate
-                                     :provider-id openai
-                                     :metadata (:response-id
-                                                "immediate-tool-anchor"))))
+                                   (list :type 'provider-anchor-candidate
+                                         :provider-id 'openai
+                                         :metadata
+                                         (list
+                                          :response-id
+                                          "immediate-tool-anchor"
+                                          :prompt-layout-revision
+                                          (e-openai-codex--prompt-layout-revision
+                                           options)
+                                          :reasoning-identity
+                                          (e-openai-codex--reasoning-identity
+                                           options)))))
                         (funcall on-item
                                  '(:type tool-call
                                    :id "compact-call"
@@ -2701,10 +2722,17 @@ call; stateless fallback carries the complete call/result pair."
                   (if (= calls 1)
                       (progn
                         (funcall on-item
-                                 '(:type provider-anchor-candidate
-                                   :provider-id openai
-                                   :metadata (:response-id
-                                              "steering-anchor")))
+                                 (list :type 'provider-anchor-candidate
+                                       :provider-id 'openai
+                                       :metadata
+                                       (list
+                                        :response-id "steering-anchor"
+                                        :prompt-layout-revision
+                                        (e-openai-codex--prompt-layout-revision
+                                         options)
+                                        :reasoning-identity
+                                        (e-openai-codex--reasoning-identity
+                                         options))))
                         (funcall on-item
                                  '(:type assistant-message :content "first"))
                         (funcall on-item '(:type done :reason stop)))
@@ -2791,10 +2819,17 @@ rely on `provider-request'."
                 (if (= calls 1)
                     (progn
                       (funcall on-item
-                               '(:type provider-anchor-candidate
-                                 :provider-id openai
-                                 :metadata (:response-id
-                                            "sync-immediate-anchor")))
+                               (list :type 'provider-anchor-candidate
+                                     :provider-id 'openai
+                                     :metadata
+                                     (list
+                                      :response-id "sync-immediate-anchor"
+                                      :prompt-layout-revision
+                                      (e-openai-codex--prompt-layout-revision
+                                       options)
+                                      :reasoning-identity
+                                      (e-openai-codex--reasoning-identity
+                                       options))))
                       (funcall on-item
                                '(:type tool-call
                                  :id "sync-compact-call"

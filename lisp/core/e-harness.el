@@ -984,6 +984,7 @@ and before a queued turn scheduled from that terminal edge can start."
     reasoning-delta reasoning-raw-delta
     tool-started tool-finished action-started action-finished action-failed
     hook-audit turn-finished token-usage
+    context-frame-consumed
     turn-failed turn-cancelled turn-steered backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)
@@ -998,6 +999,7 @@ and before a queued turn scheduled from that terminal edge can start."
     (reasoning-raw-delta . presentation-log)
     (tool-started . audit)
     (tool-finished . presentation-log)
+    (context-frame-consumed . audit)
     (action-started . audit)
     (action-finished . presentation-log)
     (action-failed . audit)
@@ -3237,18 +3239,26 @@ frame."
                            (not (e-context-lifetime-frame-consumed-p frame)))))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :frame-not-live)))
-      (list :frame frame
-            :consumer-request-id
-            (and (e-context-lifetime-frame-p frame)
-                 (e-context-lifetime-frame-consumer-request-id frame))
-            :response-id response-id
-            :reserved-response-p reserved-response-p
-            :record
-            (when (= (length effects) 1)
-              (e-context-lifetime-prepare-curation
-               frame
-               (plist-get (car effects) :arguments)
-               response-id))))))
+      (let* ((prepared
+              (when (= (length effects) 1)
+                (let ((arguments (plist-get (car effects) :arguments)))
+                  (if (and (e-context-lifetime--keyword-plist-p arguments)
+                           (plist-member arguments :drop))
+                      (e-context-lifetime-prepare-curation-disposition
+                       frame arguments response-id)
+                    (list :record
+                          (e-context-lifetime-prepare-curation
+                           frame arguments response-id)
+                          :drop-only-p nil))))))
+        (list :frame frame
+              :consumer-request-id
+              (and (e-context-lifetime-frame-p frame)
+                   (e-context-lifetime-frame-consumer-request-id frame))
+              :response-id response-id
+              :reserved-response-p reserved-response-p
+              :drop-only-p (plist-get prepared :drop-only-p)
+              :record (plist-get prepared :record)
+              :curation-preparation prepared)))))
 
 (defun e-harness--lifetime-commit-response
     (harness session-id turn-id active-entry payload)
@@ -3289,7 +3299,7 @@ session append precedes frame consumption and the next provider request."
                (consumed
                 (e-context-lifetime-frame-complete-for-consumer
                  frame consumer-id response-id
-                 (and appended (list curation-id)))))
+                 (and record appended (list curation-id)))))
           ;; Do not replace a newer descendant frame with the producer's
           ;; consumed snapshot.  The loop will use the returned value for the
           ;; provider request that completed, while the harness entry retains
@@ -3303,7 +3313,7 @@ session append precedes frame consumption and the next provider request."
            (list :frame-id (e-context-lifetime-frame-id consumed)
                  :consumer-request-id consumer-id
                  :response-entry-id response-id
-                 :curation-ids (and appended (list curation-id))))
+                 :curation-ids (and record appended (list curation-id))))
           consumed)))))
 
 (defun e-harness--lifetime-tool-observation-frame

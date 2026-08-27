@@ -668,6 +668,106 @@
         frame too-large "response-bytes" 1.0)
        :type 'e-context-lifetime-invalid-record))))
 
+(ert-deftest e-context-lifetime-test-exhaustive-curation-disposition-is-complete ()
+  "Exhaustive curation partitions every presented source exactly once."
+  (let* ((frame (e-context-lifetime-test--multi-source-frame 3))
+         (arguments
+          '(:keep (1)
+            :summaries ((:sources (2) :text "durable summary"))
+            :drop (3)))
+         (normalized
+          (e-context-lifetime-normalize-curation-disposition arguments 3)))
+    (should (equal normalized arguments))
+    (let* ((prepared
+            (e-context-lifetime-prepare-curation-disposition
+             frame arguments "response-mixed"))
+           (record (plist-get prepared :record))
+           (items (plist-get record :items)))
+      (should (equal (mapcar (lambda (item) (plist-get item :kind)) items)
+                     '(exact summary)))
+      (should (equal (plist-get (car items) :value) "source-1"))
+      (should (equal (plist-get (cadr items) :text) "durable summary"))
+      (should (equal (plist-get (car items) :source-observation-ids)
+                     '("observation-1")))
+      (should (equal (plist-get (cadr items) :source-observation-ids)
+                     '("observation-2")))
+      (should-not (string-match-p "source-3\\|observation-3\\|entry-3\\|fingerprint-3"
+                                  (prin1-to-string record))))
+    (dolist (bad
+             (list
+              '(:keep nil :summaries nil :drop nil)
+              '(:keep (1) :summaries nil :drop (1 2 3))
+              '(:keep (1) :summaries nil :drop (2))
+              '(:keep nil :summaries ((:sources (1) :text "")) :drop (2 3))
+              '(:keep (1) :summaries nil :drop (2 4))))
+      (should-error
+       (e-context-lifetime-normalize-curation-disposition bad 3)
+       :type 'e-context-lifetime-invalid-record))
+    (let* ((seventeen (e-context-lifetime-test--multi-source-frame 17))
+           (all-drop
+            (e-context-lifetime-prepare-curation-disposition
+             seventeen
+             (list :keep nil :summaries nil
+                   :drop (number-sequence 1 17))
+             "response-drop")))
+      (should (plist-get all-drop :drop-only-p))
+      (should-not (plist-get all-drop :record))
+      (should (= (plist-get all-drop :source-count) 17))
+      (should (= (plist-get all-drop :retained-source-count) 0))
+      (should-error
+       (e-context-lifetime-prepare-curation-disposition
+        seventeen
+        (list :keep (number-sequence 1 17) :summaries nil :drop nil)
+        "response-retain-17")
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-exhaustive-curation-disposition-bounds-live-frame ()
+  "Disposition preparation rejects consumed frames and one-over records."
+  (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
+         (sources (e-context-lifetime-frame-curation-sources frame 1.0))
+         (length-at-limit
+          (cl-loop for length from 1 to 10000
+                   for summary =
+                   (list :sources '(1)
+                         :text (make-string length ?x))
+                   for candidate =
+                   (e-context-lifetime--curation-record
+                    frame (list :keep nil :summaries (list summary))
+                    "response-disposition-bytes" sources)
+                   when (= (e-context-lifetime--bytes candidate) 8192)
+                   return length)))
+    (should length-at-limit)
+    (let ((at-limit
+           (list :keep nil
+                 :summaries
+                 (list (list :sources '(1)
+                             :text (make-string length-at-limit ?x)))
+                 :drop nil))
+          (one-over
+           (list :keep nil
+                 :summaries
+                 (list (list :sources '(1)
+                             :text (make-string (1+ length-at-limit) ?x)))
+                 :drop nil)))
+      (let ((prepared
+             (e-context-lifetime-prepare-curation-disposition
+              frame at-limit "response-disposition-bytes" 1.0)))
+        (should (= (e-context-lifetime--bytes (plist-get prepared :record))
+                   8192))
+        (should (= (plist-get prepared :retained-source-count) 1)))
+      (should-error
+       (e-context-lifetime-prepare-curation-disposition
+        frame one-over "response-disposition-bytes" 1.0)
+       :type 'e-context-lifetime-invalid-record))
+    (let ((consumed
+           (e-context-lifetime-frame-complete-for-consumer
+            frame "consumer-1" "response-consumed")))
+      (should-error
+       (e-context-lifetime-prepare-curation-disposition
+        consumed '(:keep nil :summaries nil :drop (1))
+        "response-after-consume")
+       :type 'e-context-lifetime-invalid-record))))
+
 (ert-deftest e-context-lifetime-test-curation-revision-identity-is-stable ()
   "Revision identity exposes schema, presentation, ratio, and bounds inputs."
   (let ((first (e-context-lifetime-curation-revision-identity 2.0))

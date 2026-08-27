@@ -996,8 +996,14 @@ the frame-local presentation installed."
                                        (list
                                         :type 'context-curate
                                         :arguments
-                                        (e-context-lifetime-normalize-curation-arguments
-                                         arguments))))))
+                                        (if (and
+                                             (e-context-lifetime--keyword-plist-p
+                                              arguments)
+                                             (plist-member arguments :drop))
+                                            (e-context-lifetime-normalize-curation-disposition
+                                             arguments)
+                                          (e-context-lifetime-normalize-curation-arguments
+                                           arguments)))))))
                              ('assistant-delta
                               (setq response-assistant-content
                                     (concat response-assistant-content

@@ -6733,6 +6733,132 @@ an empty summary\"."
     (should (e-context-lifetime-frame-observations frame))
     (should-not (e-session-context-curations store "session-1"))))
 
+(ert-deftest e-harness-test-context-lifetime-drop-only-curation-is-audit-only ()
+  "An exhaustive drop-only response consumes sources without a promotion record."
+  (let* ((directory (make-temp-file "e-harness-drop-only-" t))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (frame (e-harness-test--curation-frame))
+         (entry (list :status 'running :context-frame frame))
+         (events nil)
+         (order nil)
+         (append-control
+          (symbol-function 'e-session-append-context-curation-response))
+         (complete-frame
+          (symbol-function 'e-context-lifetime-frame-complete-for-consumer)))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "drop-only")
+          (e-harness--install-activity-sink
+           harness (lambda (event) (push event events))
+           :session-id "drop-only")
+          (let ((e-context-lifetime-shadow-projection-enabled t))
+            (cl-letf (((symbol-function
+                        'e-session-append-context-curation-response)
+                       (lambda (&rest arguments)
+                         (setq order (append order '(control)))
+                         (apply append-control arguments)))
+                      ((symbol-function
+                        'e-context-lifetime-frame-complete-for-consumer)
+                       (lambda (&rest arguments)
+                         (setq order (append order '(consume)))
+                         (apply complete-frame arguments))))
+              (should
+               (e-context-lifetime-frame-consumed-p
+                (e-harness--lifetime-commit-response
+                 harness "drop-only" "turn-drop" entry
+                 (list :frame frame
+                       :response-entry-id "response-drop-only"
+                       :curation-effects
+                       (list
+                        (list :type 'context-curate
+                              :arguments
+                              '(:keep nil :summaries nil :drop (1))))))))))
+          (should (equal order '(control consume)))
+          (e-session-flush-write-queue store)
+          (let* ((controls
+                  (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'context-curation-response))
+                   (e-session-activity-events store "drop-only")))
+                 (reopened (e-session-persistent-store-create directory))
+                 (reopened-controls
+                  (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'context-curation-response))
+                   (e-session-activity-events reopened "drop-only")))
+                 (reopened-consumed-events
+                  (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'context-frame-consumed))
+                   (e-session-activity-events reopened "drop-only")))
+                 (control (car controls))
+                 (consumed-event
+                  (seq-find
+                   (lambda (event)
+                     (eq (plist-get event :type) 'context-frame-consumed))
+                   events)))
+            (should (= (length controls) 1))
+            (should (= (length reopened-controls) 1))
+            (should (= (length reopened-consumed-events) 1))
+            (should consumed-event)
+            (should (equal (plist-get (plist-get consumed-event :payload)
+                                      :frame-id)
+                           (e-context-lifetime-frame-id frame)))
+            (should (equal (plist-get (plist-get consumed-event :payload)
+                                      :response-entry-id)
+                           "response-drop-only"))
+            (should (equal (plist-get control :id)
+                           (plist-get (car reopened-controls) :id)))
+            (should (equal (plist-get (plist-get control :payload)
+                                      :response-entry-id)
+                           "response-drop-only"))
+            (let ((reopened-consumed (car reopened-consumed-events)))
+              (should (equal (plist-get (plist-get reopened-consumed :payload)
+                                        :frame-id)
+                             (e-context-lifetime-frame-id frame)))
+              (should (equal (plist-get (plist-get reopened-consumed :payload)
+                                        :response-entry-id)
+                             "response-drop-only")))
+            (should-not (e-session-context-curations store "drop-only"))
+            (should-not (e-session-context-curations reopened "drop-only"))
+            (should (e-session-entry-by-id
+                     reopened "drop-only" (plist-get control :id)))
+            (should-not
+             (seq-find
+              (lambda (message)
+                (equal (plist-get message :id) (plist-get control :id)))
+              (e-session-messages reopened "drop-only")))
+            (dotimes (index 65)
+              (e-session-append-activity-event
+               store "drop-only" "turn-later" 'tool-progress
+               (list :index index)))
+            (e-session-flush-write-queue store)
+            (e-session--write-session-checkpoint-now store "drop-only")
+            (let ((evicted (e-session-persistent-store-create directory)))
+              (should-not
+               (seq-find
+                (lambda (event)
+                  (eq (plist-get event :event-type)
+                      'context-curation-response))
+                (e-session-activity-events evicted "drop-only")))
+              (should-not
+               (seq-find
+                (lambda (event)
+                  (eq (plist-get event :event-type)
+                      'context-frame-consumed))
+                (e-session-activity-events evicted "drop-only")))
+              (should-not
+               (e-session-entry-by-id evicted "drop-only"
+                                      (plist-get control :id)))
+              (should-not (e-session-context-curations evicted "drop-only")))))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-context-lifetime-curation-binds-payload-frame-over-descendant ()
   "Curation labels bind to the response frame, not a newer tool descendant."
   (let* ((harness (e-harness-create
