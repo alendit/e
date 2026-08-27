@@ -1,0 +1,405 @@
+#+title: Implementation Review: Feature 88 Addendum 5
+#+date: 2026-08-27
+#+startup: overview
+
+* Status and fixed-point decision
+
+This independent implementation Tick reviewed exact candidate revision
+=fa1199a956ea905d9933d272e802e3e66dcbfc4d=, including the complete production,
+test, E2E, and documentation range
+=d65b1e4a5ea028e82bee2db70b466ff3f22308b9..fa1199a956ea905d9933d272e802e3e66dcbfc4d=.
+The last implementation owner revision is
+=317be2378997aea38bc0114006a8a7d8c00b5a4f=; =fa1199a9= changes only Feature 88
+evidence/status documents.
+
+The candidate has not reached a repository-controlled fixed point.
+
+- P0: none.
+- P1: two open findings, =F88A5.I1= and =F88A5.I2=.
+- P2: three open findings, =F88A5.I3=, =F88A3.I7=, and =F88A5.I4=.
+- P3: none.
+
+The runtime implementation of =F88A5-AFFORDANCE= is clear.  The successful
+2026-08-27 configured Responses HTTP records remain current/reusable at this
+candidate for their exact recorded identity: the seven-day window is open and
+none of the six adoption dependency-cone files changed between =317be237= and
+=fa1199a9=.  The findings below affect failure diagnostics, cleanup, future
+scenario acceptance, and status documentation; the observed successful records
+did not traverse those failure paths and their request counts exclude the
+extra-call case described below.
+
+This current evidence confirms only the recorded =eng-ai-gateway-gpt= Responses
+HTTP, =:json-false=, =gpt-5.6-sol= identity.  The exact built-in ChatGPT Codex
+WebSocket scope remains separately =capability-unconfirmed=.  Feature 88 remains
+=In-review= and is not =Done=.
+
+* Review boundary and contract disposition
+
+Addendum 5 extends accepted Addendum 4.  Addendum 4 supersedes Addendum 3 only
+where promotion and curation conflict; Addendum 3 remains authoritative for
+canonical reconstruction, immediate tool continuation, retry, cache evidence,
+cleanup, and compatibility.  The selected glossary is
+=docs/references/runtime_concepts.org=: the harness owns sessions and turns, a
+context provider contributes backend-neutral context, ordinary model-facing
+tools use the harness lifecycle, and the backend adapter owns provider-specific
+request and response translation.  The reserved =context-curate= carrier is not
+an ordinary model-facing tool.
+
+| Contract or evidence cell | Disposition |
+|---------------------------+-------------|
+| =F88A5-AFFORDANCE= source presentation | clear: each detached marker identifies the following value as an ephemeral source and retains only its local label and estimate |
+| =F88A5-AFFORDANCE= carrier guidance | clear: the Responses description covers exact keep, compact summary, omission-as-drop, and no-call meanings without changing the strict schema |
+| presentation and schema identity | clear: both revisions advance to v2 and participate in prompt-layout and evidence identity |
+| =F88A5-ADOPTION= prompt control | clear: the substituted first prompt names only the ordinary deterministic tool and future-turn intent; the case-insensitive negative inventory includes numeric source references |
+| =F88A5-ADOPTION= successful semantic path | clear for the recorded run: one valid v3 effect, exact audit linkage, durable projection, raw-envelope/marker exclusion, and exact follow-up answer were observed |
+| =F88A5-ADOPTION= timeout/failure finalization | open: =F88A5.I1= and =F88A5.I3= |
+| =F88A5-ADOPTION= carrier/model-selection localization | open: =F88A5.I2= |
+| evidence identity, freshness, and raw-content exclusion | clear: effective captured identity, material hashes, bounded result vocabulary, prompt/revision/dependency hashes, and seven-day equality checks are present; no prompt, sentinel, response, or auth content enters the record |
+| affected =F88A3-CACHE= material identity | clear for the recorded run: warm-prefix and tool-heavy were rerun under the v2 affordance/presentation identity and cache remains observationally separate from semantics |
+| =F88A3-TOOL= / =F88A3-CACHE= retry acceptance | open: =F88A3.I7= |
+| external status and workflow documentation | open: =F88A5.I4= |
+| exact ChatGPT/WebSocket compatibility | external unknown: capability-unconfirmed, correctly separate from repository findings |
+
+No required repository cell is unknown: the open cells have source-proven
+defects and exact remediation evidence below.  The only remaining capability
+unknown is the explicitly external ChatGPT/WebSocket scope.
+
+* Findings
+
+** OPEN P1 =F88A5.I1=: a declared scenario timeout is misclassified and can leave its request active
+
+Contract cells: =F88A5-ADOPTION= external outcome/finalization, joined to
+affected =F88A3-CACHE= external execution.
+
+Observed fact: =e-live-e2e--prompt-batch-before-deadline= passes the remaining
+scenario budget directly to =e-board-e2e-prompt-batch=
+(=e2e/e-live-e2e-test.el:1052-1058=).  When that wait consumes the budget,
+=e-board-e2e-wait-batch= signals =E2E turn did not settle within ... seconds=
+(=e2e/e-board-e2e-support.el:127-142=).  The finalizer recognizes a timeout only
+when the error text contains =inconclusive-timeout= and otherwise records
+=provider/infrastructure-failure= (=e2e/e-live-e2e-test.el:987-1016=).  A batch
+reproduction with the actual finalizer and the wait helper's error text produced:
+
+#+begin_example
+(:condition error :recorded-result "provider/infrastructure-failure")
+#+end_example
+
+The adoption runner attempts request cancellation only after the finalizer returns
+(=e2e/e-live-e2e-test.el:2633-2675,2869-2871=).  Because the finalizer re-signals
+the original condition, timeout and provider-error paths skip this cancellation.
+Moreover, capture lists are newest-first (=e2e/e-live-e2e-test.el:2322-2369=),
+so =(car (last request-handles))= selects the oldest handle, not the latest one.
+The surrounding E2E harness cleanup removes its activity sink and temporary
+directory but does not abort the active turn or request
+(=e2e/e-live-e2e-test.el:2275-2320=).
+
+Consequence: exceeding the declared deadline emits the wrong normative outcome,
+and external I/O may continue after the runner has declared the scenario over
+and deleted its temporary session directory.  The record therefore does not
+enforce the accepted deadline or failure-side-effect boundary.
+
+Minimal correction: represent expiry of the shared scenario deadline with a
+dedicated bounded condition and classify that condition as
+=inconclusive-timeout=; do not infer it from arbitrary provider error text.  Put
+active-request cancellation in an =unwind-protect= that encloses the external
+scenario finalizer, or equivalently make the E2E harness cleanup abort the active
+turn before deleting its state.  Resolve the active/newest handle rather than
+reusing the current oldest-handle expression.  Apply the same cleanup rule to the affected
+cache selectors; do not add an adapter-specific runtime timeout.
+
+Acceptance evidence: force the board wait to consume the remaining scenario
+budget after a request handle exists.  Assert exactly one content-free record
+with =result inconclusive-timeout=, preservation of the original timeout
+condition, exactly one cancellation, no later callback mutation, and no request
+after the deadline.  Inject a non-timeout provider error separately and assert
+=provider/infrastructure-failure= plus cancellation of the newest/active handle,
+not an older completed handle.  Retain success,
+configuration, semantic, cache, and skip finalization cases.
+
+** OPEN P1 =F88A5.I2=: carrier evidence is taken from any request instead of the source-bearing continuation
+
+Contract cell: =F88A5-ADOPTION= carrier/model-selection localization.
+
+Observed fact: after the ordinary tool finishes, the runner declares the
+carrier present when =context-curate= appears in any captured first-turn body
+(=e2e/e-live-e2e-test.el:2781-2790=).  It does not identify the request that
+contains the ordinary =function_call_output= and its ephemeral-source marker.
+If the initial request contains the carrier but the source-bearing continuation
+loses it, =carrier-present-p= is still true.  The resulting zero curation records
+then take =model-selection-failure= and become =product-contract-failure=
+(=e2e/e-live-e2e-test.el:2725-2731,2791-2798=).
+
+Consequence: a repository composition regression can falsely disprove autonomous
+model adoption for an external capability identity.  This crosses the explicit
+boundary that only a valid ordinary-tool source and carrier presentation may
+produce =product-contract-failure=.
+
+Minimal correction: locate exactly one chronological source-bearing request by
+the ordinary call/output linkage and the matching ephemeral marker, then require
+the reserved carrier in that request's =:tools=.  Keep the initial request and
+other continuations out of this gate.  Carrier absence must remain
+=semantic-failure= with =failure-stage carrier=; only a valid localized carrier
+followed by no valid effect may become =product-contract-failure=.
+
+Acceptance evidence: add request-boundary regressions in which (1) only the
+initial request has the carrier and (2) only the source-bearing continuation has
+it.  The first must record carrier semantic failure and never a product failure;
+the second must clear the carrier gate.  Retain the passing exact/summary paths
+and prove that the evidence record still contains no source or model content.
+
+** OPEN P2 =F88A5.I3=: a later provider failure discards an already established adoption result
+
+Contract cell: =F88A5-ADOPTION= independent adoption/composition results.
+
+Observed fact: =adoption-result= and =composition-result= start as =unavailable=
+and are copied verbatim by the failure capture
+(=e2e/e-live-e2e-test.el:2624-2674=).  The runner verifies one preserving v3
+curation and records its disposition before the second user request
+(=e2e/e-live-e2e-test.el:2791-2814=), but it does not set =adoption-result= to
+=pass= there.  It updates both subresults only in a final semantic classification
+after the second provider turn, or on an ERT assertion failure
+(=e2e/e-live-e2e-test.el:2675-2734,2814-2868=).  A timeout or provider error in
+that second turn therefore emits =adoption-result unavailable= even though the
+captured curation record and disposition already prove adoption.
+
+Consequence: the supposedly independent fields lose the exact model-selection
+observation when later infrastructure prevents composition evidence.  Such a
+record cannot distinguish “model adopted, follow-up unavailable” from “model
+adoption never became observable.”
+
+Minimal correction: checkpoint =adoption-result pass= immediately after the one
+valid preserving effect and its audit linkage are established, while leaving
+=composition-result unavailable= until the next-turn checks settle.  A later
+provider or timeout outcome should retain that adoption result and disposition
+while its top-level result remains the appropriate availability class.
+
+Acceptance evidence: inject a provider error and a scenario timeout at the
+second-turn request after a valid exact effect, and repeat with a preserving
+summary.  Each case must emit exactly one record with =adoption-result pass=,
+the actual disposition, =composition-result unavailable=, no semantic failure
+stage, the correct top-level availability result, and the preserved original
+condition.
+
+** OPEN P2 =F88A3.I7=: cache retry validation accepts unevidenced repeated curation acknowledgements
+
+Contract cells: inherited =F88A3-TOOL= exact zero/one retry and affected
+=F88A3-CACHE= tool-heavy semantic evidence.
+
+Observed fact: =e-live-e2e--captured-turn-extras-valid-p= accepts every body
+that contains one linked =context-curate= call/output pair without consuming a
+retry event; only duplicates of the initial body are counted against durable
+=turn-retrying= events (=e2e/e-live-e2e-test.el:531-596=).  A batch reproduction
+passed two copied acknowledgement bodies with no retry events:
+
+#+begin_example
+(e-live-e2e--captured-turn-extras-valid-p initial (list ack ack) nil) => t
+#+end_example
+
+The warm-prefix scenario applies this helper to every turn
+(=e2e/e-live-e2e-test.el:4055-4068=).  The tool-heavy scenario also accepts any
+number of acknowledgement-shaped bodies after its first non-initial body and
+requires only that one exists for HTTP
+(=e2e/e-live-e2e-test.el:3416-3438,3493-3512=).  It retains the last curation
+record but does not assert exactly one record or zero reserved calls in the
+first and warm turns (=e2e/e-live-e2e-test.el:3323-3330,3546-3564=).
+
+Consequence: a cache scenario can accept an unevidenced replay of the reserved
+acknowledgement or an extra reserved effect, including on turns whose prompts
+forbid =context-curate=.  The external semantic pass would then no longer prove
+the bounded ordinary-tool/one-curation scenario named by =F88A3-TOOL= and
+=F88A3-CACHE=.
+
+Minimal correction: validate each turn as an explicit bounded sequence.  Every
+canonical warm-prefix turn, and the tool-heavy first and warm turns, may contain
+only their initial request plus exact duplicates matched one-for-one to retry
+events and must create no curation record.  The tool turn may contain the
+initial ordinary-tool request, its one linked tool-output continuation, and its
+one linked reserved acknowledgement; a duplicate of any stage must consume a
+matching retry event.  Assert exactly one curation record for that tool turn.
+Do not add a general replay ledger.
+
+Acceptance evidence: cover exact zero/one retries at the initial, ordinary-tool
+follow-up, and reserved-ack stages; fail one-over-event, two acknowledgements,
+an acknowledgement in the first/warm turn, a second curation record, a changed
+body, and wrong call/output linkage.  Retain the current five-request HTTP
+tool-heavy path and the three-request warm-prefix path.
+
+** OPEN P2 =F88A5.I4=: documentation claims a fixed point and misclassifies the external selector
+
+Contract cells: implementation status, evidence topology, and external
+capability separation.
+
+Observed fact: =limitations.org= calls the Addendum 3/4/5 implementation a
+deterministic fixed point while citing only Addendum 3/4 Tick 6
+(=docs/feats/88-generational-context-ephemeral-frames/limitations.org:7-18,62-69=).
+This Addendum 5 implementation had not yet received an independent
+implementation Tick, and this Tick found open repository defects.  Separately,
+=e2e/README.org= calls the credentialed naturalistic adoption selector
+“deterministic” and says adoption remains unconfirmed until a credentialed
+record is reviewed (=e2e/README.org:197-214=), although Addendum 5 records a
+reviewed current pass for the configured Responses HTTP identity.
+
+Consequence: the durable handoff overstates repository acceptance while the E2E
+guide understates and misclassifies profile-scoped external evidence.  A reader
+cannot tell repository gates, configured Responses capability, and exact
+ChatGPT/WebSocket capability apart from these documents.
+
+Minimal correction: until the code findings close, state that Addenda 3/4
+reached their Tick 6 repository fixed point and Addendum 5 remains under
+implementation remediation; do not describe Addendum 3/4/5 collectively as a
+fixed point.  Replace the README sentence with text equivalent to:
+
+#+begin_quote
+The credentialed naturalistic adoption selector is external compatibility
+evidence, not a deterministic repository test.  A current pass confirms only
+its captured provider/profile identity; it does not confirm the exact built-in
+ChatGPT/WebSocket scope unless that exact profile is exercised.
+#+end_quote
+
+After remediation, claim an Addendum 5 repository fixed point only from the
+next independent zero-finding Tick.  Keep the configured Responses HTTP pass
+current/reusable and exact ChatGPT/WebSocket =capability-unconfirmed=.
+
+Acceptance evidence: contradiction-scan Addendum 5, Addenda 3/4 status joins,
+=limitations.org=, =e2e/README.org=, and =docs/feats/index.org=.  They must agree
+on repository review state, configured Responses HTTP current evidence, exact
+ChatGPT/WebSocket unknown status, and =In-review=/not =Done=.
+
+* Cleared implementation and evidence
+
+The production slice is narrowly owned and source-feasible:
+
+- =lisp/core/e-context-lifetime.el:69-77,755-764= advances the schema and
+  presentation revisions and changes only the detached, provider-neutral source
+  marker.  Label order, token estimate, exact value, provenance, bounds, v3
+  writes, and v2 reads are unchanged.
+- =lisp/adapters/openai/e-openai.el:1496-1521= changes only the provider-specific
+  reserved function description.  It preserves the exact strict Addendum 4
+  parameters and introduces no core-to-adapter dependency.
+- =test/e-context-lifetime-test.el:330-429=,
+  =test/e-harness-test.el:1685-1745,5807-5900=, and
+  =test/e-openai-test.el:415-590,4959-5013= prove literal marker placement,
+  stable/frontier request shape, schema identity fencing, and unchanged wire
+  schema.
+- The adoption prompt and negative inventory are bounded at
+  =e2e/e-live-e2e-test.el:1060-1090=.  The evidence builder derives effective
+  request identity for every captured body, records one bounded material shape
+  per body, separates cache observations, and hashes rather than emits material
+  content (=e2e/e-live-e2e-test.el:447-479,666-953=).
+- Audit linkage requires one matching durable response control, curation ID,
+  consumed-frame event, and resolvable response entry
+  (=e2e/e-live-e2e-test.el:1121-1157=).  Next-turn selection uses the first body
+  at the recorded turn boundary and excludes tool roles, call/output envelopes,
+  provider replay items, and the consumed marker
+  (=e2e/e-live-e2e-test.el:511-529,2814-2863=).
+
+The accepted Addendum 4 durability, atomicity, exact bounds, compatibility,
+checkpoint retention, and cleanup implementations did not change in this
+range.  No automatic curation policy, durable runtime state, second carrier,
+compatibility shim, board storage, or ordinary-turn provider call was added.
+
+* External evidence identity and freshness
+
+The successful records were captured at =317be237= on 2026-08-27 against
+=eng-ai-gateway-gpt=, effective base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+endpoint =/responses=, Responses HTTP, =:json-false=, native requester
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  Adoption reported
+five requests, 1,712 input tokens, exact disposition, and identity, adoption,
+composition, semantic, and result =pass=.  Its zero cached-input value remains
+observational.  Warm-prefix reported 3 requests, 6,204 input, 4,087 cached; the
+tool-heavy scenario reported 5 requests, 14,717 input, 11,414 cached.  Both
+reported semantic =pass=, cache =warm=, and result =pass=.
+
+=git diff --quiet 317be237..fa1199a9= returned success for the complete adoption
+dependency cone: core lifetime, harness, loop, session, OpenAI adapter, and E2E
+runner.  The evidence is therefore current/reusable under Addendum 5's
+seven-calendar-day and exact-identity rules despite the later documentation-only
+commit.  It is not a fresh execution at =fa1199a9=, and it does not transfer to
+the exact built-in ChatGPT/WebSocket profile.
+
+* Verification
+
+Repository-side validation left the user's running Emacs unchanged and made no
+provider request.
+
+- Eight focused core, harness, OpenAI, and continuation tests passed with zero
+  unexpected results.  They covered source splitting/marker text, revision
+  identity and anchor fencing, late-frontier presentation, literal OpenAI
+  mapping, unchanged strict carrier schema, and observe-curate-forget.
+- =E_E2E=1 eldev test -f e2e/e-live-e2e-test.el= ran 48 tests: 28 expected
+  passes, 20 expected credential-gated skips, and zero unexpected results.
+- A broader changed-owner run produced 350 expected results and two sandbox-only
+  failures because local server sockets cannot be bound in the managed review
+  environment.  Both failures are unrelated existing HTTP socket tests; the
+  focused non-socket owner tests passed.
+- Direct batch reproductions confirmed the timeout misclassification and the
+  acceptance of two acknowledgement bodies with zero retry events.
+- The production/evidence diff passed =git diff --check=.  The review artifact
+  received batch Org parsing, whitespace, and scoped-worktree checks after its
+  final writing pass.
+
+* Architecture review
+
+The production change respects the architectural boundary: core owns neutral
+source lifetime presentation, the OpenAI backend adapter owns its Responses
+function description, the model selects a disposition, and existing
+core/harness/session code validates and persists it.  No production dependency
+points from stable policy toward the adapter, and no new state or speculative
+interface appears.
+
+The open architecture defect is confined to the E2E application boundary.
+Failure cleanup is placed after a re-signalling finalizer rather than in an
+outer cleanup boundary; evidence classification uses a scenario-wide presence
+test where a causal request-boundary join is required; and the retry helper
+accepts an acknowledgement category without accounting for its cardinality or
+retry provenance.  The minimal remediations belong in the E2E runner and its
+tests, not in core curation policy or the OpenAI runtime adapter.  No broader
+architectural follow-up is justified.
+
+* Required design self-check
+
+1. The affordance slice is useful on its own, but the evidence package is not a
+   safe stopping point until the five findings close.
+2. It moves toward model-directed bounded context lifetime with explicit,
+   profile-scoped adoption evidence.
+3. Guidance and scenario wording are local and reversible; stable curation
+   semantics, record shapes, and bounds remain direct.
+4. Core owns presentation, the adapter owns wire description, the model owns
+   selection, the harness/session own validation and durability, and E2E owns
+   external evidence.
+5. Production coupling is unchanged.  The E2E runner should use narrower causal
+   helpers for source-bearing requests and retry stages.
+6. No production dependency points the wrong way.  Remediation must not move
+   evidence policy into core or adapter code.
+7. Cancellation belongs in the outer E2E execution/cleanup boundary.
+8. No runtime state was added.  Scenario-local capture is the smallest correct
+   lifetime and must be discarded after finalization.
+9. Ordinary runtime cost is limited to prompt text.  External scenario requests
+   and hashes are bounded test cost; no production regression is present.
+10. The existing marker and reserved carrier are real, substitutable contracts;
+    no new interface is needed.
+11. Addendum 4 v3 writes, v2 reads, forks, reopen, compaction, and unrelated
+    transports remain compatible.
+12. No legacy production path becomes removable in this slice.  Stale status
+    wording should be replaced rather than retained.
+13. Expected external outcomes belong in the shared finalizer; unexpected
+    errors must be recorded once, cleaned up, and re-signalled.
+14. Core behavior has narrow owner tests.  The missing tests are causal carrier
+    localization, partial-result preservation, timeout cleanup, and stage-aware
+    retry cardinality; each can change narrowly within E2E.
+
+* Next fixed-point acceptance
+
+Remediate in dependency order: =F88A5.I1= cleanup/typed timeout;
+=F88A5.I2= causal carrier localization; =F88A5.I3= adoption-state checkpoint;
+=F88A3.I7= stage-aware retry/ack cardinality; then =F88A5.I4= durable status
+wording.  Re-run the deterministic owner and E2E gates.  The current successful
+configured Responses records may remain reusable if the evidence owner and
+material dependency identity are unchanged; any runner-owner remediation will
+invalidate their dependency-cone identity and require fresh configured records.
+The next independent Tick must review that freshness decision rather than
+accepting a remediation narrative.
+
+The final clear-technical-writing pass used the selected project glossary and
+changed no finding, severity, contract boundary, or evidence decision.
