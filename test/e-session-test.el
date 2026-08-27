@@ -1513,6 +1513,196 @@ promotion writer; new production records are version 3 only."
                      records))
                    1))))))
 
+(ert-deftest e-session-test-checkpoint-pins-active-curation-response-control ()
+  "Resume checkpoints pin active v3 curation response controls, not old activity."
+  (let* ((directory (make-temp-file "e-session-curation-checkpoint-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "checkpoint-curation")
+         (generation-id "generation-checkpoint-curation")
+         (response-entry-id "response-checkpoint-curation")
+         (curation-record
+          `(:record-version 3
+            :type context-promotion
+            :id "curation-checkpoint"
+            :frame-id "frame-checkpoint"
+            :generation-id ,generation-id
+            :consumer-request-id "consumer-checkpoint"
+            :response-entry-id ,response-entry-id
+            :items ((:kind summary
+                     :text "selected checkpoint meaning"
+                     :source-observation-ids ("observation-checkpoint")
+                     :source-refs ("source-checkpoint")
+                     :source-fingerprints ("fingerprint-checkpoint"))))))
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id)))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id generation-id
+              :checkpoint '((:role system :content "checkpoint policy"))
+              :covered-session-boundary root-id)))
+          (e-session-append-activity-event
+           store session-id "turn-old" 'tool-progress '(:which old))
+          (e-session-append-context-curation
+           store session-id curation-record)
+          (let ((control
+                 (e-session-append-context-curation-response
+                  store session-id "turn-curation" response-entry-id)))
+            (cl-labels
+                ((activity-records ()
+                   (seq-filter
+                    (lambda (record)
+                      (equal (plist-get record :type) "activity-event"))
+                    (e-session--checkpoint-records store session-id))))
+              (dotimes (index 63)
+                (e-session-append-activity-event
+                 store session-id "turn-later"
+                 'tool-progress (list :index index)))
+              (let ((records (activity-records)))
+                (should (= (length records) 64))
+                (should (seq-find
+                         (lambda (record)
+                           (equal (plist-get record :id)
+                                  (plist-get control :id)))
+                         records))
+                (should-not
+                 (seq-find
+                  (lambda (record)
+                    (and (equal (plist-get record :event-type) "tool-progress")
+                         (equal (plist-get record :payload) '(:which old))))
+                  records)))
+              (let ((last-event
+                     (e-session-append-activity-event
+                      store session-id "turn-later" 'tool-progress
+                      '(:index 63))))
+                (let ((records (activity-records)))
+                  (should (= (length records) 65))
+                  (should (seq-find
+                           (lambda (record)
+                             (equal (plist-get record :id)
+                                    (plist-get last-event :id)))
+                           records))
+                  (should (seq-find
+                           (lambda (record)
+                             (equal (plist-get record :id)
+                                    (plist-get control :id)))
+                           records))
+                  (should-not
+                   (seq-find
+                    (lambda (record)
+                      (and (equal (plist-get record :event-type) "tool-progress")
+                           (equal (plist-get record :payload) '(:which old))))
+                    records)))
+                (let (first-extra-event last-extra-event)
+                  (dotimes (index 65)
+                    (let ((event
+                           (e-session-append-activity-event
+                            store session-id "turn-later" 'tool-progress
+                            (list :index (+ 64 index)))))
+                      (setq first-extra-event
+                            (or first-extra-event event)
+                            last-extra-event event)))
+                  (let* ((records (activity-records))
+                         (ordinary-records
+                          (cl-remove-if
+                           (lambda (record)
+                             (equal (plist-get record :id)
+                                    (plist-get control :id)))
+                           records)))
+                    (should (= (length records) 65))
+                    (should (= (length ordinary-records) 64))
+                    (should (seq-find
+                             (lambda (record)
+                               (equal (plist-get record :id)
+                                      (plist-get control :id)))
+                             records))
+                    (should (seq-find
+                             (lambda (record)
+                               (equal (plist-get record :id)
+                                      (plist-get last-extra-event :id)))
+                             records))
+                    (should-not
+                     (seq-find
+                      (lambda (record)
+                        (equal (plist-get record :id)
+                               (plist-get first-extra-event :id)))
+                      records))
+                    (should-not
+                     (seq-find
+                      (lambda (record)
+                        (and (equal (plist-get record :event-type) "tool-progress")
+                             (equal (plist-get record :payload) '(:which old))))
+                      records))))
+                (let* ((before-record
+                        (e-session-context-curations store session-id))
+                       (before-projection
+                        (e-session-context-lifetime-projection
+                         store session-id)))
+                  (e-session--write-session-checkpoint-now store session-id)
+                  (let* ((reopened (e-session-persistent-store-create directory))
+                         (controls
+                          (seq-filter
+                           (lambda (event)
+                             (and (eq (plist-get event :event-type)
+                                      'context-curation-response)
+                                  (equal (plist-get event :id)
+                                         response-entry-id)
+                                  (equal (plist-get (plist-get event :payload)
+                                                    :response-entry-id)
+                                         response-entry-id)))
+                           (e-session-activity-events reopened session-id)))
+                         (reopened-control
+                          (e-session-entry-by-id
+                           reopened session-id response-entry-id))
+                         (reopened-projection
+                          (e-session-context-lifetime-projection
+                           reopened session-id))
+                         (reopened-events
+                          (e-session-activity-events reopened session-id))
+                         (fork (e-session-fork reopened session-id))
+                         (fork-id (plist-get fork :id))
+                         (fork-projection
+                          (e-session-context-lifetime-projection
+                           reopened fork-id))
+                         (fork-printed (prin1-to-string fork-projection)))
+                    (should (= (length controls) 1))
+                    (should (equal (plist-get (car controls) :id)
+                                   response-entry-id))
+                    (should (equal (plist-get (car controls) :payload)
+                                   (list :response-entry-id
+                                         response-entry-id)))
+                    (should (equal reopened-control (car controls)))
+                    (should (equal before-record
+                                   (e-session-context-curations
+                                    reopened session-id)))
+                    (should (equal before-projection reopened-projection))
+                    (should (= (length reopened-events) 65))
+                    (should-not
+                     (seq-find
+                      (lambda (event)
+                        (and (eq (plist-get event :event-type)
+                                 'tool-progress)
+                             (equal (plist-get event :payload)
+                                    '(:which old))))
+                      reopened-events))
+                    (should (string-match-p
+                             "selected checkpoint meaning"
+                             fork-printed))
+                    (should-not (string-match-p
+                                 response-entry-id fork-printed))
+                    (should-not
+                     (e-session-entry-by-id
+                      reopened fork-id response-entry-id))
+                    (should-not
+                     (seq-find
+                      (lambda (event)
+                        (eq (plist-get event :event-type)
+                            'context-curation-response))
+                      (e-session-activity-events reopened fork-id)))))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
   "Persistent replay keeps durable ids and parent links instead of regenerating."
   (let* ((directory (make-temp-file "e-session-" t))

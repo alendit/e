@@ -1378,6 +1378,32 @@ bodies are reconstructed by the later context consumer from session entries."
            (plist-get session :provider-anchors)))
          (context-state
           (e-session--checkpoint-context-lifetime-state store session-id))
+         ;; A v3 curation record carries the durable response identity of the
+         ;; reserved response.  Its matching audit control is normally in the
+         ;; recent activity tail, but must remain resolvable when later
+         ;; activity would evict it.  Pin only exact controls for active v3
+         ;; records; do not retain unrelated activity or copy this audit state
+         ;; into a fork.
+         (curation-response-ids
+          (delq nil
+                (mapcar
+                 (lambda (record)
+                   (when (equal (plist-get record :record-version)
+                                e-context-lifetime-curation-record-version)
+                     (plist-get record :response-entry-id)))
+                 (append (plist-get context-state :promotions) nil))))
+         (curation-response-events
+          (seq-filter
+           (lambda (entry)
+             (and (eq (plist-get entry :type) 'activity-event)
+                  (eq (plist-get entry :event-type)
+                      'context-curation-response)
+                  (member (plist-get entry :id) path-ids)
+                  (member (plist-get entry :id) curation-response-ids)
+                  (equal (plist-get (plist-get entry :payload)
+                                    :response-entry-id)
+                         (plist-get entry :id))))
+           (plist-get session :activity-events)))
          (required-ids
           (delq nil
                 (append
@@ -1391,6 +1417,8 @@ bodies are reconstructed by the later context consumer from session entries."
                  (and latest-token (list (plist-get latest-token :id)))
                  (mapcar (lambda (entry) (plist-get entry :id)) reports)
                  (mapcar (lambda (entry) (plist-get entry :id)) anchors)
+                 (mapcar (lambda (entry) (plist-get entry :id))
+                         curation-response-events)
                  (append (append (plist-get context-state :entry-ids) nil)
                          nil)
                  (list (plist-get session :current-head-id)
