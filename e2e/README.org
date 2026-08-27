@@ -194,6 +194,25 @@ unconfirmed until fresh records show the required warm results with matching
 identity.  The repository-side tests continue to cover provider-continuation
 and encrypted-reasoning fallbacks without credentials.
 
+The deterministic naturalistic adoption selector is separate from those cache
+measurements:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
+eldev test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-responses-autonomous-curation-adoption
+#+end_src
+
+It requires a configured Responses profile, uses only the ordinary
+=e2e_deterministic= tool in its first prompt, and checks the autonomous
+curation carrier, durable replacement, and next-turn raw-source exclusion.
+Its bounded evidence record reports independent =adoption-result=,
+=composition-result=, and =failure-stage= fields without prompt or response
+content.  This selector is intentionally not run by repository-side tests;
+external adoption capability remains unconfirmed until a credentialed record
+is reviewed.
+
 * Development bytecode smoke test
 
 The stale source-adjacent bytecode check is an explicit checkout diagnostic,

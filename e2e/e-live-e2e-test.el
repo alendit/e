@@ -31,6 +31,7 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-context)
+(require 'e-context-lifetime)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-registry)
@@ -443,6 +444,40 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
         (string-trim (buffer-string))
       "unavailable")))
 
+(defconst e-live-e2e--adoption-dependency-cone-files
+  '("lisp/core/e-context-lifetime.el"
+    "lisp/core/e-harness.el"
+    "lisp/core/e-loop.el"
+    "lisp/core/e-session.el"
+    "lisp/adapters/openai/e-openai.el"
+    "e2e/e-live-e2e-test.el")
+  "Source owners whose changes invalidate adoption evidence reuse.")
+
+(defun e-live-e2e--adoption-dependency-identity ()
+  "Return a content-free digest of the adoption dependency cone.
+The digest is evidence identity, not a replacement for repository provenance;
+missing owner files remain explicit in the digest rather than silently falling
+back to the repository revision."
+  (let* ((source-file (or load-file-name
+                          buffer-file-name
+                          (locate-library "e-live-e2e-test")
+                          (expand-file-name "e2e/e-live-e2e-test.el"
+                                            default-directory)))
+         (root (expand-file-name ".." (file-name-directory source-file))))
+    (secure-hash
+     'sha256
+     (mapconcat
+      (lambda (relative)
+        (let ((path (expand-file-name relative root)))
+          (format "%s:%s" relative
+                  (if (file-readable-p path)
+                      (with-temp-buffer
+                        (insert-file-contents-literally path)
+                        (secure-hash 'sha256 (current-buffer)))
+                    "unavailable"))))
+      e-live-e2e--adoption-dependency-cone-files
+      "\n"))))
+
 (defun e-live-e2e--request-shape (body)
   "Return a bounded, content-free material shape for Responses BODY."
   (let* ((input (append (plist-get body :input) nil))
@@ -498,7 +533,9 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
 (cl-defun e-live-e2e--external-evidence-record
     (&key scenario provider profile model request-bodies request-metadata
           usage-payloads timeout started-at ended-at semantic-result
-          cache-result result)
+          cache-result result adoption-result composition-result failure-stage
+          adoption-disposition scenario-prompt-identity affordance-revision
+          presentation-revision adoption-gates adoption-dependency-identity)
   "Return one bounded identity-complete external evidence RECORD.
 REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
 or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
@@ -554,6 +591,11 @@ unavailable."
            ((not identity-complete-p) "unavailable")
            (identity-mismatches "invalid")
            (t "pass")))
+         (adoption-classification
+          (and adoption-gates
+               (apply #'e-live-e2e--classify-autonomous-adoption
+                      (append (list :identity-result identity-result)
+                              adoption-gates))))
          (first-identity (car identities))
          (effective-base-url
           (or (plist-get first-identity :base-url) "unavailable"))
@@ -658,59 +700,102 @@ unavailable."
                         diagnostics)
               "unavailable"))
          (elapsed (and started-at ended-at (- ended-at started-at)))
-         (scenario-result (or result "unavailable"))
+         (scenario-result
+          (or (and (equal identity-result "pass")
+                   adoption-classification
+                   (plist-get adoption-classification :result))
+              result
+              "unavailable"))
          (record-result
-          (if (and (equal scenario-result "pass")
+          (if (and adoption-classification
                    (not (equal identity-result "pass")))
               (if (equal identity-result "invalid")
                   "identity-invalid"
                 "identity-unavailable")
-            scenario-result)))
-    (list :evidence-schema-revision e-live-e2e--external-evidence-schema-revision
-          :scenario (format "%s" scenario)
-          :provider-id (format "%s" provider)
-          :profile-id profile-name
-          :base-url-identity effective-base-url
-          :endpoint-identity effective-endpoint
-          :transport effective-transport
-          :store-mode (or effective-store "unavailable")
-          :native-requester effective-requester
-          :model-id effective-model
-          :declared-base-url (or (plist-get profile :base-url)
-                                 "unavailable")
-          :declared-model
-          (or (plist-get profile :model)
-              (plist-get profile :default-model)
-              "unavailable")
-          :declared-store-mode
-          (if (plist-member profile :response-store)
-              (format "%s" (plist-get profile :response-store))
-            "unavailable")
-          :identity-result identity-result
-          :identity-mismatches identity-mismatches
-          :scenario-result scenario-result
-          :prompt-layout-revision (format "%S" prompt-layout-revision)
-          :prompt-cache-key-derivation-revision
-          (format "e-harness-prompt-cache-key-%s"
-                  e-harness-prompt-cache-key-version)
-          :material-request-shape (or shapes [])
-          :request-count (length request-bodies)
-          :socket-connection-ids connection-ids
-          :total-input-tokens
-          (if input-token-values
-              (apply #'+ input-token-values)
-            "unavailable")
-          :cached-input-tokens
-          (if cached-token-values
-              (apply #'+ cached-token-values)
-            "unavailable")
-          :scenario-timeout-seconds timeout
-          :timestamp timestamp
-          :repository-revision (e-live-e2e--repository-revision)
-          :elapsed-seconds elapsed
-          :semantic-result (or semantic-result "unavailable")
-          :cache-result (or cache-result "unavailable")
-          :result record-result)))
+            (if (and (equal scenario-result "pass")
+                     (not (equal identity-result "pass")))
+                (if (equal identity-result "invalid")
+                    "identity-invalid"
+                  "identity-unavailable")
+              scenario-result))))
+    (let ((record
+           (list :evidence-schema-revision e-live-e2e--external-evidence-schema-revision
+                 :scenario (format "%s" scenario)
+                 :provider-id (format "%s" provider)
+                 :profile-id profile-name
+                 :base-url-identity effective-base-url
+                 :endpoint-identity effective-endpoint
+                 :transport effective-transport
+                 :store-mode (or effective-store "unavailable")
+                 :native-requester effective-requester
+                 :model-id effective-model
+                 :declared-base-url (or (plist-get profile :base-url)
+                                        "unavailable")
+                 :declared-model
+                 (or (plist-get profile :model)
+                     (plist-get profile :default-model)
+                     "unavailable")
+                 :declared-store-mode
+                 (if (plist-member profile :response-store)
+                     (format "%s" (plist-get profile :response-store))
+                   "unavailable")
+                 :identity-result identity-result
+                 :identity-mismatches identity-mismatches
+                 :scenario-result scenario-result
+                 :prompt-layout-revision (format "%S" prompt-layout-revision)
+                 :prompt-cache-key-derivation-revision
+                 (format "e-harness-prompt-cache-key-%s"
+                         e-harness-prompt-cache-key-version)
+                 :material-request-shape (or shapes [])
+                 :request-count (length request-bodies)
+                 :socket-connection-ids connection-ids
+                 :total-input-tokens
+                 (if input-token-values
+                     (apply #'+ input-token-values)
+                   "unavailable")
+                 :cached-input-tokens
+                 (if cached-token-values
+                     (apply #'+ cached-token-values)
+                   "unavailable")
+                 :scenario-timeout-seconds timeout
+                 :timestamp timestamp
+                 :repository-revision (e-live-e2e--repository-revision)
+                 :elapsed-seconds elapsed
+                 :semantic-result (or semantic-result "unavailable")
+                 :cache-result (or cache-result "unavailable")
+                 :result record-result)))
+      (if (or adoption-result composition-result failure-stage
+              adoption-gates adoption-disposition scenario-prompt-identity
+              affordance-revision presentation-revision
+              adoption-dependency-identity)
+          (append record
+                  (list :adoption-result
+                        (or (plist-get adoption-classification
+                                       :adoption-result)
+                            adoption-result
+                            "unavailable")
+                        :composition-result
+                        (or (plist-get adoption-classification
+                                       :composition-result)
+                            composition-result
+                            "unavailable")
+                        :failure-stage
+                        (or (plist-get adoption-classification :failure-stage)
+                            failure-stage
+                            "none")
+                        :adoption-disposition
+                        (or adoption-disposition "unavailable")
+                        :scenario-prompt-identity
+                        (or scenario-prompt-identity "unavailable")
+                        :affordance-revision
+                        (or affordance-revision "unavailable")
+                        :presentation-revision
+                        (or presentation-revision "unavailable")
+                        :adoption-dependency-identity
+                        (or adoption-dependency-identity
+                            (e-live-e2e--adoption-dependency-identity)
+                            "unavailable")))
+        record))))
 
 (defun e-live-e2e--report-external-evidence (record)
   "Emit one machine-readable bounded external evidence RECORD."
@@ -738,6 +823,10 @@ separate in that record."
       (error (setq condition caught)))
     (let* ((state (or (ignore-errors (funcall capture)) nil))
            (condition-type (car condition))
+           (scenario-result-override
+            (and (or (null condition)
+                     (eq condition-type 'ert-test-failed))
+                 (plist-get state :scenario-result)))
            (cache-result (or (plist-get state :cache-result)
                              "unavailable"))
            (condition-message
@@ -746,6 +835,9 @@ separate in that record."
             (cond
              (configuration-unavailable "unavailable")
              ((and (eq condition-type 'ert-test-failed)
+                   (plist-member state :composition-result))
+              (or (plist-get state :semantic-result) "failure"))
+             ((and (eq condition-type 'ert-test-failed)
                    (equal cache-result "product-contract-failure"))
               (or (plist-get state :semantic-result) "pass"))
              ((eq condition-type 'ert-test-failed) "failure")
@@ -753,6 +845,7 @@ separate in that record."
            (result
             (cond
              (configuration-unavailable "configuration-unavailable")
+             (scenario-result-override scenario-result-override)
              ((and condition-message
                    (string-match-p "inconclusive-timeout"
                                    condition-message))
@@ -785,7 +878,18 @@ separate in that record."
           :ended-at (float-time)
           :semantic-result semantic-result
           :cache-result cache-result
-          :result result))))
+          :result result
+          :adoption-result (plist-get state :adoption-result)
+          :composition-result (plist-get state :composition-result)
+          :failure-stage (plist-get state :failure-stage)
+          :adoption-disposition (plist-get state :adoption-disposition)
+          :scenario-prompt-identity
+          (plist-get state :scenario-prompt-identity)
+          :affordance-revision (plist-get state :affordance-revision)
+          :presentation-revision
+          (plist-get state :presentation-revision)
+          :adoption-gates
+          (plist-get state :adoption-gates)))))
     (if condition
         (signal (car condition) (cdr condition))
       value)))
@@ -797,6 +901,497 @@ separate in that record."
     (when (<= remaining 0)
       (error "inconclusive-timeout: external scenario deadline expired"))
     (e-board-e2e-prompt-batch harness session-id prompt remaining)))
+
+(defconst e-live-e2e--adoption-negative-terms
+  '("context-curate" "curate" "keep" "summary" "summaries"
+    "source label")
+  "Case-insensitive words forbidden in the autonomous-adoption prompt.")
+
+(defconst e-live-e2e--adoption-freshness-seconds (* 7 24 60 60)
+  "Freshness window inherited by autonomous-adoption evidence.")
+
+(defun e-live-e2e--autonomous-adoption-prompt (&optional tool-name)
+  "Return the naturalistic adoption prompt naming ordinary TOOL-NAME only."
+  (format
+   "Use the %s lookup tool exactly once to obtain the current adoption sentinel. I will ask about that value in my next message. Do not reveal it yet; reply only READY."
+   (or tool-name "e2e_deterministic")))
+
+(defun e-live-e2e--adoption-prompt-violations (prompt)
+  "Return forbidden adoption-prompt terms found in substituted PROMPT."
+  (let ((case-fold-search t)
+        violations)
+    (dolist (term e-live-e2e--adoption-negative-terms)
+      (when (string-match-p
+             (regexp-quote term)
+             (or prompt ""))
+        (push term violations)))
+    ;; A numeric source reference is a label-shaped reference, not a digit in
+    ;; the ordinary tool's name.  Keep the check strict enough for markers,
+    ;; "source 1", and "label:1" without rejecting the tool name.
+    (when (string-match-p
+           "\\(?:\\_<source\\_>\\|\\_<label\\_>\\)[[:space:]#:=/-]*[0-9]+\\|\\[[[:space:]]*[0-9]+[[:space:]]*[,\\]]"
+           (or prompt ""))
+      (push "numeric-source-reference" violations))
+    (nreverse violations)))
+
+(defun e-live-e2e--adoption-record-preserves-sentinel-p (record sentinel)
+  "Return non-nil when one curation ITEM in RECORD preserves SENTINEL."
+  (and (stringp sentinel)
+       (seq-some
+        (lambda (item)
+          (pcase (plist-get item :kind)
+            ((or 'exact "exact")
+             (equal (plist-get item :value) sentinel))
+            ((or 'summary "summary")
+             (and (stringp (plist-get item :text))
+                  (string-match-p (regexp-quote sentinel)
+                                  (plist-get item :text))))))
+        (append (plist-get record :items) nil))))
+
+(defun e-live-e2e--adoption-record-disposition (record sentinel)
+  "Return the preserving disposition in RECORD for SENTINEL, or nil."
+  (when-let ((item
+              (seq-find
+               (lambda (item)
+                 (pcase (plist-get item :kind)
+                   ((or 'exact "exact")
+                    (equal (plist-get item :value) sentinel))
+                   ((or 'summary "summary")
+                    (and (stringp (plist-get item :text))
+                         (string-match-p (regexp-quote sentinel)
+                                         (plist-get item :text))))))
+               (append (plist-get record :items) nil))))
+    (format "%s" (plist-get item :kind))))
+
+(defun e-live-e2e--adoption-audit-linked-p (store session-id record)
+  "Return non-nil when RECORD has one exact durable response/control link.
+The context-curation response control is audit-only and shares the response
+entry id with RECORD; the consumed-frame event must additionally name RECORD."
+  (let* ((response-entry-id (plist-get record :response-entry-id))
+         (curation-id (plist-get record :id))
+         (events (e-session-activity-events store session-id))
+         (controls
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type)
+                 'context-curation-response))
+           events))
+         (control (car controls))
+         (control-payload (and control (plist-get control :payload)))
+         (consumed
+          (seq-find
+           (lambda (event)
+             (and (eq (plist-get event :event-type)
+                      'context-frame-consumed)
+                  (equal (plist-get (plist-get event :payload)
+                                    :response-entry-id)
+                         response-entry-id)
+                  (equal (plist-get (plist-get event :payload)
+                                    :curation-ids)
+                         (list curation-id))))
+           events)))
+    (and (stringp response-entry-id)
+         (stringp curation-id)
+         (= (length controls) 1)
+         (equal (plist-get control :id) response-entry-id)
+         (equal (plist-get control-payload :response-entry-id)
+                response-entry-id)
+         (e-session-entry-by-id store session-id response-entry-id)
+         consumed)))
+
+(cl-defun e-live-e2e--classify-autonomous-adoption
+    (&key identity-result ordinary-tool-p prompt-control-p carrier-p
+          valid-effect-p replacement-preserved-p audit-linked-p projection-p
+          raw-excluded-p follow-up-p)
+  "Return bounded adoption and composition results for the supplied gates.
+
+The result is a plist with only the content-free subresults and one accepted
+failure stage.  A valid identity with no model-selected effect is a product
+contract observation; every repository/composition gate is semantic."
+  (if (not (equal identity-result "pass"))
+      (list :adoption-result "unavailable"
+            :composition-result "unavailable"
+            :failure-stage "none"
+            :result "unavailable")
+    (cond
+     ((not ordinary-tool-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "ordinary-tool"
+            :result "semantic-failure"))
+     ((not prompt-control-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "prompt-control"
+            :result "semantic-failure"))
+     ((not carrier-p)
+      (list :adoption-result "unavailable"
+            :composition-result "failure"
+            :failure-stage "carrier"
+            :result "semantic-failure"))
+     ((or (not valid-effect-p) (not replacement-preserved-p))
+      (list :adoption-result "product-contract-failure"
+            :composition-result "pass"
+            :failure-stage "model-selection"
+            :result "product-contract-failure"))
+     ((not audit-linked-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "commit"
+            :result "semantic-failure"))
+     ((not projection-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "projection"
+            :result "semantic-failure"))
+     ((not raw-excluded-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "raw-exclusion"
+            :result "semantic-failure"))
+     ((not follow-up-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "follow-up-answer"
+            :result "semantic-failure"))
+     (t
+      (list :adoption-result "pass"
+            :composition-result "pass"
+            :failure-stage "none"
+            :result "pass")))))
+
+(defun e-live-e2e--adoption-time (value)
+  "Return numeric time for VALUE, or nil when it is not a timestamp."
+  (cond
+   ((numberp value) value)
+   ((stringp value)
+    (ignore-errors (float-time (date-to-time value))))
+   (t nil)))
+
+(defun e-live-e2e--adoption-evidence-reusable-p
+    (previous current &optional now)
+  "Return non-nil when CURRENT can reuse bounded PREVIOUS evidence.
+NOW is a numeric or ISO timestamp used by deterministic owner tests."
+  (let* ((previous-time (e-live-e2e--adoption-time
+                         (plist-get previous :timestamp)))
+         (current-time (e-live-e2e--adoption-time
+                        (plist-get current :timestamp)))
+         (now-time (e-live-e2e--adoption-time (or now (float-time))))
+         (identity-fields
+          '(:scenario :provider-id :profile-id :base-url-identity
+            :endpoint-identity :transport :store-mode :native-requester
+            :model-id :material-request-shape :prompt-layout-revision
+            :prompt-cache-key-derivation-revision :scenario-prompt-identity
+            :affordance-revision :presentation-revision
+            :adoption-dependency-identity)))
+    (and previous current previous-time current-time now-time
+         (stringp (plist-get previous :adoption-dependency-identity))
+         (stringp (plist-get current :adoption-dependency-identity))
+         (not (string-empty-p
+               (plist-get previous :adoption-dependency-identity)))
+         (not (string-empty-p
+               (plist-get current :adoption-dependency-identity)))
+         (>= (- current-time previous-time) 0)
+         (>= (- now-time current-time) 0)
+         (<= (- now-time previous-time)
+             e-live-e2e--adoption-freshness-seconds)
+         (cl-every (lambda (field)
+                     (equal (plist-get previous field)
+                            (plist-get current field)))
+                   identity-fields))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-prompt-negative-inventory ()
+  "The substituted adoption prompt names only the ordinary deterministic tool."
+  (let ((prompt (e-live-e2e--autonomous-adoption-prompt "e2e_deterministic")))
+    (should-not (e-live-e2e--adoption-prompt-violations prompt))
+    (should (member "keep"
+                    (e-live-e2e--adoption-prompt-violations
+                     (concat prompt " KEEP"))))
+    (should (member "numeric-source-reference"
+                    (e-live-e2e--adoption-prompt-violations
+                     "Use source 2 next.")))
+    (should (member "context-curate"
+                    (e-live-e2e--adoption-prompt-violations
+                     "CONTEXT-CURATE is forbidden.")))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-accepts-exact-or-summary ()
+  "The adopted sentinel may be preserved by either supported disposition."
+  (let ((sentinel "LIVE-ADOPTION-SENTINEL"))
+    (dolist (case
+             `(((:kind exact :value ,sentinel) "exact")
+               ((:kind summary :text ,(concat "Remember " sentinel))
+                "summary")))
+      (let ((record (list :items (list (car case)))))
+        (should (e-live-e2e--adoption-record-preserves-sentinel-p
+                 record sentinel))
+        (should (equal (e-live-e2e--adoption-record-disposition
+                        record sentinel)
+                       (cadr case)))))
+    (should-not
+     (e-live-e2e--adoption-record-preserves-sentinel-p
+      '(:items ((:kind exact :value "OTHER"))) sentinel))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-classification-partitions ()
+  "Adoption/model choice and composition failures remain independently bounded."
+  (let ((base '(:identity-result "pass"
+                :ordinary-tool-p t :prompt-control-p t :carrier-p t
+                :valid-effect-p t :replacement-preserved-p t
+                :audit-linked-p t :projection-p t :raw-excluded-p t
+                :follow-up-p t)))
+    (dolist (case
+             '((:valid-effect-p nil "product-contract-failure"
+                "pass" "model-selection" "product-contract-failure")
+               (:replacement-preserved-p nil "product-contract-failure"
+                "pass" "model-selection" "product-contract-failure")
+               (:carrier-p nil "unavailable" "failure" "carrier"
+                "semantic-failure")
+               (:projection-p nil "pass" "failure" "projection"
+                "semantic-failure")
+               (:raw-excluded-p nil "pass" "failure" "raw-exclusion"
+                "semantic-failure")
+               (:follow-up-p nil "pass" "failure" "follow-up-answer"
+                "semantic-failure")))
+      (let* ((key (nth 0 case))
+             (arguments (plist-put (copy-sequence base) key (nth 1 case)))
+             (result (apply #'e-live-e2e--classify-autonomous-adoption
+                            arguments)))
+        (should (equal (plist-get result :adoption-result) (nth 2 case)))
+        (should (equal (plist-get result :composition-result) (nth 3 case)))
+        (should (equal (plist-get result :failure-stage) (nth 4 case)))
+        (should (equal (plist-get result :result) (nth 5 case)))))
+    (let ((unavailable
+           (e-live-e2e--classify-autonomous-adoption
+            :identity-result "unavailable")))
+      (should (equal (plist-get unavailable :result) "unavailable")))
+    (let ((passing (apply #'e-live-e2e--classify-autonomous-adoption base)))
+      (should (equal passing
+                     '(:adoption-result "pass"
+                       :composition-result "pass"
+                       :failure-stage "none"
+                       :result "pass"))))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-evidence-freshness-and-reuse ()
+  "Adoption evidence reuses only within seven days and equal material identity."
+  (let* ((base
+          '(:scenario "responses-autonomous-curation-adoption"
+            :provider-id "gateway" :profile-id "Responses"
+            :base-url-identity "https://gateway.example"
+            :endpoint-identity "https://gateway.example/responses"
+            :transport "responses-http" :store-mode "json-false"
+            :native-requester "e-openai-codex--http-request-start"
+            :model-id "gpt-5.6-sol"
+            :material-request-shape ((:body-sha256 "body-1"))
+            :prompt-layout-revision "layout-1"
+            :prompt-cache-key-derivation-revision "cache-1"
+            :scenario-prompt-identity "prompt-1"
+            :affordance-revision "affordance-1"
+            :presentation-revision "presentation-1"
+            :adoption-dependency-identity "cone-1"
+            :repository-revision "repo-1"
+            :timestamp "2026-08-27T00:00:00Z"))
+         (current (copy-sequence base)))
+    (should
+     (e-live-e2e--adoption-evidence-reusable-p
+      base current "2026-08-30T00:00:00Z"))
+    (should
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current) :repository-revision "repo-2")
+      "2026-08-30T00:00:00Z"))
+    (should-not
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current)
+                      :adoption-dependency-identity "cone-2")
+      "2026-08-30T00:00:00Z"))
+    (should-not
+     (e-live-e2e--adoption-evidence-reusable-p
+      base current "2026-09-04T00:00:01Z"))
+    (should-not
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current) :scenario-prompt-identity
+                      "prompt-2")
+      "2026-08-30T00:00:00Z"))
+    (should-not
+      (e-live-e2e--adoption-evidence-reusable-p
+       base (plist-put (copy-sequence current) :material-request-shape
+                       '((:body-sha256 "body-2")))
+      "2026-08-30T00:00:00Z"))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-record-is-content-free ()
+  "Adoption subresults add bounded fields without exposing captured content."
+  (let* ((record
+          (e-live-e2e--external-evidence-record
+           :scenario 'responses-autonomous-curation-adoption
+           :provider 'configured-provider
+           :profile '(:name "Configured Responses"
+                      :base-url "https://gateway.example/v1"
+                      :responses-transport http
+                      :response-store :json-false)
+           :model "gpt-5.6-sol"
+           :request-bodies
+           '((:model "gpt-5.6-sol" :store :json-false
+              :input [(:type "message" :role "system"
+                       :content "PRIVATE-LIVE-ADOPTION-SENTINEL")]))
+           :request-metadata
+           '((:url "https://gateway.example/v1/responses"
+              :transport url-retrieve))
+           :timeout 120.0
+           :started-at 100.0
+           :ended-at 100.5
+           :semantic-result "pass"
+           :cache-result "unavailable"
+           :result "pass"
+           :adoption-result "pass"
+           :composition-result "pass"
+           :failure-stage "none"
+           :adoption-disposition "summary"
+           :scenario-prompt-identity "prompt-hash"
+           :affordance-revision "context-curate-v2"
+           :presentation-revision "context-curation-presentation-v2"
+           :adoption-gates
+           '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+             :valid-effect-p t :replacement-preserved-p t
+             :audit-linked-p t :projection-p t :raw-excluded-p t
+             :follow-up-p t)))
+         (encoded (json-encode (e-live-e2e--json-plist record))))
+    (should (equal (plist-get record :identity-result) "pass"))
+    (should (equal (plist-get record :adoption-result) "pass"))
+    (should (equal (plist-get record :composition-result) "pass"))
+    (should (equal (plist-get record :failure-stage) "none"))
+    (should (equal (plist-get record :adoption-disposition) "summary"))
+    (should (string-match-p
+             "\\`[[:xdigit:]]\\{64\\}\\'"
+             (plist-get record :adoption-dependency-identity)))
+    (should-not (string-match-p "PRIVATE-LIVE-ADOPTION-SENTINEL" encoded))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-record-gates-identity ()
+  "Identity failure downgrades adoption subresults through the record path."
+  (let ((gates
+         '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+           :valid-effect-p nil :replacement-preserved-p t
+           :audit-linked-p t :projection-p t :raw-excluded-p t
+           :follow-up-p t)))
+    (dolist (case
+             `(("unavailable" "identity-unavailable"
+                (:model "caller-model" :input []))
+               ("invalid" "identity-invalid"
+                (:model "wire-model" :store :json-false :input []))))
+      (let* ((identity-result (nth 0 case))
+             (record
+              (e-live-e2e--external-evidence-record
+               :scenario 'responses-autonomous-curation-adoption
+               :provider 'configured-provider
+               :profile (if (equal identity-result "invalid")
+                            '(:name "Declared"
+                              :wire-api responses
+                              :responses-transport http
+                              :base-url "https://declared.example/v1"
+                              :response-store :json-false)
+                          '(:name "Declared"
+                            :wire-api responses
+                            :responses-transport http
+                            :base-url "https://gateway.example/v1"
+                            :response-store :json-false))
+               :model "caller-model"
+               :request-bodies (list (nth 2 case))
+               :request-metadata
+               (list (list :url
+                           (if (equal identity-result "invalid")
+                               "https://effective.example/v1/responses"
+                             "https://gateway.example/v1/responses")
+                           :transport 'url-retrieve))
+               :semantic-result "pass"
+               :cache-result "warm"
+               :result "pass"
+               :adoption-result "pass"
+               :composition-result "pass"
+               :failure-stage "none"
+               :adoption-gates gates
+               :adoption-dependency-identity "cone-1")))
+        (should (equal (plist-get record :identity-result) identity-result))
+        (should (equal (plist-get record :adoption-result) "unavailable"))
+        (should (equal (plist-get record :composition-result) "unavailable"))
+        (should (equal (plist-get record :failure-stage) "none"))
+        (should (equal (plist-get record :result) (nth 1 case)))))))
+
+(ert-deftest e-live-e2e-test-autonomous-adoption-audit-linkage-is-exact ()
+  "The curation response, durable entry, and consumed frame share one link."
+  (let ((events
+         '((:id "response-1" :event-type context-curation-response
+            :payload (:response-entry-id "response-1"))
+           (:id "consumed-1" :event-type context-frame-consumed
+            :payload (:response-entry-id "response-1"
+                      :curation-ids ("curation-1")))))
+        (record '(:id "curation-1" :response-entry-id "response-1")))
+    (cl-letf (((symbol-function 'e-session-activity-events)
+               (lambda (&rest _) events))
+              ((symbol-function 'e-session-entry-by-id)
+               (lambda (_store _session entry-id)
+                 (and (equal entry-id "response-1")
+                      (list :id entry-id)))))
+      (should (e-live-e2e--adoption-audit-linked-p
+               'store "session-1" record))
+      (let ((bad-events (copy-tree events)))
+        (plist-put (cadr bad-events) :payload
+                   '(:response-entry-id "response-1"
+                     :curation-ids ("other-curation")))
+        (setq events bad-events)
+        (should-not (e-live-e2e--adoption-audit-linked-p
+                     'store "session-1" record))))))
+
+(ert-deftest e-live-e2e-test-external-finalizer-preserves-adoption-partitions ()
+  "The shared finalizer retains a model-selection product observation."
+  (let ((process-environment (copy-sequence process-environment))
+        records
+        condition)
+    (setenv "E_E2E_ADOPTION_TEST_TOKEN" "adoption-test-secret")
+    (cl-letf (((symbol-function 'e-live-e2e--report-external-evidence)
+               (lambda (record) (push record records))))
+      (condition-case caught
+          (e-live-e2e--run-external-scenario
+           :scenario 'responses-autonomous-curation-adoption
+           :provider 'configured-provider
+           :profile '(:name "Configured Responses"
+                      :base-url "https://gateway.example/v1"
+                      :responses-transport http
+                      :response-store :json-false
+                      :requires-openai-auth nil
+                      :env-key "E_E2E_ADOPTION_TEST_TOKEN")
+           :model "gpt-5.6-sol"
+           :timeout 120.0
+           :started-at 100.0
+           :capture
+           (lambda ()
+             (list :model "gpt-5.6-sol"
+                   :request-bodies
+                   '((:model "gpt-5.6-sol" :store :json-false :input []))
+                   :request-metadata
+                   '((:url "https://gateway.example/v1/responses"
+                      :transport url-retrieve))
+                   :adoption-result "product-contract-failure"
+                   :composition-result "pass"
+                   :failure-stage "model-selection"
+                   :adoption-gates
+                   '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                     :valid-effect-p nil :replacement-preserved-p t
+                     :audit-linked-p t :projection-p t :raw-excluded-p t
+                     :follow-up-p t)
+                   :semantic-result "pass"
+                   :cache-result "unavailable"
+                   :scenario-result "product-contract-failure"))
+           :thunk (lambda () (ert-fail "model did not autonomously curate")))
+        (error (setq condition caught))))
+    (should condition)
+    (should (eq (car condition) 'ert-test-failed))
+    (should (= (length records) 1))
+    (let ((record (car records)))
+      (should (equal (plist-get record :result)
+                     "product-contract-failure"))
+      (should (equal (plist-get record :adoption-result)
+                     "product-contract-failure"))
+      (should (equal (plist-get record :composition-result) "pass"))
+      (should (equal (plist-get record :failure-stage)
+                     "model-selection"))
+      (should (equal (plist-get record :semantic-result) "pass")))))
 
 (ert-deftest e-live-e2e-test-external-evidence-record-is-bounded-and-complete ()
   "The external record is machine-readable, identity-complete, and content-free."
@@ -1469,21 +2064,24 @@ separate in that record."
      :tools (list #'e-live-e2e--echo-tool-register
                   #'e-live-e2e--slow-tool-register)))))
 
+(defvar e-live-e2e--deterministic-tool-output "LIVE-TOOL-OUTPUT"
+  "Output returned by the deterministic tool; adoption runs bind a nonce.")
+
 (defun e-live-e2e--deterministic-tool-register (registry &rest _context)
-  "Register a fixed-output tool in REGISTRY for continuation evidence."
+  "Register a bounded-output tool in REGISTRY for continuation evidence."
   (e-tools-register
    registry
    :name "e2e_deterministic"
-   :description "Return one fixed validation value exactly once."
+   :description "Return one bounded validation value exactly once."
    :parameters '(:type "object" :properties nil)
    :work
    (e-tools-cheap-work
     "e2e.live.deterministic"
     (lambda (_arguments)
-      "LIVE-TOOL-OUTPUT"))))
+      e-live-e2e--deterministic-tool-output))))
 
 (defun e-live-e2e--deterministic-tool-layer ()
-  "Return a tool layer with one fixed-output continuation test tool."
+  "Return a tool layer with one bounded-output continuation test tool."
   (e-layer-create
    :id 'e2e-deterministic-tool
    :name "E2E Deterministic Tool"
@@ -1495,6 +2093,26 @@ separate in that record."
      :instructions
      "For continuation validation, call e2e_deterministic exactly when instructed."
      :tools (list #'e-live-e2e--deterministic-tool-register)))))
+
+(ert-deftest e-live-e2e-test-deterministic-tool-output-can-be-bound-per-run ()
+  "Adoption binds a nonce while existing deterministic callers keep the default."
+  (let ((registry (e-tools-registry-create)))
+    (e-live-e2e--deterministic-tool-register registry)
+    (should (equal (plist-get
+                    (e-tools-execute-batch
+                     registry
+                     '(:id "default" :name "e2e_deterministic"
+                       :arguments nil))
+                    :content)
+                   "LIVE-TOOL-OUTPUT"))
+    (let ((e-live-e2e--deterministic-tool-output "RUN-SENTINEL"))
+      (should (equal (plist-get
+                      (e-tools-execute-batch
+                       registry
+                       '(:id "adoption" :name "e2e_deterministic"
+                         :arguments nil))
+                      :content)
+                     "RUN-SENTINEL")))))
 
 (defmacro e-live-e2e--with-harness (spec &rest body)
   "Run BODY with a live HARNESS and SESSION-ID.
@@ -1804,6 +2422,287 @@ provider turn to settle without an implicit local deadline."
                            (prin1-to-string (plist-get event :payload))
                            "e2e_echo"))
                         activities)))))
+
+(defun e-live-e2e--run-autonomous-curation-adoption ()
+  "Run the isolated naturalistic Responses curation-adoption scenario."
+  (e-live-e2e--require-enabled)
+  (let* ((provider-id e-openai-default-provider)
+         (profile (e-openai-provider-profile provider-id)))
+    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+      (ert-skip "The configured provider is not a Responses profile."))
+    (let* ((tool-name "e2e_deterministic")
+           (raw-tool-output (format "LIVE-ADOPTION-%s"
+                                   (e-live-e2e--nonce)))
+           (prompt (e-live-e2e--autonomous-adoption-prompt tool-name))
+           (follow-up-prompt
+            "What was the adoption sentinel from the lookup? Reply with exactly that value and no extra words.")
+           (prompt-identity (e-live-e2e--sha256 prompt))
+           (affordance-revision
+            (format "%s" e-context-lifetime-curation-schema-revision))
+           (presentation-revision
+            (format "%s" e-context-lifetime-curation-presentation-revision)))
+      (let ((e-context-lifetime-shadow-projection-enabled t)
+            (e-live-e2e--deterministic-tool-output raw-tool-output))
+        (e-live-e2e--with-harness
+            (harness session-id
+                     :layers (list (e-live-e2e--deterministic-tool-layer)))
+          (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
+                 (started-at (float-time))
+                 (deadline (+ started-at scenario-timeout))
+                 request-bodies
+                 request-handles
+                 first-result
+                 second-result
+                 curation-record
+                 adoption-disposition
+                 (adoption-result "unavailable")
+                 (composition-result "unavailable")
+                 (failure-stage "none")
+                 adoption-gates
+                 (scenario-result nil)
+                 (semantic-result "unavailable")
+                 (cache-result "unavailable"))
+            (e-live-e2e--run-external-scenario
+             :scenario 'responses-autonomous-curation-adoption
+             :provider provider-id
+             :profile profile
+             :model e-openai-default-model
+             :timeout scenario-timeout
+             :started-at started-at
+             :capture
+             (lambda ()
+               (let* ((ordered-entries (reverse request-bodies))
+                      (ordered-handles (reverse request-handles))
+                      (bodies (mapcar (lambda (entry) (plist-get entry :body))
+                                     ordered-entries))
+                      (metadata
+                       (mapcar (lambda (handle)
+                                 (ignore-errors
+                                   (e-backend-request-metadata handle)))
+                               ordered-handles))
+                      (usage-payloads
+                       (mapcar (lambda (event) (plist-get event :payload))
+                               (e-live-e2e--activity-of-type
+                                harness session-id 'token-usage))))
+                 (setq cache-result
+                       (if usage-payloads
+                           (e-live-e2e--cache-result usage-payloads)
+                         "unavailable"))
+                 (list :model (or (plist-get (car (last bodies)) :model)
+                                  e-openai-default-model)
+                       :request-bodies bodies
+                       :request-metadata metadata
+                       :usage-payloads usage-payloads
+                       :semantic-result semantic-result
+                       :cache-result cache-result
+                       :adoption-result adoption-result
+                       :composition-result composition-result
+                       :failure-stage failure-stage
+                       :adoption-gates adoption-gates
+                       :adoption-disposition adoption-disposition
+                       :scenario-prompt-identity prompt-identity
+                       :affordance-revision affordance-revision
+                       :presentation-revision presentation-revision
+                       :scenario-result scenario-result)))
+             :thunk
+             (lambda ()
+               (cl-labels
+                   ((classify (gates)
+                      (setq adoption-gates gates)
+                      (let ((classification
+                             (apply
+                              #'e-live-e2e--classify-autonomous-adoption
+                              (append (list :identity-result "pass")
+                                      gates))))
+                        (setq adoption-result
+                              (plist-get classification :adoption-result)
+                              composition-result
+                              (plist-get classification :composition-result)
+                              failure-stage
+                              (plist-get classification :failure-stage)
+                              scenario-result
+                              (plist-get classification :result)
+                              semantic-result
+                              (if (member (plist-get classification :result)
+                                          '("pass"
+                                            "product-contract-failure"))
+                                  "pass"
+                                "failure"))
+                        classification))
+                    (gates-for-stage (stage)
+                      (let ((gates
+                             (list :ordinary-tool-p t
+                                   :prompt-control-p t
+                                   :carrier-p t
+                                   :valid-effect-p t
+                                   :replacement-preserved-p t
+                                   :audit-linked-p t
+                                   :projection-p t
+                                   :raw-excluded-p t
+                                   :follow-up-p t)))
+                        (plist-put
+                         gates
+                         (pcase stage
+                           ("ordinary-tool" :ordinary-tool-p)
+                           ("prompt-control" :prompt-control-p)
+                           ("carrier" :carrier-p)
+                           ("commit" :audit-linked-p)
+                           ("projection" :projection-p)
+                           ("raw-exclusion" :raw-excluded-p)
+                           ("follow-up-answer" :follow-up-p))
+                         nil)))
+                    (fail (stage message)
+                      (classify (gates-for-stage stage))
+                      (ert-fail message))
+                    (model-selection-failure (message)
+                      (classify
+                       '(:ordinary-tool-p t :prompt-control-p t
+                         :carrier-p t :valid-effect-p nil
+                         :replacement-preserved-p t :audit-linked-p t
+                         :projection-p t :raw-excluded-p t :follow-up-p t))
+                      (ert-fail message))
+                    (require-gate (condition stage message)
+                      (unless condition
+                        (fail stage message)))
+                    (body-has-tool-p (body name)
+                      (seq-some
+                       (lambda (tool)
+                         (equal (format "%s" (plist-get tool :name)) name))
+                       (append (plist-get body :tools) nil)))
+                    (input-has-role-p (input roles)
+                      (seq-some
+                       (lambda (item)
+                         (member (plist-get item :role) roles))
+                       (append input nil))))
+                 (require-gate
+                  (null (e-live-e2e--adoption-prompt-violations prompt))
+                  "prompt-control"
+                  "The naturalistic adoption prompt contains reserved vocabulary.")
+                 (require-gate
+                  (string-match-p (regexp-quote tool-name) prompt)
+                  "prompt-control"
+                  "The adoption prompt did not name the ordinary deterministic tool.")
+                 (require-gate
+                  (null (e-live-e2e--adoption-prompt-violations follow-up-prompt))
+                  "prompt-control"
+                  "The follow-up prompt contains reserved vocabulary.")
+                 (e-live-e2e--with-responses-request-capture
+                     profile request-bodies request-handles
+                   (setq first-result
+                         (e-live-e2e--prompt-batch-before-deadline
+                          harness session-id prompt deadline)))
+                 (let ((tool-starts
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'tool-started))
+                       (tool-finishes
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'tool-finished))
+                       (assistant (e-live-e2e--assistant-content first-result)))
+                   (require-gate (= (length tool-starts) 1)
+                                 "ordinary-tool"
+                                 "The ordinary deterministic tool was not called exactly once.")
+                   (require-gate (= (length tool-finishes) 1)
+                                 "ordinary-tool"
+                                 "The ordinary deterministic tool did not finish exactly once.")
+                   (require-gate (equal (string-trim assistant) "READY")
+                                 "prompt-control"
+                                 "The first response did not answer READY.")
+                   (require-gate (not (e-live-e2e--contains-p assistant raw-tool-output))
+                                 "prompt-control"
+                                 "The first response disclosed the deterministic sentinel."))
+                 (let* ((ordered-bodies
+                         (mapcar (lambda (entry) (plist-get entry :body))
+                                 (reverse request-bodies)))
+                        (carrier-present-p
+                         (seq-some (lambda (body)
+                                    (body-has-tool-p body "context-curate"))
+                                  ordered-bodies)))
+                   (require-gate carrier-present-p
+                                 "carrier"
+                                 "The reserved curation carrier was absent from captured requests."))
+                 (let* ((curations
+                         (e-session-context-curations
+                          (e-harness-sessions harness) session-id))
+                        (record-count (length curations)))
+                   (unless (= record-count 1)
+                     (model-selection-failure
+                      (format "Expected one valid autonomous curation effect, got %d."
+                              record-count)))
+                   (setq curation-record (car curations))
+                   (unless (and (= (plist-get curation-record :record-version) 3)
+                                (e-live-e2e--adoption-record-preserves-sentinel-p
+                                 curation-record raw-tool-output))
+                     (model-selection-failure
+                      "The autonomous curation did not preserve the sentinel."))
+                   (setq adoption-disposition
+                         (e-live-e2e--adoption-record-disposition
+                          curation-record raw-tool-output)))
+                 (require-gate
+                  (e-live-e2e--adoption-audit-linked-p
+                   (e-harness-sessions harness) session-id curation-record)
+                  "commit"
+                  "The autonomous curation audit/control linkage was incomplete.")
+                 (e-live-e2e--with-responses-request-capture
+                     profile request-bodies request-handles
+                   (setq second-result
+                         (e-live-e2e--prompt-batch-before-deadline
+                          harness session-id follow-up-prompt deadline)))
+                 (let* ((projection
+                         (e-session-context-lifetime-projection
+                          (e-harness-sessions harness) session-id))
+                        (item (car (plist-get curation-record :items)))
+                        (expected
+                         (if (eq (plist-get item :kind) 'exact)
+                             (plist-get item :value)
+                           (plist-get item :text)))
+                        (promotion-messages
+                         (plist-get projection :promotion-messages))
+                        (final-body
+                         (car (last
+                               (mapcar (lambda (entry) (plist-get entry :body))
+                                       (reverse request-bodies)))))
+                        (final-input (and final-body
+                                          (append (plist-get final-body :input)
+                                                  nil)))
+                        (final-printed (prin1-to-string final-input)))
+                   (require-gate
+                    (and (stringp expected)
+                         (seq-some
+                          (lambda (message)
+                            (equal (plist-get message :content) expected))
+                          promotion-messages)
+                         (e-live-e2e--contains-p final-printed expected))
+                    "projection"
+                    "The next request did not contain the selected durable replacement." )
+                   (require-gate
+                    (and final-input
+                         (not (string-match-p
+                               "\\[ephemeral context source [0-9]+"
+                               final-printed))
+                         (not (input-has-role-p final-input '(tool tool-call
+                                                               "tool" "tool-call")))
+                         (not (string-match-p
+                               "tool-call-id\\|function_call\\|provider-replay-item"
+                               final-printed)))
+                    "raw-exclusion"
+                    "The next request replayed the consumed raw source or marker." )
+                   (require-gate
+                    (equal (string-trim
+                            (e-live-e2e--assistant-content second-result))
+                           raw-tool-output)
+                    "follow-up-answer"
+                    "The ordinary follow-up did not return the retained sentinel."))
+                 (classify
+                  '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                    :valid-effect-p t :replacement-preserved-p t
+                    :audit-linked-p t :projection-p t :raw-excluded-p t
+                    :follow-up-p t))))
+            (e-backend-cancel-request
+             (car (last request-handles))))))))))
+
+(ert-deftest e-live-e2e-test-responses-autonomous-curation-adoption ()
+  "A configured Responses model autonomously curates a future-turn tool result."
+  (e-live-e2e--run-autonomous-curation-adoption))
 
 (ert-deftest e-live-e2e-test-provider-lifecycle-events-are-durable ()
   "Live provider start and finish events are emitted and persisted."
