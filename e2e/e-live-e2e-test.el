@@ -5383,7 +5383,7 @@ continuation and socket assertions used by the compatibility selector."
              (lambda ()
                (let ((original-prepare
                       (symbol-function
-                       'e-context-lifetime-prepare-curation)))
+                       'e-context-lifetime-prepare-curation-disposition)))
                  (cl-labels
                      ((run-prompts ()
                         (let ((first-result
@@ -5432,7 +5432,7 @@ continuation and socket assertions used by the compatibility selector."
                                    new-marker)))))
                    (cl-letf
                        (((symbol-function
-                          'e-context-lifetime-prepare-curation)
+                          'e-context-lifetime-prepare-curation-disposition)
                          (lambda (frame arguments response-entry-id
                                   &optional bytes-per-token)
                            (setq captured-curation-arguments
