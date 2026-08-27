@@ -3,8 +3,8 @@
 
 * Status
 
-Planned.  Review 01 findings are remediated in this candidate; a fresh
-independent specification Tick remains required before implementation.
+Planned.  This candidate requires independent specification review before
+implementation.
 
 This addendum extends Addendum 5 and supersedes it only where Addendum 5 treats
 stronger generic carrier narration or omission as evidence that the model
@@ -82,6 +82,33 @@ The returned reasoning summary remains ordinary provider output handled by the
 existing reasoning parser and presentation path.  It must not be searched for
 curation vocabulary, copied into the external evidence record, or used to
 upgrade =unavailable=, =product-contract-failure=, or =pass=.
+
+=responses-reasoning-summary-capability= emits exactly one bounded,
+content-free record per invocation.  It records the scenario, provider and
+profile, effective endpoint and base URL, Responses transport, store mode,
+native requester, model, effective effort and summary value, material request
+identity, probe request identity, timestamp, repository revision, declared
+timeout, elapsed duration, bounded summary presence (=present=, =empty=, or
+=absent=), and result.  It contains no prompt, response text, returned summary
+text, authentication value, header, or other provider content.
+
+A terminal successful response to the smallest valid =summary: "auto"= request
+is =pass= for that exact identity whether the returned summary is present,
+empty, or absent.  Explicit endpoint rejection of the required field is
+=unavailable= and leaves the identity =capability-unconfirmed= without
+fallback.  Authentication/configuration, other provider/infrastructure, and
+deadline failures use =configuration-unavailable=,
+=provider/infrastructure-failure=, and =inconclusive-timeout=.  Missing or
+mismatched captured identity, or a request without the resolved effort and
+=summary: "auto"=, is =semantic-failure=.  Exactly-one finalization preserves
+the original outcome on every path.
+
+Probe evidence has a seven-calendar-day freshness window.  Reuse requires
+equality of every recorded capability and request identity field and no change
+to the OpenAI adapter, native requester, request capture, external finalizer,
+or probe runner in its dependency cone.  Otherwise it is =stale=.  Configured
+Responses HTTP and exact ChatGPT/WebSocket identities are run and reported
+separately; neither profile or transport confirms the other.
 
 ** Replace omission semantics with an exhaustive disposition
 
@@ -192,7 +219,8 @@ curation carrier.
 Add and owner-test core pure normalization/preparation for exhaustive
 =keep=/=summaries=/=drop= partitions and validated no-record drop-only results,
 then add harness/session atomic, immediate-reopen, and exact tail-eviction
-evidence.  Keep the existing wire schema working in this intermediate commit;
+evidence.  Keep the existing wire schema working at this intermediate slice
+boundary;
 the new internal shape may be accepted before it is advertised.  This temporary
 pre-exposure join is removed in Slice 3 and is not a steady-state compatibility
 shim.
