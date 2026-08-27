@@ -1,0 +1,20 @@
+#+title: Context Lifetime Rejects web_fetch Header Alists
+
+* Report
+
+Asking whether Emacs has minimap extensions ended with:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: unsupported-semantic-value,
+("server" . "nginx")
+#+end_example
+
+The turn had completed six tool calls and one capability action but displayed no
+assistant answer.
+
+* Trigger
+
+The final =web_fetch= call successfully fetched the MELPA minimap page.  Its
+structured result included HTTP response headers, represented inside Emacs as
+an association list.  Generational context was enabled when the harness tried
+to construct the tool-result observation frame for the next provider request.

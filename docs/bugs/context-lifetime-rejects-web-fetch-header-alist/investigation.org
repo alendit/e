@@ -1,0 +1,80 @@
+#+title: Context Lifetime web_fetch Header Alist Investigation
+
+* Finding
+
+The turn failed after a successful =web_fetch= because the web tool and context
+lifetime core disagree about the accepted representation of structured
+semantic values.  =web_fetch= deliberately returns HTTP headers as an
+association list, while =e-context-lifetime-canonicalize= rejects every dotted
+pair.  The first header in the live response was =("server" . "nginx")=, so it
+became the value named in the error.
+
+This is not an HTTP, nginx, MELPA, or provider failure.  The fetched result was
+already appended to the session before local preparation of the next
+tool-result observation frame aborted the turn.
+
+* Live evidence
+
+The bounded live probes completed successfully.  =scripts/e-live-probe chat=
+and =scripts/e-live-probe windows= showed that the selected server frame was on
+the Doom dashboard rather than the failed canvas, so they could not expose that
+canvas's active presentation state.
+
+The current running session journal at
+=~/.emacs.d/.local/cache/e/sessions/sessions/20260827T200530-b604a4f16a26.jsonl=
+contains the exact causal sequence:
+
+1. Entry 69 records a successful =web_fetch= tool result for
+   =https://melpa.org/#/minimap=.  Its structured =:content= includes a
+   =:headers= object whose first field is =server: nginx=.
+2. Entry 70 records the matching =tool-finished= activity.
+3. Entry 72 immediately records =turn-failed= with
+   =unsupported-semantic-value, ("server" . "nginx")=.
+4. Entry 74 records the visible summary: 22.87 seconds, six tool calls, and one
+   action.
+
+No assistant message follows the final tool result.
+
+* Source evidence
+
+=e-web-tools--parse-headers= documents and constructs an alist by pushing
+=cons= cells such as =("server" . "nginx")=.  Both HTTP fetch result builders
+then place that value under the structured tool result's =:headers= field.
+
+=e-context-lifetime--segment-observations= extracts each tool result's semantic
+content and passes the complete nested value to
+=e-context-lifetime--detached-canonical=.  That calls
+=e-context-lifetime-canonicalize= recursively.  The canonicalizer accepts
+scalars, vectors, proper lists, and keyword plists, but its generic cons branch
+signals =unsupported-semantic-value= when it reaches an improper list.  Every
+ordinary alist entry is such a dotted pair.
+
+A non-interactive batch probe reproduced the same condition directly by
+canonicalizing ='(("server" . "nginx"))=.
+
+The mismatch is already visible in test intent: the compaction suite has
+=e-compaction-test-prepare-stringifies-tool-result-alists= for structured
+=web_fetch= results, but the context-lifetime suite has no equivalent nested
+alist case.
+
+* Root cause
+
+Generational-context source preparation assumes that every model-visible tool
+result already uses its narrow canonical semantic-value grammar.  The model
+tool boundary does not enforce that assumption, and =web_fetch= has an
+established valid result shape containing alists.  Consequently, enabling
+context lifetime makes a normal successful web result capable of terminating
+the turn before the model can consume it.
+
+* Next step
+
+No fix was made during this diagnosis.  The repair should establish one stable
+canonical representation for association/object values at the owning semantic
+boundary, preserve the exact model-visible meaning across session replay, and
+add a composed regression using a =web_fetch= result with nested headers.  It
+should not special-case the literal =server= header or silently discard web
+metadata merely to avoid the validator.
+
+Because context lifetime is core runtime behavior, applying the eventual fix
+to the user's running Emacs will require a full restart rather than
+=e-dev-reload=.
