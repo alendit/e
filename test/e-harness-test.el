@@ -1489,6 +1489,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
          (raw "raw-current-state-secret")
          (diagnostics
           (list :model "gpt-test"
+                :reasoning-effort "high"
+                :reasoning-summary "detailed"
                 :observation-delivery 'request-local-replaceable
                 :replaceable-current-state-present t
                 :current-state-fingerprint fingerprint
@@ -1532,6 +1534,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  (e-harness--provider-diagnostics-activity-projection
                   diagnostics)))
             (dolist (key '(:observation-delivery
+                           :reasoning-effort
+                           :reasoning-summary
                            :replaceable-current-state-present
                            :current-state-fingerprint
                            :context-rendering-strategy
@@ -1539,6 +1543,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
               (should (plist-member projected key)))
             (should (equal (plist-get projected :current-state-fingerprint)
                            fingerprint))
+            (should (equal (plist-get projected :reasoning-summary)
+                           "detailed"))
             (should-not (plist-member projected :observation-frontier))
             (should-not (plist-member projected :replaceable-current-state))
             (should-not (plist-member projected :current-state-messages))
@@ -1559,6 +1565,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  (projected (plist-get (plist-get started :payload)
                                        :diagnostics)))
             (should started)
+            (should (equal (plist-get projected :reasoning-summary)
+                           "detailed"))
             (should (eq (plist-get projected :observation-delivery)
                         'request-local-replaceable))
             (should (eq (plist-get projected :context-rendering-strategy)
@@ -1583,6 +1591,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  (projected (plist-get payload :diagnostics)))
             (should started)
             (dolist (key '(:observation-delivery
+                           :reasoning-effort
+                           :reasoning-summary
                            :replaceable-current-state-present
                            :current-state-fingerprint
                            :context-rendering-strategy
@@ -1599,6 +1609,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                            t))
             (should (equal (plist-get projected :current-state-fingerprint)
                            fingerprint))
+            (should (equal (plist-get projected :reasoning-summary)
+                           "detailed"))
             (should (member (plist-get projected :context-rendering-strategy)
                             '(replaceable-channel "replaceable-channel")))
             (should (member (plist-get projected :provider-anchor-safety)
@@ -1760,6 +1772,34 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                 store session-id anchor 'openai "gpt-test"
                 (e-harness--provider-anchor-fingerprints first))
                'context-curation-revision-changed)))))))
+
+(ert-deftest e-harness-test-reasoning-summary-fences-provider-identity ()
+  "Effective Responses reasoning summary is an anchor identity input."
+  (let* ((base-options '(:model "gpt-test"
+                         :reasoning-effort "high"
+                         :reasoning-summary "auto"))
+         (detailed-options (plist-put (copy-sequence base-options)
+                                      :reasoning-summary
+                                      "detailed"))
+         (base (list :options base-options :segments nil))
+         (detailed (list :options detailed-options :segments nil))
+         (base-fingerprints
+          (e-harness--provider-anchor-fingerprints base))
+         (detailed-fingerprints
+          (e-harness--provider-anchor-fingerprints detailed))
+         (diagnostics (list :model "gpt-test"
+                            :reasoning-effort "high"
+                            :reasoning-summary "detailed"))
+         (projected
+          (e-harness--provider-diagnostics-activity-projection diagnostics)))
+    (should (equal (plist-get (plist-get base-fingerprints :reasoning)
+                              :reasoning-summary)
+                   "auto"))
+    (should-not (equal base-fingerprints detailed-fingerprints))
+    (should (equal (plist-get (plist-get detailed-fingerprints :reasoning)
+                              :reasoning-summary)
+                   "detailed"))
+    (should (equal (plist-get projected :reasoning-summary) "detailed"))))
 
 (ert-deftest e-harness-test-provider-anchor-persistence-keeps-latest-candidate ()
   "Provider anchor persistence keeps only the final candidate for a provider."

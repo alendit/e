@@ -167,7 +167,7 @@
                :content [(:type "output_text" :text "hi")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-defaults-to-gpt55-high-effort ()
   "OpenAI request bodies default to GPT-5.5 with high reasoning effort."
@@ -186,7 +186,7 @@
       :tool_choice "auto"
       :parallel_tool_calls t
       :text (:verbosity "low")
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-maps-explicit-text-verbosity ()
   "OpenAI request bodies map backend-neutral text verbosity."
@@ -205,7 +205,7 @@
       :tool_choice "auto"
       :parallel_tool_calls t
       :text (:verbosity "high")
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-maps-reasoning-effort-option ()
   "Backend-neutral reasoning effort maps to the Responses reasoning object."
@@ -223,7 +223,111 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "low")))))
+      :reasoning (:effort "low" :summary "auto")))))
+
+(ert-deftest e-openai-test-reasoning-summary-precedence-and-explicit-join ()
+  "Request, profile, and adapter summary choices compose predictably."
+  (let ((profile-options
+         (e-openai--harness-default-options
+          '(:wire-api responses :reasoning-summary "detailed")
+          "gpt-test")))
+    (should (equal (plist-get profile-options :reasoning-summary)
+                   "detailed"))
+    (should (equal (plist-get
+                    (e-openai-codex-request-body
+                     :messages '((:role user :content "hello"))
+                     :options '(:model "gpt-test"
+                                :reasoning-effort "low"
+                                :reasoning-summary "auto"
+                                :reasoning (:effort "minimal"
+                                            :extra "preserved")))
+                   :reasoning)
+                   '(:effort "minimal" :extra "preserved" :summary "auto")))
+    (should (equal (plist-get
+                    (e-openai-codex-request-body
+                     :messages '((:role user :content "hello"))
+                     :options '(:model "gpt-test"
+                                :reasoning-summary "auto"
+                                :reasoning (:summary "detailed")))
+                   :reasoning)
+                   '(:effort "high" :summary "detailed")))
+    ;; A shadowed lower-precedence value is not selected or validated.
+    (should (equal (plist-get
+                    (e-openai-codex-request-body
+                     :messages '((:role user :content "hello"))
+                     :options '(:model "gpt-test"
+                                :reasoning-summary "invalid"
+                                :reasoning (:summary "detailed")))
+                   :reasoning)
+                   '(:effort "high" :summary "detailed")))))
+
+(ert-deftest e-openai-test-request-context-reasoning-summary-profile-override ()
+  "Request summary overrides a Responses profile and adapter default."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-responses
+             :name "Engineering Responses"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :reasoning-summary "detailed"
+             :requires-openai-auth nil)))
+         (profile-context
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role user :content "hello"))
+           :options '(:model "gpt-test")))
+         (request-context
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role user :content "hello"))
+           :options '(:model "gpt-test"
+                      :reasoning-summary "auto")))
+         (profile-reasoning
+          (plist-get (plist-get profile-context :body-data) :reasoning))
+         (request-reasoning
+          (plist-get (plist-get request-context :body-data) :reasoning)))
+    (should (equal (plist-get profile-reasoning :summary) "detailed"))
+    (should (equal (plist-get request-reasoning :summary) "auto"))
+    (should (equal (plist-get (plist-get profile-context :metadata)
+                              :reasoning-identity)
+                   '(:effort "high" :summary "detailed")))
+    (should (equal (plist-get (plist-get request-context :metadata)
+                              :reasoning-identity)
+                   '(:effort "high" :summary "auto")))
+    (should (equal (plist-get (plist-get (plist-get profile-context :metadata)
+                                        :diagnostics)
+                              :reasoning-summary)
+                   "detailed"))
+    (should (equal (plist-get (plist-get (plist-get request-context :metadata)
+                                        :diagnostics)
+                              :reasoning-summary)
+                   "auto"))))
+
+(ert-deftest e-openai-test-reasoning-summary-rejects-disable-and-unknown-values ()
+  "Responses cannot omit, disable, or misspell the summary choice."
+  (dolist (options '((:reasoning-summary nil)
+                    (:reasoning-summary :json-false)
+                    (:reasoning-summary "verbose")
+                    (:reasoning nil)
+                    (:reasoning :json-false)
+                    (:reasoning (effort "high"))
+                    (:reasoning (:effort . "high"))))
+    (should-error
+     (e-openai-codex-request-body
+      :messages '((:role user :content "hello"))
+      :options options)
+     :type 'e-openai-provider-invalid)))
+
+(ert-deftest e-openai-test-reasoning-summary-does-not-change-chat-completions ()
+  "Chat Completions request bodies do not gain Responses reasoning fields."
+  (let ((body
+         (e-openai-chat-completion-request-body
+          :messages '((:role user :content "hello"))
+          :options '(:model "chat-test" :reasoning-summary "detailed"))))
+    (should-not (plist-member body :reasoning))
+    (should-not (plist-member body :reasoning-summary))))
 
 (ert-deftest e-openai-test-request-body-maps-prompt-cache-options ()
   "Backend-neutral prompt cache options map to Responses cache fields."
@@ -243,7 +347,7 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")
+      :reasoning (:effort "high" :summary "auto")
       :prompt_cache_key "cache-key"
       :prompt_cache_retention "24h"))))
 
@@ -582,7 +686,9 @@
     (let* ((anchor
             (list :provider-id 'openai
                   :metadata (list :response-id "response-curation"
-                                  :prompt-layout-revision first)))
+                                  :prompt-layout-revision first
+                                  :reasoning-identity
+                                  '(:effort "high" :summary "auto"))))
            (continuation-options
             (plist-put (copy-sequence first-options)
                        :provider-anchor anchor)))
@@ -612,7 +718,9 @@
              :provider-anchor
              (:provider-id openai
               :metadata (:response-id "resp-1"
-                         :prompt-layout-revision ,revision))
+                         :prompt-layout-revision ,revision
+                         :reasoning-identity
+                         (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
              ((:role system :content "Fresh dynamic state.")
               (:role user :content "new prompt"))
@@ -657,7 +765,9 @@
              :provider-anchor
              (:provider-id openai
               :metadata (:response-id "resp-1"
-                         :prompt-layout-revision ,revision))
+                         :prompt-layout-revision ,revision
+                         :reasoning-identity
+                         (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
              ((:role system :content "Fresh dynamic state.")
               (:role user :content "new prompt"))
@@ -740,7 +850,9 @@
              (:provider-id openai
               :metadata (:response-id "resp-1"
                          :prompt-layout-revision
-                         ,e-openai-gpt56-explicit-cache-layout-revision))
+                         ,e-openai-gpt56-explicit-cache-layout-revision
+                         :reasoning-identity
+                         (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
              ((:role user :content "second prompt")))))
          (second-body
@@ -817,7 +929,9 @@
                               (:provider-id openai
                                :metadata (:response-id "resp-equal"
                                           :prompt-layout-revision
-                                          "responses-explicit-cache-v1"))
+                                          "responses-explicit-cache-v1"
+                                          :reasoning-identity
+                                          (:effort "high" :summary "auto")))
                               :provider-anchor-delta-messages
                               ((:role system :content "same value"))
                               :provider-anchor-source-message-count 4)))))
@@ -1056,7 +1170,9 @@
             :provider-anchor
             (:provider-id openai
              :metadata (:response-id "resp-1"
-                        :prompt-layout-revision ,revision))
+                        :prompt-layout-revision ,revision
+                        :reasoning-identity
+                        (:effort "high" :summary "auto")))
             :provider-anchor-delta-messages
             ((:role system :content "Fresh dynamic state.")
              (:role user :content "new prompt"))
@@ -1171,6 +1287,59 @@
     (should (equal (plist-get stable-block :prompt_cache_breakpoint)
                    '(:mode "explicit")))))
 
+(ert-deftest e-openai-test-reasoning-summary-fences-continuation-anchor ()
+  "A changed effective reasoning summary cannot reuse a Responses anchor."
+  (let* ((base
+          '(:model "gpt-test"
+            :reasoning-summary "auto"
+            :provider-continuation t
+            :provider-anchor
+            (:provider-id openai
+             :metadata (:response-id "resp-1"
+                        :reasoning-identity
+                        (:effort "high" :summary "detailed")))
+            :provider-anchor-delta-messages
+            ((:role user :content "new prompt"))))
+         (unsafe (e-openai-codex-request-body
+                  :messages '((:role user :content "new prompt"))
+                  :options base))
+         (safe-options (copy-tree base)))
+    (setq safe-options
+          (plist-put safe-options
+                     :provider-anchor
+                     '(:provider-id openai
+                       :metadata (:response-id "resp-1"
+                                  :reasoning-identity
+                                  (:effort "high" :summary "auto")))))
+    (should-not (plist-member unsafe :previous_response_id))
+    (should (equal (plist-get
+                   (e-openai-codex-request-body
+                     :messages '((:role user :content "new prompt"))
+                     :options safe-options)
+                   :previous_response_id)
+                   "resp-1"))))
+
+(ert-deftest e-openai-test-reasoning-summary-missing-anchor-identity-forces-replay ()
+  "A Responses anchor without reasoning identity cannot authorize continuation."
+  (let* ((options '(:model "gpt-test"
+                    :prompt-cache-key "cache-key"
+                    :provider-continuation t
+                    :provider-anchor-delta-messages
+                    ((:role user :content "new prompt"))))
+         (options
+          (plist-put
+           (copy-sequence options)
+           :provider-anchor
+           (list :provider-id 'openai
+                 :metadata
+                 (list :response-id "resp-1"
+                       :prompt-layout-revision
+                       (e-openai-codex--prompt-layout-revision options)))))
+         (body (e-openai-codex-request-body
+                :messages '((:role user :content "new prompt"))
+                :options options)))
+    (should-not (plist-member body :previous_response_id))))
+
 (ert-deftest e-openai-test-request-body-uses-continuation-anchor ()
   "Continuation sends previous_response_id with fresh context and transcript delta."
   (should
@@ -1184,7 +1353,9 @@
      :options '(:model "gpt-test"
                 :provider-continuation t
                 :provider-anchor (:provider-id openai
-                                  :metadata (:response-id "resp-1"))
+                                  :metadata (:response-id "resp-1"
+                                             :reasoning-identity
+                                             (:effort "high" :summary "auto")))
                 :provider-anchor-delta-messages
                 ((:role system :content "changed dynamic context")
                  (:role user :content "new prompt"))))
@@ -1197,7 +1368,7 @@
                :content [(:type "input_text" :text "new prompt")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")
+      :reasoning (:effort "high" :summary "auto")
       :previous_response_id "resp-1"))))
 
 (ert-deftest e-openai-test-request-body-continuation-includes-in-turn-tool-output ()
@@ -1222,7 +1393,9 @@
           :options '(:model "gpt-test"
                      :provider-continuation t
                      :provider-anchor (:provider-id openai
-                                       :metadata (:response-id "resp-1"))
+                                       :metadata (:response-id "resp-1"
+                                                  :reasoning-identity
+                                                  (:effort "high" :summary "auto")))
                      :provider-anchor-source-message-count 5
                      :provider-anchor-delta-messages
                      ((:role system :content "changed dynamic context")
@@ -1271,7 +1444,7 @@
                :content [(:type "input_text" :text "new prompt")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-stores-full-replay-when-enabled-without-anchor ()
   "Continuation mode stores full replay requests when no anchor is valid."
@@ -1327,7 +1500,9 @@
                           :response-store :json-false
                           :provider-continuation t
                           :provider-anchor (:provider-id openai
-                                            :metadata (:response-id "resp-1"))
+                                            :metadata (:response-id "resp-1"
+                                                       :reasoning-identity
+                                                       (:effort "high" :summary "auto")))
                           :provider-anchor-delta-messages
                           ((:role user :content "new prompt"))))))
     (should (eq (plist-get body :store) :json-false))
@@ -1359,7 +1534,9 @@
                       :provider-anchor
                       (:provider-id openai
                        :covered-entry-id "entry-1"
-                       :metadata (:response-id "resp-1"))
+                       :metadata (:response-id "resp-1"
+                                  :reasoning-identity
+                                  (:effort "high" :summary "auto")))
                       :provider-anchor-delta-messages
                       ((:role user :content "new prompt"))
                       :prompt-cache-key "cache-key"
@@ -1376,6 +1553,7 @@
     (should (equal (plist-get metadata :diagnostics)
                    '(:model "gpt-test"
                      :reasoning-effort "high"
+                     :reasoning-summary "auto"
                      :response-store t
                      :prompt-cache-key-present t
                      :prompt-cache-retention-present t
@@ -1522,7 +1700,7 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "minimal")))))
+      :reasoning (:effort "minimal" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-moves-system-messages-to-instructions ()
   "Codex requests do not send forbidden system input messages."
@@ -1542,7 +1720,7 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-includes-function-call-before-output ()
   "Tool-call transcript messages serialize before function-call outputs."
@@ -1574,7 +1752,7 @@
                :output "{\"ok\":true}")]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :reasoning (:effort "high")))))
+      :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-responses-url-appends-responses-path ()
   "Responses providers append /responses unless the base URL already has it."
@@ -1765,6 +1943,7 @@
                      :request-function #'ignore))
                    '(:model "gateway-default"
                      :reasoning-effort "high"
+                     :reasoning-summary "auto"
                      :provider-continuation t
                      :provider-anchor-provider-id openai)))))
 
@@ -1774,6 +1953,7 @@
                   (e-openai-create-harness :request-function #'ignore))
                  '(:model "gpt-5.5"
                    :reasoning-effort "high"
+                   :reasoning-summary "auto"
                    :provider-continuation t
                    :provider-anchor-provider-id openai))))
 
@@ -2123,7 +2303,8 @@
                      :provider 'openai-no-continuation
                      :request-function #'ignore))
                    '(:model "gateway-default"
-                     :reasoning-effort "high")))))
+                     :reasoning-effort "high"
+                     :reasoning-summary "auto")))))
 
 (ert-deftest e-openai-test-responses-profile-can-enable-continuation ()
   "Responses profiles opt into provider continuation explicitly."
@@ -2142,6 +2323,7 @@
                      :request-function #'ignore))
                    '(:model "gateway-default"
                      :reasoning-effort "high"
+                     :reasoning-summary "auto"
                      :provider-continuation t
                      :provider-anchor-provider-id openai)))))
 
@@ -2425,6 +2607,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               :id "rs-1"
               :encrypted_content "ciphertext"
               :summary nil))))))
+
+(ert-deftest e-openai-test-parse-reasoning-summary-presence-is-diagnostic-only ()
+  "Encrypted reasoning preserves whether summary is absent, empty, or present."
+  (dolist (case
+           '(("" .
+              "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"ciphertext\"}}\n\n")
+             (":summary:[]" .
+              "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"ciphertext\",\"summary\":[]}}\n\n")
+             (":summary:[{...}]" .
+              "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"ciphertext\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"diagnostic\"}]}}\n\n")))
+    (let* ((parsed (e-openai-codex-parse-stream (cdr case)))
+           (item (plist-get (car parsed) :item)))
+      (if (string-empty-p (car case))
+          (should-not (plist-member item :summary))
+        (should (plist-member item :summary))))))
 
 (ert-deftest e-openai-test-parse-tool-call-event ()
   "Responses tool_call items become backend-neutral tool calls."
@@ -3368,7 +3565,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                        '((:type assistant-delta :content "ok")
                          (:type provider-anchor-candidate
                           :provider-id openai
-                          :metadata (:response-id "resp-ws-1"))
+                          :metadata (:response-id "resp-ws-1"
+                                    :reasoning-identity
+                                    (:effort "high" :summary "auto")))
                          (:type done :reason stop))))
         (should (eq (plist-get (e-backend-request-metadata request)
                                :transport)
@@ -3427,7 +3626,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (equal (nreverse seen)
                        '((:type provider-anchor-candidate
                           :provider-id openai
-                          :metadata (:response-id "resp-ws-1"))
+                          :metadata (:response-id "resp-ws-1"
+                                    :reasoning-identity
+                                    (:effort "high" :summary "auto")))
                          (:type assistant-message
                           :content "candidate answer")
                          (:type done :reason stop))))))))
@@ -3475,7 +3676,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (equal (nreverse seen)
                        '((:type provider-anchor-candidate
                           :provider-id openai
-                          :metadata (:response-id "resp-ws-1"))
+                          :metadata (:response-id "resp-ws-1"
+                                    :reasoning-identity
+                                    (:effort "high" :summary "auto")))
                          (:type done :reason stop))))))))
 
 (ert-deftest e-openai-test-websocket-completion-retains-connection ()
@@ -3527,7 +3730,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (equal (nreverse late-seen)
                        '((:type provider-anchor-candidate
                           :provider-id openai
-                          :metadata (:response-id "resp-ws-1"))
+                          :metadata (:response-id "resp-ws-1"
+                                    :reasoning-identity
+                                    (:effort "high" :summary "auto")))
                          (:type done :reason stop))))
         (should (e-backend-cancel-request request))
         (should (= close-count 1))))))
@@ -3598,7 +3803,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-one"))
+                  :metadata (:response-id "resp-one"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role tool
                    :content (:tool-call-id "call-one" :content "result")))
@@ -4026,7 +4233,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-one"))
+                  :metadata (:response-id "resp-one"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role user :content "two"))
                  :provider-anchor-source-message-count 2)
@@ -4224,7 +4433,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-one"))
+                  :metadata (:response-id "resp-one"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role user :content "two"))
                  :provider-anchor-source-message-count 2)
@@ -4330,7 +4541,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-one"))
+                  :metadata (:response-id "resp-one"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role user :content "two"))
                  :provider-anchor-source-message-count 2)
@@ -4362,7 +4575,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-one"))
+                  :metadata (:response-id "resp-one"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role user :content "three"))
                  :provider-anchor-source-message-count 2)
@@ -4386,7 +4601,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
-                  :metadata (:response-id "resp-two"))
+                  :metadata (:response-id "resp-two"
+                             :reasoning-identity
+                             (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
                  ((:role user :content "three")
                   (:role user :content "four"))
@@ -4528,7 +4745,9 @@ result from the canonical messages supplied by the caller."
                    :provider-continuation t
                    :provider-anchor
                    (:provider-id openai
-                    :metadata (:response-id "resp-latest"))
+                    :metadata (:response-id "resp-latest"
+                               :reasoning-identity
+                               (:effort "high" :summary "auto")))
                    :provider-anchor-delta-messages
                    ((:role tool
                      :content (:tool-call-id "call-latest"
@@ -5062,7 +5281,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :provider-continuation t
              :response-store t
              :provider-anchor
-             (:provider-id openai :metadata (:response-id "resp-promotion"))
+             (:provider-id openai
+              :metadata (:response-id "resp-promotion"
+                         :reasoning-identity
+                         (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
              ((:role assistant
                :content "selected"
@@ -5106,7 +5328,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :provider-continuation t
              :response-store t
              :provider-anchor
-             (:provider-id openai :metadata (:response-id "resp-curation"))
+             (:provider-id openai
+              :metadata (:response-id "resp-curation"
+                         :reasoning-identity
+                         (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
              ((:role tool
                :content (:tool-call-id "tool-call" :content "result")
@@ -5227,7 +5452,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                      (e-openai-codex-parse-stream
                       (if (= request-count 1)
                           first-response
-                        second-response))))
+                        second-response)
+                      nil
+                      '(:effort "high" :summary "auto"))))
                 (when (= request-count 1)
                   (setq first-items (copy-tree items)))
                 (dolist (item items)
@@ -5466,7 +5693,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             :response-store t
             :provider-anchor
             (:provider-id openai
-             :metadata (:response-id "fresh-anchor"))))
+             :metadata (:response-id "fresh-anchor"
+                        :reasoning-identity
+                        (:effort "high" :summary "auto")))))
          (second-http-body
           (e-openai-codex-request-body
            :messages delta :options second-options :tools nil))

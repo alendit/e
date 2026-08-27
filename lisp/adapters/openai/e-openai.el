@@ -194,6 +194,80 @@ provider-neutral backend contract."
                  (string :tag "Effort"))
   :group 'e-openai)
 
+(defcustom e-openai-default-reasoning-summary "auto"
+  "Default Responses reasoning summary mode.
+
+Responses requests always include this field.  `auto' is the provider's
+ordinary summary mode; `detailed' is an explicit diagnostic choice."
+  :type '(choice (const "auto") (const "detailed"))
+  :group 'e-openai)
+
+(defun e-openai--validate-reasoning-summary (value)
+  "Return valid Responses reasoning summary VALUE, or signal an error."
+  (unless (and (stringp value)
+               (member value '("auto" "detailed")))
+    (signal 'e-openai-provider-invalid
+            (list (format "Invalid Responses reasoning summary %S" value))))
+  value)
+
+(defun e-openai--validate-reasoning-effort (value)
+  "Return non-empty reasoning effort VALUE, or signal an error."
+  (unless (and (stringp value)
+               (not (string-empty-p value)))
+    (signal 'e-openai-provider-invalid
+            (list (format "Invalid Responses reasoning effort %S" value))))
+  value)
+
+(defun e-openai--keyword-plist-p (value)
+  "Return non-nil when VALUE is a proper plist with keyword keys."
+  (let ((tail value)
+        (valid t))
+    (while (and valid tail)
+      (if (and (consp tail)
+               (keywordp (car tail))
+               (consp (cdr tail)))
+          (setq tail (cddr tail))
+        (setq valid nil)))
+    (and valid (null tail))))
+
+(defun e-openai--effective-reasoning (options)
+  "Return validated Responses reasoning for OPTIONS.
+An explicit `:reasoning' plist supplies the highest-precedence fields; absent
+effort and summary fields are filled from the corresponding effective options.
+The returned plist is detached from OPTIONS and always contains both required
+fields."
+  (let* ((explicit-p (plist-member options :reasoning))
+         (explicit (and explicit-p (plist-get options :reasoning)))
+         (option-summary
+          (if (plist-member options :reasoning-summary)
+              (plist-get options :reasoning-summary)
+            e-openai-default-reasoning-summary)))
+    (when explicit-p
+      (unless (e-openai--keyword-plist-p explicit)
+        (signal 'e-openai-provider-invalid
+                (list (format "Invalid Responses reasoning %S" explicit))))
+      (when (null explicit)
+        (signal 'e-openai-provider-invalid
+              '("Responses :reasoning cannot be nil"))))
+    (let* ((reasoning (copy-tree (or explicit nil)))
+           (effort
+            (if (and explicit-p (plist-member explicit :effort))
+                (plist-get explicit :effort)
+              (if (plist-member options :reasoning-effort)
+                  (plist-get options :reasoning-effort)
+                e-openai-default-reasoning-effort)))
+           (summary
+            (if (and explicit-p (plist-member explicit :summary))
+                (plist-get explicit :summary)
+              option-summary)))
+      (setq effort (e-openai--validate-reasoning-effort effort)
+            summary (e-openai--validate-reasoning-summary summary))
+      ;; Keep the required fields in a stable order while retaining any
+      ;; provider-specific fields carried by an explicit reasoning plist.
+      (cl-remf reasoning :effort)
+      (cl-remf reasoning :summary)
+      (append (list :effort effort) reasoning (list :summary summary)))))
+
 (defcustom e-openai-default-text-verbosity "low"
   "Default GPT-5 Responses text verbosity for OpenAI-like requests."
   :type '(choice (const :tag "Unset" nil)
@@ -551,6 +625,9 @@ Profiles can independently set `:responses-context-layout' to
 `developer-input' when system segments should remain distinct even without an
 explicit breakpoint.  Set `:include-encrypted-reasoning' when a provider
 supports returning stateless reasoning items for complete replay.  A Responses
+profile may set `:reasoning-summary' to the diagnostic value \"detailed\";
+when absent, the adapter sends \"auto\".  The request-level option can
+override the profile, but the field cannot be disabled.  A Responses
 profile may set `:observation-delivery' to `request-local-replaceable' only
 when that profile and transport have proven that top-level `instructions' are
 not inherited by its continuation response; otherwise the conservative
@@ -630,6 +707,13 @@ When PROVIDER is nil, use `e-openai-default-provider'."
     ((or 'chat-completion 'chat-completions) 'chat-completion)
     (other (signal 'e-openai-provider-invalid
                    (list (format "Unsupported :wire-api %S" other))))))
+
+(defun e-openai--profile-reasoning-summary (profile)
+  "Return the validated Responses summary mode declared by PROFILE."
+  (e-openai--validate-reasoning-summary
+   (if (plist-member profile :reasoning-summary)
+       (plist-get profile :reasoning-summary)
+     e-openai-default-reasoning-summary)))
 
 (defun e-openai--profile-responses-transport (profile)
   "Return normalized Responses transport for PROFILE."
@@ -750,6 +834,12 @@ not options and therefore cannot enter this identity."
               :context-curation-revision-identity
               (e-context-lifetime-curation-revision-identity))
       wire-revision)))
+
+(defun e-openai-codex--reasoning-identity (options)
+  "Return the effective Responses reasoning identity for OPTIONS."
+  (let ((reasoning (e-openai--effective-reasoning options)))
+    (list :effort (plist-get reasoning :effort)
+          :summary (plist-get reasoning :summary))))
 
 (defun e-openai-codex--prompt-cache-mode-label (options)
   "Return the diagnostic cache mode label for segmented OPTIONS."
@@ -886,6 +976,11 @@ injected requester for conformance tests."
   "Return backend-neutral harness options for PROFILE and MODEL."
   (let ((options (list :model model
                        :reasoning-effort e-openai-default-reasoning-effort)))
+    (when (eq (e-openai--provider-wire-api profile) 'responses)
+      (setq options
+            (append options
+                    (list :reasoning-summary
+                          (e-openai--profile-reasoning-summary profile)))))
     (if (e-openai--profile-continuation-supported-p profile)
         (append options
                 (list :provider-continuation t
@@ -1309,7 +1404,13 @@ escape."
                  (stringp response-id)
                  (not (string-empty-p response-id))
                  (equal (plist-get metadata :prompt-layout-revision)
-                        (e-openai-codex--prompt-layout-revision options)))
+                        (e-openai-codex--prompt-layout-revision options))
+                 ;; The effective reasoning pair is part of continuation
+                 ;; safety.  An anchor without it is legacy/incomplete and
+                 ;; must not authorize a material Responses continuation.
+                 (and (plist-member metadata :reasoning-identity)
+                      (equal (plist-get metadata :reasoning-identity)
+                             (e-openai-codex--reasoning-identity options))))
         response-id))))
 
 (defun e-openai-codex--move-inherited-frontier-to-end (messages options)
@@ -1536,11 +1637,7 @@ retained response already carries the stable segment and its earlier marker."
          (text-verbosity (e-openai-codex--text-verbosity model options))
          (continuation-response-id
           (e-openai-codex--continuation-response-id options))
-         (reasoning (if (plist-member options :reasoning)
-                        (plist-get options :reasoning)
-                      (when-let ((effort (or (plist-get options :reasoning-effort)
-                                             e-openai-default-reasoning-effort)))
-                        (list :effort effort))))
+         (reasoning (e-openai--effective-reasoning options))
          (store-value (e-openai--response-store-value options))
          (body (append
                 (list :model model)
@@ -1619,6 +1716,7 @@ retained response already carries the stable segment and its earlier marker."
            (diagnostics
             (list :model (plist-get body :model)
                   :reasoning-effort (plist-get reasoning :effort)
+                  :reasoning-summary (plist-get reasoning :summary)
                   :response-store (e-openai--response-store-value options)
                   :prompt-cache-key-present
                   (not (null (plist-member body :prompt_cache_key)))
@@ -1646,6 +1744,9 @@ retained response already carries the stable segment and its earlier marker."
                   :responses-transport responses-transport))
            (metadata (list :provider-continuation continuation-state
                            :responses-transport responses-transport
+                           :reasoning-identity
+                           (list :effort (plist-get reasoning :effort)
+                                 :summary (plist-get reasoning :summary))
                            :diagnostics diagnostics)))
       (when (or (plist-member options :observation-delivery)
                 (plist-member options :context-capabilities)
@@ -2079,10 +2180,11 @@ handle."
    (t "")))
 
 (defun e-openai-codex--websocket-event-items
-    (event emit-anchor &optional prompt-layout-revision)
+    (event emit-anchor &optional prompt-layout-revision reasoning-identity)
   "Return backend-neutral items for WebSocket EVENT.
 When EMIT-ANCHOR is nil, completed response ids stay transport-local.
-PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
+PROMPT-LAYOUT-REVISION and REASONING-IDENTITY are persisted with an emitted
+continuation anchor."
   (let* ((completed-event-p
           (member (plist-get event :type)
                   '("response.completed" "response.done")))
@@ -2094,7 +2196,7 @@ PROMPT-LAYOUT-REVISION is persisted with an emitted continuation anchor."
          (anchor-candidate-item
           (when (and emit-anchor completed-event-p)
             (e-openai-codex--anchor-candidate-item
-             response prompt-layout-revision)))
+             response prompt-layout-revision reasoning-identity)))
          (event-item (e-openai-codex--event-item event)))
     (delq nil (list usage-item anchor-candidate-item event-item))))
 
@@ -2386,8 +2488,8 @@ is the request-resolved local policy."
 
 (cl-defun e-openai-codex--websocket-request-start
     (&key session url headers body-data full-body-data request-metadata
-          prompt-layout-revision idle-close-seconds on-item on-complete
-          on-error)
+          prompt-layout-revision reasoning-identity idle-close-seconds
+          on-item on-complete on-error)
   "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
 SESSION owns a connection reusable by compatible sequential requests.
 FULL-BODY-DATA is the safe request without provider continuation.
@@ -2594,7 +2696,8 @@ list.  Return a cancellable `e-backend-request' handle."
                      (dolist (item (e-openai-codex--websocket-event-items
                                     event
                                     emit-anchor
-                                    prompt-layout-revision))
+                                    prompt-layout-revision
+                                    reasoning-identity))
                        (emit-item item))
                      (when terminal-event-p
                        ;; An incomplete response is a successful terminal
@@ -2807,9 +2910,10 @@ provider identity.  Core binds its labels to the live frame at completion."
       (list :type 'token-usage :usage normalized))))
 
 (defun e-openai-codex--anchor-candidate-item
-    (response &optional prompt-layout-revision)
+    (response &optional prompt-layout-revision reasoning-identity)
   "Return provider anchor candidate item from completed RESPONSE.
-PROMPT-LAYOUT-REVISION records the request layout carried by the response."
+PROMPT-LAYOUT-REVISION records the request layout carried by the response;
+REASONING-IDENTITY fences the effective effort and summary pair."
   (when-let ((response-id (and (consp response)
                                (plist-get response :id))))
     (when (stringp response-id)
@@ -2819,7 +2923,9 @@ PROMPT-LAYOUT-REVISION records the request layout carried by the response."
             (append
              (list :response-id response-id)
              (when prompt-layout-revision
-               (list :prompt-layout-revision prompt-layout-revision)))))))
+               (list :prompt-layout-revision prompt-layout-revision))
+             (when reasoning-identity
+               (list :reasoning-identity reasoning-identity)))))))
 
 (defun e-openai-codex--json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a JSON error response."
@@ -2981,9 +3087,10 @@ WIRE-API identifies the expected OpenAI streaming protocol."
      (t nil))))
 
 (defun e-openai-codex-parse-stream
-    (stream-text &optional prompt-layout-revision)
+    (stream-text &optional prompt-layout-revision reasoning-identity)
   "Parse Codex Responses STREAM-TEXT into backend-neutral items.
-PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
+PROMPT-LAYOUT-REVISION and REASONING-IDENTITY are stored on emitted
+continuation anchors."
   (e-openai-codex--append-raw-response stream-text)
   (let ((items nil)
         (event-summaries nil)
@@ -3026,7 +3133,8 @@ PROMPT-LAYOUT-REVISION is stored on emitted continuation anchors."
                        (anchor-candidate-item
                         (when completed-event-p
                           (e-openai-codex--anchor-candidate-item
-                           response prompt-layout-revision)))
+                           response prompt-layout-revision
+                           reasoning-identity)))
                        (usage-item
                         (when completed-event-p
                           (e-openai-codex--usage-item
@@ -3265,6 +3373,15 @@ OpenAI request and backend-neutral context."
                         effective-options
                         :responses-context-layout
                         (plist-get profile :responses-context-layout)))
+                 ;; Responses always carries a summary choice.  Materialize
+                 ;; the profile value here for direct adapter callers while
+                 ;; preserving a caller-provided request override.
+                 (unless (plist-member effective-options :reasoning-summary)
+                   (setq effective-options
+                         (plist-put
+                          effective-options
+                          :reasoning-summary
+                          (e-openai--profile-reasoning-summary profile))))
                  ;; Direct adapter callers do not pass through the harness
                  ;; capability projection.  Materialize the profile's
                  ;; semantic delivery contract here so the input layout is
@@ -3299,6 +3416,9 @@ OpenAI request and backend-neutral context."
                                 profile
                                 (plist-get effective-options :model))))
                  (cl-remf effective-options :prompt-cache-retention)))
+            (reasoning-identity
+             (when (eq wire-api 'responses)
+               (e-openai-codex--reasoning-identity effective-options)))
             (body-data
              (e-openai--profile-call
               'openai.request-body
@@ -3370,6 +3490,7 @@ OpenAI request and backend-neutral context."
              :websocket-idle-close-seconds websocket-idle-close-seconds
              :prompt-layout-revision
              (plist-get metadata :openai-prompt-layout-revision)
+             :reasoning-identity reasoning-identity
              :session-id session-id
              :url url
              :headers headers
@@ -3448,7 +3569,8 @@ OpenAI request and backend-neutral context."
                 ('responses
                  (e-openai-codex-parse-stream
                   body
-                  (plist-get context :prompt-layout-revision)))
+                  (plist-get context :prompt-layout-revision)
+                  (plist-get context :reasoning-identity)))
                 ('chat-completion
                  (e-openai-chat-completion-parse-stream body))))
       (json-error (setq parse-error err)))
@@ -3727,6 +3849,8 @@ default when turn options do not include `:model'.  The provider profile's
                     :request-metadata (websocket-request-metadata context)
                     :prompt-layout-revision
                     (plist-get context :prompt-layout-revision)
+                    :reasoning-identity
+                    (plist-get context :reasoning-identity)
                     :idle-close-seconds
                     (plist-get context :websocket-idle-close-seconds)
                     :on-item on-item
@@ -3813,6 +3937,8 @@ default when turn options do not include `:model'.  The provider profile's
                       :request-metadata (websocket-request-metadata context)
                       :prompt-layout-revision
                       (plist-get context :prompt-layout-revision)
+                      :reasoning-identity
+                      (plist-get context :reasoning-identity)
                       :idle-close-seconds
                       (plist-get context :websocket-idle-close-seconds)
                       :on-item on-item

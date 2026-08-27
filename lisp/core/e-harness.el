@@ -1322,7 +1322,7 @@ board activity message unpublishable."
 (defun e-harness--provider-diagnostics-activity-projection (diagnostics)
   "Return named scalar provider DIAGNOSTICS safe for durable activity."
   (let (projected)
-    (dolist (key '(:model :reasoning-effort :effort :response-store
+    (dolist (key '(:model :reasoning-effort :reasoning-summary :effort :response-store
                    :prompt-cache-key-present :prompt-cache-retention-present
                    :prompt-cache-mode :prompt-layout-revision
                    :provider-continuation :previous-response-id-present
@@ -3551,9 +3551,15 @@ provided the carrier option itself."
                     (secure-hash 'sha256 (prin1-to-string tool))))
             (plist-get options :tools))
            :reasoning
-           (list :reasoning (plist-get options :reasoning)
-                 :reasoning-effort (plist-get options :reasoning-effort)
-                 :effort (plist-get options :effort))
+           (let ((reasoning
+                  (list :reasoning (plist-get options :reasoning)
+                        :reasoning-effort (plist-get options :reasoning-effort)
+                        :effort (plist-get options :effort))))
+             (when (plist-member options :reasoning-summary)
+               (setq reasoning
+                     (plist-put reasoning :reasoning-summary
+                                (plist-get options :reasoning-summary))))
+             reasoning)
            :provider-options
            (list :instructions (plist-get options :instructions)
                  :max-tokens (plist-get options :max-tokens)
