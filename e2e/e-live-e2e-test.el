@@ -84,6 +84,140 @@ never returned or recorded here."
       '("responses-websocket" . "e-openai-codex--websocket-request-start")
     '("responses-http" . "e-openai-codex--http-request-start")))
 
+(defun e-live-e2e--metadata-value (metadata key)
+  "Return (PRESENT VALUE) for KEY in request METADATA or its diagnostics."
+  (let ((diagnostics (plist-get metadata :diagnostics)))
+    (cond
+     ((plist-member metadata key)
+      (list t (plist-get metadata key)))
+     ((plist-member diagnostics key)
+      (list t (plist-get diagnostics key)))
+     (t (list nil nil)))))
+
+(defun e-live-e2e--identity-url (url)
+  "Return URL without query/fragment material, or nil when URL is absent."
+  (when (stringp url)
+    (car (split-string url "[?#]" t))))
+
+(defun e-live-e2e--identity-base-url (endpoint)
+  "Return the base identity for Responses ENDPOINT."
+  (when-let ((endpoint (e-live-e2e--identity-url endpoint)))
+    (let ((base
+           (replace-regexp-in-string
+            "/responses\\(?:/[^/?#]+\\)?\\'" "" endpoint)))
+      ;; The adapter uses the WebSocket scheme for the wire endpoint while a
+      ;; profile's base URL is scheme-neutral.  Compare their HTTP identities,
+      ;; but retain the exact endpoint separately in the evidence record.
+      (replace-regexp-in-string
+       "\\`wss://" "https://"
+       (replace-regexp-in-string "\\`ws://" "http://"
+                                (replace-regexp-in-string "/+\\'" "" base))))))
+
+(defun e-live-e2e--identity-transport (value)
+  "Normalize captured transport VALUE to a Responses transport label."
+  (let ((value (downcase (format "%s" value))))
+    (cond
+     ((member value '("websocket" "responses-websocket"))
+      "responses-websocket")
+     ((member value '("http" "responses-http" "url-retrieve"
+                      "sync-wrapper" "injected-request-function"))
+      "responses-http")
+     (t nil))))
+
+(defun e-live-e2e--captured-request-identity
+    (profile body metadata fallback-model)
+  "Return the effective identity of captured Responses BODY and METADATA.
+The body and actual request metadata are authoritative.  Profile values only
+fill fields that the wire/adapter legitimately leaves implicit, so a record
+cannot silently report a configured identity different from the request that
+crossed the native requester."
+  (let* ((metadata (or metadata nil))
+         (transport-value
+          (or (and (plist-member metadata :transport)
+                   (plist-get metadata :transport))
+              (cadr (e-live-e2e--metadata-value metadata
+                                                :responses-transport))))
+         (profile-transport (plist-get profile :responses-transport))
+         (transport (or (e-live-e2e--identity-transport transport-value)
+                        (e-live-e2e--identity-transport profile-transport)
+                        ;; Responses profiles default to HTTP when transport
+                        ;; is omitted; captured metadata still wins above.
+                        "responses-http"))
+         (requester-value
+          (or (cadr (e-live-e2e--metadata-value metadata :native-requester))
+              (cadr (e-live-e2e--metadata-value metadata :requester))))
+         (requester
+          (or (and requester-value (format "%s" requester-value))
+              (if (equal transport "responses-websocket")
+                  "e-openai-codex--websocket-request-start"
+                (when (equal transport "responses-http")
+                  "e-openai-codex--http-request-start"))))
+         (endpoint-value
+          (cadr (e-live-e2e--metadata-value metadata :url)))
+         (endpoint (or (e-live-e2e--identity-url endpoint-value)
+                       (e-live-e2e--identity-url
+                        (plist-get profile :base-url))))
+         (endpoint-captured-p (stringp (e-live-e2e--identity-url endpoint-value)))
+         (metadata-model (e-live-e2e--metadata-value metadata :model))
+         (model-captured-p
+          (or (plist-member body :model) (car metadata-model)))
+         (model
+          (cond
+           ((plist-member body :model) (plist-get body :model))
+           ((car metadata-model) (cadr metadata-model))
+           (t fallback-model)))
+         (store
+          (cond
+           ((plist-member body :store)
+            (list t (plist-get body :store) 'wire))
+           ((car (e-live-e2e--metadata-value metadata :response-store))
+            (let ((value (e-live-e2e--metadata-value metadata :response-store)))
+              (list t (cadr value) 'metadata)))
+           ((and (equal transport "responses-websocket"))
+            ;; WebSocket Responses stores the response implicitly when the
+            ;; wire omits `store'; this is the adapter's documented default.
+            (list t t 'implicit-websocket))
+           (t (list nil nil nil)))))
+    (list :endpoint endpoint
+          :endpoint-captured-p endpoint-captured-p
+          :base-url (e-live-e2e--identity-base-url endpoint)
+          :model model
+          :model-captured-p model-captured-p
+          :store-present (car store)
+          :store (cadr store)
+          :store-source (caddr store)
+          :transport transport
+          :native-requester requester)))
+
+(defun e-live-e2e--identity-mismatches (profile identities)
+  "Return bounded identity mismatches in PROFILE and captured IDENTITIES."
+  (let (mismatches)
+    (cl-loop for identity in identities
+             for index from 1
+             do (dolist (spec '((:base-url :base-url)
+                                (:default-model :model)
+                                (:model :model)
+                                (:response-store :store)
+                                (:responses-transport :transport)))
+                  (let ((declared-key (car spec))
+                        (effective-key (cadr spec)))
+                    (when (and (plist-member profile declared-key)
+                               (not (equal
+                                     (if (eq effective-key :base-url)
+                                         (e-live-e2e--identity-base-url
+                                          (plist-get profile declared-key))
+                                       (if (eq effective-key :transport)
+                                           (e-live-e2e--identity-transport
+                                            (plist-get profile declared-key))
+                                         (plist-get profile declared-key)))
+                                     (plist-get identity effective-key))))
+                      (push (list :request-index index
+                                  :field effective-key
+                                  :declared (plist-get profile declared-key)
+                                  :effective (plist-get identity effective-key))
+                            mismatches)))))
+    (nreverse mismatches)))
+
 (defun e-live-e2e--cache-scenario-timeout ()
   "Return the predeclared total bound for a cache scenario."
   (e-live-e2e--positive-number-env
@@ -375,18 +509,98 @@ unavailable."
          (request-metadata (or request-metadata nil))
          (diagnostics
           (mapcar #'e-live-e2e--request-diagnostics request-metadata))
-         (responses-identity (e-live-e2e--responses-identity profile))
-         (websocket-p
-          (equal (cdr responses-identity)
-                 "e-openai-codex--websocket-request-start"))
+         (identities
+          (cl-loop for body in request-bodies
+                   for index from 1
+                   collect
+                   (e-live-e2e--captured-request-identity
+                    profile body (nth (1- index) request-metadata) model)))
+         (identity-fields '(:base-url :model :store :transport
+                            :native-requester))
+         (identity-complete-p
+          (and identities
+               (cl-every
+                (lambda (identity)
+                  (and (cl-every (lambda (field)
+                                   (plist-get identity field))
+                                 identity-fields)
+                       ;; A declared/profile URL is useful context, but it
+                       ;; cannot make a body-only partial capture complete.
+                       (plist-get identity :endpoint-captured-p)
+                       ;; Likewise, the caller's expected model is not wire
+                       ;; evidence when both body and metadata omit it.
+                       (plist-get identity :model-captured-p)
+                       (plist-get identity :store-present)))
+                identities)))
+         (identity-drift
+          (when (and identity-complete-p (cdr identities))
+            (let ((first (car identities)))
+              (cl-loop for identity in (cdr identities)
+                       for index from 2
+                       append
+                       (cl-loop for field in identity-fields
+                                unless (equal (plist-get first field)
+                                              (plist-get identity field))
+                                collect (list :request-index index
+                                              :field field
+                                              :first (plist-get first field)
+                                              :effective (plist-get identity field)))))))
+         (declaration-mismatches
+          (and identities
+               (e-live-e2e--identity-mismatches profile identities)))
+         (identity-mismatches (append identity-drift declaration-mismatches))
+         (identity-result
+          (cond
+           ((not identity-complete-p) "unavailable")
+           (identity-mismatches "invalid")
+           (t "pass")))
+         (first-identity (car identities))
+         (effective-base-url
+          (or (plist-get first-identity :base-url) "unavailable"))
+         (effective-endpoint
+          (or (plist-get first-identity :endpoint) "unavailable"))
+         (effective-model
+          (or (plist-get first-identity :model) "unavailable"))
+         (effective-store
+          (and (plist-get first-identity :store-present)
+               (format "%s" (plist-get first-identity :store))))
+         (effective-transport
+          (or (plist-get first-identity :transport) "unavailable"))
+         (effective-requester
+          (or (plist-get first-identity :native-requester) "unavailable"))
          (shapes
           (cl-loop for body in request-bodies
                    for index from 1
-                   for metadata = (nth (1- index) diagnostics)
+                   for metadata =
+                   (e-live-e2e--request-diagnostics
+                    (nth (1- index) request-metadata))
+                   for identity = (nth (1- index) identities)
+                   for websocket-p
+                   = (equal (plist-get identity :transport)
+                            "responses-websocket")
                    for shape = (e-live-e2e--request-shape body)
                    collect
                    (append shape
                            (list :request-index index
+                                 :effective-endpoint
+                                 (or (plist-get identity :endpoint)
+                                     "unavailable")
+                                 :effective-base-url
+                                 (or (plist-get identity :base-url)
+                                     "unavailable")
+                                 :effective-model
+                                 (or (plist-get identity :model)
+                                     "unavailable")
+                                 :effective-store-mode
+                                 (and (plist-get identity :store-present)
+                                      (format "%s"
+                                              (plist-get identity :store)))
+                                 :effective-transport
+                                 (or (plist-get identity :transport)
+                                     "unavailable")
+                                 :effective-native-requester
+                                 (or (plist-get identity :native-requester)
+                                     "unavailable")
                                  :connection-id
                                  (and websocket-p
                                       (plist-get metadata
@@ -406,11 +620,18 @@ unavailable."
                                  :prompt-layout-revision
                                  (plist-get metadata :prompt-layout-revision)))))
          (connection-ids
-          (when websocket-p
+          (when (cl-some (lambda (identity)
+                          (equal (plist-get identity :transport)
+                                 "responses-websocket"))
+                        identities)
             (delete-dups
-             (delq nil (mapcar (lambda (metadata)
-                                 (plist-get metadata :websocket-connection-id))
-                               diagnostics)))))
+             (delq nil
+                   (cl-loop for identity in identities
+                            for metadata in diagnostics
+                            when (equal (plist-get identity :transport)
+                                        "responses-websocket")
+                            collect (plist-get metadata
+                                                :websocket-connection-id))))))
          (input-token-values
           (delq nil (mapcar (lambda (payload)
                               (and (numberp (plist-get payload :input-tokens))
@@ -431,26 +652,43 @@ unavailable."
                               t))
          (profile-name (or (plist-get profile :name)
                            (format "%s" provider)))
-         (base-url
-          (or (plist-get profile :base-url)
-              (plist-get (car request-metadata) :url)
-              "unavailable"))
          (prompt-layout-revision
           (or (seq-some (lambda (metadata)
                           (plist-get metadata :prompt-layout-revision))
                         diagnostics)
               "unavailable"))
-         (elapsed (and started-at ended-at (- ended-at started-at))))
+         (elapsed (and started-at ended-at (- ended-at started-at)))
+         (scenario-result (or result "unavailable"))
+         (record-result
+          (if (and (equal scenario-result "pass")
+                   (not (equal identity-result "pass")))
+              (if (equal identity-result "invalid")
+                  "identity-invalid"
+                "identity-unavailable")
+            scenario-result)))
     (list :evidence-schema-revision e-live-e2e--external-evidence-schema-revision
           :scenario (format "%s" scenario)
           :provider-id (format "%s" provider)
           :profile-id profile-name
-          :base-url-identity base-url
-          :transport (car responses-identity)
-          :store-mode (format "%s" (plist-get profile :response-store))
-          :native-requester (cdr responses-identity)
-          :model-id (or model (plist-get (car request-bodies) :model)
-                        "unavailable")
+          :base-url-identity effective-base-url
+          :endpoint-identity effective-endpoint
+          :transport effective-transport
+          :store-mode (or effective-store "unavailable")
+          :native-requester effective-requester
+          :model-id effective-model
+          :declared-base-url (or (plist-get profile :base-url)
+                                 "unavailable")
+          :declared-model
+          (or (plist-get profile :model)
+              (plist-get profile :default-model)
+              "unavailable")
+          :declared-store-mode
+          (if (plist-member profile :response-store)
+              (format "%s" (plist-get profile :response-store))
+            "unavailable")
+          :identity-result identity-result
+          :identity-mismatches identity-mismatches
+          :scenario-result scenario-result
           :prompt-layout-revision (format "%S" prompt-layout-revision)
           :prompt-cache-key-derivation-revision
           (format "e-harness-prompt-cache-key-%s"
@@ -472,7 +710,7 @@ unavailable."
           :elapsed-seconds elapsed
           :semantic-result (or semantic-result "unavailable")
           :cache-result (or cache-result "unavailable")
-          :result (or result "unavailable"))))
+          :result record-result)))
 
 (defun e-live-e2e--report-external-evidence (record)
   "Emit one machine-readable bounded external evidence RECORD."
@@ -915,6 +1153,153 @@ separate in that record."
         (should (plist-member shape :connection-id))
         (should-not (plist-get shape :connection-id)))
       (should-not (string-match-p "private captured content" encoded)))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-uses-captured-http-and-websocket-identity ()
+  "Captured endpoint/model/store identity wins over omitted profile settings."
+  (dolist (case
+           '((http url-retrieve "https://backend.example/v1/responses"
+                   "wire-http-model" :json-false
+                   "responses-http"
+                   "e-openai-codex--http-request-start")
+             (websocket websocket "wss://backend.example/v1/responses"
+                         "wire-websocket-model" t
+                         "responses-websocket"
+                         "e-openai-codex--websocket-request-start")))
+    (pcase-let ((`(,profile-transport ,native-transport ,endpoint ,wire-model
+                     ,wire-store ,transport ,requester)
+                  case))
+      (let* ((record
+              (e-live-e2e--external-evidence-record
+               :scenario 'captured-identity
+               :provider 'configured-provider
+               :profile (list :name "Configured Responses"
+                              :wire-api 'responses
+                              :responses-transport profile-transport
+                              :base-url "https://backend.example/v1/")
+               :model "caller-default-model"
+               :request-bodies
+               (list (list :model wire-model
+                           :input []))
+               :request-metadata
+               (list (list :url endpoint
+                           :transport native-transport
+                           :diagnostics
+                           (list :model wire-model
+                                 :response-store wire-store)))
+               :usage-payloads '((:input-tokens 10
+                                  :cached-input-tokens 4))
+               :timeout 120.0
+               :started-at 100.0
+               :ended-at 100.5
+               :semantic-result "pass"
+               :cache-result "warm"
+               :result "pass")))
+        (should (equal (plist-get record :identity-result) "pass"))
+        (should (equal (plist-get record :result) "pass"))
+        (should (equal (plist-get record :endpoint-identity) endpoint))
+        (should (equal (plist-get record :base-url-identity)
+                       "https://backend.example/v1"))
+        (should (equal (plist-get record :model-id) wire-model))
+        (should (equal (plist-get record :store-mode)
+                       (format "%s" wire-store)))
+        (should (equal (plist-get record :transport) transport))
+        (should (equal (plist-get record :native-requester) requester))))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-does-not-promote-uncaptured-defaults ()
+  "Profile URL/store/model defaults do not complete a partial capture."
+  (let ((record
+         (e-live-e2e--external-evidence-record
+          :scenario 'partial-identity
+          :provider 'configured-provider
+          :profile '(:name "Configured Responses"
+                     :wire-api responses
+                     :responses-transport http
+                     :base-url "https://backend.example/v1/"
+                     :default-model "declared-model"
+                     :response-store :json-false)
+          :model "caller-model"
+          :request-bodies '((:input []))
+          :request-metadata
+          '((:url "https://backend.example/v1/responses"
+             :transport url-retrieve))
+          :semantic-result "pass"
+          :cache-result "warm"
+          :result "pass")))
+    (should (equal (plist-get record :identity-result) "unavailable"))
+    (should (equal (plist-get record :result) "identity-unavailable"))
+    (should (equal (plist-get record :model-id) "caller-model"))
+    (should (equal (plist-get record :store-mode) "unavailable"))
+    (should (equal (plist-get record :base-url-identity)
+                   "https://backend.example/v1"))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-rejects-declared-identity-mismatch ()
+  "A profile declaration cannot make a different captured request pass."
+  (let ((record
+         (e-live-e2e--external-evidence-record
+          :scenario 'declared-identity-mismatch
+          :provider 'configured-provider
+          :profile '(:name "Declared profile"
+                     :wire-api responses
+                     :responses-transport http
+                     :base-url "https://declared.example/v1"
+                     :default-model "declared-model")
+          :request-bodies
+          '((:model "effective-model" :store :json-false :input []))
+          :request-metadata
+          '((:url "https://effective.example/v1/responses"
+             :transport websocket
+             :diagnostics (:response-store :json-false)))
+          :timeout 120.0
+          :started-at 100.0
+          :ended-at 100.5
+          :semantic-result "pass"
+          :cache-result "warm"
+          :result "pass")))
+    (should (equal (plist-get record :identity-result) "invalid"))
+    (should (equal (plist-get record :result) "identity-invalid"))
+    (should (equal (plist-get record :scenario-result) "pass"))
+    (should (equal (plist-get record :base-url-identity)
+                   "https://effective.example/v1"))
+    (should (equal (plist-get record :model-id) "effective-model"))
+    (should (equal (plist-get record :transport) "responses-websocket"))
+    (should (seq-some (lambda (m) (eq (plist-get m :field) :base-url))
+                      (plist-get record :identity-mismatches)))
+    (should (seq-some (lambda (m) (eq (plist-get m :field) :model))
+                      (plist-get record :identity-mismatches)))
+    (should (seq-some (lambda (m) (eq (plist-get m :field) :transport))
+                      (plist-get record :identity-mismatches)))))
+
+(ert-deftest e-live-e2e-test-external-evidence-record-rejects-identity-drift ()
+  "A material identity change in a later captured request is not cache proof."
+  (let ((record
+         (e-live-e2e--external-evidence-record
+          :scenario 'identity-drift
+          :provider 'configured-provider
+          :profile '(:name "Configured Responses"
+                     :wire-api responses
+                     :responses-transport http)
+          :model "fallback-model"
+          :request-bodies
+          '((:model "wire-model" :store :json-false :input [])
+            (:model "changed-model" :store :json-false :input []))
+          :request-metadata
+          '((:url "https://backend.example/v1/responses"
+             :transport url-retrieve)
+            (:url "https://backend.example/v1/responses"
+             :transport url-retrieve))
+          :timeout 120.0
+          :started-at 100.0
+          :ended-at 100.5
+          :semantic-result "pass"
+          :cache-result "warm"
+          :result "pass")))
+    (should (equal (plist-get record :request-count) 2))
+    (should (equal (plist-get record :identity-result) "invalid"))
+    (should (equal (plist-get record :result) "identity-invalid"))
+    (should (seq-some (lambda (m)
+                        (and (= (plist-get m :request-index) 2)
+                             (eq (plist-get m :field) :model)))
+                      (plist-get record :identity-mismatches)))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-classifies-injected-failures ()
   "The shared finalizer records failures before preserving their outcome."
