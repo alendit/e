@@ -5266,7 +5266,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "Partition every presented source label exactly once: use keep for exact retention, summaries for durable replacements, and drop for every other source."))
+      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
@@ -5385,6 +5385,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    (properties (plist-get parameters :properties))
                    (drop (plist-get properties :drop)))
               (should body)
+              (should
+               (equal
+                (plist-get tool :description)
+                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."))
               (should (equal (append (plist-get parameters :required) nil)
                              '("keep" "summaries" "drop")))
               (should (eq (plist-get parameters :additionalProperties)

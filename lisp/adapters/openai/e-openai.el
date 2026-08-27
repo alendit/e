@@ -1634,7 +1634,7 @@ retained response already carries the stable segment and its earlier marker."
    :type "function"
    :name "context-curate"
    :description
-   "Partition every presented source label exactly once: use keep for exact retention, summaries for durable replacements, and drop for every other source."
+   "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."
    :parameters
    (list
     :type "object"

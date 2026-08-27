@@ -791,7 +791,7 @@
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v3"))
+                   "context-curate-v4"))
     (should (equal (plist-get first :presentation-revision)
                    "context-curation-presentation-v2"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))

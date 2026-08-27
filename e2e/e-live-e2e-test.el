@@ -774,6 +774,58 @@ call must have exactly one matching empty output in causal order."
          (integerp output-index)
          (< call-index output-index))))
 
+(defconst e-live-e2e--context-curation-description
+  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."
+  "Expected lifecycle affordance in the reserved curation carrier.")
+
+(defun e-live-e2e--context-curation-carrier-p (body)
+  "Return non-nil when BODY carries the exact curation schema and affordance."
+  (seq-some
+   (lambda (tool)
+     (let* ((parameters (plist-get tool :parameters))
+            (properties (plist-get parameters :properties))
+            (keep (plist-get properties :keep))
+            (summaries (plist-get properties :summaries))
+            (summary-item (plist-get summaries :items))
+            (summary-properties (plist-get summary-item :properties))
+            (sources (plist-get summary-properties :sources))
+            (text (plist-get summary-properties :text))
+            (drop (plist-get properties :drop))
+            (keys (cl-loop for (key _value) on properties by #'cddr
+                           collect key)))
+       (and (equal (plist-get tool :type) "function")
+            (equal (plist-get tool :name) "context-curate")
+            (equal (plist-get tool :description)
+                   e-live-e2e--context-curation-description)
+            (equal (plist-get parameters :type) "object")
+            (eq (plist-get parameters :additionalProperties) :json-false)
+            (equal (append (plist-get parameters :required) nil)
+                   '("keep" "summaries" "drop"))
+            (equal (sort (copy-sequence keys)
+                         (lambda (left right)
+                           (string< (symbol-name left)
+                                    (symbol-name right))))
+                   '(:drop :keep :summaries))
+            (equal (plist-get keep :type) "array")
+            (equal (plist-get keep :maxItems) 16)
+            (equal (plist-get summaries :type) "array")
+            (equal (plist-get summaries :maxItems) 16)
+            (equal (plist-get sources :type) "array")
+            (equal (plist-get sources :minItems) 1)
+            (equal (plist-get sources :maxItems) 16)
+            (equal (plist-get text :type) "string")
+            (equal (plist-get text :minLength) 1)
+            (equal (plist-get drop :type) "array")
+            (not (plist-member drop :maxItems)))))
+   (append (plist-get body :tools) nil)))
+
+(defun e-live-e2e--responses-reasoning-auto-p (body)
+  "Return non-nil when Responses BODY carries effective reasoning auto."
+  (let ((reasoning (plist-get body :reasoning)))
+    (and (listp reasoning)
+         (stringp (plist-get reasoning :effort))
+         (equal (plist-get reasoning :summary) "auto"))))
+
 (defun e-live-e2e--adoption-source-bearing-request-index (bodies sentinel)
   "Return the unique source-bearing continuation index in chronological BODIES.
 SENTINEL is the exact ordinary-tool result.  A candidate must be after an
@@ -1123,6 +1175,7 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
 (ert-deftest e-live-e2e-test-adoption-carrier-localizes-to-source-continuation ()
   "Only the linked ordinary result continuation can satisfy the carrier gate."
   (let* ((sentinel "ADOPTION-SOURCE")
+         (carrier-tool (e-openai-codex--context-curation-tool-definition))
          (call (list :type "function_call" :name "e2e_deterministic"
                      :call_id "ordinary-call"))
          (marker
@@ -1135,14 +1188,13 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
           (list :type "function_call_output"
                 :call_id "ordinary-call" :output sentinel))
          (initial
-          (list :tools (list (list :type "function"
-                                    :name "context-curate"))
+          (list :tools (list carrier-tool)
                 :input (list call)))
          (source-without-carrier
           (list :tools nil :input (list marker output)))
          (source-with-carrier
-          (list :tools (list (list :type "function"
-                                    :name "context-curate"))
+          (list :reasoning '(:effort "medium" :summary "auto")
+                :tools (list carrier-tool)
                 :input (list marker output)))
          (curation-call
           (list :type "function_call" :name "context-curate"
@@ -1151,12 +1203,10 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
           (list :type "function_call_output" :call_id "curation-call"
                 :output ""))
          (reserved-ack
-          (list :tools (list (list :type "function"
-                                    :name "context-curate"))
+          (list :tools (list carrier-tool)
                 :input (list call marker output curation-call curation-output)))
          (other-with-carrier
-          (list :tools (list (list :type "function"
-                                    :name "context-curate"))
+          (list :tools (list carrier-tool)
                 :input '((:type "message"
                           :content [(:type "input_text"
                                      :text "ordinary continuation")])))))
@@ -1177,9 +1227,13 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
               (list initial source-with-carrier other-with-carrier) sentinel)
              1))
     (should
-     (seq-some (lambda (tool)
-                 (equal (plist-get tool :name) "context-curate"))
-               (append (plist-get source-with-carrier :tools) nil)))
+     (and (e-live-e2e--context-curation-carrier-p source-with-carrier)
+          (e-live-e2e--responses-reasoning-auto-p source-with-carrier)))
+    (let ((wrong-affordance (copy-tree source-with-carrier)))
+      (plist-put (car (plist-get wrong-affordance :tools))
+                 :description
+                 "Partition every presented source label exactly once.")
+      (should-not (e-live-e2e--context-curation-carrier-p wrong-affordance)))
     ;; A later reserved acknowledgement replays the ordinary bundle, but is
     ;; not another source-bearing continuation.
     (should (equal
@@ -2317,7 +2371,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :prompt-layout-revision "layout-1"
             :prompt-cache-key-derivation-revision "cache-1"
             :scenario-prompt-identity "drop-prompt-1"
-            :affordance-revision "context-curate-v3"
+            :affordance-revision "context-curate-v4"
             :presentation-revision "context-curation-presentation-v2"
             :adoption-dependency-identity "drop-cone-1"
             :repository-revision "repo-1"
@@ -2575,7 +2629,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
            :failure-stage "none"
            :adoption-disposition "summary"
            :scenario-prompt-identity "prompt-hash"
-           :affordance-revision "context-curate-v2"
+           :affordance-revision "context-curate-v4"
            :presentation-revision "context-curation-presentation-v2"
            :adoption-gates
            '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
@@ -4284,11 +4338,6 @@ provider turn to settle without an implicit local deadline."
                     (require-gate (condition stage message)
                       (unless condition
                         (fail stage message)))
-                    (body-has-tool-p (body name)
-                      (seq-some
-                       (lambda (tool)
-                         (equal (format "%s" (plist-get tool :name)) name))
-                       (append (plist-get body :tools) nil)))
                     (input-has-role-p (input roles)
                       (seq-some
                        (lambda (item)
@@ -4359,8 +4408,10 @@ provider turn to settle without an implicit local deadline."
                               (nth source-bearing-index ordered-bodies)))
                         (carrier-present-p
                          (and source-bearing-body
-                              (body-has-tool-p source-bearing-body
-                                               "context-curate"))))
+                              (e-live-e2e--context-curation-carrier-p
+                               source-bearing-body)
+                              (e-live-e2e--responses-reasoning-auto-p
+                               source-bearing-body))))
                    (require-gate carrier-present-p
                                  "carrier"
                                  "The reserved curation carrier was absent from the source-bearing continuation."))
@@ -4623,47 +4674,7 @@ activity eviction.  Its evidence remains content-free; all source values and
                       (ert-fail message))
                     (require-gate (condition stage message)
                       (unless condition
-                        (fail stage message)))
-                    (body-has-tool-p (body name)
-                      (seq-some
-                       (lambda (tool)
-                         (equal (format "%s" (plist-get tool :name)) name))
-                       (append (plist-get body :tools) nil)))
-                    (reasoning-auto-p (body)
-                      (let ((reasoning (plist-get body :reasoning)))
-                        (and (listp reasoning)
-                             (stringp (plist-get reasoning :effort))
-                             (equal (plist-get reasoning :summary) "auto"))))
-                    (strict-carrier-p (body)
-                      (seq-some
-                       (lambda (tool)
-                         (let* ((parameters (plist-get tool :parameters))
-                                (properties (plist-get parameters :properties))
-                                (drop (plist-get properties :drop))
-                                (keys (cl-loop for (key _value)
-                                               on properties by #'cddr
-                                               collect key)))
-                           (and (equal (plist-get tool :name) "context-curate")
-                                (equal (plist-get tool :type) "function")
-                                (equal (plist-get parameters :type) "object")
-                                (eq (plist-get parameters :additionalProperties)
-                                    :json-false)
-                                (equal (plist-get parameters :required)
-                                       ["keep" "summaries" "drop"])
-                                (equal (sort (copy-sequence keys)
-                                             (lambda (left right)
-                                               (string< (symbol-name left)
-                                                        (symbol-name right))))
-                                       '(:drop :keep :summaries))
-                                (equal (plist-get (plist-get properties :keep)
-                                                  :maxItems)
-                                       16)
-                                (equal (plist-get
-                                        (plist-get properties :summaries)
-                                        :maxItems)
-                                       16)
-                                (not (plist-member drop :maxItems)))))
-                       (append (plist-get body :tools) nil))))
+                        (fail stage message))))
                  (require-gate
                   (null (e-live-e2e--adoption-prompt-violations prompt))
                   "prompt-control"
@@ -4744,8 +4755,10 @@ activity eviction.  Its evidence remains content-free; all source values and
                                            :test #'equal))))
                  (let ((carrier-present-p
                         (and source-bearing-body
-                             (strict-carrier-p source-bearing-body)
-                             (reasoning-auto-p source-bearing-body))))
+                             (e-live-e2e--context-curation-carrier-p
+                              source-bearing-body)
+                             (e-live-e2e--responses-reasoning-auto-p
+                              source-bearing-body))))
                    (require-gate carrier-present-p
                                  "carrier"
                                  "The source continuation lacked the strict carrier or reasoning auto."))
