@@ -100,3 +100,4 @@ Status values for coding agents:
 | 87 | Planned     | 87-sqlite-session-board-persistence/         | SQLite Session and Board Persistence                 |
 | 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addenda 3/4 |
 | 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
+| 90 | Planned     | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |

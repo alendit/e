@@ -1,0 +1,402 @@
+#+title: Tool Invocation Receipts and Temporary Details
+#+date: 2026-08-27
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Keep a compact, truthful mark of every completed model-facing tool invocation
+without retaining its arguments or result in ordinary model context.
+
+Every registered model-facing tool call carries a short model-authored stated
+purpose.  The harness removes that field before dispatch, records the complete
+provider-neutral invocation details in a session-scoped =tmp://= resource, and
+retains only a bounded receipt containing the tool, status, stated purpose, and
+details URI.
+
+This is a separate feature from [[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]].  Feature 88 decides which semantic
+observations remain in later context.  This feature records that an invocation
+happened even when its exact ephemeral tool bundle is no longer present.
+
+* User story
+
+An agent calls a search tool to investigate a question.  It uses the result but
+does not keep that exact result through context curation.  On a later turn, the
+agent still sees a compact receipt such as:
+
+#+begin_src emacs-lisp
+(:tool "search"
+ :status ok
+ :stated-purpose "Find the implementation that owns tool schema generation"
+ :details-uri "tmp://tool-invocations/turn-01/call-07.json"
+ :details-lifetime session-tmp)
+#+end_src
+
+The receipt is sufficient to remember that the investigation occurred.  If the
+details resource is still live, the agent can read the complete normalized
+arguments and semantic result without carrying either through every later
+request.
+
+* Terms
+
+- Tool arguments :: The operation-specific JSON object declared by an
+  individual tool and delivered to its handler.
+- Invocation envelope :: Harness-owned fields around one tool call, including
+  call identity, tool name, stated purpose, and operation-specific arguments.
+- Stated purpose :: A short model-authored description of why the model is
+  making the call.  It is narration, not trusted evidence or authorization.
+- Invocation details :: The complete provider-neutral executed arguments and
+  semantic tool result stored in a session-scoped temporary resource.
+- Invocation receipt :: The bounded durable mark retained after the full
+  invocation details leave ordinary model context.
+
+* Contract
+
+** Uniform stated purpose
+
+The backend-visible definition of every ordinary registered model-facing tool
+has one additional required string property named =stated_purpose=.
+
+The value must be nonblank, single-line, and at most 200 characters.  It should
+describe the immediate purpose of that particular call rather than restating
+the tool name.  For example, =Inspect the harness boundary that prepares tool
+calls= is useful; =Call read= is not.
+
+=stated_purpose= is reserved invocation-envelope metadata.  A tool may not
+declare its own property with that name.  Registration or definition generation
+must fail clearly on a collision.
+
+The registry retains each tool's original parameter schema.  A single central
+definition projection adds =stated_purpose= to the backend-visible schema,
+including schemas with =additionalProperties: false=.  No tool module, MCP
+wrapper, capability, or handler is edited merely to opt into this contract.
+
+The decorated definition is the canonical material tool schema for provider
+requests, schema fingerprints, and anchor compatibility.  Enabling this feature
+therefore invalidates anchors and cache evidence recorded against the old tool
+shape.  Existing schema-identity machinery must reject the old shape rather
+than adding a compatibility shim, and cache evidence must be refreshed after
+the new shape lands.
+
+When a provider returns a call, =e-tools= validates and extracts
+=stated_purpose= before operation argument coercion.  It stores the value as
+=:stated-purpose= on the provider-neutral call envelope, removes
+=:stated_purpose= from =:arguments=, and then coerces and validates the remaining
+arguments against the tool's original schema.  A handler therefore receives
+exactly the same operation-specific argument shape it received before this
+feature.
+
+Missing, blank, multiline, over-limit, or non-string stated purposes reject the
+call before handler dispatch through the normal invalid-tool-arguments path.
+The rejected call still produces a receipt and temporary detail resource when
+the harness can represent the parsed provider-neutral call safely.  Such a
+receipt omits =:stated-purpose= and carries a bounded =:purpose-status invalid=
+marker; it never invents a purpose for the model.
+
+This requirement applies to ordinary tools exposed through =e-tools-definitions=.
+It does not change provider-owned built-in tools, reserved control effects such
+as =context-curate=, shell-facing capability actions, or host-authored nested
+=e-tools-call= invocations.  A future provider or control surface must not claim
+uniform support until it has an equivalent envelope boundary.
+
+** Purpose is not policy
+
+The stated purpose is untrusted model-authored text.
+
+- Tool handlers must not branch on it.
+- Approval, sandbox, permission, capability, and destructive-action decisions
+  continue to use the tool identity, normalized arguments, active policy, and
+  execution context.
+- A stated purpose never substitutes for an approval explanation required by a
+  privileged execution path.
+- Hooks may render or audit it, but may not treat it as proof of intent.
+
+** Temporary invocation details
+
+The harness writes one versioned UTF-8 JSON resource for every completed
+ordinary model-facing invocation under:
+
+#+begin_example
+tmp://tool-invocations/<turn-id>/<tool-call-id>.json
+#+end_example
+
+Path components use safe stable IDs rather than argument or purpose text.  The
+resource uses the existing session =tmp://= owner and cleanup lifecycle; this
+feature does not introduce another resource scheme, external payload registry,
+or durable blob store.
+
+The version-1 document contains:
+
+#+begin_src json
+{
+  "version": 1,
+  "tool_call_id": "call-07",
+  "tool": "search",
+  "stated_purpose": "Find the implementation that owns tool schema generation",
+  "arguments": {"query": "e-tools-definitions"},
+  "result": {
+    "status": "ok",
+    "content": "...",
+    "metadata": {}
+  }
+}
+#+end_src
+
+=arguments= is the complete normalized value actually passed to the tool
+handler.  It is not the provider's raw JSON argument string.  The resource does
+not include provider response items, replay envelopes, wire acknowledgements,
+encrypted argument carriers, transport metadata, or backing objects.
+
+=result= is the complete provider-neutral semantic result after the tool and
+domain post-processing have settled but before presentation-only truncation.
+It includes status, content, and portable semantic metadata.  Process handles,
+buffers, callbacks, transport objects, and other nonportable implementation
+state are excluded even if they were temporarily adjacent to the result.
+
+For a call rejected before dispatch, the document omits =arguments= and records
+=received_arguments= as the complete parsed provider-neutral value plus the
+rejection result.  =received_arguments= contains only the operation-specific
+value after envelope extraction, not =stated_purpose=.  The document must not
+describe rejected input as executed arguments.
+
+The details writer is harness-owned.  It runs once at the common tool lifecycle
+boundary and receives the final call envelope and semantic result.  Individual
+tools do not generate descriptors or write resources.
+
+** Large-result integration
+
+The invocation-details resource becomes the canonical session-owned full copy
+for ordinary model-facing tool results.  The existing tool-output truncation
+path reuses that resource instead of writing a second full result under
+=tmp://tool-results/=.
+
+A truncated model-visible result may keep its bounded preview and notice, but
+its full-result link points to the invocation-details URI.  Existing generic
+=raw-result://= behavior remains available for result production outside an
+active harness session; it does not satisfy this feature's receipt guarantee.
+
+Archival must happen before presentation-only truncation and after all
+semantic result transformations.  Hook ordering alone must not make completeness
+accidental: the harness lifecycle exposes an explicit invocation-detail stage,
+and the truncation capability consumes the resulting reference.
+
+** Receipt record
+
+After invocation details are available, the harness emits one compact receipt:
+
+#+begin_src emacs-lisp
+(:tool-call-id "call-07"
+ :tool "search"
+ :status ok
+ :stated-purpose "Find the implementation that owns tool schema generation"
+ :details-uri "tmp://tool-invocations/turn-01/call-07.json"
+ :details-lifetime session-tmp)
+#+end_src
+
+The receipt contains no argument value, result content, result preview, provider
+replay item, or raw transport field.  Errors may add a bounded error class, but
+not an error body copied from the full result.
+
+The existing durable tool activity path owns receipt persistence.  Replace the
+current durable argument preview in =tool-started= with call identity and stated
+purpose.  Replace the result preview in =tool-finished= with the completed
+receipt fields rather than creating a second parallel audit ledger.
+Presentation code that needs details follows the URI.
+
+The activity record may outlive the =tmp://= resource.  The receipt therefore
+states its =session-tmp= detail lifetime and remains truthful after cleanup: it
+still records which tool completed, with what status and stated purpose, but the
+details URI may be unavailable after session reset, process restart, explicit
+cleanup, or expiry.  No durable record claims that temporary details are
+restart-safe.
+
+** Model-context projection
+
+A harness-owned context provider projects a bounded recent receipt list into
+ordinary model context.  This projection is separate from transcript messages
+and from Feature 88's exact or summarized curation items.
+
+The projection includes receipts whether or not Feature 88 later keeps,
+summarizes, or drops the matching exact tool source.  This uniform rule avoids
+coupling receipt existence to one curation implementation and guarantees that a
+dropped ephemeral bundle still leaves a mark.  Temporary duplication beside a
+still-visible exact result is acceptable because the receipt is small and has a
+different purpose.
+
+The projection is ordered by durable activity sequence and bounded by both
+entry count and canonical UTF-8 bytes.  It includes an omitted count when older
+receipts do not fit.  Exact initial limits must be selected from representative
+tool-heavy session measurements during implementation and recorded with the
+tests; this plan does not infer a threshold from one historical cache run.
+
+The receipt block is a late, changing context segment.  It must not be inserted
+into stable instructions or allowed to invalidate unrelated stable-prefix
+identity.  Compaction may summarize ordinary conversation, but the bounded
+receipt projection continues to derive from its activity authority.
+
+** Lifetime and cleanup
+
+Invocation detail resources use the existing session tmp lineage rules:
+
+- a normal session owns an isolated root;
+- a subagent lineage shares its configured tmp lineage root;
+- session reset and harness teardown perform existing owner-aware cleanup;
+- configured idle expiry may remove old roots;
+- process restart does not reconstruct temp resources from durable receipts.
+
+Explicit cleanup and expiry must never leave a live in-memory reference claiming
+that details are readable.  Projection checks current resource availability and
+renders an unavailable detail state when the URI no longer resolves.  It does
+not mutate or delete the durable receipt.
+
+* Ownership and dependency direction
+
+- =e-tools= owns backend-visible schema decoration, reserved-field validation,
+  extraction, and stripping before operation argument validation.
+- =e-harness= owns invocation-envelope lifecycle, complete-detail capture,
+  receipt emission, and bounded receipt context projection.
+- =e-session-tmp-resources= owns storage paths, URI resolution, isolation, and
+  cleanup.  It remains ignorant of tool semantics.
+- =e-session= owns the existing durable activity record and activity sequence.
+  It stores receipts but does not inspect their meaning.
+- =e-tool-output-truncation= consumes an already-created invocation-detail
+  reference for presentation truncation and no longer owns a duplicate full
+  session result file.
+- Backend adapters serialize the centrally decorated definitions and parse
+  ordinary calls.  They do not invent stated purposes or invocation receipts.
+- Feature 88 remains the owner of semantic observation lifetime.  It neither
+  stores invocation details nor decides whether a receipt exists.
+
+Dependencies continue from provider adapters and presentation capabilities
+toward stable =e-tools=, harness, session, and resource contracts.  Tool modules
+remain unaware of the new metadata.
+
+* Implementation slices
+
+** Slice 1: invocation envelope
+
+Add the reserved stated-purpose schema projection and call-envelope extraction
+in =e-tools=.  Cover empty schemas, strict object schemas, MCP-backed tools,
+schema collisions, invalid purposes, and the invariant that handlers receive
+only their declared arguments.
+
+** Slice 2: complete temporary details
+
+Add the versioned invocation-details codec and harness-owned write stage.  Store
+normalized executed arguments and complete semantic results through the
+existing session tmp API.  Cover success, tool error, rejected arguments,
+cancellation, timeout, nested result metadata, and nonportable metadata
+exclusion.
+
+** Slice 3: unify full-result storage
+
+Make tool-output truncation reuse the invocation-details reference.  Remove the
+duplicate session-owned =tmp://tool-results/= write path while preserving the
+generic non-session =raw-result://= fallback.  Verify that large results are
+complete in details and bounded in provider-visible output.
+
+** Slice 4: receipts and context
+
+Replace durable tool activity argument/result previews with compact receipt
+fields.  Add the bounded, late-frontier receipt context provider and resource
+liveness rendering.  Preserve activity ordering, checkpoint/reopen behavior,
+session resource projections, and presentation links.
+
+** Slice 5: lifetime integration and system proof
+
+Exercise a complete Feature 88 turn where an ordinary tool bundle is consumed
+and omitted by curation.  Prove that later context lacks the arguments and
+result, retains the compact receipt, and can read the complete details while the
+tmp resource is live.  Then clean the resource and prove the receipt remains
+truthful without claiming readable details.
+
+* Acceptance criteria
+
+- Every ordinary registered model-facing tool definition includes one required
+  bounded =stated_purpose= field without edits to individual tools.
+- A valid stated purpose reaches the provider-neutral call envelope and never
+  reaches the tool handler's operation arguments.
+- Purpose text cannot grant permission, bypass approval, or change tool policy.
+- A completed call has exactly one session-owned invocation-details resource
+  containing its complete normalized executed arguments and complete portable
+  semantic result.
+- No details resource contains provider replay items, raw wire arguments,
+  acknowledgements, encrypted carriers, or live backing objects.
+- A rejected call distinguishes received arguments from executed arguments.
+- Durable tool activity retains only the compact receipt and no argument or
+  result preview.
+- Tool-output truncation reuses the invocation-details resource and does not
+  write a second full session result.
+- Later ordinary context retains a bounded receipt after Feature 88 removes the
+  matching exact tool bundle.
+- Receipt projection is count- and byte-bounded, reports omitted entries, and
+  remains outside the stable prompt prefix.
+- Session reset, teardown, explicit cleanup, and expiry follow existing tmp
+  ownership rules.  A surviving receipt reports unavailable details rather than
+  implying restart-safe storage.
+- OpenAI and Anthropic adapter tests prove the decorated schema and round-trip
+  call shape; provider-specific code contains no receipt-generation policy.
+- Tool-schema identity tests prove that enabling =stated_purpose= invalidates an
+  older anchor and requires fresh cache evidence for the changed request shape.
+- Focused ERT, the Feature 88 credential-free E2E scenario, =eldev compile=,
+  and the relevant repository test suite pass outside the user's running Emacs.
+
+* Non-goals
+
+- Retaining full tool details durably or across process restart.
+- Treating model-authored purpose as trustworthy intent or approval rationale.
+- Adding a reason field to shell-facing actions, reserved control effects,
+  provider-owned built-in tools, or host-authored nested tool calls.
+- Recording provider raw JSON, replay envelopes, or transport objects.
+- Changing Feature 88 curation choices, provider continuation, or prompt-cache
+  policy.
+- Adding a new resource scheme, blob store, or tool-specific descriptor API.
+- Building a new detailed invocation UI beyond existing resource links.
+
+* Legacy removal
+
+- Remove durable tool-started argument previews.
+- Remove durable tool-finished result previews and their dedicated preview-byte
+  configuration when no independent consumer remains.
+- Remove the session-owned duplicate =tmp://tool-results/= full-result writer
+  after invocation details become its canonical replacement.
+- Remove tests whose only contract is persistence of argument/result previews;
+  replace them with receipt-only persistence and detail-resource assertions.
+
+* Design self-check
+
+1. If work stops after this feature, every tool invocation has useful bounded
+   provenance and inspectable temporary details without growing ordinary
+   context with full results.
+2. It moves toward explicit semantic context plus resource-backed details and
+   small durable audit records.
+3. The stable decisions are central schema decoration, handler isolation, and
+   receipt/detail separation.  Exact projection limits remain local and must be
+   selected from representative measurements.
+4. =e-tools= owns call shape, the harness owns invocation lifecycle, session tmp
+   owns temporary storage, and session activity owns durable receipts.
+5. Coupling decreases because individual tools and adapters do not implement
+   the feature.  The only new shared contract is the invocation envelope.
+6. Stable policy does not depend on a backend adapter, tool implementation,
+   presentation shell, or temp filesystem path.
+7. Filesystem writes and cleanup remain in the tmp resource adapter; core tool
+   argument policy stays side-effect free.
+8. Full details use the smallest useful lifetime: session tmp.  Only the compact
+   receipt is durable, and its URI lifetime is explicit.
+9. The added per-call work is one bounded schema field, one serialization, and
+   one local temp write.  Reusing the truncation resource prevents duplicate
+   large-result writes.  Tool-heavy benchmarks must measure the remaining cost.
+10. Stated purpose and receipts are real contracts with one meaning; tool
+    handlers are not forced to consume or simulate them.
+11. Existing ordinary tool arguments and handlers remain compatible.  Provider
+    built-ins and reserved effects are explicitly outside the first contract.
+12. Existing durable argument/result previews and duplicate session result files
+    can be removed.
+13. Invalid model fields use normal tool-argument errors.  Temp write, codec,
+    and cleanup failures surface at the harness/resource boundary rather than
+    being silently swallowed.
+14. Pure schema/envelope tests, codec tests, lifecycle tests, adapter tests, and
+    one Feature 88 E2E isolate failures to their owning component.
