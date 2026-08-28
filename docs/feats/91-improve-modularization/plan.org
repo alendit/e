@@ -1,0 +1,478 @@
+#+title: Improve Modularization
+#+date: 2026-08-28
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Make the physical Emacs Lisp modules reflect =e='s established semantic
+components so developers and coding agents can understand, change, test, and
+review one owner without loading unrelated responsibilities or depending on
+another component's private state.
+
+Preserve the existing macro architecture: the harness owns agent lifecycle,
+sessions own durable conversation state, capabilities own semantic behavior,
+layers package capabilities, backend adapters own provider behavior, and shells
+own presentation.  Improve the physical decomposition and the interfaces
+between those owners rather than introducing a new framework or changing
+product behavior.
+
+* Why now
+
+The conceptual architecture is stronger than the current source topology.
+Several established components are compressed into very large files, and some
+consumers extend them by reaching through private =--= symbols instead of a
+narrow owner-shaped interface.
+
+At the review baseline =986e3a8adc06=:
+
+- production Lisp contains 84,124 lines across 128 files;
+- the six largest production files contain 30,206 lines, about 36 percent of
+  production Lisp;
+- the six largest test files contain 39,892 of 92,837 test lines, about
+  43 percent of the test tree;
+- =e-chat.el= contains 10,687 lines and about 665 function or macro
+  definitions;
+- =e-org-canvas.el= references 38 distinct private =e-chat--*= symbols; and
+- =e-board-runtime.el= references 11 distinct private =e-harness--*= symbols
+  and installs two private harness callbacks.
+
+These counts prioritize review; they are not architectural proof by
+themselves.  The actionable defects are distinct change reasons hidden in one
+physical unit, private cross-component dependencies, misplaced semantic
+knowledge, and central dispatch that every variant must modify.
+
+The source and test monoliths also impose a practical agent cost.  A focused
+chat change may require navigating more than 22,000 source-and-test lines, while
+harness and OpenAI changes each span more than 10,000 lines across their main
+source and test files.
+
+* Current assessment
+
+** What is already good
+
+- Core, capability, layer, shell, and backend-adapter responsibilities are
+  conceptually distinct.
+- Capabilities, resources, hooks, tools, context providers, layers, shell
+  manifests, stores, and backend adapters are real extension seams with current
+  consumers.
+- Provider-specific auth, request mapping, streaming, retry, timeout, and
+  cancellation policy remain behind backend adapters.
+- =e-board= and =e-context-lifetime= contain substantial cohesive state-machine
+  and domain-model behavior; their length does not justify mechanical helper
+  extraction.
+- Feature 70 established behavioral separation between chat transcript and
+  composer state, even though that separation is not yet represented by
+  physical modules and public component APIs.
+
+** Confirmed modularization gaps
+
+1. =e-chat.el= owns surface/window composition, composer editing, context
+   references, transcript rendering, block navigation, activity rendering,
+   session replay, overview rows, and workspace unread presentation in one
+   feature.
+2. Org Canvas reuses chat presentation by subclassing chat modes, mutating
+   chat-private buffer state, and calling chat-private functions.  The intended
+   reusable composer and transcript components therefore do not have stable
+   consumer-shaped interfaces.
+3. =e-harness.el= combines capability/layer derivation, resource-operation tool
+   construction, activity projection and persistence, prompt queues, session
+   options, compaction, context lifetime, provider-anchor acceleration, and
+   top-level turn orchestration.
+4. =e-board-runtime.el= invokes private harness operations for attached prompt,
+   steering, follow-up, abort, activity, and final-output behavior.  It also
+   mutates private global adapter slots, making the boundary implicit and
+   process-global.
+5. =e-session.el= combines the in-memory aggregate, concrete feature metadata
+   vocabulary, record normalization and replay, checkpoints, JSONL/index I/O,
+   board journals, context records, and public session mutation/query APIs.
+6. =e-openai.el= combines profiles, auth, two wire APIs, two Responses
+   transports, request mapping, SSE parsing, diagnostics, provider compaction,
+   and harness construction.  =e-mcp.el= similarly combines helper-process and
+   HTTP transports with catalog, tool, resource, context, and capability
+   composition.
+7. =e-base-tools.el= combines the file resource/coherence/search owner with the
+   independent shell-process and streamed-output collector owner.
+8. Physical placement obscures some dependency direction.  Core modules load
+   the layer and shell registries from implementation-oriented directories,
+   and =e-chat-service= in core depends on the concrete
+   =e-chat-output-mode= capability.
+9. Test topology mirrors the largest production files, so production-only
+   extraction would leave the agent and review cost largely unchanged.
+
+* Principles
+
+- Split by cohesive semantic owner and independent change reason, not by line
+  range, function count, or an arbitrary maximum file size.
+- A retained large root requires a residual-topology inventory: responsibilities,
+  dependencies, state, transactions, callers, and tests, plus the causal
+  invariant that prevents each plausible complete private boundary.
+- Extract complete boundaries.  Do not create forwarding-only modules, shared
+  bags of helpers, type-only dumping grounds, or circular =require= graphs.
+- Keep one clear owner for every piece of mutable state.  Presentation modules
+  own their buffer-local state; harness and session subcomponents own explicit
+  runtime substate rather than sharing an unstructured plist.
+- Cross-component consumers call narrow non-private APIs.  A module may keep
+  =--= helpers private to its own feature, but another component must not depend
+  on them.
+- Preserve public commands and stable runtime contracts during behavior-neutral
+  extraction.  Remove obsolete private paths when their callers migrate; do
+  not add compatibility wrappers for internal APIs without a real requirement.
+- Keep dependencies pointing toward core/domain contracts.  Shells, layers,
+  adapters, and application services may depend on core; core must not depend
+  on a concrete shell, provider, or capability implementation.
+- Preserve live reloadability for shell, layer, default, and capability
+  modules.  Core record-shape changes may require a restart and must not acquire
+  compatibility shims solely to avoid that requirement.
+- Split owner-level tests with their production modules.  Keep composed tests
+  only for public interaction among owners, and do not freeze private
+  decomposition into integration assertions.
+- Measure load, hot-path, allocation, and test-runtime effects.  A source split
+  must not add repeated scans, copying, dispatch, or synchronous I/O.
+
+* Target module boundaries
+
+** Chat presentation
+
+Keep =e-chat.el= as the public shell facade and mode/command composition root.
+Move complete presentation owners behind it:
+
+- =e-chat-surface= owns transcript/composer window membership, activation,
+  fitting, split behavior, and surface-local state;
+- =e-chat-composer= owns editable input, submission extraction, inline
+  completion, and context-reference editing;
+- =e-chat-transcript= owns durable entry, structured block, navigation, and
+  transcript replay rendering;
+- =e-chat-activity= owns progress, reasoning/tool/action projection, transient
+  activity blocks, and redraw scheduling; and
+- =e-chat-overview= owns session rows, read markers, workspace unread state,
+  active-session previews, and overview commands.
+
+Each component exposes only the operations needed by =e-chat= and Org Canvas.
+Org Canvas must stop initializing chat-private registries and progress state.
+Its input pane may derive from a public composer mode and consume a public
+transcript/activity presenter, but it must own its canvas-specific state and
+commands.
+
+** Harness application services
+
+Keep =e-harness= as the application-service facade and lifecycle authority.
+Extract cohesive owners for:
+
+- effective capability/layer/resource/tool derivation;
+- durable activity projection and recording;
+- active-turn and prompt-queue state;
+- compaction and context-lifetime orchestration, including provider-neutral
+  anchor acceleration; and
+- top-level turn submission, settlement, abort, reset, and wait composition.
+
+Introduce a public attached-turn port shaped for =e-board-runtime=.  It covers
+attachment authorization, submit, steer, queue, abort, activity observation,
+and final assistant output without exposing harness-private functions or
+process-global callback variables.  It is not a generic dependency-injection
+framework.
+
+Subcomponents receive the smallest required owner or callback interface.  Do
+not move all harness internals into a shared =e-harness-internal= module that
+merely recreates the same coupling across more files.
+
+** Sessions and storage
+
+Separate the stable session aggregate and typed domain operations from record
+codec/replay, checkpoint policy, and physical storage.  Candidate owners are:
+
+- session aggregate, identity, path navigation, and semantic mutation;
+- durable record codecs and replay;
+- catalog/checkpoint projections; and
+- the session storage adapter.
+
+Do not implement a parallel decomposition that conflicts with Feature 87.
+Feature 87 owns the SQLite storage contracts, migration, and removal of JSONL,
+checkpoint, and index paths.  This feature supplies modularization acceptance
+for the resulting session boundary and may extract stable aggregate/codec code
+only when that work will survive the SQLite cutover.
+
+Concrete shell, subagent, task-queue, board-orchestration, and MCP state should
+use owner-shaped typed operations, capability state, or domain records rather
+than requiring every new feature to extend one central session metadata list.
+Keep schema registration deterministic and available before replay; do not add
+a load-order-sensitive plugin registry.
+
+** Backend and protocol adapters
+
+Keep =e-openai= as the public OpenAI-like backend facade.  Separate provider
+profiles/auth, Responses mapping, Chat Completions mapping, HTTP transport,
+WebSocket transport, stream decoding, provider compaction, and backend
+composition.  Wire and transport variants implement narrow contracts selected
+by the facade instead of adding branches throughout one file.
+
+Separate MCP client semantics from helper-process and HTTP transports, then
+keep capability/tool/resource/context composition in its own module.  Both
+transports must remain substitutable for the supported MCP operations without
+unsupported-operation stubs.
+
+Consider a shared cancellable URL-stream transport only after direct comparison
+of the OpenAI and Anthropic implementations proves a common contract.  Provider
+request shapes, auth, retries, timeouts, and response semantics remain adapter
+owned.
+
+** Base tools and secondary shells
+
+Split file/resource/coherence/search behavior from shell-process execution and
+the streamed bash-output collector.  Compose both into the existing base
+capability without changing its model-facing tools or resource semantics.
+
+After the chat presentation boundary exists, split Org Canvas session/canvas
+commands from its transient input/result presentation.  Do not create a second
+chat renderer or composer implementation.
+
+** Large cohesive roots
+
+Do not split =e-board=, =e-context-lifetime=, =e-loop=, =e-tools=, or =e-work=
+merely because they are large.  Re-evaluate them with residual topology after
+Feature 87 and Feature 88 settle.
+
+Plausible complete boundaries such as board observer cursors, pickup lifecycle,
+or routing classification may be extracted only when the new owner can preserve
+the aggregate's ordering, admission, commit, retry, and settlement invariants
+without duplicating board state or weakening atomic transitions.
+
+* Coordination with active features
+
+- Feature 87 owns SQLite session and board persistence.  Reuse its
+  =e-session-storage=, =e-board-storage=, and independent chat/participant
+  boundaries rather than creating competing ports.
+- Feature 88 is =In-review= and owns generational context semantics.  Do not
+  move its harness/session/context code until its exact accepted revision is
+  known; then extract without changing its behavioral contract.
+- Feature 90 is =In-progress= and currently changes tool, harness, session tmp,
+  activity, and context-projection behavior.  Do not begin an overlapping
+  harness/session extraction until its active slice is accepted or the operator
+  explicitly coordinates the overlap.
+- Feature 70 is complete and supplies the accepted transcript/composer
+  behavioral contract.  Its source and graphical tests are preservation
+  evidence for the chat physical decomposition.
+
+* Implementation slices
+
+Each slice is a coherent semantic commit, updates this plan's status evidence,
+splits matching owner tests, and leaves the project better than before even if
+later slices do not proceed.
+
+1. *Chat component API and physical extraction*
+   - Inventory every =e-chat= responsibility, buffer-local state owner, public
+     command, and external private-symbol consumer.
+   - Extract surface, composer, transcript, activity, and overview modules in
+     dependency order while retaining =e-chat= as the facade.
+   - Migrate Org Canvas, chat starter, debug, and canvas consumers off
+     =e-chat--*= symbols.
+   - Split =test/e-chat-test.el= by owner while retaining focused facade and
+     graphical composition coverage.
+   - Gate: no production file outside the chat component calls an
+     =e-chat--*= symbol, and Org Canvas no longer initializes chat-private
+     rendering state.
+
+2. *Harness/board attached-turn boundary*
+   - Inventory every private harness call and callback used by board runtime,
+     actions, defaults, and subagent layers.
+   - Introduce the smallest public owner-shaped harness operations required by
+     those consumers.
+   - Replace private global adapter mutation with an explicit lifecycle-owned
+     attachment contract.
+   - Gate: =e-board-runtime= calls no =e-harness--*= symbol and no module assigns
+     a harness-private callback variable.
+
+3. *Low-risk capability and protocol splits*
+   - Split base file/resource behavior from bash process/collector behavior.
+   - Split MCP transports from MCP capability composition.
+   - Preserve existing capability ids, tool schemas, resource methods, async
+     behavior, and focused tests.
+   - Gate: each transport and capability owner has an independent focused test
+     module, and the facade contains composition rather than transport bodies.
+
+4. *OpenAI adapter decomposition*
+   - Extract profile/auth, wire mapping, HTTP, WebSocket, decoding, compaction,
+     and composition owners behind the existing =e-openai= public facade.
+   - Keep provider-effective request metadata and diagnostics intact.
+   - Split =test/e-openai-test.el= along the same stable contracts.
+   - Gate: adding a new supported wire mapper or Responses transport requires a
+     new implementation plus one composition registration, not edits across
+     unrelated auth, parser, and transport code.
+
+5. *Harness internal owners*
+   - Start only after overlapping Feature 88 and Feature 90 work reaches an
+     accepted revision.
+   - Extract activity, queue, capability derivation, context runtime, and turn
+     orchestration through complete state-owning boundaries.
+   - Split =test/e-harness-test.el= by stable owner contract.
+   - Gate: =e-harness.el= is a readable composition facade, extracted modules
+     do not share an unstructured internal state bag, and hot-path measurements
+     show no unjustified regression.
+
+6. *Session/storage convergence*
+   - Execute with or after the Feature 87 storage slices rather than ahead of
+     their accepted contracts.
+   - Leave stable aggregate, codec/replay, and storage responsibilities in
+     separate modules with typed owner-shaped APIs.
+   - Remove obsolete JSONL/checkpoint/index modules when Feature 87 cuts over;
+     do not preserve them as runtime compatibility paths.
+   - Gate: session consumers do not call storage-private functions, concrete
+     feature state no longer expands a generic metadata bag without an owning
+     typed contract, and restart tests prove the accepted storage semantics.
+
+7. *Residual topology and documentation*
+   - Re-inventory every production file above 2,500 lines and every test file
+     above 4,000 lines as review-priority signals.
+   - For each retained large root, record the cohesive responsibilities and the
+     causal invariant preventing each plausible complete extraction.
+   - Update =docs/architecture.md= and repository maps to match actual physical
+     placement and dependency direction.
+   - Gate: no selected root retains an unexamined material responsibility and
+     the architecture document no longer describes conceptual boundaries that
+     are contradicted by imports or private consumers.
+
+* Test and verification strategy
+
+- Run focused ERT for each extracted owner before its old implementation is
+  removed.
+- Compare public command behavior, tool schemas, request bodies, durable record
+  shapes, and event ordering before and after extraction.
+- Run =eldev compile= with warnings treated as errors at each coherent slice.
+- Run the complete repository suite once per accepted package, not after every
+  mechanical move.
+- Use =bash e2e/run-graphical-tests.sh= for chat surface, composer, window,
+  viewport, focus, and Org Canvas behavior.  Capture isolated transition
+  artifacts for failures; do not inspect the user's live desktop.
+- Run current-config E2E only for the final composed presentation gate and only
+  against isolated state.
+- Measure package load time and the relevant harness/session/chat hot paths
+  before and after their slices.  Source modularization does not justify extra
+  runtime work.
+- Keep tests contract-shaped.  A different correct internal decomposition must
+  be able to pass owner tests without reproducing the old private call graph.
+
+* Acceptance criteria
+
+- The public architecture remains harness/core, capabilities/layers, adapters,
+  application services, and presentation shells with dependencies pointing
+  toward stable contracts.
+- Each selected production module has one cohesive responsibility and one
+  primary reason to change.
+- No shell or layer reaches into =e-chat--*=, =e-harness--*=, or
+  =e-session--*= symbols owned by another component.
+- Chat surface, composer, transcript, activity, and overview behavior have
+  explicit owners and focused tests.
+- Org Canvas reuses public presentation components without duplicating chat
+  state initialization or rendering policy.
+- Board runtime depends on a narrow public attached-turn contract rather than
+  harness-private functions and callback variables.
+- Harness activity, queue, context-runtime, and turn-orchestration state have
+  explicit owners; the facade does not remain a renamed god module.
+- Session aggregate, record codec/replay, and physical storage responsibilities
+  are distinct after Feature 87 convergence.
+- OpenAI wire APIs and transports, MCP transports, and base file/bash behavior
+  are independently testable behind their existing facades.
+- Source and test decomposition align; no extracted owner remains buried in a
+  monolithic mirror test file.
+- Every retained large root has a current residual-topology justification.
+- No compatibility wrapper, fallback path, generic plugin framework, or shared
+  helper module remains solely to make extraction easier.
+- Focused tests, compilation, relevant graphical tests, the complete batch
+  suite, and performance comparisons pass without changing the user's running
+  Emacs or live durable store.
+
+* Non-goals
+
+- No product feature, command redesign, visual redesign, provider behavior
+  change, persistence migration, or context-lifetime semantic change belongs in
+  a behavior-neutral extraction slice.
+- No arbitrary universal maximum file length.  File size is a navigation and
+  review signal; cohesive algorithms and state machines may remain large with
+  explicit evidence.
+- No one-function-per-file layout, types-only package, miscellaneous helper
+  library, service locator, dependency-injection container, or speculative
+  plugin system.
+- No public compatibility promise for existing private =--= symbols.
+- No duplicate chat renderer, composer, session store, board store, HTTP stack,
+  or transport abstraction.
+- No full E2E expansion beyond the composed behavior affected by a slice.
+- No automatic reload or restart of the user's running Emacs.
+
+* Legacy removal
+
+- Remove cross-component calls to =e-chat--*=, =e-harness--*=, and
+  =e-session--*= symbols when their public owner-shaped replacements land.
+- Remove =e-harness--attached-port-authorizer= and
+  =e-harness--attached-follow-up-publisher= after the attached-turn contract is
+  active.
+- Remove manual Org Canvas initialization of chat-private registries, progress,
+  block, focus, and status state.
+- Remove central transport branches that become facade composition over
+  independent OpenAI or MCP implementations.
+- Remove obsolete JSONL/checkpoint/index modules through Feature 87 rather than
+  retaining them as a second runtime path.
+- Remove tests whose only contract is the old file placement or private call
+  graph; retain and relocate their stable behavioral assertions.
+
+* Risks and mitigations
+
+- *Circular load dependencies*: define the owner contract before moving its
+  implementation, keep facade composition one-way, and verify fresh batch load
+  order after every slice.
+- *Shared mutable state disguised by extraction*: move state with its semantic
+  owner or introduce an explicit owned subrecord; do not pass a generic state
+  plist among modules.
+- *Behavior drift during large moves*: compare public outputs and event order,
+  use small semantic commits, and delete the old path in the same slice.
+- *Conflict with active features*: respect the Feature 87/88/90 sequencing
+  gates and rebaseline source ownership before each affected package.
+- *Slower runtime through extra abstraction*: keep composition direct and
+  measure load and hot paths; reject added scans, copies, timers, or synchronous
+  work without a first-principles requirement.
+- *Tests freeze the new decomposition*: assert public owner behavior and
+  composed contracts, not module filenames or internal forwarding calls.
+- *Cosmetic file-count success*: require private-consumer removal, dependency
+  correction, explicit state ownership, and residual-topology review in
+  addition to smaller source units.
+
+* Design self-check
+
+1. Each slice leaves a usable component boundary, fewer private dependencies,
+   and matching focused tests even if later slices stop.
+2. The feature moves toward the existing capability-first runtime with physical
+   modules that match semantic owners.
+3. Storage and context semantics are likely to change under Features 87 and 88,
+   so those decisions remain local to their owners and are sequenced after
+   acceptance.  Presentation and transport boundaries are already stable
+   enough to extract.
+4. Every target component has one named owner and primary change reason; the
+   facade owns composition rather than all implementation details.
+5. Coupling decreases by removing private cross-component calls and replacing
+   them with narrow consumer-shaped interfaces.
+6. Dependencies continue to point from shells, layers, adapters, and services
+   toward core/domain contracts; physical placement is corrected where it
+   currently obscures that direction.
+7. UI, filesystem, process, network, and durable-storage effects remain in
+   shells or adapters rather than moving into policy modules.
+8. Presentation state remains buffer-local, harness runtime state remains
+   process-local, and durable session/board state stays at the smallest correct
+   storage lifetime.
+9. The intended performance effect is neutral apart from cheaper agent and
+   maintainer navigation.  Any runtime regression must be measured and
+   justified from first principles.
+10. Chat components, the attached-turn port, wire mappers, transports, and
+    storage APIs are real current contracts.  Implementations must substitute
+    without narrowed preconditions or unsupported-operation errors.
+11. Preserve public commands and accepted durable formats until their owning
+    feature changes them.  Private APIs receive no compatibility shim without
+    a real caller requirement.
+12. Remove private bridges, manual state initialization, central variant
+    branches, obsolete storage paths, and mechanism-coupled tests as their
+    replacements land.
+13. Expected errors remain with the component that can decide them; extraction
+    must not add broad condition handling or swallow unexpected failures.
+14. Owner-level tests prove behavior independently, while focused integration
+    and graphical tests prove only the public composition among owners.
