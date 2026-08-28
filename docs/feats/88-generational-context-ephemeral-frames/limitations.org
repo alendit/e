@@ -4,18 +4,21 @@
 
 * Status
 
-In-review (repository-controlled Addendum 7 remediation; configured Responses
-HTTP v5 evidence pending; exact ChatGPT/WebSocket capability-unconfirmed).
+In-review (repository fixed point =9d5d1b07=; configured Responses HTTP v5
+evidence accepted at =bbda59aa=; exact built-in ChatGPT/WebSocket
+capability-unconfirmed).
 This document records the remaining external limitation after Addenda 3--7.
 The current authority is the origin/main Addendum 5 contract as reconciled by
 Addendum 7: the v5 carrier is optional =keep=/=summaries=/=erase=, with
 omission preserving separately owned receipts and explicit =erase= suppressing
-source-derived projections.  No current v5 configured HTTP result is claimed.
+source-derived projections.  The current configured Responses HTTP result is
+recorded below; it does not establish the exact built-in ChatGPT/WebSocket
+capability.
 Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
 closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
 unknowns; I6 remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.
-The configured evidence below predates this authority rebase and is retained
-as historical v4/explicit-drop evidence only.  The exact built-in ChatGPT
+The older configured evidence below predates this authority rebase and is
+retained as historical v4/explicit-drop evidence only.  The exact built-in ChatGPT
 Codex WebSocket scope is not confirmed, so this is not a Done decision.
 
 * Purpose
@@ -67,8 +70,9 @@ response retention
 
 * Historical pre-rebase implementation and external evidence
 
-The repository-controlled Addendum 7 package is being remediated from
-=f59e91cf= under the origin/main Addendum 5 authority.  Independent Tick 6 at
+The repository-controlled Addendum 7 package reached its reviewed fixed point
+at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9= after remediation from =f59e91cf=
+under the origin/main Addendum 5 authority.  Independent Tick 6 at
 exact candidate =835ba655= (implementation =f991f895=) closed =F88A4.I5= with
 zero P0-P3 repository findings and zero deterministic unknowns.  I6 remains
 closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order
@@ -106,7 +110,7 @@ not establish the current v5 contract:
 | =c6755665= | restore the carrier-local lifecycle affordance |
 | =01a8466a= | match drop audit linkage by control response and turn, rejecting duplicates |
 
-The exact configured run on 2026-08-28 used provider/profile
+The earlier configured run on 2026-08-28 used provider/profile
 =eng-ai-gateway-gpt=, profile =Engineering AI Model Gateway / GPT (Responses)=,
 exact base URL
 =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
@@ -126,7 +130,8 @@ report:
 
 These records exercised the pre-rebase =context-curate-v4= carrier and its
 explicit =drop= evidence lane.  They are historical compatibility evidence,
-not a current v5 HTTP result; the v5 configured run remains pending.
+not a current v5 HTTP result; at the time of that run, the v5 configured run
+was pending.
 
 The positive adoption record reported identity, scenario, semantic, adoption,
 composition, and result =pass=, with =failure-stage none= and disposition
@@ -146,7 +151,43 @@ This is historical external compatibility evidence for the configured
 Responses HTTP profile.  It does not establish the current v5 contract and it
 does not exercise the exact built-in ChatGPT Codex WebSocket
 retained/replaced-socket or response-continuation claims; those remain
-separately unconfirmed and not exercised.  The current v5 HTTP run is pending.
+separately unconfirmed and not exercised.  The v5 HTTP run described below is
+the later accepted current evidence.
+
+* Current configured Addendum 7 evidence
+
+The accepted current run was captured at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using provider
+=eng-ai-gateway-gpt=, profile =Engineering AI Model Gateway / GPT
+(Responses)=, endpoint =/responses= over Responses HTTP, =:json-false= store
+mode, native requester =e-openai-codex--http-request-start=, and model
+=gpt-5.6-sol=.  Material requests used =context-curate-v5= and
+=context-curation-presentation-v2=.  Exact built-in ChatGPT/WebSocket
+behavior was not tested.  The records were content-free:
+
+| Scenario | Requests | Total input | Cached input | Adoption/disposition | Composition | Semantic | Cache | Result |
+|----------+----------+-------------+--------------+---------------------+-------------+----------+-------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | n/a | n/a | pass | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,789 | 0 (observational) | exact | pass | pass | product-contract-failure (observational) | pass |
+| =responses-autonomous-curation-erase= | 3 | 4,822 | 3,033 | erase | pass | pass | product-contract-failure (observational) | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | n/a | n/a | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 15,124 | 11,688 | n/a | n/a | pass | warm | pass |
+
+The reasoning-summary probe used effort =high= and summary =auto=; returned
+summary was =absent= as a diagnostic and did not affect the pass.  Its
+companion dependency identity was
+=da64a0a7ff700b61252f0586e0fa554c0ab77b0c8a46cf48b5a7a1d3af848ac8=.
+The explicit erase record used prompt identity
+=28d132555abbe76e0ab6c9d322bcde75f9943fdfbb9f8204e1271bbe88e40f26= and
+adoption dependency identity
+=a67001609dab1e8cd6722ed3f95311bdce094110c21a5deecb38140c54eff84e=.
+The adoption and erase cache classifications were
+=product-contract-failure (observational; does not gate adoption)=.  The
+explicit erase lane non-vacuously proved the prerequisite receipt, erase
+selection and persistence, tool-call identity join, receipt suppression,
+activity/tmp preservation, and exact reopen behavior.  This configured
+evidence confirms the Responses HTTP profile only; exact built-in
+ChatGPT/WebSocket capability remains unconfirmed.
 
 * Systems and sessions inspected
 
@@ -643,24 +684,20 @@ canonical OpenAI profiles.
 
 * Current external acceptance limitation
 
-The repository-controlled Addendum 7 package is in fixed-point remediation
-after Review 02 at =f59e91cf=.  Its optional v5 carrier, atomic nested erasure,
-receipt integration, and deterministic model-to-context path must be accepted
-at one exact revision before configured evidence is refreshed.  No current v5
-Responses HTTP capability result is claimed yet.
-
-The configured records at =317be237= and =01a8466a= are historical.  They
-exercise pre-rebase =context-curate-v4=, including its exhaustive disposition
-and explicit =drop= lane; they do not establish v5 keep/summary/erase adoption
-or composition.  Fresh v5 Responses HTTP reasoning-summary, autonomous
-retention, autonomous erasure, warm-prefix, and tool-heavy records remain
-pending.  Cache accounting will remain observational and separate from
-semantic and composition results.
+The repository-controlled Addendum 7 package reached its deterministic fixed
+point at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=.  The accepted configured
+Responses HTTP evidence was captured by the live runner at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using =context-curate-v5=;
+provider/profile, request counts, and bounded token observations are recorded
+in the current-evidence section above.  The earlier records at =317be237= and
+=01a8466a= remain historical v4/explicit-drop compatibility evidence only.
+Cache accounting in both current and historical adoption records is
+observational and separate from semantic and composition results.
 
 The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
-response-continuation claims were not exercised and remain
-=capability-unconfirmed=; therefore this document remains =In-review= rather
-than =Done=.
+response-continuation claims were not exercised by the accepted Responses HTTP
+run and remain =capability-unconfirmed=; therefore this document remains
+=In-review= rather than =Done=.
 
 * Historical acceptance gap: the warm path only
 

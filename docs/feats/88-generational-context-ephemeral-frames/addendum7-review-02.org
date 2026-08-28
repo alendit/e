@@ -19,10 +19,13 @@ closed it:
 - P2: none open; =F88A7.I3= through =F88A7.I6= are closed.
 - P3: none.
 
-Repository-controlled acceptance is complete.  Fresh Addendum 7 configured
-Responses HTTP evidence is pending under =context-curate-v5=.  Exact built-in
-ChatGPT/WebSocket behavior remains =capability-unconfirmed= and separate from
-the repository findings.
+Repository-controlled acceptance is complete at the fixed point
+=9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=.  The later accepted Addendum 7
+configured Responses HTTP evidence was captured by the live runner at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= under =context-curate-v5=.
+Exact built-in ChatGPT/WebSocket behavior remains =capability-unconfirmed=
+and separate from both the repository findings and this configured HTTP
+evidence.
 
 * Scope and authority
 
@@ -152,25 +155,27 @@ Contract cell: documentation and external status.
 =keep=/=summaries=/=drop= implementation and configured records current
 (=limitations.org:5-32,113-128,634-655=).  Rebase the current status, purpose,
 table, and final limitation on Addendum 7.  Keep v4/drop results explicitly
-historical, v5 configured HTTP evidence pending until rerun, and exact
+historical, v5 configured HTTP evidence pending until rerun at the time of this
+review, and exact
 ChatGPT/WebSocket =capability-unconfirmed=.
 
-Closed at =772018ebb38f6c2a24ab57e29bbf289dc07bcb2f=.  Current status is
-v5; v4/drop records are explicitly historical, fresh HTTP evidence is pending,
+Closed at =772018ebb38f6c2a24ab57e29bbf289dc07bcb2f=.  At that review
+revision, v5 configured HTTP evidence was still pending; subsequent accepted
+evidence is recorded below.  v4/drop records remain explicitly historical,
 and exact ChatGPT/WebSocket behavior remains =capability-unconfirmed=.
 
 * Contract disposition
 
 | Contract | Disposition |
 |----------+-------------|
-| =F88A7-CARRIER= | Repository carrier and reasoning shape clear; fresh v5 evidence pending. |
+| =F88A7-CARRIER= | Repository carrier clear; configured v5 Responses HTTP evidence accepted. |
 | =F88A7-OMISSION= | Credential-free adapter path clear. |
-| =F88A7-ERASURE= | Repository package semantics, carrier, and projection suppression accepted; external evidence pending. |
+| =F88A7-ERASURE= | Repository package semantics and suppression accepted; configured HTTP evidence accepted. |
 | =F88A7-PRESERVATION= | Repository behavior and exact reopen predicate accepted. |
 | =F88A7-DURABILITY= | Package path clear across branch/reopen/checkpoint/compaction. |
 | =F88A7-ATOMICITY= | Accepted, including exact selected-path retry and one package authority. |
 | =F88A7-RECEIPTS= | Accepted functionally and asymptotically. |
-| =F88A7-ADOPTION= | Runner and evidence identity accepted; fresh v5 HTTP pending. |
+| =F88A7-ADOPTION= | Runner and evidence identity accepted; configured v5 Responses HTTP evidence accepted. |
 
 * Verification performed
 
@@ -186,9 +191,9 @@ and exact ChatGPT/WebSocket behavior remains =capability-unconfirmed=.
 - Changed Org files parsed successfully.
 - No provider call, graphical test, live reload, or live Emacs probe was used.
 
-Remediation and final-Tick evidence:
+Remediation and final-Tick evidence for the repository fixed point:
 
-- Exact accepted revision:
+- Exact repository fixed point reviewed:
   =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=.
 - Complete repository suite: 2,456 tests accounted for; 2,454 expected passes,
   zero unexpected results, and two expected graphical skips.
@@ -200,6 +205,39 @@ Remediation and final-Tick evidence:
 - Changed-owner warnings-as-errors compilation, Node syntax, Org parsing, and
   diff check passed.  The final docstring-only revision passed its narrow
   warnings-as-errors compile and diff check.
+
+* Post-review configured evidence
+
+The accepted current evidence run was captured at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using provider
+=eng-ai-gateway-gpt=, profile =Engineering AI Model Gateway / GPT
+(Responses)=, endpoint =/responses= over Responses HTTP, =:json-false= store
+mode, native requester =e-openai-codex--http-request-start=, model
+=gpt-5.6-sol=, =context-curate-v5=, and
+=context-curation-presentation-v2=.  This evidence revision is distinct from
+the repository fixed point reviewed above; exact built-in ChatGPT/WebSocket
+behavior was not tested.
+
+| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
+|----------+----------+-------------+--------------+----------+----------------------+-------------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,789 | 0 (observational) | pass | exact | pass | pass |
+| =responses-autonomous-curation-erase= | 3 | 4,822 | 3,033 | pass | erase | pass | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass/warm |
+| =responses-canonical-tool-heavy= | 5 | 15,124 | 11,688 | pass | n/a | n/a | pass/warm |
+
+The reasoning-summary record used effort =high= and summary =auto=, with
+returned-summary =absent= as a diagnostic only; its companion dependency
+identity was =da64a0a7ff700b61252f0586e0fa554c0ab77b0c8a46cf48b5a7a1d3af848ac8=.
+The adoption and erase cache results were
+=product-contract-failure (observational; does not gate adoption)=.  The
+erase record used prompt identity
+=28d132555abbe76e0ab6c9d322bcde75f9943fdfbb9f8204e1271bbe88e40f26= and
+adoption dependency identity
+=a67001609dab1e8cd6722ed3f95311bdce094110c21a5deecb38140c54eff84e=.
+The explicit erase lane non-vacuously proved the prerequisite receipt, erase
+selection and persistence, tool-call identity join, receipt suppression,
+activity/tmp preservation, and exact reopen behavior.
 
 * Architecture and design disposition
 
@@ -217,8 +255,6 @@ persistence family was introduced.
 
 * Unresolved
 
-- Fresh identity-complete Addendum 7 configured Responses HTTP records after
-  repository acceptance.
 - Exact built-in ChatGPT/WebSocket remains =capability-unconfirmed=.
 
 The feature remains =In-review=.  The running Emacs was left unchanged.

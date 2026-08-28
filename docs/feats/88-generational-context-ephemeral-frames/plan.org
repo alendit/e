@@ -30,13 +30,14 @@ activity, audit, and temporary details.  Responses reasoning summaries remain
 
 The behaviorally coherent implementation now spans core preparation, atomic
 session persistence, harness commit, the actual carrier, Feature 90 receipt
-filtering, and credential-free end-to-end composition.  Repository validation
-passes 2,456 tests with 2,454 expected passes, zero unexpected results, and two
+filtering, and credential-free end-to-end composition.  The repository
+fixed-point review is at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=;
+accepted configured evidence was captured by the live runner at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.  Repository validation passes
+2,456 tests with 2,454 expected passes, zero unexpected results, and two
 expected graphical skips; changed-owner warnings-as-errors compilation also
-passes.  The
-remaining boundary is one independent fixed-point review followed by refreshed
-configured evidence.  A7.1/A7.2 are internal implementation history, not
-delivery or fixed-point boundaries.
+passes.  A7.1/A7.2 are internal implementation history, not delivery or
+fixed-point boundaries.
 
 The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
 profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
@@ -44,7 +45,7 @@ profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
 Responses HTTP transport, =:json-false= store mode, native requester
 =e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
 endpoint adds =/responses=; all material requests agreed on the effective
-identity.  The following Addendum 6 scenario evidence is historical and
+identity.  The following earlier Addendum 6 scenario evidence is historical and
 content-free; its =drop= carrier and =context-curate-v4= identity are not
 current Addendum 7 acceptance evidence:
 
@@ -63,9 +64,40 @@ semantic or composition results.  Addendum 4 supersedes Addendum 3 only where
 the model-facing promotion contract conflicts, using =context-curate= and
 durable version-3 records while retaining read-only version-2 compatibility.
 
-Authoritative validation recorded at =f991f895= is =eldev test= with 2,367
-total tests, 2,365 expected passes, 0 unexpected, and 2 expected skips;
-=eldev compile= passed and the focused checkpoint test passed 1/1.
+The accepted current Addendum 7 evidence at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= used provider =eng-ai-gateway-gpt=,
+profile =Engineering AI Model Gateway / GPT (Responses)=, endpoint
+=/responses= over Responses HTTP, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  Material
+requests used =context-curate-v5= and =context-curation-presentation-v2=;
+exact built-in ChatGPT/WebSocket behavior was not tested.  These records were
+content-free:
+
+| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
+|----------+----------+-------------+--------------+----------+----------------------+-------------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,789 | 0 (observational) | pass | exact | pass | pass |
+| =responses-autonomous-curation-erase= | 3 | 4,822 | 3,033 | pass | erase | pass | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass/warm |
+| =responses-canonical-tool-heavy= | 5 | 15,124 | 11,688 | pass | n/a | n/a | pass/warm |
+
+The reasoning-summary record used effort =high= and summary =auto=, with
+returned-summary =absent= as a diagnostic only; its companion dependency
+identity was =da64a0a7ff700b61252f0586e0fa554c0ab77b0c8a46cf48b5a7a1d3af848ac8=.
+The adoption record's cache result was
+=product-contract-failure (observational; does not gate adoption)=.  The
+erase record had the same observational cache result, prompt identity
+=28d132555abbe76e0ab6c9d322bcde75f9943fdfbb9f8204e1271bbe88e40f26=, and
+adoption dependency identity
+=a67001609dab1e8cd6722ed3f95311bdce094110c21a5deecb38140c54eff84e=.  The
+explicit erase lane non-vacuously proved the prerequisite receipt, erase
+selection and persistence, tool-call identity join, receipt suppression,
+activity/tmp preservation, and reopen behavior.
+
+Repository validation at the fixed point =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=
+accounted for 2,456 tests: 2,454 expected passes, zero unexpected results, and
+two expected graphical skips; changed-owner warnings-as-errors compilation,
+Org parsing, and whitespace validation passed.
 
 * Goal
 
@@ -1137,13 +1169,14 @@ latency: that mechanism is outside this feature.
 
 * Residual ambiguities
 
-- The configured =eng-ai-gateway-gpt= Responses HTTP profile has current
-  identity-complete evidence at =01a8466a=.  The fresh 2026-08-28 run passed
-  the reasoning-summary probe, exact-retention adoption, explicit-drop
-  adoption, warm-prefix cache, and tool-heavy cache scenarios; the exact
-  request counts and token observations are tabulated above.  Adoption cache
-  usage was zero and remains observational.  The records contain no prompt,
-  sentinel, answer, returned summary, or authentication content.
+- The configured =eng-ai-gateway-gpt= Responses HTTP profile has accepted,
+  identity-complete Addendum 7 evidence at =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.
+  The current run passed the reasoning-summary probe, exact-retention
+  adoption, explicit-erasure adoption, warm-prefix cache, and tool-heavy cache
+  scenarios; the exact request counts and token observations are tabulated
+  above.  Adoption cache results were observational and did not gate the
+  semantic or composition passes.  The records contain no prompt, sentinel,
+  answer, returned summary, or authentication content.
 - The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
   response-continuation claims were not exercised by that HTTP run and remain
   unconfirmed; this keeps the plan =In-review= rather than =Done=.

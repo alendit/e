@@ -23,13 +23,43 @@ not separate A7.1/A7.2 deliveries.  Acceptance requires the real model carrier,
 atomic durable application, receipt integration, and credential-free
 model-to-context coverage together.
 
-The integrated implementation is ready for independent fixed-point review.
-Repository validation passes 2,456 tests with 2,454 expected passes, zero
-unexpected results, and two expected graphical skips.  Changed-owner
-warnings-as-errors compilation, Org parsing, and whitespace validation also
-pass.  Configured
-Responses evidence is deliberately deferred until the exact revision has been
-accepted by the independent reviewer.
+The repository-controlled implementation fixed point is
+=9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=, with 2,456 tests accounted for:
+2,454 expected passes, zero unexpected results, and two expected graphical
+skips.  Changed-owner warnings-as-errors compilation, Org parsing, and
+whitespace validation passed.  Accepted configured Responses HTTP evidence
+was captured by the live runner at
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; exact built-in
+ChatGPT/WebSocket behavior remains capability-unconfirmed, so the Feature
+remains In-review rather than Done.
+
+The current configured identity was provider =eng-ai-gateway-gpt=, profile
+=Engineering AI Model Gateway / GPT (Responses)=, endpoint =/responses= over
+Responses HTTP, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, model =gpt-5.6-sol=,
+=context-curate-v5=, and =context-curation-presentation-v2=.  The records
+below were content-free and do not claim exact WebSocket capability.
+
+| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
+|----------+----------+-------------+--------------+----------+----------------------+-------------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,789 | 0 (observational) | pass | exact | pass | pass |
+| =responses-autonomous-curation-erase= | 3 | 4,822 | 3,033 | pass | erase | pass | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass/warm |
+| =responses-canonical-tool-heavy= | 5 | 15,124 | 11,688 | pass | n/a | n/a | pass/warm |
+
+The reasoning-summary probe used effort =high= and summary =auto=, with
+returned-summary =absent= as a diagnostic only; its companion dependency
+identity was =da64a0a7ff700b61252f0586e0fa554c0ab77b0c8a46cf48b5a7a1d3af848ac8=.
+The adoption and erase cache results were
+=product-contract-failure (observational; does not gate adoption)=.  The
+erase record used prompt identity
+=28d132555abbe76e0ab6c9d322bcde75f9943fdfbb9f8204e1271bbe88e40f26= and
+adoption dependency identity
+=a67001609dab1e8cd6722ed3f95311bdce094110c21a5deecb38140c54eff84e=.
+The explicit erase lane non-vacuously proved its prerequisite receipt, erase
+selection and persistence, tool-call identity join, receipt suppression,
+activity/tmp preservation, and reopen behavior.
 
 * Decision
 
