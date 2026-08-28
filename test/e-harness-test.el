@@ -1264,74 +1264,244 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
 
 
 (ert-deftest e-harness-test-tool-finished-activity-compacts-result-payload ()
-  "Durable tool-finished activity avoids duplicating full tool result output."
-  (let* ((harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)))
-         (large-output (make-string 64 ?x)))
+  "Durable tool-finished activity stores one compact lifecycle receipt."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    (let ((e-harness-durable-tool-finished-result-preview-bytes 8))
+    (let ((e-harness--trusted-tool-details-uri
+           "tmp://tool-invocations/turn-1/call-1.json"))
       (e-harness--emit-turn-event
        harness
        "session-1"
        "turn-1"
        'tool-finished
-       (list :tool-call '(:id "call-1" :name "bash")
-             :result (list :tool-call-id "call-1"
-                           :name "bash"
-                           :status 'ok
-                           :content large-output
-                           :metadata '(:tmp-uri "tmp://full.txt"))))
-      (let* ((event (car (e-harness-session-activity-events
-                          harness
-                          "session-1")))
-             (payload (plist-get event :payload))
-             (result (plist-get payload :result))
-             (metadata (plist-get result :metadata)))
-        (should (equal (plist-get result :content) "xxxxxxxx"))
-        (should (plist-get metadata :activity-truncated))
-        (should (equal (plist-get metadata :activity-original-bytes) 64))
-        (should (equal (plist-get metadata :tmp-uri) "tmp://full.txt"))))))
+       '(:tool-call (:id "call-1" :name "bash"
+                    :stated-purpose "Run the bounded command"
+                    :arguments (:command "raw-command-secret"))
+         :result (:tool-call-id "call-1"
+                  :name "bash"
+                  :status ok
+                  :content "raw-result-secret"
+                  :metadata (:invocation-details-uri
+                             "tmp://tool-invocations/turn-1/call-1.json"
+                             :authorization "Bearer raw-auth")))))
+    (let* ((event (car (e-harness-session-activity-events
+                        harness "session-1")))
+           (payload (plist-get event :payload))
+           (call (plist-get payload :tool-call))
+           (receipt (plist-get payload :receipt))
+           (serialized (prin1-to-string payload)))
+      (should (equal call '(:id "call-1" :name "bash")))
+      (should
+       (equal receipt
+              '(:tool-call-id "call-1"
+                :tool "bash"
+                :status ok
+                :stated-purpose "Run the bounded command"
+                :details-uri
+                "tmp://tool-invocations/turn-1/call-1.json"
+                :details-lifetime session-tmp)))
+      (should-not (plist-member payload :result))
+      (should-not (plist-member call :arguments))
+      (should-not (string-match-p
+                   "raw-command-secret\\|raw-result-secret\\|raw-auth"
+                   serialized)))))
 
 (ert-deftest e-harness-test-tool-finished-activity-drops-unknown-metadata ()
-  "Durable tool activity stores only named safe metadata fields."
+  "Invalid purpose status is durable without persisting invalid text."
   (let ((harness (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness--emit-turn-event
-     harness "session-1" "turn-1" 'tool-finished
-     '(:tool-call (:id "call-1" :name "probe")
-       :result (:tool-call-id "call-1" :name "probe" :status ok
-                :content "ok"
-                :metadata (:authorization "Bearer raw-secret"
-                           :nested (:token "raw-nested")
-                           :tmp-uri "tmp://safe"))))
+    (let ((e-harness--trusted-tool-details-uri "tmp://safe"))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'tool-finished
+       '(:tool-call (:id "call-1" :name "probe"
+                    :stated-purpose "Bearer raw-secret"
+                    :metadata (:purpose-status invalid)
+                    :arguments (:query "raw-nested"))
+         :result (:tool-call-id "call-1" :name "probe" :status ok
+                  :content "raw-result-secret"
+                  :metadata (:invocation-details-uri "tmp://safe"
+                             :authorization "Bearer raw-auth")))))
     (let* ((event (car (e-harness-session-activity-events
                         harness "session-1")))
-           (metadata (plist-get (plist-get (plist-get event :payload) :result)
-                                :metadata))
-           (serialized (prin1-to-string metadata)))
-      (should (equal (plist-get metadata :tmp-uri) "tmp://safe"))
-      (should-not (string-match-p "raw-secret\\|raw-nested" serialized)))))
+           (payload (plist-get event :payload))
+           (receipt (plist-get payload :receipt))
+           (serialized (prin1-to-string payload)))
+      (should (eq (plist-get receipt :purpose-status) 'invalid))
+      (should-not (plist-member receipt :stated-purpose))
+      (should-not (plist-member payload :result))
+      (should-not (string-match-p
+                   "raw-secret\\|raw-nested\\|raw-result-secret\\|raw-auth"
+                   serialized)))))
 
-(ert-deftest e-harness-test-tool-finished-activity-redacts-safe-metadata-strings ()
-  "Named metadata fields still cross the shared string redactor."
+(ert-deftest e-harness-test-tool-finished-activity-rejects-mismatched-result ()
+  "A result for another call never becomes a durable receipt."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (let ((e-harness--trusted-tool-details-uri "tmp://trusted.json"))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'tool-finished
+       '(:tool-call (:id "call-1" :name "probe"
+                    :stated-purpose "Inspect the bounded probe")
+         :result (:tool-call-id "call-2" :name "other" :status ok
+                  :content "raw-mismatched-result")) ))
+    (let* ((payload (plist-get
+                     (car (e-harness-session-activity-events harness "session-1"))
+                     :payload))
+           (serialized (prin1-to-string payload)))
+      (should-not (plist-member payload :receipt))
+      (should-not (plist-member payload :result))
+      (should-not (string-match-p "raw-mismatched-result" serialized)))))
+
+(ert-deftest e-harness-test-tool-finished-activity-rejects-untrusted-details-uri ()
+  "A URI copied into result metadata cannot authorize a receipt."
   (let ((harness (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (e-harness--emit-turn-event
      harness "session-1" "turn-1" 'tool-finished
-     '(:tool-call (:id "call-1" :name "probe")
+     '(:tool-call (:id "call-1" :name "probe"
+                  :stated-purpose "Inspect the bounded probe")
        :result (:tool-call-id "call-1" :name "probe" :status ok
-                :content "ok"
-                :metadata
-                (:tmp-uri "https://user:password@example.test/file?token=raw-token"
-                 :resource-uri "https://example.test/file?X-Amz-Signature=signed-secret"))))
+                :content "raw-untrusted-result"
+                :metadata (:invocation-details-uri
+                           "tmp://forged/call-1.json"))))
+    (let* ((payload (plist-get
+                     (car (e-harness-session-activity-events harness "session-1"))
+                     :payload))
+           (serialized (prin1-to-string payload)))
+      (should-not (plist-member payload :receipt))
+      (should-not (plist-member payload :result))
+      (should-not (string-match-p "raw-untrusted-result" serialized)))))
+
+(ert-deftest e-harness-test-tool-lifecycle-trusts-details-stage-for-receipt ()
+  "The lifecycle archival stage authorizes the finished receipt transiently."
+  (let* ((capability
+          (e-capability-create
+           :id 'receipt-tool
+           :tools
+           (list (lambda (registry)
+                   (e-tools-test-register
+                    registry
+                    :name "probe"
+                    :description "Return a bounded probe."
+                    :handler (lambda (_arguments) "ok"))))
+           :hooks
+           (list
+            (e-hook-create
+             :id "40-test-details"
+             :point :invocation-details
+             :handler
+             (lambda (result context)
+               (plist-put context :invocation-details-uri
+                          "tmp://tool-invocations/turn-1/call-1.json")
+               result)))))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities (list capability)))
+         (call '(:id "call-1" :name "probe"
+                 :stated-purpose "Inspect the bounded probe"
+                 :arguments nil))
+         result
+         failure)
+    (e-harness-create-session harness :id "session-1")
+    (e-tool-lifecycle-start-call
+     (e-harness-tool-lifecycle harness "session-1" "turn-1")
+     call
+     :on-done
+     (lambda (value)
+       (setq result value)
+       (e-harness--emit-turn-event
+        harness "session-1" "turn-1" 'tool-finished
+        (list :tool-call call :result value)))
+     :on-error (lambda (err) (setq failure err)))
+    (should-not failure)
+    (should (e-tools-result-p result))
     (let* ((event (car (e-harness-session-activity-events
                         harness "session-1")))
-           (serialized (prin1-to-string event)))
-      (should (string-match-p "REDACTED" serialized))
-      (should-not
-       (string-match-p "password\\|raw-token\\|signed-secret" serialized)))))
+           (payload (plist-get event :payload))
+           (receipt (plist-get payload :receipt)))
+      (should (equal (plist-get receipt :details-uri)
+                     "tmp://tool-invocations/turn-1/call-1.json"))
+      (should-not (plist-member payload :trusted-details-uri))
+      (should-not (plist-member (plist-get payload :result)
+                                :trusted-details-uri)))))
+
+(ert-deftest e-harness-test-tool-started-activity-retains-purpose-without-arguments ()
+  "Durable tool-started activity retains identity and stated purpose only."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness--emit-turn-event
+     harness "session-1" "turn-1" 'tool-started
+     '(:id "call-1" :name "probe"
+       :stated-purpose "Inspect the bounded probe"
+       :arguments (:query "raw-query")))
+    (let* ((event (car (e-harness-session-activity-events
+                        harness "session-1")))
+           (payload (plist-get event :payload))
+           (serialized (prin1-to-string payload)))
+      (should (equal payload
+                     '(:id "call-1"
+                       :name "probe"
+                       :stated-purpose "Inspect the bounded probe")))
+      (should-not (string-match-p "raw-query" serialized)))))
+
+(ert-deftest e-harness-test-tool-receipt-survives-persistent-reopen-without-preview ()
+  "Reopened durable activity keeps receipt identity without raw content."
+  (let* ((directory (make-temp-file "e-harness-tool-receipt-" t))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-harness--emit-turn-event
+           harness "session-1" "turn-1" 'tool-started
+           '(:id "call-1" :name "bash"
+             :stated-purpose "Run the bounded command"
+             :arguments (:command "raw-command-secret")))
+          (let ((e-harness--trusted-tool-details-uri
+                 "tmp://tool-invocations/turn-1/call-1.json"))
+            (e-harness--emit-turn-event
+             harness "session-1" "turn-1" 'tool-finished
+             '(:tool-call (:id "call-1" :name "bash"
+                          :stated-purpose "Run the bounded command"
+                          :arguments (:command "raw-command-secret"))
+               :result (:tool-call-id "call-1"
+                        :name "bash"
+                        :status ok
+                        :content "raw-result-secret"
+                        :metadata (:invocation-details-uri
+                                   "tmp://tool-invocations/turn-1/call-1.json")))))
+          (e-session-flush-write-queue store)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (events (e-session-activity-events reopened "session-1"))
+                 (started (car events))
+                 (finished (cadr events))
+                 (started-payload (plist-get started :payload))
+                 (finished-payload (plist-get finished :payload))
+                 (receipt (plist-get finished-payload :receipt))
+                 (serialized (prin1-to-string events)))
+            (should (equal started-payload
+                           '(:id "call-1"
+                             :name "bash"
+                             :stated-purpose "Run the bounded command")))
+            (should (equal receipt
+                           '(:tool-call-id "call-1"
+                             :tool "bash"
+                             :status "ok"
+                             :stated-purpose "Run the bounded command"
+                             :details-uri
+                             "tmp://tool-invocations/turn-1/call-1.json"
+                             :details-lifetime "session-tmp")))
+            (should-not (string-match-p
+                         "raw-command-secret\\|raw-result-secret"
+                         serialized))))
+      (delete-directory directory t))))
 
 (ert-deftest e-harness-test-malformed-tool-finished-activity-never-falls-back-raw ()
   "Malformed legacy payloads retain identity, not arbitrary raw values."

@@ -1023,14 +1023,11 @@ Classes are `audit', `replay', `presentation-log', and `transient-progress'.")
     compaction-finished compaction-failed)
   "Durable activity event types that should flush the session index.")
 
-(defcustom e-harness-durable-tool-finished-result-preview-bytes 4096
-  "Maximum UTF-8 bytes retained from tool results in durable activity events.
-
-Tool transcript messages retain the model-visible tool result.  Durable
-`tool-finished' activity is presentation history, so it stores only a compact
-preview to avoid duplicating large outputs in session JSONL files."
-  :type 'integer
-  :group 'e)
+(defvar e-harness--trusted-tool-details-uri nil
+  "Dynamically scoped details URI produced by the tool lifecycle.
+The value is available only while a completed tool event is projected.  It is
+never copied into the transcript, public event payload, or durable activity
+payload as provenance; the durable receipt may include the URI itself.")
 
 (defcustom e-harness-provider-request-deadline-seconds nil
   "Optional hard wall-clock deadline attached to a turn's provider requests.
@@ -1142,8 +1139,17 @@ and message text are interpreted by the backend adapter and supplied as
   "Return non-nil when TYPE should flush coalesced activity index writes."
   (memq type e-harness--activity-index-flush-event-types))
 
+(defun e-harness--safe-activity-scalar (value)
+  "Return VALUE safe for a narrow durable activity identity field."
+  (cond
+   ((stringp value) (e-telemetry-redact-string value))
+   ((or (numberp value) (symbolp value) (null value)) value)
+   (t nil)))
+
 (defun e-harness--string-byte-prefix (text max-bytes)
-  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
+  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes.
+This generic activity helper is used for bounded steering diagnostics; tool
+result activity itself is no longer represented by a preview."
   (let ((bytes 0)
         (index 0)
         (length (length text)))
@@ -1156,72 +1162,40 @@ and message text are interpreted by the backend adapter and supplied as
       (setq index (1+ index)))
     (substring text 0 index)))
 
-(defun e-harness--safe-tool-result-metadata (metadata preview content-text)
-  "Return a narrow durable schema derived from tool METADATA."
-  (let ((safe (list :activity-preview preview)))
-    (dolist (key '(:tmp-uri :resource-uri :work-id :transport
-                   :blocking-class :refresh-context))
-      (let ((value (plist-get metadata key)))
-        (when (or (stringp value) (numberp value)
-                  (memq value '(t nil :json-false)))
-          (setq safe
-                (append safe
-                        (list key (if (stringp value)
-                                      (e-telemetry-redact-string value)
-                                    value)))))))
-    (when (plist-get preview :truncated)
-      (setq safe
-            (append safe
-                    (list :activity-truncated t
-                          :activity-original-bytes (string-bytes content-text)
-                          :activity-shown-bytes
-                          (plist-get preview :shown-bytes)))))
-    safe))
+(defun e-harness--tool-purpose-activity-fields (call)
+  "Return the safe stated-purpose fields for tool CALL.
+Invalid purpose text is never persisted; callers receive an explicit status
+instead so rejected calls remain distinguishable from calls without an
+envelope."
+  (let* ((metadata (and (listp call) (plist-get call :metadata)))
+         (purpose (and (listp call) (plist-get call :stated-purpose))))
+    (cond
+     ((eq (plist-get metadata :purpose-status) 'invalid)
+      '(:purpose-status invalid))
+     ((and (stringp purpose)
+           (not (string-empty-p (string-trim purpose)))
+           (not (string-match-p "[\n\r]" purpose))
+           (<= (length purpose) 200))
+      (list :stated-purpose (e-harness--safe-activity-scalar purpose)))
+     ((and (listp call) (plist-member call :stated-purpose))
+      '(:purpose-status invalid))
+     (t nil))))
 
-(defun e-harness--compact-tool-result-for-activity (result)
-  "Return compact redacted durable activity representation of tool RESULT."
-  (let* ((content (plist-get result :content))
-         (content-text (e-tools-result-content-text content))
-         (redacted (e-telemetry-redact-string content-text))
-         (preview (e-telemetry-preview
-                   redacted
-                   (max 0 e-harness-durable-tool-finished-result-preview-bytes)))
-         (preview-content (if (stringp content)
-                              (e-harness--string-byte-prefix
-                               redacted
-                               (max 0 e-harness-durable-tool-finished-result-preview-bytes))
-                            (plist-get preview :content)))
-         (metadata
-          (e-harness--safe-tool-result-metadata
-           (plist-get result :metadata) preview content-text)))
-    (list :tool-call-id (plist-get result :tool-call-id)
-          :name (plist-get result :name)
-          :status (plist-get result :status)
-          :content preview-content
-          :metadata metadata)))
-
-(defun e-harness--safe-activity-scalar (value)
-  "Return VALUE safe for a narrow durable activity identity field."
-  (cond
-   ((stringp value) (e-telemetry-redact-string value))
-   ((or (numberp value) (symbolp value) (null value)) value)
-   (t nil)))
-
-(defun e-harness--tool-call-activity-projection (call include-arguments)
-  "Return a narrow durable projection of tool CALL.
-When INCLUDE-ARGUMENTS is non-nil, retain only a bounded redacted preview."
+(defun e-harness--tool-call-identity-projection (call)
+  "Return only stable identity fields from tool CALL."
   (when (listp call)
-    (let ((projected
-           (list :id (e-harness--safe-activity-scalar (plist-get call :id))
-                 :name (e-harness--safe-activity-scalar
-                        (plist-get call :name)))))
-      (when (and include-arguments (plist-member call :arguments))
-        (setq projected
-              (append projected
-                      (list :arguments
-                            (e-telemetry-preview
-                             (plist-get call :arguments))))))
-      projected)))
+    (list :id (e-harness--safe-activity-scalar (plist-get call :id))
+          :name (e-harness--safe-activity-scalar
+                 (plist-get call :name)))))
+
+(defun e-harness--tool-call-activity-projection (call)
+  "Return the durable start projection of tool CALL.
+Only call identity and the validated stated-purpose envelope cross this
+boundary; operation arguments remain in the detached invocation-details
+artifact when that lifecycle is available."
+  (when (listp call)
+    (append (e-harness--tool-call-identity-projection call)
+            (e-harness--tool-purpose-activity-fields call))))
 
 (defun e-harness--tool-relation-activity-fields (payload)
   "Return named causal fields retained from tool activity PAYLOAD."
@@ -1239,28 +1213,57 @@ When INCLUDE-ARGUMENTS is non-nil, retain only a bounded redacted preview."
   (let* ((wrapped (and (listp payload) (plist-member payload :tool-call)))
          (call (and (listp payload)
                     (if wrapped (plist-get payload :tool-call) payload)))
-         (projected (e-harness--tool-call-activity-projection call t))
+         (projected (e-harness--tool-call-activity-projection call))
          (relations (e-harness--tool-relation-activity-fields payload)))
     (if wrapped
         (append (list :tool-call projected) relations)
       (append projected relations))))
 
+(defun e-harness--tool-receipt-activity-projection
+    (call result details-uri)
+  "Return the compact durable receipt for top-level CALL and RESULT.
+DETAILS-URI must be supplied by the successful lifecycle archival stage; a
+URI copied into RESULT metadata is not sufficient to authorize a receipt."
+  (let* ((id (or (plist-get call :id)
+                 (plist-get result :tool-call-id)))
+         (name (or (plist-get call :name)
+                   (plist-get result :name)))
+         (receipt
+          (append
+           (list :tool-call-id (e-harness--safe-activity-scalar id)
+                 :tool (e-harness--safe-activity-scalar name)
+                 :status (e-harness--safe-activity-scalar
+                          (plist-get result :status)))
+           (e-harness--tool-purpose-activity-fields call))))
+    (when (and (stringp details-uri)
+               (not (string-empty-p details-uri)))
+      (setq receipt
+            (append receipt
+                    (list :details-uri
+                          (e-harness--safe-activity-scalar details-uri)))))
+    (append receipt (list :details-lifetime 'session-tmp))))
+
 (defun e-harness--compact-tool-finished-payload (payload)
-  "Return a narrow durable projection of tool-finished PAYLOAD."
+  "Return the compact durable projection of tool-finished PAYLOAD.
+Nested host-authored calls retain causal identity only.  A top-level finished
+call records one receipt whose content and operation arguments live in the
+detached invocation-details artifact."
   (let* ((call (and (listp payload) (plist-get payload :tool-call)))
          (result (and (listp payload) (plist-get payload :result)))
          (projected
           (append
-           (list :tool-call
-                 (e-harness--tool-call-activity-projection call nil))
+           (list :tool-call (e-harness--tool-call-identity-projection call))
            (e-harness--tool-relation-activity-fields payload))))
-    ;; Unknown, malformed, and legacy result shapes retain only call identity
-    ;; and causal fields.  They never fall back to persisting the raw payload.
-    (when (e-tools-result-p result)
+    (when (and (not (plist-get payload :nested))
+               (e-tools--result-for-call-p result call)
+               (stringp e-harness--trusted-tool-details-uri)
+               (not (string-empty-p e-harness--trusted-tool-details-uri)))
       (setq projected
             (append projected
-                    (list :result
-                          (e-harness--compact-tool-result-for-activity result)))))
+                    (list :receipt
+                          (e-harness--tool-receipt-activity-projection
+                           call result
+                           e-harness--trusted-tool-details-uri)))))
     projected))
 
 (defun e-harness--activity-field (payload key predicate &optional transform)
@@ -2163,13 +2166,17 @@ compaction) where exposing tools risks a tool-call instead of a reply."
               :on-done
               (lambda (result)
                   (condition-case err
-                      (when on-done
-                        (funcall
-                         on-done
-                         (e-harness--tool-result-through-stages
-                          harness session-id turn-id tool-call result
-                          archival-call archival-rejected-p
-                          archival-received-arguments (context))))
+                      (let ((details-holder (list nil)))
+                        (let ((staged-result
+                               (e-harness--tool-result-through-stages
+                                harness session-id turn-id tool-call result
+                                archival-call archival-rejected-p
+                                archival-received-arguments (context)
+                                details-holder)))
+                          (let ((e-harness--trusted-tool-details-uri
+                                 (car details-holder)))
+                            (when on-done
+                              (funcall on-done staged-result)))))
                     (error
                      (if on-error
                          (funcall on-error err)
@@ -2829,7 +2836,7 @@ also emitting the normal compaction failure event."
 (defun e-harness--tool-result-through-stages
     (harness session-id turn-id tool-call result
              &optional archival-call archival-rejected-p
-             archival-received-arguments stage-context)
+             archival-received-arguments stage-context details-holder)
   "Run RESULT through semantic, archival, and presentation stages.
 ARCHIVAL-CALL and its rejection fields are an internal detached side channel;
 they are never included in the transcript message or lifecycle event."
@@ -2862,6 +2869,9 @@ they are never included in the transcript message or lifecycle event."
           (append (list :invocation-details-uri
                         (plist-get detail-context :invocation-details-uri))
                   context)))
+    (when details-holder
+      (setcar details-holder
+              (plist-get detail-context :invocation-details-uri)))
     (e-hooks-run-reduce hooks :tool-result-presentation archived-result
                         presentation-context)))
 
@@ -2872,18 +2882,20 @@ they are never included in the transcript message or lifecycle event."
            (archival-rejected-p (plist-get entry :open-tool-archival-rejected-p))
            (archival-received-arguments
             (plist-get entry :open-tool-archival-received-arguments))
+           (details-holder (list nil))
            (result (e-harness--tool-result-through-stages
                     harness session-id turn-id tool-call
                     (e-harness--cancelled-tool-result tool-call)
                     archival-call archival-rejected-p
-                    archival-received-arguments))
+                    archival-received-arguments nil details-holder))
            (message (list :role 'tool
                           :content result
                           :metadata nil)))
-      (e-harness--append-message harness session-id turn-id message)
-      (e-harness--emit-turn-event
-       harness session-id turn-id 'tool-finished
-       (list :tool-call tool-call :result result))
+      (let ((e-harness--trusted-tool-details-uri (car details-holder)))
+        (e-harness--append-message harness session-id turn-id message)
+        (e-harness--emit-turn-event
+         harness session-id turn-id 'tool-finished
+         (list :tool-call tool-call :result result)))
       (plist-put entry :open-tool-call nil)
       (plist-put entry :open-tool-archival-call nil)
       (plist-put entry :open-tool-archival-rejected-p nil)
