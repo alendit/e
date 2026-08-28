@@ -1832,10 +1832,11 @@ submitted erase label and no retained exact or summary labels."
 
 (defun e-live-e2e--autonomous-erase-prompt (&optional tool-name)
   "Return the naturalistic negative-adoption prompt for TOOL-NAME.
-The prompt describes current-answer use only and deliberately contains no
-carrier, curation, source-label, reasoning, schema, or argument vocabulary."
+The prompt describes current-answer use plus no future lookup reminder, and
+deliberately contains no carrier, curation, source-label, reasoning, schema,
+or argument vocabulary."
   (format
-   "Call the %s lookup tool exactly once. The returned value is useful only for the current answer. Reverse every character of its returned sentinel exactly and reply with only that transformed value and no extra text."
+   "Call the %s lookup tool exactly once. The returned sentinel is useful only for this answer, and after this answer I do not want any reminder that the lookup happened carried into later turns. Reverse every character of the sentinel exactly and reply with only that transformed value and no extra text."
    (or tool-name "e2e_deterministic")))
 
 (defun e-live-e2e--reopened-receipt-equal-p (original-event reopened-event)
@@ -2146,14 +2147,19 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                      "CONTEXT-CURATE is forbidden.")))))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-prompt-negative-inventory ()
-  "The negative adoption prompt requests only a current-answer transformation."
+  "The negative prompt asks for current use and no later lookup reminder."
   (let ((prompt (e-live-e2e--autonomous-erase-prompt "e2e_deterministic")))
     (should (string-match-p (regexp-quote "e2e_deterministic") prompt))
+    (should (= (length (split-string prompt "e2e_deterministic")) 2))
     (should (string-match-p (regexp-quote "exactly once") prompt))
-    (should (string-match-p (regexp-quote "useful only for the current answer")
+    (should (string-match-p (regexp-quote "useful only for this answer")
                             prompt))
-    (should (string-match-p (regexp-quote "Reverse every character") prompt))
-    (should (string-match-p (regexp-quote "returned sentinel") prompt))
+    (should (string-match-p (regexp-quote "after this answer") prompt))
+    (should (string-match-p (regexp-quote "do not want any reminder") prompt))
+    (should (string-match-p (regexp-quote "the lookup happened") prompt))
+    (should (string-match-p (regexp-quote "carried into later turns") prompt))
+    (should (string-match-p (regexp-quote "Reverse every character of the sentinel")
+                            prompt))
     (should (string-match-p (regexp-quote "only that transformed value")
                             prompt))
     (should (string-match-p (regexp-quote "no extra text") prompt))
