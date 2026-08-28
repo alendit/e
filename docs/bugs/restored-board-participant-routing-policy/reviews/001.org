@@ -1,0 +1,388 @@
+#+title: Review 001 — Restored Board Participant Routing Policy
+#+startup: overview
+
+* Decision
+
+Fixed point is not accepted.
+
+Reviewed revision: =3fdc21fc15c33379dba8a1b48d82e9617ebc43a4=.
+Baseline parent: =a6435cf86f870e7b58ce24d5410512dd4148bb7c=.
+Goal: =BUG-RBPRP-1=.
+Review mode: whole-package implementation rebaseline.
+
+The candidate establishes the intended owner split and proves the ordinary
+fresh/restart root/private routing path.  It does not yet preserve every
+admitted selector across JSON replay, isolate sibling terminal presentation
+when causal turn identities coincide, or implement the accepted legacy upgrade
+and fail-closed compatibility boundary.  Expected participant-creation failure
+also leaves a user-facing orphan session.  There are no P0 findings; three P1,
+two P2, and two P3 findings remain.
+
+The review covered the complete coherent package, not only the commit diff:
+=e-session= schema/index/checkpoint/replay, =e-chat-service= creation/open/
+restore and board projection, registry routing, chat live/replay settlement,
+the real board/chat composition, compatibility, documentation, and the
+supplied repository-wide evidence.
+
+* Contract and evidence matrix
+
+| ID | Required behavior | Evidence inspected | Disposition |
+|----+-------------------+--------------------+-------------|
+| R1-SCHEMA | Persist one exact, complete participant identity, pickup selector, observer selector, default tags, and default target | =e-session.el:1875-2091,3316-3354=; codec tests | Open: F001, F005 |
+| R1-REPLAY | JSONL, index, checkpoint, reopen, and branch selection preserve routing meaning | =e-session.el:1559-1580,1674-1697,1998-2036,2375-2391,2745-2776=; direct JSON replay probe | Open: F001; nested state retention itself clears |
+| R1-OWNERS | Session owns schema/replay, service owns admission, registry owns participant id | production owners and architecture docs | Cleared apart from admission atomicity F004 |
+| R2-FRESH | Ordinary main input reaches only the root; private input reaches only the private participant | composed test exact message/pickup/participant assertions | Cleared for newly created valid policies |
+| R2-RESTART | The same identities, selectors, recipients, deliveries, private defaults, and root observer survive restart | =test/e-chat-test.el:6289-6412= and focused 1/1 rerun | Cleared for the tested tag/exact-target policy; F001 and F003 keep the full row open |
+| S1-SUCCESS | Only selected output/success/empty-output may settle selected progress, status, and composer | ownership projection and live render branches; focused tests | Cleared for distinct presentation turn ids |
+| S1-TERMINAL | Sibling success/failure/cancel remains visible but cannot mutate selected presentation, including replay | =e-chat.el:6348-6459,8180-8242,8496-8524=; causal-alias probe | Open: F002, F006 |
+| S2-INTENT | Composer classifies submit/steer from the selected participant's true active state | =e-chat.el:8684-8702= calls =e-chat-service-active-turn-p=, which reads the selected attachment | Cleared; F002 still permits contradictory replay/snapshot presentation |
+| COMPAT | Canonical roleless root/owner defaults remain; implicit participant restore fails closed; explicit complete legacy admission may upgrade | =e-chat-service.el:683-702,782-893,1171-1188=; two direct probes | Open: F003 |
+| ATOMIC | Invalid/conflicting create, open, and restore fail before externally visible mutation | creation/open/restore ordering and direct invalid-policy probe | Open: F004; implicit restore validates before registry creation |
+| TEST | Deterministic owner, JSON restart, real board/chat observer, all terminal dispositions, and stable public assertions | focused 11/11; composed 1/1; full-suite classification; test source | Open only for the missing finding regressions |
+| DOC | Report, investigation, architecture, and Feature 66 ledgers describe current behavior and evidence without overclaim | all four changed documentation owners | Open: F007 |
+
+No required cell is merely unknown.  The open cells have concrete source or
+runtime evidence below.  External model/provider evidence is not required by
+this bug contract, and the historical live incident remains motivation rather
+than a completion gate.
+
+* Findings
+
+** P1 F001 — JSON replay changes admitted selector attribute values
+
+Requirement: =R1-SCHEMA=, =R1-REPLAY=, and therefore =R2-RESTART= require the
+same routing meaning before and after restart.
+
+Observed fact:
+
+- The validator deliberately accepts non-keyword symbols as selector data at
+  =lisp/core/e-session.el:1885-1896=, including the symbol-valued attribute
+  fixture at =test/e-session-test.el:151-160=.
+- Replay normalization restores known kind and tag fields, but does not restore
+  nested =:attributes= values at =lisp/core/e-session.el:1998-2036=.
+- The board matcher compares attribute values with exact =equal= at
+  =lisp/core/e-board.el:1870-1879=.
+- A persistent-store probe at the reviewed revision produced
+  =(:before (:marker car) :after (:marker "car"))=.
+
+Consequence: a selector admitted and effective before persistence can stop
+matching after JSON reopen, or collide with a separately meaningful string.
+The passing persistence test uses only kind/tags and cannot detect that semantic
+change.
+
+Minimal remediation: define one reversible durable representation for admitted
+attribute atoms, preserving the symbol/string distinction through JSONL,
+index, checkpoint, and replay.  If symbols are not part of the real contract,
+reject them before first persistence and remove the test that declares them
+valid; do not make symbol and string values loosely equal in the matcher.
+
+Acceptance evidence: route otherwise identical messages whose marker values are
+=car= and ="car"= before and after persistent reopen and checkpoint rewrite;
+prove each selector continues to select only its original value.  Include
+nested list/vector/plist attribute values and caller-mutation detachment.
+
+** P1 F002 — Sibling terminal activity can mutate the selected turn through a shared causal id
+
+Requirement: =S1-TERMINAL= allows sibling activity to be visible but forbids it
+from settling or changing selected-owned presentation state.  =S2-INTENT=
+requires presentation and selected execution state to remain coherent.
+
+Observed fact:
+
+- Service projection intentionally maps output/activity back to the causal
+  board input at =lisp/core/e-chat-service.el:316-327,343-352=.  Selected and
+  sibling private turns caused by one input can therefore share the same shell
+  =turn-id=.
+- The sibling terminal renderer says it is non-settling, but still sets the
+  selected record's end time, settles its open thought, and records failure at
+  =lisp/shells/chat/e-chat.el:6441-6459=.
+- Replayed activity also records =turn-finished= without an ownership gate at
+  =lisp/shells/chat/e-chat.el:6348-6371=.  The service state reducer clears an
+  equal active id without checking selected ownership at
+  =lisp/core/e-chat-service.el:1207-1220=.
+- Cancellation replay is unreachable: the terminal selector admits only
+  =turn-failed= at =lisp/shells/chat/e-chat.el:8496-8502= although its consumer
+  contains a cancellation branch at lines 8519-8524.
+- A direct same-id probe left progress and global status running but changed
+  the selected record to =:ended-at 2=, its provider round to =:status failed=,
+  its Thought row to =failed=, and its failure text to the sibling error.
+- The focused sibling test uses =selected-turn=, =sibling-failed=, and
+  =sibling-cancelled= as distinct ids at =test/e-chat-test.el:6157-6209=.  The
+  composed test's sibling output has no causal delivery/reply link at lines
+  6385-6401, so it also misses the incident identity join.
+
+Consequence: the UI can simultaneously show the selected turn as running and
+its thought as failed/ended by a sibling.  Reopen omits no-output cancellation,
+and a state snapshot can hide a genuinely active selected turn.  This is the
+same semantic shape as the reported settlement incident even though the global
+composer gate itself now remains selected-owned.
+
+Minimal remediation: gate every selected turn-record and state-reducer mutation
+on selected ownership, not only global progress/status/composer changes.  Render
+sibling terminal rows without reusing or mutating the selected record; use a
+board-message/subject/source identity if a row identity is needed.  Include
+=turn-cancelled= in terminal replay and render selected cancellation with its
+own semantics.
+
+Acceptance evidence: through real board delivery, cause selected and sibling
+private turns from the same input, then cover sibling success, failure,
+cancellation, and empty output while the selected participant remains active.
+Assert selected record/Thought/progress/status/composer and =submit/steer=
+independently, then checkpoint/reopen and repeat failure/cancellation visibility
+and non-mutation.  Use semantic fields rather than whole internal plists.
+
+** P1 F003 — Legacy admission does not implement the accepted fail-closed boundary
+
+Requirement: =COMPAT= permits main defaults only for the canonical roleless
+root and owner records, rejects implicit participant restoration without a
+policy, and permits an explicit caller-supplied complete legacy upgrade.
+
+Observed fact:
+
+- =e-chat-service--session-routing-policy= signals immediately for a
+  participant-role record without policy at
+  =lisp/core/e-chat-service.el:683-702=.  =e-chat-service-open-board= calls it
+  before considering explicit arguments at lines 856-879, so the promised
+  explicit upgrade is impossible.  The probe returned
+  =(:explicit-upgrade e-session-error :policy nil)=.
+- The canonical =chat:<session-id>= check exists only in root catalog filtering
+  at =lisp/core/e-chat-service.el:1171-1188=.  Binding any other roleless board
+  association falls through to generic =main= selectors at lines 782-822.  A
+  noncanonical roleless probe returned
+  =(:policy nil :default-tags (main) :default-to nil)=.
+- If a policy already exists, =open-board= silently ignores supplied conflicting
+  routing arguments at lines 863 and 880-887.
+
+Consequence: a legacy private participant cannot use the only accepted upgrade
+route, while an ambiguous noncanonical legacy record can be silently widened to
+main routing.  Callers also cannot tell that requested overrides were ignored.
+
+Minimal remediation: make admission modes explicit before binding: use the
+durable complete policy when present and reject conflicting override arguments;
+allow a complete validated caller policy to upgrade a missing-policy legacy
+record; apply main defaults only to a canonical roleless root/owner; fail closed
+for every other missing-policy association.  Persist an admitted upgrade once,
+then attach from that persisted value.
+
+Acceptance evidence: cover canonical roleless root and owner, noncanonical
+roleless state, participant-role implicit restore, participant-role explicit
+complete upgrade, incomplete upgrade, and conflicts with an existing policy.
+Assert association and registry/binding mutation as well as the returned error.
+
+** P2 F004 — Expected participant-creation failure leaves an orphan root session
+
+Requirement: =ATOMIC= requires invalid/conflicting admission to fail before
+session, association, or attachment becomes externally visible.
+
+Observed fact:
+
+- =e-chat-service-create-participant= creates the session first at
+  =lisp/core/e-chat-service.el:902-907=, then resolves the board and validates the
+  routing policy at lines 908-917, persists at lines 918-920, and attaches at
+  lines 921-928.
+- Invalid selector input therefore leaves a session with no board association.
+  =e-chat-service--root-session-p= treats an association-free session as a root
+  at =lisp/core/e-chat-service.el:1171-1183=.
+- The direct invalid-policy probe returned
+  =(:error e-session-error :session-exists t :roots ("orphan" "root"))=.
+- Implicit restore has the correct relative order: policy validation occurs at
+  =lisp/core/e-chat-service.el:785-788= before a missing board is created at
+  lines 793-812.
+
+Consequence: a rejected private-participant request pollutes the chat catalog
+with a false top-level session and may reserve the requested session id.
+
+Minimal remediation: resolve the board, participant identity, complete policy,
+and expected admission conflicts before creating or persisting the session.
+Keep the application-service operation atomic for expected failures; if a later
+owned step can still fail after mutation, provide a narrow rollback owned by
+the same service rather than swallowing the error.
+
+Acceptance evidence: invalid board, invalid selector, duplicate session id,
+duplicate participant id, persistence rejection, and attachment rejection leave
+no new session, root-catalog row, association, registry participant, binding, or
+subscription.  Successful creation must still persist before it is exposed as
+restorable.
+
+** P2 F005 — “Bounded” routing policy has no domain bound
+
+Requirement: =R1-SCHEMA= explicitly calls selectors bounded declarative data.
+
+Observed fact: =e-session--board-routing-json-value-p= rejects cycles but walks
+arbitrary finite lists/vectors at =lisp/core/e-session.el:1885-1927=, and the
+validity check calls =json-encode= without a prior node or byte ceiling at lines
+1929-1934.  Policy validation at lines 1970-1996 adds no string, collection,
+node, or encoded-byte limit.  Transport command budgets are not a domain policy
+bound and do not protect the in-memory store or pre-encoding work.
+
+Consequence: caller-controlled routing data can impose unbounded validation,
+encoding, index, checkpoint, and replay work.  The architecture self-check's
+bounded-cost claim is not established.
+
+Minimal remediation: choose one measured stable policy ceiling and enforce
+structural and canonical UTF-8/encoded-byte bounds before persistence or
+attachment.  Bound strings and collections before full JSON encoding.  Reuse a
+domain-owned board/session budget only if its semantics match this value.
+
+Acceptance evidence: exact boundary, one-byte/one-node-over, deeply nested,
+large-string, and large-collection tests must prove rejection before mutation
+in both in-memory and persistent paths; a representative private policy must
+remain comfortably below the limit.
+
+** P3 F006 — The shell's synthetic-event compatibility path fails open for board-shaped events
+
+Requirement: =S1-TERMINAL= needs selected ownership on every board projection;
+the historical fallback is only for direct synthetic shell events.
+
+Observed fact: every current service branch derives the top-level ownership
+fact from the attached participant at
+=lisp/core/e-chat-service.el:337-369= and copies it into projected messages at
+lines 373-417.  However, =e-chat--event-selected-participant-p= and the message
+equivalent return true for any missing key at
+=lisp/shells/chat/e-chat.el:8136-8150=; they do not distinguish a keyless direct
+event from a malformed board-shaped projection.
+
+Consequence: one future or malformed board projection that omits the marker
+regains the original fail-open settlement behavior.  Current production
+projections are complete, so this is a boundary defect rather than evidence of
+another current delivery path.
+
+Minimal remediation: preserve historical true only for events with no board
+identity.  A board-shaped event/message with =:board-id=, =:board-seq=, or
+=:message-id= but no explicit ownership fact must be non-settling or signal at
+the projection boundary.
+
+Acceptance evidence: a direct synthetic non-board event retains legacy
+rendering; board-shaped events with explicit true, explicit nil, and missing
+ownership respectively settle, remain observed-only, and fail closed.
+
+** P3 F007 — Completion and evidence prose overstates the candidate
+
+Requirement: =DOC= requires the bug and architecture ledgers to distinguish
+implemented intent, accepted evidence, and remaining review findings.
+
+Observed fact:
+
+- =investigation.org:35-36= says the historical state persisted only board id
+  and principal, although association role was already durable in the baseline.
+- Lines 130-134 still say focused tests do not cover the unsafe composition,
+  while lines 231-246 say the new test does; the accurate limitation is the
+  missing shared-causal-id terminal composition in F002.
+- Line 206 says the primary defect is fixed, and lines 253-255 say the ownership
+  gate supersedes the open conclusion.  =Feature 66 plan.org:23-35= and
+  =review2.org= likewise describe the correction as complete.
+- =investigation.org:328-329= claims bounded validation despite F005.  Its line
+  251 records the historical pre-candidate fact that no full suite was run,
+  without adding the exact candidate's classified full-suite evidence.
+
+Consequence: a maintainer can treat open correctness cells as accepted and
+misread historical evidence as the exact-revision gate.
+
+Minimal remediation: after functional remediation, state that the old record
+persisted board id, principal, and later role but not routing policy; mark the
+old composition-gap paragraph historical; replace completion claims with the
+review disposition until a zero-finding Tick; report the exact candidate's full
+suite with the six restricted-sandbox failures and successful loopback rerun;
+and make the cost claim match the implemented bound.  Update Feature 66 and
+architecture claims in the same documentation slice.
+
+Acceptance evidence: an Org/source scan has one current status, one exact
+reviewed revision, no stale “fixed/complete” assertion, and a truthful split
+between repository failures and environment-restricted fixtures.
+
+* Verification
+
+The independent focused package was rerun at the exact reviewed revision:
+
+#+begin_src sh
+eldev test \
+  -f test/e-session-test.el \
+  e-session-test-board-routing-policy-round-trips-and-detaches \
+  e-session-test-board-routing-policy-persistence-round-trips \
+  e-session-test-board-routing-policy-invalid-is-atomic \
+  e-session-test-board-routing-policy-owner-legacy-remains-readable \
+  -f test/e-modernchat-test.el \
+  e-chat-service-test-board-output-identifies-terminal-presentation \
+  e-chat-service-test-restored-participant-without-policy-fails-closed \
+  e-chat-service-test-restores-routing-policy-before-attachment \
+  -f test/e-session-persistence-test.el \
+  e-session-persistence-test-checkpoint-indexes-board-identity \
+  -f test/e-chat-test.el \
+  e-chat-test-board-final-assistant-settles-turn-progress \
+  e-chat-test-sibling-terminal-events-do-not-settle-selected-turn \
+  e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only
+#+end_src
+
+Result: 11/11 passed, 0 unexpected.  The strengthened composed scenario passed
+1/1 within that lane.
+
+Three bounded source probes reproduced F001, F003/F004, and F002 respectively:
+
+#+begin_example
+(:before (:marker car) :after (:marker "car"))
+(:explicit-upgrade e-session-error :policy nil)
+(:policy nil :default-tags (main) :default-to nil)
+(:error e-session-error :session-exists t :roots ("orphan" "root"))
+selected record after sibling failure:
+  :ended-at 2
+  provider round :status failed
+  Thought row :status failed
+  :failure-error "sibling"
+  progress remains "shared-input"; global status remains "waiting for provider"
+#+end_example
+
+Neutral exact-revision evidence supplied with the candidate was classified as
+follows:
+
+- full =eldev test=: 2464 total, 2456 expected passes, 2 expected skips, and six
+  local HTTP/network-process fixture failures under the restricted sandbox;
+- the same six fixtures reran 6/6 green with loopback access, so they are
+  environmental evidence rather than repository findings;
+- strict warnings-as-errors compilation of the five changed Lisp owners passed;
+- repository-wide compilation is *not* recorded as green: it reached the
+  unchanged =tools/migrate-session-checkpoints.el= and exited with its CLI usage;
+- =git diff --check
+  a6435cf86f870e7b58ce24d5410512dd4148bb7c..3fdc21fc15c33379dba8a1b48d82e9617ebc43a4=
+  passed.
+
+* Architecture review
+
+The main ownership direction is correct: session owns durable representation,
+chat service owns application admission/projection, registry owns board routing,
+and the shell owns presentation.  The policy has the required restart lifetime;
+selected ownership is correctly derived process-local state.  No Grimoire,
+provider, or shell-local routing policy was introduced.
+
+F004 is the material side-effect-placement exception: session creation occurs
+before service admission has a valid aggregate.  F002 is the material identity
+exception: a presentation convenience id is reused as if it were selected-turn
+ownership.  F006 leaves a fail-open compatibility branch broader than its
+synthetic-event purpose.  Closing these findings reduces coupling and removes
+partial state; it does not require a board-wide settlement abstraction or a new
+durable record.
+
+Performance remains ordinary-path constant apart from policy validation and
+persistence, but F005 means the claimed worst-case bound is absent.  Branch
+selection does not independently vary board routing policy, and checkpoint
+records retain the whole association; no separate routing ledger is present.
+
+* Residual risks and fixed-point disposition
+
+- The historical live incident is observational motivation.  No provider call,
+  live Emacs probe, graphical test, or running-Emacs mutation is needed to
+  reproduce the remaining defects.
+- Graphical redisplay is not a remaining evidence requirement: the settlement
+  corruption reproduces in the shell's semantic record in batch ERT.  A later
+  graphical regression may be useful but cannot substitute for the real causal
+  composition.
+- The six full-suite failures are classified environmental only because their
+  exact fixtures passed with loopback access.  Repository-wide compile remains
+  unavailable as a green aggregate for the stated unchanged CLI reason.
+- The running Emacs was left unchanged.  The reviewed core, session, service,
+  and shell behavior would require a restart before use.
+
+Fixed point is rejected at
+=3fdc21fc15c33379dba8a1b48d82e9617ebc43a4=.  After F001-F007 are remediated,
+the exact-revision gate must rerun the focused owners, the causal-id live/replay
+composition, the classified full suite, strict owner compilation, Org checks,
+and diff check before a fresh independent Tick can accept the package.
