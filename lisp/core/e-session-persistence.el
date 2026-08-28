@@ -364,9 +364,19 @@ they do not introduce a checkpoint or a second write."
 
 (defun e-session-persistence--checkpoint-operation (controller session-id)
   "Return one bounded writer checkpoint operation for CONTROLLER SESSION-ID."
-  (let ((store (e-session-persistence-store controller)))
+  (let* ((store (e-session-persistence-store controller))
+         ;; The public manifest stays in the detached in-memory shape used by
+         ;; callers.  The Node writer, however, also consumes its board state
+         ;; as a JSON checkpoint/index source, so encode routing attributes at
+         ;; this transport boundary just as append records do.
+         (manifest (copy-tree (e-session-checkpoint-manifest
+                               store session-id))))
+    (when (plist-member manifest :board-state)
+      (plist-put manifest :board-state
+                 (e-session--board-association-for-json
+                  (plist-get manifest :board-state))))
     (list :op "checkpoint"
-          :sessions (vector (e-session-checkpoint-manifest store session-id)))))
+          :sessions (vector manifest))))
 
 (defun e-session-persistence--reindex-operation ()
   "Return the writer operation used as a checkpoint-batch index barrier."

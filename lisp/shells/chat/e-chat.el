@@ -6424,11 +6424,29 @@ function records only lifecycle audit text."
   "Render durable ACTIVITY-EVENTS for TURN-ID once."
   (when-let ((record (e-chat--turn-record turn-id)))
     (unless (plist-get record :activity-rendered)
-      (dolist (event activity-events)
-        (when (equal (plist-get event :turn-id) turn-id)
-          (e-chat--record-activity-event turn-id event)))
-      (plist-put record :activity-rendered t)
-      (e-chat--render-turn-transient turn-id record))))
+      (let (selected-event-p)
+        (dolist (event activity-events)
+          (when (equal (plist-get event :turn-id) turn-id)
+            (let* ((selected-p (e-chat--event-selected-participant-p event))
+                   (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+              (when selected-p
+                (setq selected-event-p t))
+              (e-chat--record-activity-event render-turn-id event)
+              (when-let ((render-record
+                          (e-chat--existing-turn-record render-turn-id)))
+                (plist-put render-record :activity-rendered t)))))
+        ;; An observed sibling can share the causal TURN-ID.  Do not mutate
+        ;; the selected record merely because its sibling's activity was
+        ;; replayed; only selected-owned activity establishes this marker.
+        (when selected-event-p
+          (plist-put record :activity-rendered t)
+          (e-chat--render-turn-transient turn-id record))
+        (when (and (not selected-event-p)
+                   e-chat--progress-turn-id)
+          (when-let ((selected-record
+                      (e-chat--existing-turn-record e-chat--progress-turn-id)))
+            (e-chat--render-turn-transient
+             e-chat--progress-turn-id selected-record)))))))
 
 (defun e-chat--record-turn-failure (turn-id payload)
   "Record failed-turn PAYLOAD for TURN-ID."
@@ -6439,15 +6457,19 @@ function records only lifecycle audit text."
     record))
 
 (defun e-chat--render-observed-terminal-event
-    (turn-id created-at event-type payload)
+    (turn-id created-at event-type payload &optional event)
   "Render an observed sibling terminal EVENT-TYPE without settling this chat.
 The semantic row remains visible, but the selected participant's progress,
 status, and composer are owned by the selected terminal path only."
-  (let ((record (e-chat--existing-turn-record turn-id)))
-    (e-chat--set-turn-time turn-id :ended-at created-at)
-    (e-chat--settle-open-thinking turn-id created-at event-type)
+  (let* ((render-turn-id (e-chat--observed-turn-id turn-id event))
+         (selected-turn-id e-chat--progress-turn-id)
+         (selected-record (and selected-turn-id
+                               (e-chat--existing-turn-record selected-turn-id)))
+         (record (e-chat--existing-turn-record render-turn-id)))
+    (e-chat--set-turn-time render-turn-id :ended-at created-at)
+    (e-chat--settle-open-thinking render-turn-id created-at event-type)
     (when (eq event-type 'failed)
-      (e-chat--record-turn-failure turn-id payload))
+      (e-chat--record-turn-failure render-turn-id payload))
     (e-chat--insert-entry
      "System"
      (if (eq event-type 'cancelled)
@@ -6455,8 +6477,14 @@ status, and composer are owned by the selected terminal path only."
        (format "Turn failed: %s"
                (or (plist-get payload :error) "Turn failed")))
      nil
-     turn-id
-     (and record (e-chat--turn-details-text turn-id record)))))
+     render-turn-id
+     (and record (e-chat--turn-details-text render-turn-id record)))
+    ;; Inserting an observed row removes the selected running-status block as
+    ;; a physical-buffer operation.  Re-render only that transient; no selected
+    ;; turn record or settlement state is changed here.
+    (when (and selected-turn-id selected-record
+               (equal e-chat--progress-turn-id selected-turn-id))
+      (e-chat--render-turn-transient selected-turn-id selected-record))))
 
 (defun e-chat--render-turn-failure
     (turn-id created-at payload &optional ensure-composer)
@@ -6487,6 +6515,26 @@ status, and composer are owned by the selected terminal path only."
     ;; tool-call counts.  `finalize-turn-display' is a no-op when the turn did
     ;; no provider work (`settled-activity-p' is nil), so failures before any
     ;; round add no empty summary.
+    (e-chat--finalize-turn-display turn-id)))
+
+(defun e-chat--render-turn-cancellation
+    (turn-id created-at &optional ensure-composer)
+  "Render selected TURN-ID as cancelled at CREATED-AT."
+  (e-chat--set-turn-time turn-id :ended-at created-at)
+  (e-chat--settle-open-thinking turn-id created-at 'cancelled)
+  (e-chat--cancel-pending-activity-redraw turn-id)
+  (e-chat--stop-progress-indicator turn-id)
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (e-chat--delete-turn-transient record))
+  (e-chat--clear-running-status-markers)
+  (e-chat--set-status "cancelled")
+  (let ((record (e-chat--existing-turn-record turn-id)))
+    (e-chat--insert-entry
+     "System" "Turn cancelled" ensure-composer turn-id
+     (and record (e-chat--turn-details-text turn-id record)))
+    ;; Persist the activity summary (duration, tool-call count) below the
+    ;; cancellation, matching the failed-turn path.  No-op when the turn did
+    ;; no provider work.
     (e-chat--finalize-turn-display turn-id)))
 
 (defun e-chat--finalize-turn-display (turn-id)
@@ -8138,16 +8186,58 @@ separate dimmed representation instead."
 Board-backed service projections carry this process-local ownership fact.  A
 synthetic shell event without the fact retains the historical direct-render
 behavior; real board events always include the key, including an explicit nil
-for an observed sibling or an event with no participant subject."
+for an observed sibling or an event with no participant subject.  A malformed
+board-shaped event without the fact is rejected from selected settlement."
   (if (plist-member event :selected-participant-p)
       (eq (plist-get event :selected-participant-p) t)
-    t))
+    (not (e-chat--board-shaped-p event))))
+
+(defun e-chat--board-shaped-p (value)
+  "Return non-nil when VALUE carries a board projection identity."
+  (or (plist-member value :board-id)
+      (plist-member value :board-seq)
+      (plist-member value :message-id)
+      (plist-member value :subject-participant-id)))
 
 (defun e-chat--message-selected-participant-p (message)
   "Return whether projected MESSAGE belongs to this chat's participant."
   (if (plist-member message :selected-participant-p)
       (eq (plist-get message :selected-participant-p) t)
-    t))
+    (not (e-chat--board-shaped-p message))))
+
+(defun e-chat--observed-turn-id (turn-id event)
+  "Return an isolated presentation id for unselected EVENT.
+The causal TURN-ID can be shared by board participants, so sibling rows use
+their own durable board identity and never mutate the selected turn record."
+  (let ((board-id (plist-get event :board-id))
+        (subject-participant-id (plist-get event :subject-participant-id))
+        (source-turn-id (plist-get event :source-turn-id)))
+    (if (and board-id subject-participant-id)
+        ;; Board delivery rows for one sibling turn often have different
+        ;; message/activity ids.  Their durable board + subject + source
+        ;; identity is the stable presentation key; include the causal id to
+        ;; keep reused source ids from crossing selected turns.
+        (list :observed-board-turn
+              :board-id (copy-tree board-id)
+              :subject-participant-id (copy-tree subject-participant-id)
+              :source-turn-id (copy-tree source-turn-id)
+              :causal-turn-id (copy-tree turn-id))
+      ;; Only malformed/subjectless rows may use a per-row fallback.  A
+      ;; well-formed board projection must never split one sibling turn by
+      ;; message id or board sequence.
+      (format "%s:observed:%s"
+              turn-id
+              (or (plist-get event :message-id)
+                  (plist-get event :board-seq)
+                  (plist-get event :id)
+                  (plist-get event :event-type)
+                  (sxhash-equal event))))))
+
+(defun e-chat--presentation-turn-id (turn-id event)
+  "Return EVENT's selected or isolated presentation turn id."
+  (if (e-chat--event-selected-participant-p event)
+      turn-id
+    (e-chat--observed-turn-id turn-id event)))
 
 (defun e-chat--settle-successful-turn-presentation (turn-id ended-at)
   "Settle successful TURN-ID presentation at ENDED-AT.
@@ -8211,38 +8301,26 @@ rows, so either may establish this idempotent presentation boundary."
         (plist-get event :turn-id)
         (plist-get event :created-at)
         'failed
-        (plist-get event :payload))))
+        (plist-get event :payload)
+        event)))
     ('turn-cancelled
      (if (e-chat--event-selected-participant-p event)
          (let* ((turn-id (plist-get event :turn-id))
                 (created-at (plist-get event :created-at))
                 (output-tail-windows
                  (e-chat--capture-live-output-follow-windows)))
-           (e-chat--set-turn-time turn-id :ended-at created-at)
-           (e-chat--settle-open-thinking turn-id created-at 'cancelled)
-           (e-chat--cancel-pending-activity-redraw turn-id)
-           (e-chat--stop-progress-indicator turn-id)
-           (when-let ((record (e-chat--existing-turn-record turn-id)))
-             (e-chat--delete-turn-transient record))
-           (e-chat--clear-running-status-markers)
-           (e-chat--set-status "cancelled")
-           (let ((record (e-chat--existing-turn-record turn-id)))
-             (e-chat--insert-entry
-              "System" "Turn cancelled" t turn-id
-              (and record (e-chat--turn-details-text turn-id record)))
-             ;; Persist the activity summary (duration, tool-call count) below the
-             ;; cancellation, matching the failed-turn path.  No-op when the turn
-             ;; did no provider work.
-             (e-chat--finalize-turn-display turn-id))
+           (e-chat--render-turn-cancellation turn-id created-at t)
            (e-chat--restore-output-tail-windows output-tail-windows))
        (e-chat--render-observed-terminal-event
         (plist-get event :turn-id)
         (plist-get event :created-at)
         'cancelled
-        (plist-get event :payload))))
+        (plist-get event :payload)
+        event)))
     ('compaction-started
      (let ((payload (plist-get event :payload)))
-       (e-chat--set-status "compacting")
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "compacting"))
        (e-chat--insert-entry
         "System"
         (cond
@@ -8256,7 +8334,8 @@ rows, so either may establish this idempotent presentation boundary."
         (plist-get event :turn-id))))
     ('compaction-prepared
      (let ((payload (plist-get event :payload)))
-       (e-chat--set-status "compaction prepared")
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "compaction prepared"))
        (e-chat--insert-entry
         "System"
         (format "Compaction prepared; keeping from %s"
@@ -8264,11 +8343,13 @@ rows, so either may establish this idempotent presentation boundary."
         t
         (plist-get event :turn-id))))
     ('compaction-summary-started
-     (e-chat--set-status "summarizing context"))
+     (when (e-chat--event-selected-participant-p event)
+       (e-chat--set-status "summarizing context")))
     ('compaction-finished
      (let ((payload (plist-get event :payload)))
-       (e-chat--invalidate-mode-line-context-estimate)
-       (e-chat--set-status "compacted" t)
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--invalidate-mode-line-context-estimate)
+         (e-chat--set-status "compacted" t))
        (e-chat--insert-entry
         "System"
         (format "%s %s"
@@ -8278,10 +8359,12 @@ rows, so either may establish this idempotent presentation boundary."
                 (or (plist-get payload :compaction-id) "summary"))
         t
         (plist-get event :turn-id))
-       (e-chat--ensure-composer)
-       (e-chat--refresh-composer-position)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--ensure-composer)
+         (e-chat--refresh-composer-position))))
     ('compaction-failed
-     (e-chat--set-status "compaction failed")
+     (when (e-chat--event-selected-participant-p event)
+       (e-chat--set-status "compaction failed"))
      (e-chat--insert-entry
       "System"
       (let ((payload (plist-get event :payload)))
@@ -8303,19 +8386,29 @@ rows, so either may establish this idempotent presentation boundary."
         (t
          (let* ((assistant-p (eq (plist-get message :role) 'assistant))
                 (turn-id (plist-get event :turn-id))
+                (render-turn-id
+                 (e-chat--presentation-turn-id turn-id event))
                 (output-tail-windows
                  (and assistant-p
                       (e-chat--capture-live-output-follow-windows))))
-           (e-chat--render-durable-message message turn-id)
+           (e-chat--render-durable-message message render-turn-id)
+           (when (and (not (e-chat--event-selected-participant-p event))
+                      e-chat--progress-turn-id)
+             (when-let ((selected-record
+                         (e-chat--existing-turn-record
+                          e-chat--progress-turn-id)))
+               (e-chat--render-turn-transient
+                e-chat--progress-turn-id selected-record)))
            (when assistant-p
-             (plist-put (e-chat--turn-record turn-id)
+             (plist-put (e-chat--turn-record render-turn-id)
                         :assistant-output-rendered t)
              (when (and (plist-get message :terminal-output)
                         (e-chat--event-selected-participant-p event))
                (e-chat--settle-successful-turn-presentation
-                turn-id (plist-get event :created-at)))
+                render-turn-id (plist-get event :created-at)))
              (e-chat--restore-output-tail-windows output-tail-windows))
-           (when assistant-p
+           (when (and assistant-p
+                      (e-chat--event-selected-participant-p event))
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)
              (e-chat--refresh-session-display)))))))
@@ -8328,26 +8421,34 @@ rows, so either may establish this idempotent presentation boundary."
        (unless (e-chat--reconcile-message-display message)
          (e-chat--rerender-transcript))))
     ('provider-request-started
-     (setq e-chat--assistant-streaming-p nil)
-     (e-chat--set-status "waiting for provider")
+     (when (e-chat--event-selected-participant-p event)
+       (setq e-chat--assistant-streaming-p nil))
+     (when (e-chat--event-selected-participant-p event)
+       (e-chat--set-status "waiting for provider"))
      (e-chat--record-provider-started
-      (plist-get event :turn-id)
+      (e-chat--presentation-turn-id
+       (plist-get event :turn-id) event)
       (plist-get event :created-at))
-     (e-chat--request-activity-redraw (plist-get event :turn-id)))
+     (e-chat--request-activity-redraw
+      (e-chat--presentation-turn-id (plist-get event :turn-id) event)))
     ('provider-request-finished
      (e-chat--record-provider-finished
-      (plist-get event :turn-id)
+      (e-chat--presentation-turn-id
+       (plist-get event :turn-id) event)
       (plist-get event :created-at)
       (plist-get (plist-get event :payload) :status))
-     (e-chat--request-activity-redraw (plist-get event :turn-id)))
+     (e-chat--request-activity-redraw
+      (e-chat--presentation-turn-id (plist-get event :turn-id) event)))
     ('turn-retrying
      (let* ((turn-id (plist-get event :turn-id))
             (payload (plist-get event :payload))
             (attempt (plist-get payload :attempt))
             (backoff (plist-get payload :backoff-seconds)))
+       (setq turn-id (e-chat--presentation-turn-id turn-id event))
        (e-chat--record-turn-retrying turn-id payload)
-       (e-chat--set-status
-        (format "retry %s in %.0fs" (or attempt 1) (or backoff 0)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status
+          (format "retry %s in %.0fs" (or attempt 1) (or backoff 0))))
        (e-chat--request-activity-redraw turn-id 'activity)))
     ('queue-changed
      (if (e-chat--surface-transcript-p)
@@ -8357,84 +8458,101 @@ rows, so either may establish this idempotent presentation boundary."
     ('turn-steered
      (let* ((turn-id (plist-get event :turn-id))
             (payload (plist-get event :payload))
-            (record (e-chat--turn-record turn-id)))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event))
+            (record (e-chat--turn-record render-turn-id)))
        (e-chat--record-steering-input
         record
         (plist-get payload :prompt-preview))
-       (e-chat--set-status "steered")
-       (e-chat--request-activity-redraw turn-id 'activity)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "steered"))
+       (e-chat--request-activity-redraw render-turn-id 'activity)))
     ('assistant-delta
-     (setq e-chat--assistant-streaming-p t)
-     (e-chat--set-status "streaming"))
+     (when (e-chat--event-selected-participant-p event)
+       (setq e-chat--assistant-streaming-p t)
+       (e-chat--set-status "streaming")))
     ('reasoning-delta
-     (e-chat--set-status "reasoning")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-reasoning-delta
-        record
-        (plist-get (plist-get event :payload) :content)
-        t
-        'activity)
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "reasoning"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-reasoning-delta
+          record
+          (plist-get (plist-get event :payload) :content)
+          t
+          'activity)
+         (e-chat--request-activity-redraw render-turn-id))))
     ('tool-started
-     (e-chat--set-status "tool")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-tool-started
-        record
-        (plist-get event :payload)
-        'activity
-        (plist-get event :created-at))
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "tool"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-tool-started
+          record
+          (plist-get event :payload)
+          'activity
+          (plist-get event :created-at))
+         (e-chat--request-activity-redraw render-turn-id))))
     ('tool-finished
-     (e-chat--set-status "tool done")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-tool-finished
-        record
-        (plist-get event :payload)
-        'activity
-        (plist-get event :created-at))
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "tool done"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-tool-finished
+          record
+          (plist-get event :payload)
+          'activity
+          (plist-get event :created-at))
+         (e-chat--request-activity-redraw render-turn-id))))
     ('action-started
-     (e-chat--set-status "action")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-action-started
-        record
-        (plist-get event :payload)
-        'activity)
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "action"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-action-started
+          record
+          (plist-get event :payload)
+          'activity)
+         (e-chat--request-activity-redraw render-turn-id))))
     ((or 'action-finished 'action-failed)
-     (e-chat--set-status "action done")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-action-finished
-        record
-        (plist-get event :payload)
-        'activity)
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "action done"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-action-finished
+          record
+          (plist-get event :payload)
+          'activity)
+         (e-chat--request-activity-redraw render-turn-id))))
     ('hook-audit
      ;; Audits remain durable and queryable, but are ordinary turn activity,
      ;; not user-facing system failures.  Keep the live path consistent with
      ;; replay, which records the compact summary below.
      (when-let ((turn-id (plist-get event :turn-id)))
-       (let ((record (e-chat--turn-record turn-id)))
+       (let* ((render-turn-id (e-chat--presentation-turn-id turn-id event))
+              (record (e-chat--turn-record render-turn-id)))
          (e-chat--record-hook-audit record (plist-get event :payload) 'activity)
-         (e-chat--request-activity-redraw turn-id 'activity))))
+         (e-chat--request-activity-redraw render-turn-id 'activity))))
     ('tool-progress
-     (e-chat--set-status "tool output")
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--record-tool-progress record (plist-get event :payload))
-       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+     (let* ((turn-id (plist-get event :turn-id))
+            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
+       (when (e-chat--event-selected-participant-p event)
+         (e-chat--set-status "tool output"))
+       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
+         (e-chat--record-tool-progress record (plist-get event :payload))
+         (e-chat--request-activity-redraw render-turn-id))))
     ('backend-empty-output
      (when (e-chat--event-selected-participant-p event)
        (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
        (e-chat--stop-progress-indicator (plist-get event :turn-id))
        (e-chat--set-status "done")))
     ('token-usage
-     (e-chat--request-mode-line-status-refresh t))
+     (when (e-chat--event-selected-participant-p event)
+       (e-chat--request-mode-line-status-refresh t)))
     ('provider-anchor-candidate
      nil)
     ('session-reset
@@ -8493,35 +8611,57 @@ service projection again."
                 source-events))))
     (e-chat--tail-messages events limit)))
 
-(defun e-chat--terminal-activity-event (turn-id activity-events)
-  "Return TURN-ID's terminal failure activity event, or nil."
-  (cl-find-if
+(defun e-chat--terminal-activity-events (turn-id activity-events)
+  "Return all terminal failure/cancellation events for TURN-ID.
+Selected and observed board participants share the causal turn id during
+replay.  Keep every matching terminal row so observed siblings remain
+renderable; settlement is gated separately by ownership in the renderer."
+  (cl-remove-if-not
    (lambda (event)
      (and (equal (plist-get event :turn-id) turn-id)
-          (eq (plist-get event :event-type) 'turn-failed)))
+          (memq (plist-get event :event-type)
+                '(turn-failed turn-cancelled))))
    activity-events))
+
+(defun e-chat--terminal-activity-event (turn-id activity-events)
+  "Return the first terminal failure/cancellation event for TURN-ID.
+This singular compatibility accessor is retained for callers that only need
+one event; replay rendering uses `e-chat--terminal-activity-events'."
+  (car (e-chat--terminal-activity-events turn-id activity-events)))
 
 (defun e-chat--render-replayed-terminal-event (turn-id activity-events)
   "Render replayed terminal activity for TURN-ID when no final block exists."
-  (when-let ((activity-event
-              (e-chat--terminal-activity-event turn-id activity-events)))
-    (let ((event-type (plist-get activity-event :event-type)))
-      (if (e-chat--event-selected-participant-p activity-event)
-          (let ((record (e-chat--turn-record turn-id)))
-            (unless (or (plist-get record :final-rendered)
-                        (plist-get record :failure-rendered))
-              (e-chat--render-turn-activity-events turn-id activity-events)
-              (e-chat--render-turn-failure
+  (let* ((terminal-events
+          (e-chat--terminal-activity-events turn-id activity-events))
+         (selected-event
+          (cl-find-if #'e-chat--event-selected-participant-p
+                      terminal-events)))
+    (when selected-event
+      (let ((record (e-chat--turn-record turn-id))
+            (event-type (plist-get selected-event :event-type)))
+        (unless (or (plist-get record :final-rendered)
+                    (plist-get record :failure-rendered))
+          (e-chat--render-turn-activity-events turn-id activity-events)
+          (if (eq event-type 'turn-cancelled)
+              (e-chat--render-turn-cancellation
                turn-id
-               (plist-get activity-event :created-at)
-               (plist-get activity-event :payload)
-               t)))
-        (when (memq event-type '(turn-failed turn-cancelled))
-          (e-chat--render-observed-terminal-event
-           turn-id
-           (plist-get activity-event :created-at)
-           (if (eq event-type 'turn-cancelled) 'cancelled 'failed)
-           (plist-get activity-event :payload)))))))
+               (plist-get selected-event :created-at)
+               t)
+            (e-chat--render-turn-failure
+             turn-id
+             (plist-get selected-event :created-at)
+             (plist-get selected-event :payload)
+             t)))))
+    (dolist (activity-event terminal-events)
+      (unless (eq activity-event selected-event)
+        (e-chat--render-observed-terminal-event
+         turn-id
+         (plist-get activity-event :created-at)
+         (if (eq (plist-get activity-event :event-type) 'turn-cancelled)
+             'cancelled
+           'failed)
+         (plist-get activity-event :payload)
+         activity-event)))))
 
 (defun e-chat--activity-event-turn-ids (activity-events)
   "Return TURN-IDs represented in ACTIVITY-EVENTS, preserving event order."
@@ -8543,8 +8683,9 @@ service projection again."
   "Return non-nil when EVENTS contain a terminal turn activity event."
   (cl-some
    (lambda (event)
-     (memq (plist-get event :event-type)
-           '(turn-finished turn-failed turn-cancelled)))
+     (and (e-chat--event-selected-participant-p event)
+          (memq (plist-get event :event-type)
+                '(turn-finished turn-failed turn-cancelled))))
    events))
 
 (defun e-chat--render-replayed-active-activity (activity-events)
@@ -8592,10 +8733,16 @@ service snapshot when supplied."
           (when (and turn-id (not (equal turn-id next-turn-id)))
             (e-chat--render-replayed-terminal-event turn-id activity-events))
           (setq turn-index (1+ turn-index))
-          (setq turn-id next-turn-id))
-        (setq record (e-chat--turn-record turn-id)))
-      (e-chat--record-replayed-message-time record message)
-      (let ((hidden (e-harness-message-hidden-p message)))
+          (setq turn-id next-turn-id)))
+      (let* ((message-selected-p
+              (e-chat--message-selected-participant-p message))
+             (render-turn-id
+              (if message-selected-p
+                  turn-id
+                (e-chat--observed-turn-id turn-id message))))
+        (setq record (e-chat--turn-record render-turn-id))
+        (e-chat--record-replayed-message-time record message)
+        (let ((hidden (e-harness-message-hidden-p message)))
         (unless (e-chat--tool-message-p message)
           (if hidden
               ;; In normal view, retain a hidden physical projection so the
@@ -8603,14 +8750,14 @@ service snapshot when supplied."
               ;; Audit reveal renders the separate dimmed entry through the
               ;; same helper.
               (e-chat--render-durable-message
-               message turn-id (e-chat--message-selected-participant-p message))
+               message render-turn-id message-selected-p)
             (when (eq (plist-get message :role) 'assistant)
               (e-chat--render-turn-activity-events turn-id activity-events))
             (e-chat--render-durable-message
-             message turn-id (e-chat--message-selected-participant-p message))
+             message render-turn-id message-selected-p)
             (when (and (eq (plist-get message :role) 'assistant)
-                       (e-chat--message-selected-participant-p message))
-              (e-chat--finalize-turn-display turn-id))))))
+                       message-selected-p)
+              (e-chat--finalize-turn-display render-turn-id)))))))
     (e-chat--render-replayed-active-activity activity-events)
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
@@ -8844,19 +8991,41 @@ HARNESS are internal test seams."
     buffer))
 
 (cl-defun e-chat-open-board
-    (board &key harness session-id metadata participant-id pickup-selector
-           observer-selector default-tags default-to display instance-id)
+    (board &key harness session-id metadata
+           (participant-id nil participant-id-supplied-p)
+           (pickup-selector nil pickup-selector-supplied-p)
+           (observer-selector nil observer-selector-supplied-p)
+           (default-tags nil default-tags-supplied-p)
+           (default-to nil default-to-supplied-p)
+           display instance-id)
   "Open BOARD as the public interaction context for one chat participant.
 When SESSION-ID is nil, create a private execution session for the participant."
   (let* ((harness (or harness (e-chat--default-harness)))
          (binding
-          (if session-id
-              (e-chat-service-open-board
-               board harness session-id
-               :participant-id participant-id
-               :pickup-selector pickup-selector
-               :observer-selector observer-selector
-               :default-tags default-tags :default-to default-to)
+         (if session-id
+              (let (routing-arguments)
+                (when participant-id-supplied-p
+                  (setq routing-arguments
+                        (append routing-arguments
+                                (list :participant-id participant-id))))
+                (when pickup-selector-supplied-p
+                  (setq routing-arguments
+                        (append routing-arguments
+                                (list :pickup-selector pickup-selector))))
+                (when observer-selector-supplied-p
+                  (setq routing-arguments
+                        (append routing-arguments
+                                (list :observer-selector observer-selector))))
+                (when default-tags-supplied-p
+                  (setq routing-arguments
+                        (append routing-arguments
+                                (list :default-tags default-tags))))
+                (when default-to-supplied-p
+                  (setq routing-arguments
+                        (append routing-arguments
+                                (list :default-to default-to))))
+                (apply #'e-chat-service-open-board
+                       board harness session-id routing-arguments))
             (let ((session
                    (e-chat-service-create-participant
                     board harness :metadata metadata

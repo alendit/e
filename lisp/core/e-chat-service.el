@@ -340,6 +340,19 @@ are compared with it rather than inferred from tags, authors, or causal ids."
        (equal subject-participant-id
               (e-chat-service--binding-participant-id binding))))
 
+(defun e-chat-service--event-selected-participant-p (event)
+  "Return whether EVENT is owned by the attached participant.
+
+Synthetic events without board identity retain the historical direct-service
+behavior.  A board-shaped event with a missing ownership fact is fail-closed,
+so a sibling cannot settle a selected binding through a malformed projection."
+  (if (plist-member event :selected-participant-p)
+      (eq (plist-get event :selected-participant-p) t)
+    (not (or (plist-member event :board-id)
+             (plist-member event :board-seq)
+             (plist-member event :message-id)
+             (plist-member event :subject-participant-id)))))
+
 (defun e-chat-service--message-event (binding message)
   "Translate one immutable board MESSAGE for BINDING's existing reducers."
   (let* ((kind (e-board-message-kind message))
@@ -390,7 +403,11 @@ are compared with it rather than inferred from tags, authors, or causal ids."
                            :subject-participant-id
                            (e-board-message-subject-participant-id message)
                            :selected-participant-p
-                           (plist-get identity :selected-participant-p)))))))
+                           ;; An input has no participant subject.  It is the
+                           ;; chat's own user turn for replay grouping; terminal
+                           ;; ownership is still derived only from output and
+                           ;; activity subjects below.
+                           t))))))
       ('output
        (append identity
                (list :type 'message-added :session-id session-id
@@ -666,6 +683,10 @@ are compared with it rather than inferred from tags, authors, or causal ids."
   "Return one validated, detached routing policy for PARTICIPANT-ID.
 `:self' is a caller-facing admission shorthand only; durable state contains the
 resolved participant identity so restart never needs shell or caller policy."
+  (unless (stringp participant-id)
+    (signal 'e-session-error
+            (list "Routing policy participant id must be a string"
+                  participant-id)))
   (let* ((observer-selector
           (if (eq observer-selector :self)
               (list :subject-participant-id participant-id)
@@ -680,7 +701,77 @@ resolved participant identity so restart never needs shell or caller policy."
       (signal 'e-session-error (list "Invalid board routing policy" policy)))
     policy))
 
-(defun e-chat-service--session-routing-policy (session)
+(defun e-chat-service--canonical-legacy-root-p (session association)
+  "Return non-nil when SESSION has the established root identity defaults."
+  (let ((role (plist-get association :association-role))
+        (principal (plist-get association :principal))
+        (session-id (plist-get session :id)))
+    (or (equal role e-chat-service--board-role-root)
+        (and (null role)
+             (stringp session-id)
+             (equal principal (format "chat:%s" session-id))))))
+
+(defun e-chat-service--routing-overrides-present-p
+    (participant-id participant-id-supplied-p
+                   pickup-selector pickup-selector-supplied-p
+                   observer-selector observer-selector-supplied-p
+                   default-tags default-tags-supplied-p
+                   default-to default-to-supplied-p)
+  "Return non-nil when a caller supplied any routing override."
+  (or participant-id-supplied-p pickup-selector-supplied-p
+      observer-selector-supplied-p default-tags-supplied-p
+      default-to-supplied-p
+      ;; Callers outside CL keyword binding sometimes pass a non-nil value via
+      ;; an adapter; preserve the explicit-value meaning at this boundary.
+      participant-id pickup-selector observer-selector default-tags default-to))
+
+(defun e-chat-service--complete-routing-arguments-p
+    (participant-id participant-id-supplied-p
+                    pickup-selector pickup-selector-supplied-p
+                    observer-selector observer-selector-supplied-p
+                    default-tags default-tags-supplied-p
+                    default-to default-to-supplied-p)
+  "Return non-nil when all five caller routing fields are explicitly present."
+  (and participant-id-supplied-p pickup-selector-supplied-p
+       observer-selector-supplied-p default-tags-supplied-p
+       default-to-supplied-p
+       (and (stringp participant-id)
+            (not (string-empty-p participant-id)))
+       (e-session--board-routing-selector-valid-p pickup-selector)
+       (or (eq observer-selector :self)
+           (e-session--board-routing-selector-valid-p observer-selector))
+       (e-session--board-routing-tag-list-valid-p default-tags)
+       ;; `nil' is the valid explicit default-to value.
+       (or (null default-to) (stringp default-to) (eq default-to :self))))
+
+(defun e-chat-service--routing-override-conflicts-p
+    (policy participant-id participant-id-supplied-p
+           pickup-selector pickup-selector-supplied-p
+           observer-selector observer-selector-supplied-p
+           default-tags default-tags-supplied-p default-to default-to-supplied-p)
+  "Return non-nil when supplied routing values conflict with POLICY."
+  (or (and participant-id-supplied-p
+           (not (equal participant-id (plist-get policy :participant-id))))
+      (and pickup-selector-supplied-p
+           (not (equal pickup-selector (plist-get policy :pickup-selector))))
+      (and observer-selector-supplied-p
+           (let ((expected
+                  (if (eq observer-selector :self)
+                      (list :subject-participant-id
+                            (plist-get policy :participant-id))
+                    observer-selector)))
+             (not (equal expected
+                         (plist-get policy :observer-selector)))))
+      (and default-tags-supplied-p
+           (not (equal default-tags (plist-get policy :default-tags))))
+      (and default-to-supplied-p
+           (let ((expected
+                  (if (eq default-to :self)
+                      (plist-get policy :participant-id)
+                    default-to)))
+             (not (equal expected (plist-get policy :default-to)))))))
+
+(defun e-chat-service--session-routing-policy (session &optional allow-missing)
   "Return SESSION's durable routing policy or signal for unsafe restoration."
   (let ((association (e-session-board-association session)))
     (when (e-session-board-association-invalid-p association)
@@ -694,12 +785,27 @@ resolved participant identity so restart never needs shell or caller policy."
                   (list "Malformed board routing policy"
                         (plist-get session :id))))
         policy))
-     ((equal (plist-get association :association-role)
-             e-chat-service--board-role-participant)
+     ;; A complete caller-supplied policy may upgrade a legacy participant at
+     ;; the explicit open boundary.  The ordinary restore path never gets
+     ;; this exception; it must fail closed below.
+     ((and allow-missing association)
+      ;; The explicit open boundary may supply a complete replacement for any
+      ;; legacy association whose policy is absent.  The caller still decides
+      ;; below whether the supplied fields are complete; implicit restoration
+      ;; never takes this branch.
+      nil)
+     ((e-chat-service--canonical-legacy-root-p session association)
+      ;; Canonical roleless/owner records are the only legacy shapes with the
+      ;; established main defaults.  Ambiguous roleless records do not get a
+      ;; default participant policy by inference.
+      nil)
+     ((null association)
+      ;; Let the caller report the established missing board-state condition.
+      nil)
+     (t
       (signal 'e-session-error
-              (list "Participant board association has no routing policy"
-                    (plist-get session :id))))
-     (t nil))))
+              (list "Legacy board participant has no complete routing policy"
+                    (plist-get session :id)))))))
 
 (cl-defun e-chat-service--install-participant-binding
     (board harness session-id &key principal participant-id
@@ -854,29 +960,69 @@ resolved participant identity so restart never needs shell or caller policy."
      :default-to (plist-get routing-policy :default-to))))
 
 (cl-defun e-chat-service-open-board
-    (board harness session-id &key participant-id pickup-selector
-           observer-selector default-tags default-to)
+    (board harness session-id
+           &key (participant-id nil participant-id-supplied-p)
+           (pickup-selector nil pickup-selector-supplied-p)
+           (observer-selector nil observer-selector-supplied-p)
+           (default-tags nil default-tags-supplied-p)
+           (default-to nil default-to-supplied-p))
   "Open existing BOARD by attaching HARNESS SESSION-ID as one participant."
   (let* ((board (e-board-registry-get board))
          (session (e-session-get (e-harness-sessions harness) session-id))
          (state (plist-get session :board-session-state))
-         (routing-policy (e-chat-service--session-routing-policy session)))
+         (association (e-session-board-association session))
+         (routing-policy
+          (e-chat-service--session-routing-policy session t))
+         (overrides-p
+          (e-chat-service--routing-overrides-present-p
+           participant-id participant-id-supplied-p
+           pickup-selector pickup-selector-supplied-p
+           observer-selector observer-selector-supplied-p
+           default-tags default-tags-supplied-p
+           default-to default-to-supplied-p))
+         (complete-p
+          (e-chat-service--complete-routing-arguments-p
+           participant-id participant-id-supplied-p
+           pickup-selector pickup-selector-supplied-p
+           observer-selector observer-selector-supplied-p
+           default-tags default-tags-supplied-p
+           default-to default-to-supplied-p)))
     (unless (and (equal (plist-get state :board-id)
                         (e-board-registry-board-id board))
                  (equal (plist-get state :principal)
                         (e-board-registry-board-principal board)))
       (signal 'e-session-missing (list session-id 'board-session-state)))
-    (unless routing-policy
-      (when participant-id
-        (setq routing-policy
-              (e-chat-service--routing-policy
-               participant-id (or pickup-selector '(:tags (main)))
-               (or observer-selector '(:tags (main)))
-               (or default-tags '(main)) default-to))
-        (e-chat-service--persist-board-state
-         (e-harness-sessions harness) session-id
-         (plist-get state :principal) (plist-get state :board-id)
-         (plist-get state :association-role) routing-policy)))
+    (cond
+     (routing-policy
+      (when (and overrides-p
+                 (e-chat-service--routing-override-conflicts-p
+                  routing-policy participant-id participant-id-supplied-p
+                  pickup-selector pickup-selector-supplied-p
+                  observer-selector observer-selector-supplied-p
+                  default-tags default-tags-supplied-p
+                  default-to default-to-supplied-p))
+        (signal 'e-session-error
+                (list "Routing policy override conflicts with durable state"
+                      session-id))))
+     (complete-p
+      (setq routing-policy
+            (e-chat-service--routing-policy
+             participant-id pickup-selector observer-selector
+             default-tags default-to))
+      ;; Admission upgrades are durable before a runtime attachment can expose
+      ;; the participant to board traffic.
+      (e-chat-service--persist-board-state
+       (e-harness-sessions harness) session-id
+       (plist-get state :principal) (plist-get state :board-id)
+       (plist-get state :association-role) routing-policy))
+     ((e-chat-service--canonical-legacy-root-p session association)
+      ;; Canonical roleless/owner legacy sessions retain the historical main
+      ;; defaults.  No caller-supplied partial policy is silently borrowed.
+      nil)
+     (t
+      (signal 'e-session-error
+              (list "Legacy board participant has no complete routing policy"
+                    session-id))))
     (if routing-policy
         (e-chat-service--install-participant-binding
          board harness session-id
@@ -903,31 +1049,58 @@ LIMIT defaults to the registry's fixed page bound."
     (board harness &key metadata id participant-id pickup-selector
            observer-selector (default-tags '(main)) default-to)
   "Create and attach a private execution session as a participant on BOARD."
-  (let* ((session (e-harness-create-session harness :id id :metadata metadata))
-         (session-id (plist-get session :id))
-         (board (e-board-registry-get board))
+  ;; Resolve every caller-controlled admission input before creating the
+  ;; session.  The session is not a valid root/participant until the complete
+  ;; association is durable and the attachment succeeds.
+  (let* ((board (e-board-registry-get board))
          (participant-id (or participant-id
                              (e-board-registry-allocate-participant-id board)))
          (principal (e-board-registry-board-principal board))
          (store (e-harness-sessions harness))
+         (pickup-selector (or pickup-selector '(:tags (main))))
+         (observer-selector (or observer-selector '(:tags (main))))
          (routing-policy
           (e-chat-service--routing-policy
-           participant-id (or pickup-selector '(:tags (main)))
-           (or observer-selector '(:tags (main)))
+           participant-id pickup-selector observer-selector
            default-tags default-to))
-         (_ (e-chat-service--persist-board-state
+         (_ (when (gethash participant-id
+                           (e-board-registry-board-participants board))
+             (signal 'e-board-registry-id-conflict (list participant-id))))
+         (_ (when id
+             (condition-case nil
+                 (progn (e-session-get store id)
+                        (signal 'e-session-duplicate (list id)))
+               (e-session-missing nil)))))
+    (let* ((session (e-harness-create-session harness :id id :metadata metadata))
+           (session-id (plist-get session :id))
+           (attached-participant nil))
+      (condition-case error
+          (progn
+            (e-chat-service--persist-board-state
              store session-id principal (e-board-registry-board-id board)
-             e-chat-service--board-role-participant routing-policy))
-         (binding
-          (e-chat-service--install-participant-binding
-           board harness session-id
-           :participant-id (plist-get routing-policy :participant-id)
-           :pickup-selector (plist-get routing-policy :pickup-selector)
-           :observer-selector (plist-get routing-policy :observer-selector)
-           :default-tags (plist-get routing-policy :default-tags)
-           :default-to (plist-get routing-policy :default-to))))
-    (ignore binding)
-    session))
+             e-chat-service--board-role-participant routing-policy)
+            (let ((binding
+                   (e-chat-service--install-participant-binding
+                    board harness session-id
+                    :participant-id (plist-get routing-policy :participant-id)
+                    :pickup-selector (plist-get routing-policy :pickup-selector)
+                    :observer-selector (plist-get routing-policy :observer-selector)
+                    :default-tags (plist-get routing-policy :default-tags)
+                    :default-to (plist-get routing-policy :default-to))))
+              (setq attached-participant
+                    (and (e-chat-service-binding-p binding)
+                         (e-board-runtime-attachment-participant
+                          (e-chat-service-binding-attachment binding))))
+              session))
+        (error
+         ;; Expected service-owned failures must not leave a false root in the
+         ;; catalog.  Remove a participant only when this operation actually
+         ;; attached one; all unexpected errors are re-signalled unchanged.
+         (when (and attached-participant
+                    (e-board-registry-participant-p attached-participant))
+           (e-board-registry-remove-participant board attached-participant))
+         (e-session-abort-created store session-id)
+         (signal (car error) (cdr error)))))))
 
 (defun e-chat-service--harness-has-capability-p (harness capability-id)
   "Return non-nil when HARNESS has active capability CAPABILITY-ID."
@@ -1212,11 +1385,14 @@ identity so existing indexes remain readable without mutation."
     (dolist (event activities)
       (pcase (plist-get event :event-type)
         ('turn-started
-         (unless active-turn
+         (when (and (e-chat-service--event-selected-participant-p event)
+                    (not active-turn))
            (setq active-turn (list :id (plist-get event :turn-id)
                                    :status 'running))))
         ((or 'turn-finished 'turn-failed 'turn-cancelled)
-         (when (equal (plist-get active-turn :id) (plist-get event :turn-id))
+         (when (and (e-chat-service--event-selected-participant-p event)
+                    (equal (plist-get active-turn :id)
+                           (plist-get event :turn-id)))
            (setq active-turn nil)))))
     (list :board-id
           (e-board-registry-board-id (e-chat-service-binding-board binding))

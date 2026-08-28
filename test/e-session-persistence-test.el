@@ -8,6 +8,7 @@
 (require 'ert)
 (require 'e-session)
 (require 'e-session-persistence)
+(require 'e-board)
 
 (ert-deftest e-session-persistence-test-bundled-writer-script-exists ()
   "The packaged runtime includes the writer beside its owning Lisp module."
@@ -29,6 +30,46 @@
       (accept-process-output nil 0.02))
     (should-not failure)
     (should done)))
+
+(defun e-session-persistence-test--route-routing-policy (policy)
+  "Route symbol and string attribute messages through POLICY's selector.
+This is an owner-level routing assertion: it exercises the restored selector
+against real board messages instead of comparing only persisted plists."
+  (let* ((board (e-board-create))
+         (symbol-selector
+          (e-session--board-routing-copy-value
+           (plist-get policy :pickup-selector)))
+         (string-selector
+          (e-session--board-routing-copy-value symbol-selector))
+         (symbol-attributes
+          (plist-get symbol-selector :attributes))
+         (string-attributes
+          (e-session--board-routing-copy-value symbol-attributes)))
+    (plist-put string-attributes :symbol "car")
+    (plist-put string-selector :attributes string-attributes)
+    (e-board-add-participant board :id "symbol-recipient"
+                             :create-pickup-subscription-id "symbol-address")
+    (e-board-add-participant board :id "string-recipient"
+                             :create-pickup-subscription-id "string-address")
+    (e-board-subscribe board "symbol-recipient" symbol-selector
+                       :id "symbol-selector")
+    (e-board-subscribe board "string-recipient" string-selector
+                       :id "string-selector")
+    (cl-letf (((symbol-function 'e-board--schedule-input-classification)
+               (lambda (board)
+                 (e-board-drain-input-classifications board))))
+      (dolist (case (list (list 'car "symbol-recipient")
+                          (list "car" "string-recipient")))
+        (let* ((attributes (e-session--board-routing-copy-value
+                            symbol-attributes))
+               (_ (plist-put attributes :symbol (car case)))
+               (publication
+                (e-board-post-input board
+                                   :tags '(private)
+                                   :attributes attributes))
+               (message (e-board-publication-message publication)))
+          (should (equal (e-board-message-matching-participant-ids message)
+                         (list (cadr case)))))))))
 
 (ert-deftest e-session-persistence-test-unsettled-transfer-has-no-false-zero ()
   "Checkpoint timer ownership transfers to the writer outbox atomically."
@@ -262,6 +303,15 @@
                      (setq writes (1+ writes))
                      (apply original-write-region arguments))))
           (e-session-create store :id "session-1")
+          (e-session-declare-board-state
+           store "session-1" "chat:session-1" "writer-board" "participant"
+           '(:participant-id "writer-participant"
+             :pickup-selector (:kind input :tags (private)
+                              :attributes (:marker car :text "car"))
+             :observer-selector (:subject-participant-id "writer-participant"
+                                  :attributes (:marker car :text "car"))
+             :default-tags (private)
+             :default-to "writer-participant"))
           (e-session-append-message
            store "session-1" '(:role user :content "writer owned"))
           ;; No session file operation is performed by this Emacs process.
@@ -273,7 +323,23 @@
                                    controller "session-1"
                                    '(:type "session-info" :metadata (:retry t)))))
           (e-session-persistence-test--await-durable store)
-          (let ((loaded (e-session-persistent-store-create directory)))
+          (let* ((indexed (e-session-persistent-index-store-create directory))
+                 (indexed-policy
+                  (e-session-board-routing-policy
+                   (e-session--peek-session indexed "session-1")))
+                 (loaded (e-session-persistent-store-create directory)))
+            ;; The Node writer has rewritten both the derived index and the
+            ;; checkpoint/journal.  Check the index stub first, then force the
+            ;; full replay path and compare the reversible attribute meaning.
+            (should (equal (plist-get
+                            (plist-get indexed-policy :pickup-selector)
+                            :attributes)
+                           '(:marker car :text "car")))
+            (should (equal
+                     (e-session-board-routing-policy
+                      (e-session-get loaded "session-1"))
+                     (e-session-board-routing-policy
+                      (e-session--peek-session indexed "session-1"))))
             (should (equal (plist-get (car (e-session-messages loaded "session-1"))
                                       :content)
                            "writer owned"))
@@ -629,13 +695,16 @@
          (controller (e-session-persistence-enable store))
          (routing-policy
           '(:participant-id "participant-1"
-            :pickup-selector (:kind input :tags (private))
+            :pickup-selector
+            (:kind input :tags (private)
+             :attributes (:symbol car :string "car"))
             :observer-selector (:subject-participant-id "participant-1")
             :default-tags (private)
             :default-to "participant-1")))
     (unwind-protect
         (progn
           (e-session-create store :id "session-1")
+          (e-session-persistence-test--route-routing-policy routing-policy)
           (e-session-persistence-declare-board-state
            controller "session-1" "principal:owner" "board-1"
            "participant" routing-policy)
@@ -652,6 +721,8 @@
             (should (equal (plist-get (plist-get entry :board-state)
                                       :routing-policy)
                            routing-policy))
+            (e-session-persistence-test--route-routing-policy
+             (plist-get (plist-get entry :board-state) :routing-policy))
             (should-not (plist-member entry :state)))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (state (plist-get (e-session-get loaded "session-1")
@@ -662,11 +733,16 @@
                              :association-role "participant"
                              :routing-policy
                              (:participant-id "participant-1"
-                              :pickup-selector (:kind input :tags (private))
+                              :pickup-selector
+                              (:kind input :tags (private)
+                               :attributes (:symbol car :string "car"))
                               :observer-selector
                               (:subject-participant-id "participant-1")
                               :default-tags (private)
-                              :default-to "participant-1"))))))
+                              :default-to "participant-1"))))
+            (e-session-persistence-test--route-routing-policy
+             (e-session-board-routing-policy
+              (e-session-get loaded "session-1")))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

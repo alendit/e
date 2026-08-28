@@ -32,8 +32,9 @@ installs it in the process-local binding.  Grimoire creates the Daily update
 participant with a =grimoire-update= pickup selector, self-only observer,
 =grimoire-update= default tags, and =:self= default target.
 
-The historical defect was that the chat service persisted only =board-id= and
-=principal= in =board-session-state=.  On restart,
+The historical defect was that the chat service persisted =board-id=,
+=principal=, and the later association role in =board-session-state=, but not
+the routing policy.  On restart,
 =e-chat-service--bind-session= reconstructed the binding with generic defaults:
 =(:tags (main))= pickup and observer selectors, =(main)= default tags, no exact
 target, and a newly generated participant identity.  The source correction now
@@ -203,9 +204,10 @@ Focused repository validation:
 - Org Canvas and the starter shell pass the same retry activity through their
   existing chat presentation path.
 
-The primary restored-routing defect is fixed in repository source.  The
-running Emacs was not reloaded; the core/service/session and shell changes
-require a restart before they can affect that process.
+The candidate restored-routing correction is present in repository source.
+The running Emacs was not reloaded; the core/service/session and shell changes
+require a restart before they can affect that process.  The bug remains =New=
+until an independent fixed-point review accepts the complete package.
 
 * Partial-Fix Validation
 
@@ -253,6 +255,59 @@ Focused repository evidence:
 The earlier settlement incident and partial-fix counts above are retained as
 historical evidence.  The new ownership gate supersedes their conclusion
 that the restored-routing defect remained open.
+
+* F001-F007 Implementation And Evidence (2026-08-28)
+
+The current candidate remediates the review's implementation cells without
+changing the ownership boundary.  It remains pending independent acceptance;
+this section records implementation evidence rather than closing the bug.
+=e-session= now admits one complete routing
+policy with an iterative, cycle-safe JSON-shape walk performed before JSON
+encoding or session mutation.  Its reversible
+=e-routing-attributes-v1= representation preserves symbol versus string
+values, including nested lists, vectors, and plists, through the JSONL journal,
+derived index, checkpoint manifest, and Node writer/index path.  The selected
+policy uses the existing board metadata/attribute scale as its UTF-8 admission
+budget plus a local structural-node budget; it has no arbitrary nesting-depth
+cap and does not depend on =e-board=.
+
+=e-chat-service= now makes legacy admission explicit: canonical roleless roots
+and owner records retain historical main defaults, a missing-policy association
+may be upgraded only by a complete caller-supplied policy, conflicting durable
+overrides are rejected, and an implicit participant restore without a complete
+policy fails closed.  Participant creation preflights board, policy, identity,
+and duplicate-session conflicts, then rolls back its own session and participant
+when persistence or attachment fails.  Unexpected errors remain visible.
+
+The shell receives a process-local selected-participant fact derived from the
+attached binding and event subject.  It renders sibling success, failure,
+cancellation, and empty-output activity, but every selected turn-record,
+progress, status, composer, and submit/steer settlement mutation is gated on
+selected ownership.  Identity-free synthetic events retain the direct-service
+compatibility path; board-shaped events missing the fact fail closed.  The
+provider-free fresh/restart composition proves exact root/private recipients,
+restored default routing, observer delivery, sibling non-settlement, and the
+selected-turn steer-to-submit transition.
+
+Current repository-side evidence is bounded as follows:
+
+- The four changed owner suites (session, persistence, modernchat, and chat)
+  ran 522 tests with 521 expected results, one expected skip, and zero
+  unexpected results.
+- The focused F001-F006 owner lanes and the Node checkpoint/index regression
+  are green; check-parens covered all eight changed Lisp/test files.
+- Strict warnings-as-errors compilation passed for the four changed Lisp
+  owners.  No live Emacs was changed, and no live provider call was required.
+- Review 001's classified full-suite evidence remains historical: 2464 total,
+  2456 expected passes, 2 expected skips, and six local HTTP/network-process
+  fixture failures under the restricted sandbox; the same six fixtures were
+  6/6 green with loopback access.  Repository-wide compilation was not
+  recorded as green because the unchanged
+  =tools/migrate-session-checkpoints.el= target exited with its CLI usage.
+
+The bug index remains =New= pending a fresh independent review of the exact
+revision.  The historical full-suite classification above is not a current
+acceptance claim; the focused evidence is the bounded candidate evidence only.
 
 * Presentation cleanup
 
@@ -325,9 +380,9 @@ the derived intermittent entry.
    shell only consumes projected facts.
 8. The added durable state is the smallest restart-lived routing policy.
    Selected ownership is derived per event and is never persisted.
-9. Validation, detachment, and one participant comparison are bounded by the
-   existing association and projection paths; ordinary provider work is
-   unchanged.
+9. Validation and detachment are bounded by the policy's UTF-8 and structural
+   admission budgets plus one participant comparison; ordinary provider work
+   is unchanged.
 10. The routing policy is one real, complete association contract.  A partial
     implementation cannot silently weaken it because partial state is invalid.
 11. Legacy root/owner associations retain =main= behavior.  Unreconstructable

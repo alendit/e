@@ -60,8 +60,16 @@ stand in for the pure curation preparation path."
 (defun e-session-test--routing-policy (&optional participant-id)
   "Return one valid detached board routing policy fixture."
   (list :participant-id (or participant-id "participant-private")
-        :pickup-selector '(:kind input :tags (private))
-        :observer-selector '(:subject-participant-id "participant-private")
+        :pickup-selector
+        '(:kind input :tags (private)
+          :attributes (:symbol car :string "car"
+                       :nested (car "car" (:inner car))
+                       :vector [car "car"]))
+        :observer-selector
+        '(:subject-participant-id "participant-private"
+          :attributes (:symbol car :string "car"
+                       :nested (car "car" (:inner car))
+                       :vector [car "car"]))
         :default-tags '(private)
         :default-to "participant-private"))
 
@@ -116,6 +124,16 @@ stand in for the pure curation preparation path."
                  (e-session-get
                   (e-session-persistent-store-create directory) session-id)))
             (should (equal (e-session-board-routing-policy restored) policy))
+            (let* ((pickup (plist-get (e-session-board-routing-policy restored)
+                                      :pickup-selector))
+                   (attributes (plist-get pickup :attributes)))
+              (should (eq (plist-get attributes :symbol) 'car))
+              (should (equal (plist-get attributes :string) "car"))
+              (should (eq (car (plist-get attributes :nested)) 'car))
+              (should (equal (cadr (plist-get attributes :nested)) "car"))
+              (should (vectorp (plist-get attributes :vector)))
+              (should (eq (aref (plist-get attributes :vector) 0) 'car))
+              (should (equal (aref (plist-get attributes :vector) 1) "car")))
             (should (equal (plist-get (e-session-board-association restored)
                                       :association-role)
                            "participant"))))
@@ -167,6 +185,101 @@ stand in for the pure curation preparation path."
                :default-to nil)))
         (should-not
          (e-session-board-routing-policy-valid-p function-form-policy)))))
+
+(ert-deftest e-session-test-board-routing-policy-budget-is-pre-encoding-and-bounded ()
+  "Routing admission rejects exact overages before encoding or mutation."
+  (let* ((store (e-session-store-create))
+         (session-id "routing-budget")
+         (policy '(:participant-id "p"
+                   :pickup-selector (:tags (private)
+                                    :attributes (:marker "123456789"))
+                   :observer-selector (:tags (private))
+                   :default-tags (private)
+                   :default-to nil)))
+    (e-session-create store :id session-id)
+    (e-session-declare-board-state
+     store session-id "chat:routing-budget" "budget-board" "owner")
+    ;; The byte budget is exactly the UTF-8 size of the admitted value; one
+    ;; additional byte is rejected before `json-encode' is reached.
+    (let ((e-session--board-routing-policy-byte-budget 11)
+          encoded
+          (original-json-encode (symbol-function 'json-encode)))
+      (cl-letf (((symbol-function 'json-encode)
+                 (lambda (value)
+                   (setq encoded t)
+                   (funcall original-json-encode value))))
+        ;; Avoid recursing through the instrumented wrapper for the exact
+        ;; boundary check; the direct budget predicate is the pre-encoding
+        ;; contract exercised by policy validation.
+        (should (e-session--board-routing-value-budget-valid-p "123456789"))
+        (let ((e-session--board-routing-policy-byte-budget 10))
+          (should-not
+           (e-session--board-routing-value-budget-valid-p "123456789")))
+        (let ((e-session--board-routing-policy-byte-budget 10))
+          (should-error
+           (e-session-declare-board-state
+            store session-id "chat:routing-budget" "budget-board" "owner"
+            policy)
+           :type 'error))
+        (should-not encoded)))
+    ;; The structural budget is likewise exact at a small test boundary and
+    ;; catches a deep finite value without imposing a recursion-depth rule.
+    (let ((e-session--board-routing-policy-node-budget 3))
+      (should (e-session--board-routing-value-budget-valid-p '(a)))
+      (should-not (e-session--board-routing-value-budget-valid-p '(a b))))
+    (let ((deep nil))
+      (dotimes (_ 200)
+        (setq deep (list :nested deep)))
+      (let ((e-session--board-routing-policy-node-budget 32))
+        (should-not (e-session--board-routing-value-budget-valid-p deep))))))
+
+(ert-deftest e-session-test-board-routing-policy-encoded-budget-covers-scalars-and-depth ()
+  "The full reversible policy has an exact encoded boundary and safe depth."
+  (let* ((policy '(:participant-id "p"
+                   :pickup-selector
+                   (:kind input :tags (private)
+                    :attributes
+                    (:symbol car :number 123456789012345678901234567890
+                     :nested (car "car" (:inner car))))
+                   :observer-selector (:tags (private))
+                   :default-tags (private)
+                   :default-to nil))
+         (encoded (e-session--board-routing-policy-for-json policy))
+         (encoded-bytes (e-session--board-routing-json-byte-size encoded)))
+    (should (= encoded-bytes
+               (string-bytes (json-encode encoded))))
+    (let ((e-session--board-routing-policy-byte-budget encoded-bytes))
+      (should (e-session-board-routing-policy-valid-p policy)))
+    (let ((e-session--board-routing-policy-byte-budget (1- encoded-bytes)))
+      (should-not (e-session-board-routing-policy-valid-p policy)))
+    ;; Symbols and bignums contribute to the preflight estimate instead of
+    ;; bypassing it as zero-sized atoms.
+    (should-not
+     (e-session--board-routing-value-budget-valid-p
+      (intern (make-string (1+ e-session--board-routing-policy-byte-budget)
+                           ?s))))
+    (should-not
+     (e-session--board-routing-value-budget-valid-p
+      (string-to-number
+       (concat "1" (make-string e-session--board-routing-policy-byte-budget
+                                  ?0)))))
+    ;; A finite structure below the admitted node ceiling is traversed without
+    ;; consuming the evaluator stack; the one-over case is rejected first.
+    (let ((deep 'x))
+      (dotimes (_ 300)
+        (setq deep (list :nested deep)))
+      (should (e-session--board-routing-value-budget-valid-p deep))
+      (let* ((deep-policy (e-session--board-routing-copy-value policy))
+             (attributes
+              (plist-get (plist-get deep-policy :pickup-selector)
+                         :attributes))
+             (attributes (plist-put attributes :deep deep)))
+        (plist-put (plist-get deep-policy :pickup-selector)
+                   :attributes attributes)
+        (should (e-session-board-routing-policy-valid-p deep-policy))))
+    (let ((wide (make-vector (1+ e-session--board-routing-policy-node-budget)
+                             nil)))
+      (should-not (e-session--board-routing-value-budget-valid-p wide)))))
 
 (ert-deftest e-session-test-board-routing-policy-owner-legacy-remains-readable ()
   "Role-bearing legacy owner state retains its established readable shape."
@@ -2026,6 +2139,75 @@ stand in for the pure curation preparation path."
             (should (plist-member index-entry :generation))
             (should (plist-member index-entry :sequence))
             (should (eq (plist-get index-entry :criticality) 'derived))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-abort-created-preserves-unrelated-queued-work ()
+  "Application rollback removes only its writes from a shared queue."
+  (let* ((directory (make-temp-file "e-session-abort-created-" t))
+         (store (e-session-persistent-index-store-create
+                 directory :write-mode 'queued)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "rollback-target")
+          (e-session-create store :id "unrelated-session")
+          (e-session-append-message
+           store "unrelated-session"
+           '(:id "unrelated-message" :role user :content "keep me"))
+          (let* ((queue-before (copy-sequence
+                                (e-session-store-write-queue store)))
+                 (target-entries
+                  (cl-remove-if-not
+                   (lambda (entry)
+                     (equal (e-session--queued-entry-session-id entry)
+                            "rollback-target"))
+                   queue-before))
+                 (other-entries
+                  (cl-remove-if-not
+                   (lambda (entry)
+                     (equal (e-session--queued-entry-session-id entry)
+                            "unrelated-session"))
+                   queue-before))
+                 (timer-before
+                  (e-session-store-write-queue-timer store))
+                 (index-before
+                  (e-session-store-index-write-pending store))
+                 (unsettled-before
+                  (e-session-store-unsettled-write-count store)))
+            (should target-entries)
+            (should other-entries)
+            (should (timerp timer-before))
+            (should index-before)
+            (e-session-abort-created store "rollback-target")
+            (should-error (e-session-get store "rollback-target")
+                          :type 'e-session-missing)
+            (should (e-session-get store "unrelated-session"))
+            (should (equal
+                     (e-session-store-index-write-pending store)
+                     index-before))
+            (should (eq (e-session-store-write-queue-timer store)
+                        timer-before))
+            (should (= (e-session-store-unsettled-write-count store)
+                       (- unsettled-before (length target-entries))))
+            (should-not
+             (member "rollback-target"
+                     (e-session-checkpoint-dirty-session-ids store)))
+            (should (member "unrelated-session"
+                            (e-session-checkpoint-dirty-session-ids store)))
+            (should (equal
+                     (mapcar #'e-session--queued-entry-session-id
+                             (e-session-store-write-queue store))
+                     (mapcar #'e-session--queued-entry-session-id
+                             other-entries)))
+            (e-session-flush-write-queue store)
+            (let ((reopened (e-session-persistent-store-create directory)))
+              (should (e-session-get reopened "unrelated-session"))
+              (should (equal
+                       (plist-get
+                        (car (e-session-messages reopened
+                                                 "unrelated-session"))
+                        :content)
+                       "keep me")))))
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 

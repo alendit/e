@@ -253,10 +253,15 @@ New board-backed chat associations also persist one complete routing policy in
 the existing board-session-state record: the resolved participant id, pickup
 selector, observer selector, default tags, and default target, including
 explicit nil values. `e-session` owns schema, detachment, replay, index, and
-checkpoint validation; `e-chat-service` prepares the policy and resolves
-`:self`; `e-board-registry` allocates participant ids. Restoration validates
-the policy before attachment, while a participant-role record without a
-complete policy fails closed rather than borrowing the `main` route.
+checkpoint validation; its tagged routing-attribute codec preserves symbol
+versus string meaning through JSONL, index, checkpoint, and Node-writer
+rewrites. Admission is an iterative, cycle-safe JSON-shape check with the
+policy's UTF-8 and structural budgets applied before encoding or mutation;
+the UTF-8 budget follows the existing board metadata/attribute scale without
+coupling session code to `e-board`. `e-chat-service` prepares the policy and
+resolves `:self`; `e-board-registry` allocates participant ids. Restoration
+validates the policy before attachment, while a participant-role record
+without a complete policy fails closed rather than borrowing the `main` route.
 
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a

@@ -655,7 +655,7 @@ arrays and sometimes inverted key/value pairs."
     (e-session--ensure-directories store)
     (let ((coding-system-for-write 'utf-8))
       (with-temp-buffer
-        (insert (json-encode record) "\n")
+        (insert (json-encode (e-session--record-for-json record)) "\n")
         (write-region (point-min) (point-max)
                       (e-session--session-file store session-id)
                       t 'silent)))))
@@ -663,7 +663,7 @@ arrays and sometimes inverted key/value pairs."
 (defun e-session--record-already-appended-p (store session-id record)
   "Return non-nil when RECORD already occupies SESSION-ID's journal."
   (let ((journal (e-session--session-file store session-id))
-        (encoded (json-encode record)))
+        (encoded (json-encode (e-session--record-for-json record))))
     (and (file-readable-p journal)
          (with-temp-buffer
            (insert-file-contents journal)
@@ -678,7 +678,11 @@ arrays and sometimes inverted key/value pairs."
 
 (defun e-session--index-json (store)
   "Return STORE's current index JSON line."
-  (concat (json-encode (vconcat (e-session-list store))) "\n"))
+  (concat
+   (json-encode
+    (vconcat (mapcar #'e-session--index-entry-for-json
+                     (e-session-list store))))
+   "\n"))
 
 (defun e-session--write-index-now (store)
   "Immediately write STORE's persistent session index."
@@ -885,22 +889,23 @@ Return STORE."
 
 (defun e-session--append-record (store session-id record)
   "Append RECORD for SESSION-ID in persistent STORE."
-  (e-session--profile-call
-   'session.append-record
-   (list :session-id session-id
-         :metadata (list :record-type (plist-get record :type)))
-   (lambda ()
-     (when (e-session--persistent-p store)
-       (e-session--mark-checkpoint-dirty store session-id)
-       (if-let ((controller (e-session--persistence-controller store)))
-           (e-session-persistence-submit-record controller session-id record)
-         (if (e-session--queued-writes-p store)
-           (progn
-             (e-session--schedule-write-queue store)
-             (push (e-session--queued-write-entry store session-id record)
-                   (e-session-store-write-queue store))
-             (e-session--adjust-unsettled-writes store 1))
-           (e-session--append-record-now store session-id record)))))))
+  (let ((record (e-session--record-for-json record)))
+    (e-session--profile-call
+     'session.append-record
+     (list :session-id session-id
+           :metadata (list :record-type (plist-get record :type)))
+     (lambda ()
+       (when (e-session--persistent-p store)
+         (e-session--mark-checkpoint-dirty store session-id)
+         (if-let ((controller (e-session--persistence-controller store)))
+             (e-session-persistence-submit-record controller session-id record)
+           (if (e-session--queued-writes-p store)
+             (progn
+               (e-session--schedule-write-queue store)
+               (push (e-session--queued-write-entry store session-id record)
+                     (e-session-store-write-queue store))
+               (e-session--adjust-unsettled-writes store 1))
+             (e-session--append-record-now store session-id record))))))))
 
 
 (defun e-session--entry-index (store session-id)
@@ -1688,7 +1693,9 @@ disappear while an automatic projection could still reference its subject."
                     (list (list :type "board-session-state"
                                 :session-id session-id
                                 :timestamp (plist-get root :updated-at)
-                                :board-state (copy-tree board-state)
+                                :board-state
+                                (e-session--board-association-for-json
+                                 board-state)
                                 :board-id (plist-get board-state :board-id)
                                 :principal (plist-get board-state :principal)
                                 :board-output-sequence
@@ -1872,6 +1879,9 @@ disappear while an automatic projection could still reference its subject."
   '(:invalid-board-association t)
   "Bounded internal marker for a present malformed board association.")
 
+(define-error 'e-session-board-routing-invalid
+  "Invalid board routing policy value")
+
 (defconst e-session--board-routing-policy-keys
   '(:participant-id :pickup-selector :observer-selector :default-tags
     :default-to)
@@ -1882,55 +1892,198 @@ disappear while an automatic projection could still reference its subject."
     :tags :tags-all :tags-any)
   "JSON-shaped declarative selector keys admitted to routing policy.")
 
+(defconst e-session--board-routing-policy-node-budget 8192
+  "Maximum structural nodes admitted by a board routing policy.
+
+This is a domain budget for the declarative policy, not a nesting-depth cap.
+It is deliberately independent of `e-board' so session replay can account for
+the same bounded policy before encoding or mutation.  The representative
+board policies are far below this ceiling.")
+
+(defconst e-session--board-routing-policy-byte-budget (* 64 1024)
+  "Maximum UTF-8 bytes accounted for by a board routing policy.
+
+The value follows the existing board metadata/attribute scale while keeping
+the session admission boundary independent of the board implementation.")
+
+(defun e-session--board-routing-value-budget-valid-p (value)
+  "Return non-nil when VALUE fits the routing-policy admission budget.
+
+Account iteratively so hostile deep or cyclic values are rejected before
+`json-encode' or session mutation.  In addition to string payloads, account
+symbol names, numeric spellings, and a small canonical structural overhead.
+This is a preflight estimate; the encoded policy receives an exact canonical
+UTF-8 byte check after its reversible attribute encoding."
+  (let ((pending (list (list :value value)))
+        (visiting (make-hash-table :test 'eq))
+        (nodes 0)
+        (bytes 0)
+        (valid t))
+    (while (and valid pending)
+      (let ((task (pop pending)))
+        (if (eq (car task) :leave)
+            (remhash (cdr task) visiting)
+          (let ((current (cadr task)))
+            (setq nodes (1+ nodes))
+            (when (> nodes e-session--board-routing-policy-node-budget)
+              (setq valid nil))
+            (cond
+             ((stringp current)
+              ;; Quotes are part of the JSON spelling; escapes are charged by
+              ;; the exact post-encoding check below.
+              (setq bytes (+ bytes 2 (string-bytes current))))
+             ((numberp current)
+              (setq bytes (+ bytes (string-bytes
+                                    (number-to-string current)))))
+             ((symbolp current)
+              (setq bytes (+ bytes 2 (string-bytes (symbol-name current)))))
+             ((null current)
+              (setq bytes (+ bytes 4)))
+             ((eq current t)
+              (setq bytes (+ bytes 4)))
+             ((or (vectorp current) (consp current))
+              (when (gethash current visiting)
+                (setq valid nil))
+              (unless (gethash current visiting)
+                (puthash current t visiting)
+                (push (cons :leave current) pending)
+                ;; Every container contributes delimiters.  Individual
+                ;; separators are charged by each child below conservatively
+                ;; through the node count and the final exact check.
+                (setq bytes (+ bytes 2))
+                (if (vectorp current)
+                    (let ((index (1- (length current))))
+                      (while (>= index 0)
+                        (push (list :value (aref current index)) pending)
+                        (setq index (1- index))))
+                  (push (list :value (cdr current)) pending)
+                  (push (list :value (car current)) pending))))
+             (t
+              ;; Function objects, hash tables, buffers, markers, and other
+              ;; process-local objects are not durable selector data.
+              (setq valid nil)))
+            (when (> bytes e-session--board-routing-policy-byte-budget)
+              (setq valid nil))))))
+    valid))
+
 (defun e-session--board-routing-json-value-p (value &optional visiting)
   "Return non-nil when VALUE is a finite JSON-shaped Lisp value.
 Functions, hash tables, and cyclic values are deliberately not durable board
 policy.  VISITING is the active identity set used to reject cycles without
 accepting an executable selector predicate by accident."
-  (setq visiting (or visiting (make-hash-table :test 'eq)))
-  (cond
-   ((or (null value) (eq value t) (numberp value) (stringp value)) t)
-   ;; Symbols are data in selectors, even when the same symbol names a
-   ;; callable function.  Executable function objects and forms are rejected
-   ;; by the branches below instead.
-   ((and (symbolp value) (not (keywordp value))) t)
-   ((functionp value) nil)
-   ((and (consp value) (memq (car value) '(lambda function))) nil)
-   ((or (vectorp value) (consp value))
-    (unless (gethash value visiting)
-      (puthash value t visiting)
-      (unwind-protect
-          (if (vectorp value)
-              (cl-every
-               (lambda (item)
-                 (e-session--board-routing-json-value-p item visiting))
-               value)
-            (if (e-session--keyword-plist-shape-p value)
-                (let ((tail value)
-                      (valid t))
-                  (while (and valid tail)
+  (let ((visiting (or visiting (make-hash-table :test 'eq)))
+        (leave-marker (make-symbol "routing-leave"))
+        (pending (list value))
+        (valid t))
+    ;; Keep this admission walk iterative.  A structural budget is useful
+    ;; only when a hostile but finite nested value cannot exhaust the Lisp
+    ;; evaluator before the budget is consulted.
+    (while (and valid pending)
+      (let ((current (pop pending)))
+        (if (and (consp current) (eq (car current) leave-marker))
+            (remhash (cdr current) visiting)
+          (cond
+           ((or (null current) (eq current t) (numberp current)
+                (stringp current)) nil)
+           ;; Symbols are data in selectors, even when their names are also
+           ;; callable functions.  Only executable objects/forms are rejected.
+           ((and (symbolp current) (not (keywordp current))) nil)
+           ((functionp current) (setq valid nil))
+           ((and (consp current) (memq (car current) '(lambda function)))
+            (setq valid nil))
+           ((or (vectorp current) (consp current))
+            (if (gethash current visiting)
+                (setq valid nil)
+              (puthash current t visiting)
+              (push (cons leave-marker current) pending)
+              (cond
+               ((vectorp current)
+                (let ((index (1- (length current))))
+                  (while (>= index 0)
+                    (push (aref current index) pending)
+                    (setq index (1- index)))))
+               ((e-session--keyword-plist-shape-p current)
+                (let ((tail current))
+                  (while tail
                     (pop tail)
-                    (setq valid
-                          (e-session--board-routing-json-value-p
-                           (pop tail) visiting)))
-                  valid)
-              (if (proper-list-p value)
-                  (cl-every
-                   (lambda (item)
-                     (e-session--board-routing-json-value-p item visiting))
-                   value)
-                (and (or (keywordp (car value))
-                         (stringp (car value)))
-                     (e-session--board-routing-json-value-p
-                      (cdr value) visiting)))))
-        (remhash value visiting))))
-   (t nil)))
+                    (push (pop tail) pending))))
+               ((proper-list-p current)
+                (dolist (item (reverse current))
+                  (push item pending)))
+               ((or (keywordp (car current))
+                    (stringp (car current)))
+                (push (cdr current) pending))
+               (t
+                (setq valid nil)))))
+           (t (setq valid nil))))))
+    valid))
+
+(defun e-session--board-routing-json-byte-size (value)
+  "Return the canonical UTF-8 JSON byte size of finite VALUE.
+Container traversal is iterative so a policy below the structural node budget
+cannot overflow the Lisp evaluator merely while measuring its representation.
+Scalar values use Emacs's canonical JSON escaping; unsupported dotted pairs
+signal `e-session-board-routing-invalid'."
+  (let ((pending (list (list :value value)))
+        (visiting (make-hash-table :test 'eq))
+        (leave-marker (make-symbol "routing-json-leave"))
+        (bytes 0))
+    (while pending
+      (let ((task (pop pending)))
+        (if (eq (car task) leave-marker)
+            (remhash (cdr task) visiting)
+          (let ((current (cadr task)))
+            (cond
+             ((or (null current) (eq current t) (numberp current)
+                  (stringp current) (symbolp current))
+              (setq bytes (+ bytes
+                             (string-bytes (json-encode current)))))
+             ((or (vectorp current) (consp current))
+              (when (gethash current visiting)
+                (signal 'e-session-board-routing-invalid
+                        (list "Cyclic routing value" current)))
+              (puthash current t visiting)
+              (push (cons leave-marker current) pending)
+              (cond
+               ((vectorp current)
+                (let ((count (length current))
+                      (index (1- (length current))))
+                  (setq bytes (+ bytes 2 (max 0 (1- count))))
+                  (while (>= index 0)
+                    (push (list :value (aref current index)) pending)
+                    (setq index (1- index)))))
+               ((e-session--keyword-plist-shape-p current)
+                (let ((tail current)
+                      (count 0))
+                  (while tail
+                    (setq count (1+ count))
+                    (push (list :value (pop tail)) pending)
+                    (push (list :value (pop tail)) pending))
+                  (setq bytes (+ bytes 2 count (max 0 (1- count))))))
+               ((proper-list-p current)
+                (let ((count (length current)))
+                  (setq bytes (+ bytes 2 (max 0 (1- count))))
+                  (dolist (item (reverse current))
+                    (push (list :value item) pending))))
+               (t
+                (signal 'e-session-board-routing-invalid
+                        (list "Unsupported dotted routing value" current)))))
+             (t
+              (signal 'e-session-board-routing-invalid
+                      (list "Unsupported routing value" current))))))))
+    bytes))
 
 (defun e-session--board-routing-json-value-valid-p (value)
   "Return non-nil when VALUE is finite and encodable as JSON."
-  (and (e-session--board-routing-json-value-p value)
+  (and (e-session--board-routing-value-budget-valid-p value)
+       (e-session--board-routing-json-value-p value)
        (condition-case nil
-           (progn (json-encode value) t)
+           (progn
+             ;; Measure the canonical spelling without recursively encoding
+             ;; the whole value.  Scalar `json-encode' calls retain exact
+             ;; escaping while containers are traversed iteratively.
+             (e-session--board-routing-json-byte-size value)
+             t)
          (error nil))))
 
 (defun e-session--board-routing-tag-list-valid-p (value)
@@ -1993,7 +2146,15 @@ accepting an executable selector predicate by accident."
              (push key seen)))
          (and valid
               (= (length seen) (length e-session--board-routing-policy-keys))
-              (e-session--board-routing-json-value-valid-p policy)))))
+              (e-session--board-routing-json-value-valid-p policy)
+              ;; Attribute selectors are tagged reversibly for persistence;
+              ;; enforce the byte ceiling on that actual canonical form too.
+              (condition-case nil
+                  (<=
+                   (e-session--board-routing-json-byte-size
+                    (e-session--board-routing-policy-for-json policy))
+                   e-session--board-routing-policy-byte-budget)
+                (error nil))))))
 
 (defun e-session--normalize-board-routing-selector (selector)
   "Return SELECTOR in the in-memory symbol form used by board matchers."
@@ -2010,15 +2171,356 @@ accepting an executable selector predicate by accident."
     selector))
 
 (defun e-session--board-routing-copy-value (value)
-  "Deep-copy JSON-shaped board routing VALUE, including strings."
-  (cond
-   ((stringp value) (copy-sequence value))
-   ((consp value)
-    (cons (e-session--board-routing-copy-value (car value))
-          (e-session--board-routing-copy-value (cdr value))))
-   ((vectorp value)
-    (vconcat (mapcar #'e-session--board-routing-copy-value value)))
-   (t value)))
+  "Deep-copy JSON-shaped board routing VALUE, including strings.
+Use an explicit task stack so an admitted finite policy does not consume the
+Lisp call stack merely while detaching nested selector data.  Cycles signal the
+same invalid-policy condition as the admission walk."
+  (let ((pending (list (list :value value)))
+        (results nil)
+        (visiting (make-hash-table :test 'eq))
+        (leave-marker (make-symbol "routing-copy-leave")))
+    (while pending
+      (let ((task (pop pending)))
+        (pcase (car task)
+          (:leave
+           (remhash (cdr task) visiting))
+          (:assemble-vector
+           (let (items)
+             (dotimes (_ (cadr task))
+               (push (pop results) items))
+             (push (vconcat items) results)))
+          (:assemble-cons
+           (let ((cdr-value (pop results))
+                 (car-value (pop results)))
+             (push (cons car-value cdr-value) results)))
+          (:value
+           (let ((current (cadr task)))
+             (cond
+              ((stringp current)
+               (push (copy-sequence current) results))
+              ((or (null current) (eq current t) (numberp current)
+                   (symbolp current))
+               (push current results))
+              ((or (vectorp current) (consp current))
+               (when (gethash current visiting)
+                 (signal 'e-session-board-routing-invalid
+                         (list "Cyclic routing value" current)))
+               (puthash current t visiting)
+               (push (cons leave-marker current) pending)
+               (push (list :assemble-vector (length current)) pending)
+               (if (vectorp current)
+                   (let ((index (1- (length current))))
+                     (while (>= index 0)
+                       (push (list :value (aref current index)) pending)
+                       (setq index (1- index))))
+                 ;; A cons is always copied as its car/cdr pair.  This avoids
+                 ;; calling `proper-list-p' while traversing a deep value.
+                 (pop pending)
+                 (push (list :assemble-cons) pending)
+                 (push (list :value (cdr current)) pending)
+                 (push (list :value (car current)) pending)))
+              (t
+              (signal 'e-session-board-routing-invalid
+                       (list "Unsupported routing value" current)))))))))
+    (car results)))
+
+(defconst e-session--board-routing-attributes-tag
+  "e-routing-attributes-v1"
+  "JSON tag used to preserve selector attribute Lisp types across replay.")
+
+(defun e-session--board-routing-encode-attribute-value (value)
+  "Return reversible JSON-shaped encoding of attribute VALUE.
+The encoder uses an explicit post-order task stack and preserves symbols,
+vectors, lists, plists, and dotted conses without recursive calls."
+  (let ((pending (list (list :value value)))
+        (results nil)
+        (visiting (make-hash-table :test 'eq))
+        (leave-marker (make-symbol "routing-encode-leave")))
+    (while pending
+      (let ((task (pop pending)))
+        (pcase (car task)
+          (:leave
+           (remhash (cdr task) visiting))
+          (:assemble-pair
+           (let ((item (pop results))
+                 (key (pop results)))
+             (push (vector key item) results)))
+          (:assemble
+           (let ((kind (cadr task))
+                 (count (caddr task))
+                 items)
+             (dotimes (_ count)
+               (push (pop results) items))
+             (setq items (vconcat items))
+             (push (pcase kind
+                     ('vector (vector "vector" items))
+                     ('list (vector "list" items))
+                     ('plist (vector "plist" items))
+                     ('cons (vector "cons" items)))
+                   results)))
+          (:value
+           (let ((current (cadr task)))
+             (cond
+              ((or (null current) (eq current t) (numberp current))
+               (push current results))
+              ((stringp current)
+               (push (copy-sequence current) results))
+              ((symbolp current)
+               (push (vector "symbol" (symbol-name current)) results))
+              ((or (vectorp current) (consp current))
+               (when (gethash current visiting)
+                 (signal 'e-session-board-routing-invalid
+                         (list "Cyclic attribute value" current)))
+               (puthash current t visiting)
+               (push (cons leave-marker current) pending)
+               (cond
+                ((vectorp current)
+                 (push (list :assemble 'vector (length current)) pending)
+                 (let ((index (1- (length current))))
+                   (while (>= index 0)
+                     (push (list :value (aref current index)) pending)
+                     (setq index (1- index)))))
+                ((e-session--keyword-plist-shape-p current)
+                 (let ((tail current)
+                       (pairs nil))
+                   (while tail
+                     (push (cons (pop tail) (pop tail)) pairs))
+                   (push (list :assemble 'plist (length pairs)) pending)
+                   (dolist (pair pairs)
+                     (push (list :assemble-pair) pending)
+                     (push (list :value (cdr pair)) pending)
+                     (push (list :value (car pair)) pending))))
+                ((proper-list-p current)
+                 (push (list :assemble 'list (length current)) pending)
+                 (dolist (item (reverse current))
+                   (push (list :value item) pending)))
+                (t
+                 (push (list :assemble 'cons 2) pending)
+                 (push (list :value (cdr current)) pending)
+                 (push (list :value (car current)) pending))))
+              (t
+              (signal 'e-session-board-routing-invalid
+                       (list "Unsupported attribute value" current)))))))))
+    (car results)))
+
+(defun e-session--board-routing-encode-attributes (attributes)
+  "Return tagged reversible JSON value for ATTRIBUTES."
+  (vector e-session--board-routing-attributes-tag
+          (e-session--board-routing-encode-attribute-value attributes)))
+
+(defun e-session--board-routing-attributes-encoded-p (value)
+  "Return non-nil when VALUE is the tagged persisted attribute array."
+  (let ((array (cond ((vectorp value) (append value nil))
+                     ((proper-list-p value) value))))
+    (and (= (length array) 2)
+         (string= (car array) e-session--board-routing-attributes-tag))))
+
+(defun e-session--board-routing-decode-attribute-value (value)
+  "Decode one reversible JSON-shaped attribute VALUE, or signal malformed.
+Decoding is iterative to keep replay safe for a finite admitted structure."
+  (let ((pending (list (list :value value)))
+        (results nil))
+    (while pending
+      (let* ((task (pop pending))
+             (kind (car task)))
+        (cond
+         ((eq kind :assemble-pair)
+          (let ((item (pop results))
+                (key (pop results)))
+            (unless (keywordp key)
+              (signal 'e-session-board-routing-invalid
+                      (list "Non-keyword plist key" key)))
+            (push (vector key item) results)))
+         ((eq kind :assemble)
+          (let ((assembly-kind (cadr task))
+                (count (caddr task))
+                items)
+            (dotimes (_ count)
+              (push (pop results) items))
+            (setq items (vconcat items))
+            (push
+             (cond
+              ((eq assembly-kind 'vector) items)
+              ((eq assembly-kind 'list) (append items nil))
+              ((eq assembly-kind 'cons)
+               (cons (aref items 0) (aref items 1)))
+              ((eq assembly-kind 'plist)
+               (let (plist)
+                 (dotimes (index count)
+                   (let ((pair (aref items index)))
+                     (setq plist
+                           (append plist
+                                   (list (aref pair 0)
+                                         (aref pair 1))))))
+                 plist))
+              (t
+               (signal 'e-session-board-routing-invalid
+                       (list "Unknown assembly kind" assembly-kind))))
+             results)))
+         ((eq kind :value)
+          (let ((current (cadr task)))
+            (if (or (null current) (eq current t) (numberp current)
+                    (stringp current))
+                (push (if (stringp current) (copy-sequence current) current)
+                      results)
+              (let* ((array (cond ((vectorp current) (append current nil))
+                                  ((proper-list-p current) current)))
+                     (tag (and array (car array)))
+                     (payload (and array (cdr array))))
+                (unless (and (stringp tag) (= (length payload) 1))
+                  (signal 'e-session-board-routing-invalid
+                          (list "Malformed encoded attribute" current)))
+                (let ((data (car payload)))
+                  (cond
+                   ((string= tag "symbol")
+                    (unless (stringp data)
+                      (signal 'e-session-board-routing-invalid
+                              (list "Invalid symbol" current)))
+                    (push (intern data) results))
+                   ((member tag '("vector" "list" "cons" "plist"))
+                    (let* ((elements
+                            (cond ((vectorp data) (append data nil))
+                                  ((proper-list-p data) data)))
+                           (assembly-kind
+                            (cond ((string= tag "vector") 'vector)
+                                  ((string= tag "list") 'list)
+                                  ((string= tag "cons") 'cons)
+                                  (t 'plist))))
+                      (unless elements
+                        (when (and (not (vectorp data))
+                                   (not (proper-list-p data)))
+                          (signal 'e-session-board-routing-invalid
+                                  (list "Invalid encoded sequence" current))))
+                      (when (and (eq assembly-kind 'cons)
+                                 (/= (length elements) 2))
+                        (signal 'e-session-board-routing-invalid
+                                (list "Invalid cons" current)))
+                      (when (eq assembly-kind 'plist)
+                        (dolist (pair elements)
+                          (unless (and (or (vectorp pair)
+                                           (proper-list-p pair))
+                                       (= (length pair) 2))
+                            (signal 'e-session-board-routing-invalid
+                                    (list "Invalid plist pair" current)))))
+                      (if (eq assembly-kind 'plist)
+                          (let ((pairs (reverse elements)))
+                            (push (list :assemble 'plist (length pairs))
+                                  pending)
+                            (dolist (pair pairs)
+                              (push (list :assemble-pair) pending)
+                              (push (list :value (elt pair 1)) pending)
+                              (push (list :value (elt pair 0)) pending)))
+                        (push (list :assemble assembly-kind (length elements))
+                              pending)
+                        (dolist (item (reverse elements))
+                          (push (list :value item) pending)))))
+                   (t
+                    (signal 'e-session-board-routing-invalid
+                            (list "Unknown attribute tag" tag)))))))))
+         (t
+          (signal 'e-session-board-routing-invalid
+                  (list "Unknown decode task" kind))))))
+    (car results)))
+
+(defun e-session--board-routing-decode-attributes (value)
+  "Decode tagged persisted selector attributes VALUE."
+  (let ((array (cond ((vectorp value) (append value nil))
+                     ((proper-list-p value) value))))
+    (if (and (= (length array) 2)
+             (string= (car array) e-session--board-routing-attributes-tag))
+        (e-session--board-routing-decode-attribute-value (cadr array))
+    (signal 'e-session-board-routing-invalid
+            (list "Missing attribute tag" value)))))
+
+(defun e-session--board-routing-selector-for-json (selector)
+  "Return SELECTOR with its attribute values reversibly encoded."
+  (let ((result (e-session--board-routing-copy-value selector)))
+    (when (and (plist-member result :attributes)
+               (not (e-session--board-routing-attributes-encoded-p
+                     (plist-get result :attributes))))
+      (plist-put result :attributes
+                 (e-session--board-routing-encode-attributes
+                  (plist-get result :attributes))))
+    result))
+
+(defun e-session--board-routing-selector-from-json (selector)
+  "Return detached SELECTOR after decoding persisted attributes."
+  (if (e-session--keyword-plist-shape-p selector)
+      (let ((result (e-session--board-routing-copy-value selector)))
+        (when (and (plist-member result :attributes)
+                   (e-session--board-routing-attributes-encoded-p
+                    (plist-get result :attributes)))
+          (plist-put result :attributes
+                     (e-session--board-routing-decode-attributes
+                      (plist-get result :attributes))))
+        result)
+    selector))
+
+(defun e-session--board-routing-policy-for-json (policy)
+  "Return POLICY suitable for JSON persistence."
+  (when policy
+    (let ((result (e-session--board-routing-copy-value policy)))
+      (dolist (key '(:pickup-selector :observer-selector))
+        (when (plist-member result key)
+          (plist-put result key
+                     (e-session--board-routing-selector-for-json
+                      (plist-get result key)))))
+      result)))
+
+(defun e-session--board-routing-policy-from-json (policy)
+  "Return detached POLICY after decoding persisted attributes."
+  (when policy
+    (if (e-session--keyword-plist-shape-p policy)
+        (let ((result (e-session--board-routing-copy-value policy)))
+          (dolist (key '(:pickup-selector :observer-selector))
+            (when (plist-member result key)
+              (plist-put result key
+                         (e-session--board-routing-selector-from-json
+                          (plist-get result key)))))
+          result)
+      policy)))
+
+(defun e-session--board-association-for-json (association)
+  "Return ASSOCIATION with routing attributes encoded for JSON."
+  (when association
+    (let ((result (e-session--board-routing-copy-value association)))
+      (when (plist-member result :routing-policy)
+        (plist-put result :routing-policy
+                   (e-session--board-routing-policy-for-json
+                    (plist-get result :routing-policy))))
+      result)))
+
+(defun e-session--board-association-from-json (association)
+  "Return detached ASSOCIATION after decoding persisted attributes."
+  (when association
+    (if (e-session--keyword-plist-shape-p association)
+        (let ((result (e-session--board-routing-copy-value association)))
+          (when (plist-member result :routing-policy)
+            (plist-put result :routing-policy
+                       (e-session--board-routing-policy-from-json
+                        (plist-get result :routing-policy))))
+          result)
+      association)))
+
+(defun e-session--record-for-json (record)
+  "Return RECORD with board routing attributes encoded for persistence."
+  (if (and (listp record)
+           (equal (plist-get record :type) "board-session-state"))
+      (let ((result (e-session--board-routing-copy-value record)))
+        (plist-put result :board-state
+                   (e-session--board-association-for-json
+                    (plist-get result :board-state)))
+        result)
+    record))
+
+(defun e-session--index-entry-for-json (entry)
+  "Return index ENTRY with board routing attributes encoded."
+  (let ((result (e-session--board-routing-copy-value entry)))
+    (when (plist-member result :board-state)
+      (plist-put result :board-state
+                 (e-session--board-association-for-json
+                  (plist-get result :board-state))))
+    result))
 
 (defun e-session--normalize-board-routing-policy (policy)
   "Return detached POLICY with replayed tag/kind values normalized."
@@ -2105,7 +2607,8 @@ identity mirrors reconstruct only the canonical legacy shape in its absence."
                  (plist-member projection :principal)
                  (null state) (null board-id) (null principal))
             nil
-          (e-session--normalize-board-association state)))
+          (e-session--normalize-board-association
+           (e-session--board-association-from-json state))))
     (let ((board-id (plist-get projection :board-id))
           (principal (plist-get projection :principal)))
       (if (and (null board-id) (null principal))
@@ -3183,6 +3686,40 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
            :metadata metadata))
     (e-session--write-index store)
     session))
+
+(defun e-session-abort-created (store session-id)
+  "Remove a newly created SESSION-ID after an owning service failure.
+
+This is intentionally limited to application-service rollback: callers must
+  only use it for a session that has just been created and has not been exposed
+as a restorable participant.  It removes the in-memory/index/journal state and
+any queued direct-store writes, rather than appending a user-visible tombstone
+  for an object that never completed admission."
+  (when-let* ((session (gethash session-id (e-session-store-sessions store)))
+              (_ (plist-get session :loaded)))
+    (dolist (entry (copy-sequence (e-session-store-write-queue store)))
+      (when (equal (e-session--queued-entry-session-id entry) session-id)
+        (e-session--drop-queued-write-entry store entry)))
+    (remhash session-id (e-session-store-checkpoint-dirty-session-ids store))
+    (remhash session-id (e-session-store-entry-indexes store))
+    (remhash session-id (e-session-store-board-journals store))
+    (remhash session-id (e-session-store-sessions store))
+    (when (e-session--persistent-p store)
+      (dolist (file (list (e-session--session-file store session-id)
+                          (e-session--checkpoint-file store session-id)))
+        (when (file-exists-p file)
+          (delete-file file)))
+      ;; Keep the derived catalog truthful for direct and queued stores.  A
+      ;; controller's already-submitted outbox is outside this rollback API;
+      ;; its caller must fail before submission when durable atomicity is
+      ;; required.
+      (unless (or (e-session--persistence-controller store)
+                  (e-session-store-index-write-pending store))
+        ;; Go through the ordinary path: queued stores retain their shared
+        ;; timer/index obligation, while direct stores perform their normal
+        ;; immediate derived-index write.
+        (e-session--write-index store)))
+    t))
 
 (defun e-session--board-journal (store session-id)
   "Return STORE's private board journal for SESSION-ID."

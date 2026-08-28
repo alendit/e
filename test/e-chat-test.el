@@ -6172,7 +6172,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               ;; selected turn's progress/status or composer settlement.
               (e-chat--render-event
                (list :type 'message-added :session-id e-chat-session-id
-                     :turn-id "sibling-turn" :created-at 1
+                     :turn-id "selected-turn" :created-at 1
                      :board-seq 10 :selected-participant-p nil
                      :payload
                      '(:message (:id "sibling-output" :role assistant
@@ -6181,20 +6181,20 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                  :selected-participant-p nil))))
               (e-chat--render-event
                (list :type 'turn-finished :session-id e-chat-session-id
-                     :turn-id "sibling-turn" :created-at 2
+                     :turn-id "selected-turn" :created-at 2
                      :board-seq 11 :selected-participant-p nil))
               (e-chat--render-event
                (list :type 'turn-failed :session-id e-chat-session-id
-                     :turn-id "sibling-failed" :created-at 3
+                     :turn-id "selected-turn" :created-at 3
                      :board-seq 12 :selected-participant-p nil
                      :payload '(:error "sibling failure")))
               (e-chat--render-event
                (list :type 'turn-cancelled :session-id e-chat-session-id
-                     :turn-id "sibling-cancelled" :created-at 4
+                     :turn-id "selected-turn" :created-at 4
                      :board-seq 13 :selected-participant-p nil))
               (e-chat--render-event
                (list :type 'backend-empty-output :session-id e-chat-session-id
-                     :turn-id "sibling-turn" :created-at 5
+                     :turn-id "selected-turn" :created-at 5
                      :board-seq 14 :selected-participant-p nil))
               (should (string-match-p "Sibling answer" (buffer-string)))
               (should (equal e-chat--progress-turn-id "selected-turn"))
@@ -6209,6 +6209,124 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should (eq (e-chat--submit-intent nil) 'submit)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-sibling-activity-uses-one-stable-observed-record ()
+  "One sibling's provider lifecycle rows share an isolated presentation record."
+  (let ((buffer (e-chat-test--buffer nil "chat-sibling-activity")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--active-turn-running-p)
+                     (lambda () t)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "selected-turn"
+                            :created-at 0))
+            (let ((selected-status e-chat--status)
+                  (event-base
+                   '(:session-id "chat-sibling-activity"
+                     :turn-id "selected-turn"
+                     :board-id "board-1"
+                     :subject-participant-id "participant-sibling"
+                     :source-turn-id "source-turn-1"
+                     :selected-participant-p nil)))
+              (dolist (event
+                       (list
+                        (append event-base
+                                '(:type provider-request-started :created-at 1
+                                  :payload (:status started)))
+                        (append event-base
+                                '(:type reasoning-delta :created-at 2
+                                  :payload (:content "sibling planning")))
+                        (append event-base
+                                '(:type provider-request-finished :created-at 3
+                                  :payload (:status done)))
+                        (append event-base
+                                '(:type turn-failed :created-at 4
+                                  :payload (:error "sibling failed")))))
+                (e-chat--render-event event))
+              (let* ((observed-id
+                      (e-chat--observed-turn-id "selected-turn" event-base))
+                     (observed (e-chat--existing-turn-record observed-id))
+                     (selected (e-chat--existing-turn-record "selected-turn")))
+                (should (equal observed-id
+                               '(:observed-board-turn
+                                 :board-id "board-1"
+                                 :subject-participant-id "participant-sibling"
+                                 :source-turn-id "source-turn-1"
+                                 :causal-turn-id "selected-turn")))
+                (should observed)
+                (should (= (hash-table-count e-chat--turn-registry) 2))
+                (should (= (length (e-chat--activity-records observed)) 1))
+                (should (equal (plist-get (e-chat--last-round-record observed)
+                                          :status)
+                               'done))
+                (should (equal (plist-get observed :failure-error)
+                               "sibling failed"))
+                (should-not (plist-get selected :ended-at))
+                (should-not (plist-get selected :failure-error))
+                (should (equal e-chat--status selected-status))
+                (should (equal e-chat--progress-turn-id "selected-turn"))
+                (should (eq (e-chat--submit-intent nil) 'steer))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replayed-sibling-terminal-events-remain-observable ()
+  "Replay renders sibling failures and cancellations without selected settlement."
+  (let ((buffer (e-chat-test--buffer nil "chat-replayed-siblings")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--active-turn-running-p)
+                     (lambda () t)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "selected-turn"
+                            :created-at 0))
+            (let ((selected-status e-chat--status)
+                  (activity-events
+                   (list
+                    '(:turn-id "selected-turn" :event-type turn-failed
+                      :created-at 1 :board-id "board-1"
+                      :subject-participant-id "participant-sibling"
+                      :source-turn-id "sibling-failure"
+                      :selected-participant-p nil
+                      :payload (:error "replayed sibling failure"))
+                    '(:turn-id "selected-turn" :event-type turn-cancelled
+                      :created-at 2 :board-id "board-1"
+                      :subject-participant-id "participant-sibling"
+                      :source-turn-id "sibling-cancel"
+                      :selected-participant-p nil))))
+              (e-chat--render-replayed-terminal-event
+               "selected-turn" activity-events)
+              (should (string-match-p "replayed sibling failure"
+                                      (buffer-string)))
+              (should (string-match-p "Turn cancelled" (buffer-string)))
+              (should (e-chat--existing-turn-record
+                       (e-chat--observed-turn-id
+                        "selected-turn" (car activity-events))))
+              (should (e-chat--existing-turn-record
+                       (e-chat--observed-turn-id
+                        "selected-turn" (cadr activity-events))))
+              (should (equal e-chat--status selected-status))
+              (should (equal e-chat--progress-turn-id "selected-turn"))
+              (should (eq (e-chat--submit-intent nil) 'steer))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))
+
+(ert-deftest e-chat-test-board-ownership-fallback-is-fail-closed ()
+  "Only identity-free synthetic events retain the historical selected default."
+  (should (e-chat--event-selected-participant-p '(:type turn-started)))
+  (should (e-chat--event-selected-participant-p
+           '(:type turn-started :selected-participant-p t)))
+  (should-not (e-chat--event-selected-participant-p
+               '(:type turn-started :selected-participant-p nil)))
+  (should-not (e-chat--event-selected-participant-p
+               '(:type turn-failed :board-id "board" :turn-id "turn")))
+  (should (e-chat--message-selected-participant-p
+           '(:role assistant :content "synthetic")))
+  (should-not (e-chat--message-selected-participant-p
+               '(:role assistant :board-seq 4 :content "missing fact"))))
 
 (ert-deftest e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only ()
   "Board routing and presentation ownership survive a provider-free restart."
@@ -6382,23 +6500,123 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                  (list :type 'turn-started :session-id root-id
                        :turn-id restarted-main-input :created-at 10
                        :selected-participant-p t))
-                (e-board-post-output
-                        restored-source :id "sibling-output"
-                        :author (format "participant:%s"
-                                        restored-private-participant)
-                        :subject-participant-id restored-private-participant
-                        :source-turn-id "sibling-turn" :tags '(main)
-                        :content "Observed sibling answer."
-                        :source-output-key '(routing sibling-output 1))
+                ;; Establish a real selected provider round first.  The
+                ;; sibling rows below use the same causal input but a
+                ;; different participant; their terminal rows must not settle
+                ;; this round or replace its thought/progress state.
                 (e-board-post-activity
-                        restored-source :id "sibling-finished"
-                        :author (format "participant:%s"
-                                        restored-private-participant)
-                        :subject-participant-id restored-private-participant
-                        :source-turn-id "sibling-turn"
-                        :activity-kind 'turn-summary :tags '(main)
-                        :attributes '(:status finished)
-                        :source-activity-key '(routing sibling-summary 1))
+                 restored-source :id "root-provider-started"
+                 :author (format "participant:%s"
+                                 restored-root-participant)
+                 :subject-participant-id restored-root-participant
+                 :source-turn-id "root-turn" :activity-kind
+                 'provider-request-started :tags '(main)
+                 :attributes '(:status started)
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing root-provider-started 1))
+                (e-board-post-activity
+                 restored-source :id "root-reasoning"
+                 :author (format "participant:%s"
+                                 restored-root-participant)
+                 :subject-participant-id restored-root-participant
+                 :source-turn-id "root-turn" :activity-kind
+                 'reasoning-delta :tags '(main)
+                 :content "selected planning"
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing root-reasoning 1))
+                (e-board-post-activity
+                 restored-source :id "root-provider-finished"
+                 :author (format "participant:%s"
+                                 restored-root-participant)
+                 :subject-participant-id restored-root-participant
+                 :source-turn-id "root-turn" :activity-kind
+                 'provider-request-finished :tags '(main)
+                 :attributes '(:status done)
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing root-provider-finished 1))
+                ;; Drain the selected lifecycle before introducing sibling
+                ;; rows.  Replay may already have a legitimate outer
+                ;; `:ended-at`; snapshot it rather than mistaking that
+                ;; restored fact for sibling settlement.
+                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-ui-work-with-batch-drain
+                  (e-ui-work-drain-batch :buffer root-buffer))
+                (let* ((selected-before
+                        (e-chat--existing-turn-record restarted-main-input))
+                       (selected-ended-at-before
+                        (plist-get selected-before :ended-at))
+                       (selected-failure-before
+                        (plist-get selected-before :failure-error))
+                       (selected-round-before
+                        (copy-tree (e-chat--last-round-record selected-before)))
+                       (selected-activity-round-before
+                        (plist-get selected-before :activity-round))
+                       (selected-thought-before
+                        (e-chat--round-thought-text selected-round-before))
+                       (selected-status-before e-chat--status)
+                       (selected-progress-before e-chat--progress-turn-id)
+                       (selected-composer-before
+                        (e-chat-test--composer-text-for root-buffer))
+                       (selected-intent-before (e-chat--submit-intent nil)))
+                  (should selected-before)
+                  (should (= (plist-get selected-before :activity-round) 1))
+                  (should (equal (plist-get selected-round-before :status)
+                                 'done))
+                  (should (equal
+                           (plist-get selected-round-before :reasoning)
+                           '((:kind reasoning :round 1
+                             :content "selected planning"))))
+                  (e-board-post-output
+                 restored-source :id "sibling-output"
+                 :author (format "participant:%s"
+                                 restored-private-participant)
+                 :subject-participant-id restored-private-participant
+                 :source-turn-id "sibling-turn" :tags '(main)
+                 :content "Observed sibling answer."
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-output-key '(routing sibling-output 1))
+                (e-board-post-activity
+                 restored-source :id "sibling-finished"
+                 :author (format "participant:%s"
+                                 restored-private-participant)
+                 :subject-participant-id restored-private-participant
+                 :source-turn-id "sibling-turn"
+                 :activity-kind 'turn-summary :tags '(main)
+                 :attributes '(:status finished)
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing sibling-summary 1))
+                ;; Failure, cancellation, and empty-output rows are all
+                ;; ordinary observer deliveries.  They share the restarted
+                ;; input's causal id but retain one isolated sibling identity.
+                (e-board-post-activity
+                 restored-source :id "sibling-failed"
+                 :author (format "participant:%s"
+                                 restored-private-participant)
+                 :subject-participant-id restored-private-participant
+                 :source-turn-id "sibling-failure"
+                 :activity-kind 'turn-summary :tags '(main)
+                 :attributes '(:status failed :error "sibling failure")
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing sibling-failure 1))
+                (e-board-post-activity
+                 restored-source :id "sibling-cancelled"
+                 :author (format "participant:%s"
+                                 restored-private-participant)
+                 :subject-participant-id restored-private-participant
+                 :source-turn-id "sibling-cancel"
+                 :activity-kind 'turn-summary :tags '(main)
+                 :attributes '(:status cancelled)
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing sibling-cancel 1))
+                (e-board-post-activity
+                 restored-source :id "sibling-empty"
+                 :author (format "participant:%s"
+                                 restored-private-participant)
+                 :subject-participant-id restored-private-participant
+                 :source-turn-id "sibling-empty"
+                 :activity-kind 'backend-empty-output :tags '(main)
+                 :reply-to-message-ids (list restarted-main-input)
+                 :source-activity-key '(routing sibling-empty 1))
                 ;; Exercise the real subscription observer and shell callback;
                 ;; do not bypass selection with a directly synthesized event.
                 (e-chat-service--drain-subscription e-chat--event-subscription)
@@ -6406,10 +6624,38 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                   (e-ui-work-drain-batch :buffer root-buffer))
                 (should (string-match-p "Observed sibling answer"
                                         (buffer-string)))
+                (should (string-match-p "Turn failed: sibling failure"
+                                        (buffer-string)))
+                (should (string-match-p "Turn cancelled"
+                                        (buffer-string)))
                 (should (equal e-chat--progress-turn-id restarted-main-input))
                 (should-not
                  (member e-chat--status '("done" "error" "cancelled")))
+                (let ((selected-record
+                       (e-chat--existing-turn-record restarted-main-input)))
+                  (should selected-record)
+                  (should (equal (plist-get selected-record :ended-at)
+                                 selected-ended-at-before))
+                  (should (equal (plist-get selected-record :failure-error)
+                                 selected-failure-before))
+                  (should (equal (plist-get selected-record :activity-round)
+                                 selected-activity-round-before))
+                  (should (equal
+                           (e-chat--last-round-record selected-record)
+                           selected-round-before))
+                  (should (equal
+                           (e-chat--round-thought-text
+                            (e-chat--last-round-record selected-record))
+                           selected-thought-before))
+                  (should (equal e-chat--status selected-status-before))
+                  (should (equal e-chat--progress-turn-id
+                                 selected-progress-before))
+                  (should (equal (e-chat-test--composer-text-for root-buffer)
+                                 selected-composer-before))
+                  (should (eq (e-chat--submit-intent nil)
+                              selected-intent-before)))
                 (should (eq (e-chat--submit-intent nil) 'steer))
+                )
                 (e-board-post-output
                         restored-source :id "root-output"
                         :author (format "participant:%s"

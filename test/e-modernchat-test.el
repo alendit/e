@@ -350,9 +350,19 @@ messages so the transcript reads as one clean answer."
        harness :id "two" :board-id "shared"
        :principal (e-board-registry-board-principal board))
       (let* ((one (e-chat-service-open-board
-                   board harness "one" :participant-id "one"))
+                   board harness "one"
+                   :participant-id "one"
+                   :pickup-selector '(:tags (main))
+                   :observer-selector '(:tags (main))
+                   :default-tags '(main)
+                   :default-to nil))
              (_two (e-chat-service-open-board
-                    board harness "two" :participant-id "two"))
+                    board harness "two"
+                    :participant-id "two"
+                    :pickup-selector '(:tags (main))
+                    :observer-selector '(:tags (main))
+                    :default-tags '(main)
+                    :default-to nil))
              (source (e-board-registry-board-source-board board)))
         (e-board-registry-install-subscription
          board "two" '(:tags (review)) :id "two-review")
@@ -461,6 +471,174 @@ messages so the transcript reads as one clean answer."
                    '(:subject-participant-id "ptc-restored")))
     (should (equal (plist-get captured :default-tags) '(private)))
     (should (equal (plist-get captured :default-to) "ptc-restored"))))
+
+(ert-deftest e-chat-service-test-legacy-routing-admission-is-explicit ()
+  "Legacy board associations choose defaults, upgrade, or fail closed explicitly."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
+         captured)
+    (cl-labels
+        ((legacy (id principal role)
+           (let ((board-id (format "routing-admission-%s-board" id)))
+             (e-board-registry-create :id board-id :principal principal)
+             (e-session-create store :id id)
+             (e-session-declare-board-state
+              store id principal board-id role)
+             board-id)))
+      (let ((canonical-board (legacy "canonical" "chat:canonical" nil))
+            (owner-board (legacy "legacy-owner" "other-owner" "owner"))
+            explicit-roleless-board
+            ambiguous-board participant-board partial-board durable-board)
+        ;; The canonical roleless root and an owner association retain the
+        ;; historical main defaults without borrowing a caller policy.
+        (setq explicit-roleless-board
+              (legacy "explicit-roleless" "other-principal" nil)
+              ambiguous-board (legacy "ambiguous" "other-principal" nil)
+              participant-board (legacy "legacy-participant" "board-owner"
+                                        "participant")
+              partial-board (legacy "partial-participant" "board-owner"
+                                    "participant")
+              durable-board (legacy "durable-participant" "board-owner"
+                                    "participant"))
+        (cl-letf (((symbol-function 'e-chat-service--install-participant-binding)
+                   (lambda (_board _harness _session-id &rest arguments)
+                     (setq captured arguments)
+                     :captured)))
+          (should (eq (e-chat-service-open-board
+                       canonical-board harness "canonical")
+                      :captured))
+          (should (equal (plist-get captured :default-tags) '(main)))
+          (should (eq (e-chat-service-open-board
+                       owner-board harness "legacy-owner")
+                      :captured))
+          ;; A noncanonical roleless association has no safe implicit policy.
+          ;; A complete caller-supplied policy is the one explicit upgrade
+          ;; permitted for that otherwise ambiguous legacy shape.
+          (should (eq
+                   (e-chat-service-open-board
+                    explicit-roleless-board harness "explicit-roleless"
+                    :participant-id "explicit-roleless-id"
+                    :pickup-selector '(:tags (private))
+                    :observer-selector
+                    '(:subject-participant-id "explicit-roleless-id")
+                    :default-tags '(private)
+                    :default-to nil)
+                   :captured))
+          (should (equal
+                   (plist-get (e-session-board-routing-policy
+                               (e-session-get store "explicit-roleless"))
+                              :participant-id)
+                   "explicit-roleless-id"))
+          (should-error (e-chat-service-open-board
+                         ambiguous-board harness "ambiguous")
+                        :type 'e-session-error)
+          ;; A participant may be admitted only with every explicit field.  The
+          ;; resolved value is persisted before the attachment boundary runs.
+          (should (eq
+                   (e-chat-service-open-board
+                    participant-board harness "legacy-participant"
+                    :participant-id "private-admitted"
+                    :pickup-selector '(:tags (private))
+                    :observer-selector '(:subject-participant-id
+                                         "private-admitted")
+                    :default-tags '(private)
+                    :default-to "private-admitted")
+                   :captured))
+          (let ((policy (e-session-board-routing-policy
+                         (e-session-get store "legacy-participant"))))
+            (should (equal (plist-get policy :participant-id)
+                           "private-admitted"))
+            (should (equal (plist-get policy :default-tags) '(private))))
+          ;; Partial upgrade input is rejected without adding a policy.
+          (should-error
+           (e-chat-service-open-board
+            partial-board harness "partial-participant"
+            :participant-id "private-partial")
+           :type 'e-session-error)
+          (should-not
+           (e-session-board-routing-policy
+            (e-session-get store "partial-participant")))
+          ;; A durable policy is authoritative; conflicting caller values are
+          ;; rejected rather than silently ignored.
+          (e-session-declare-board-state
+           store "durable-participant" "board-owner"
+           (e-board-registry-board-id
+            (e-board-registry-get durable-board))
+           "participant"
+           '(:participant-id "durable-id"
+             :pickup-selector (:tags (private))
+             :observer-selector (:subject-participant-id "durable-id")
+             :default-tags (private)
+             :default-to "durable-id"))
+          (should-error
+           (e-chat-service-open-board
+            durable-board harness "durable-participant"
+            :participant-id "other-id")
+           :type 'e-session-error)
+          (should (equal
+                   (plist-get (e-session-board-routing-policy
+                               (e-session-get store "durable-participant"))
+                              :participant-id)
+                   "durable-id")))))))
+
+(ert-deftest e-chat-service-test-participant-creation-failures-are-atomic ()
+  "Participant admission failures leave no orphan session or board member."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
+         (board (e-board-registry-create
+                 :id "participant-atomic-board" :principal "board-owner")))
+    ;; Board resolution and policy validation both precede session creation.
+    (should-error
+     (e-chat-service-create-participant
+      "missing-board" harness :id "invalid-board-session")
+     :type 'e-board-registry-missing)
+    (should-error
+     (e-chat-service-create-participant
+      board harness :id "invalid-selector-session"
+      :pickup-selector '(:predicate (lambda (_message) t)))
+     :type 'e-session-error)
+    (should-error (e-session-get store "invalid-board-session")
+                  :type 'e-session-missing)
+    (should-error (e-session-get store "invalid-selector-session")
+                  :type 'e-session-missing)
+    ;; A duplicate session id is rejected before a participant id is reserved.
+    (e-session-create store :id "existing-session")
+    (should-error
+     (e-chat-service-create-participant
+      board harness :id "existing-session" :participant-id "unused-id")
+     :type 'e-session-duplicate)
+    (should-not (gethash "unused-id"
+                         (e-board-registry-board-participants board)))
+    ;; An explicit participant collision is also preflighted.
+    (e-chat-service-create-participant
+     board harness :id "first-private" :participant-id "same-participant")
+    (should-error
+     (e-chat-service-create-participant
+      board harness :id "second-private" :participant-id "same-participant")
+     :type 'e-board-registry-id-conflict)
+    (should-error (e-session-get store "second-private")
+                  :type 'e-session-missing)
+    ;; Owned failures after session allocation roll the session back.
+    (cl-letf (((symbol-function 'e-chat-service--persist-board-state)
+               (lambda (&rest _arguments)
+                 (signal 'e-session-error (list "persist rejected")))))
+      (should-error
+       (e-chat-service-create-participant
+        board harness :id "persist-failure" :participant-id "persist-id")
+       :type 'e-session-error))
+    (should-error (e-session-get store "persist-failure")
+                  :type 'e-session-missing)
+    (cl-letf (((symbol-function 'e-chat-service--install-participant-binding)
+               (lambda (&rest _arguments)
+                 (signal 'e-session-error (list "attachment rejected")))))
+      (should-error
+       (e-chat-service-create-participant
+        board harness :id "attachment-failure" :participant-id "attach-id")
+       :type 'e-session-error))
+    (should-error (e-session-get store "attachment-failure")
+                  :type 'e-session-missing)
+    (should-not (gethash "attach-id"
+                         (e-board-registry-board-participants board)))))
 
 (ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
   "A participant cannot become a root by reusing the owner's id in its store."
