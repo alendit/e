@@ -23,7 +23,10 @@ contract remain governed by the first addendum.
 Addendum 4 supersedes this document only for the model-facing
 promotion/curation contract: =context-curate= is the active carrier and new
 durable records are version 3, while the persisted =context-promotion= family
-remains the read-only version-2 compatibility shape.
+remains the read-only version-2 compatibility shape.  Addendum 5 makes the
+source affordance self-explaining, and Addendum 6 adds mandatory Responses
+reasoning summaries plus explicit exhaustive =keep=/=summaries=/=drop=
+dispositions; those later changes fence the applicable material identity.
 
 Implementation is not authorized merely because this plan exists.  The
 =docs/feats/index.org= entry remains the compact status authority.
@@ -51,9 +54,9 @@ evidence; they refer to these IDs and do not add independent requirements.
 | =F88A3-SEM= | After a consumed observation, the next ordinary request is rebuilt from the session-owned durable body, committed promotions, and the new runtime frontier; the prior raw observation, call, replay item, result marker, and contaminated response IDs are absent. | core lifetime policy plus session/harness composition | ordinary turn following an observed/promoted tool turn | 2 | =canonical-observe-promote-forget= owner and composed scenarios | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-LAYOUT= | An affected OpenAI Responses request keeps top-level instructions stable, renders the unchanged semantic prefix before the changing user/observation frontier, preserves observation instruction authority with developer-role input, and places an explicit breakpoint at the stable-prefix boundary where supported. | OpenAI adapter consuming harness-owned segment identity | literal built-in Codex and canonical OpenAI request bodies | 1 | two canonical =[A B C] -> [A B D]= projections with byte/order prefix comparison, raw =C= exclusion, authority check, and breakpoint check | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-DELIVERY= | For a profile adopting late-input frontier layout, current-state and dynamic-context input is =inherited= under continuation.  An observation-bearing response or descendant is not a durable cross-turn anchor.  Profiles that retain top-level instruction replacement remain under the first addendum instead. | backend capability contract and OpenAI profile resolver | harness anchor selection/persistence joined to the affected profile | 1 and 2 | capability-map, anchor-safety, no-persistence, and canonical-next-turn scenarios | not applicable; repository-controlled | not applicable | accepted |
-| =F88A3-TOOL= | The latest tool-producing response is usable only by its matching in-memory function-call-output follow-up.  A =previous_response_not_found= rejection performs at most one complete canonical retry containing the required call/replay/result bundle; neither response lineage authorizes the next ordinary turn. | loop for causal follow-up; OpenAI adapter for response availability/retry | streamed tool response, tool execution, matching follow-up, then next ordinary turn | 2 and 3 | both provider-done/tool-result orderings; top-level =error= and =response.failed=; exact zero/one retry; next-turn exclusion | configured compatible Responses tool-heavy run reports continuation and cache separately; ChatGPT/WebSocket-specific continuation remains unconfirmed | retry reason/count may be bounded diagnostics; otherwise not applicable | accepted |
+| =F88A3-TOOL= | The latest tool-producing response is usable only by its matching in-memory function-call-output follow-up.  A =previous_response_not_found= rejection performs at most one complete canonical retry containing the required call/replay/result bundle; neither response lineage authorizes the next ordinary turn. | loop for causal follow-up; OpenAI adapter for response availability/retry | streamed tool response, tool execution, matching follow-up, then next ordinary turn | 2 and 3 | both provider-done/tool-result orderings; top-level =error= and =response.failed=; exact zero/one retry; next-turn exclusion | configured compatible Responses tool-heavy run reports continuation and cache separately at =01a8466a=; ChatGPT/WebSocket-specific continuation remains unconfirmed | retry reason/count may be bounded diagnostics; otherwise not applicable | accepted |
 | =F88A3-PROMOTION= | Core validates promotion provenance against the consumed frame and commits valid facts to the session before any subsequent provider request; invalid promotion follows the existing failure path without later dispatch or semantic mutation. | core and harness/session append boundary | observed tool turn followed by promoted ordinary turn | 2 | existing owner tests plus public valid/invalid promotion composition | not applicable; repository-controlled | not applicable | accepted inherited contract; superseded by =F88A4-CURATE= |
-| =F88A3-CACHE= | With unchanged capability identity and cache key, a compatible configured Responses profile's canonical pair reports a warm prefix; stateful WebSocket retained and deliberate replacement-socket behavior remains a transport-specific case.  Missing usage is unavailable, explicit zero on a valid run is =product-contract-failure=, and semantic correctness remains independent of cache availability. | OpenAI adapter profile/evidence boundary | minimal canonical pair and tool-heavy canonical composition | 4 | stable key, literal prefix, transport-aware request identity, and usage classification | configured compatible Responses HTTP profile is current under the Addendum 5 material identity; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | cached ratio, latency, and warm/cold frequency are observational | accepted specification/runner; current Responses HTTP evidence at =317be237=; ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-CACHE= | With unchanged capability identity and cache key, a compatible configured Responses profile's canonical pair reports a warm prefix; stateful WebSocket retained and deliberate replacement-socket behavior remains a transport-specific case.  Missing usage is unavailable, explicit zero on a valid run is =product-contract-failure=, and semantic correctness remains independent of cache availability. | OpenAI adapter profile/evidence boundary | minimal canonical pair and tool-heavy canonical composition | 4 | stable key, literal prefix, transport-aware request identity, and usage classification | configured compatible Responses HTTP profile is current after the Addendum 6 reasoning/disposition changes; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | cached ratio, latency, and warm/cold frequency are observational | accepted specification/runner; current Responses HTTP evidence at =01a8466a=; ChatGPT/WebSocket capability-unconfirmed |
 | =F88A3-CLEANUP= | The ChatGPT optimization path retains no historical response ledger, eviction history, older-anchor diagnostics, Codex-specific idle override, or wire-size acceptance; only immediate causal response state and the general socket policy remain, and no new durable state or compatibility shim is introduced. | OpenAI adapter | adapter state across response completion, follow-up, rejection, close, and replacement | 3 | negative source/test searches plus latest-follow-up, retry, general idle-close, and cleanup tests | not applicable; repository-controlled | not applicable | accepted |
 | =F88A3-COMPAT= | Provider-neutral anchors, canonical OpenAI compaction/continuation with an independent semantic consumer, persisted historical audit records, and unrelated transports remain unchanged; named streams, generalized graphs, crash recovery, compaction redesign, and presentation are outside this package. | existing owning modules | unaffected-profile and disabled-feature regressions | 3 and 4 | existing generic branchable, compaction, disabled, session-load, and transport suites | public named-stream documentation is context, not acceptance | not applicable | accepted |
 
@@ -83,49 +86,51 @@ dependency order is:
 | =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
 | =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
 | =f991f895= | I5 checkpoint retention pins referenced curation audit controls beyond the bounded activity tail |
+| =3fdcf799= | Addendum 5 self-explaining source affordance and material revision fence |
+| =317be237= | Addendum 5 naturalistic adoption evidence and refreshed cache scenarios |
+| =cab12162= | mandatory Responses reasoning effort and summary request identity |
+| =611fc115= | pure exhaustive curation disposition semantics |
+| =43ed86bb= | strict =keep=/=summaries=/=drop= carrier exposure |
+| =42eb2568= | normalize reasoning summary replay arrays across continuations |
+| =448fa897= | normalize the remaining Responses reasoning replay path |
+| =cb0a44c6= | configured autonomous disposition adoption runner |
+| =4001735e= | correct capability-runner keyword binding |
+| =99d11381= | capture exhaustive curation source identity in tool-heavy evidence |
+| =c6755665= | restore the carrier-local lifecycle affordance |
+| =01a8466a= | match drop audit linkage by control response and turn, rejecting duplicates |
 
 The I5 remediation gives a reserved-only curation response a distinct
-audit-resolvable control identity and, at =f991f895=, pins that exact
-=context-curation-response= control for an active v3 record beyond the bounded
-activity tail without changing model projection.  I6 at =031bd2a9= makes the
-external evidence record derive its endpoint, store, model, transport, and
-native requester from the captured material request rather than optional
-profile declarations.  Authoritative validation at
-=f991f895= is =eldev test= with 2,367 total tests, 2,365 expected passes, 0
-unexpected, and 2 expected skips; =eldev compile= passed and the focused
-checkpoint test passed 1/1.
+audit-resolvable control identity and pins that exact control when an active v3
+record references it.  I6 derives external evidence identity from captured
+requests.  Addendum 6 then makes reasoning summaries mandatory on Responses
+requests, requires an exhaustive disposition, normalizes replay arrays, and
+keeps drop audit matching exact even when unrelated frame-consumption events
+are present.  These changes leave provider output and audit metadata out of
+model-visible semantic projection.
 
-The 2026-08-27 configured run, after the Addendum 5 material affordance change,
-exercised the two canonical scenarios with the compatible Responses
-provider/profile =eng-ai-gateway-gpt=, exact base URL
+The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
+profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
 =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP transport, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The
-warm-prefix selector used a predeclared 180-second bound and the tool-heavy
-selector used a predeclared 300-second bound.  The identity-complete records at revision
-=317be2378997aea38bc0114006a8a7d8c00b5a4f= report identity =pass= and:
-The captured endpoint is that base URL with the Responses =/responses= suffix;
-all five identity fields agree across each scenario's material requests.
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
+endpoint adds =/responses= and all material requests agreed on the effective
+identity.  The cache rows below are current at =01a8466a=; the Addendum 5/6
+adoption and reasoning rows are recorded in their owning documents.
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
-| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | pass | warm | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | pass | warm | pass |
 
-The prior =031bd2a9= cache record is historical and was not reused after the
-Addendum 5 material marker and reserved-tool guidance changed the request
-identity.  The current proof is the =317be237= record above.  The later
-=f991f895= session-checkpoint change remains independent of request/evidence
-owners, and independent Tick 6 at exact candidate =835ba655= closed =F88A4.I5=
-with zero P0-P3 repository findings and zero deterministic unknowns.
-
-This is current external compatibility evidence for the configured Responses
-HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
-WebSocket retained/replaced-socket or response-continuation claims; those
-remain separately unconfirmed and not exercised.  All repository-controlled
-rows are accepted, including the =F88A3-CACHE= specification and runners, but
-the addendum remains =In-review= rather than =Done= while that
-ChatGPT/WebSocket-specific scope is unconfirmed.
+The earlier =317be237= cache and adoption records are historical and were not
+reused after the Addendum 6 reasoning and exhaustive-disposition request-shape
+changes.  This is current external compatibility evidence for the configured
+Responses HTTP profile.  It does not exercise the exact built-in ChatGPT
+Codex WebSocket retained/replaced-socket or response-continuation claims;
+those remain separately unconfirmed and not exercised.  All
+repository-controlled Addendum 3 rows remain accepted, including the cache
+specification and runners, while this addendum remains =In-review= rather than
+=Done= for that remaining transport-specific scope.
 
 * Rationale and corrected vocabulary
 

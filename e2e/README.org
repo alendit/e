@@ -110,7 +110,7 @@ is not part of normal tests and explicitly skips whenever =CI= is set:
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
-eldev test -f e2e/e-live-e2e-test.el
+eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
 
 The Codex sample uses the normal Codex auth file and sends no project-derived
@@ -120,7 +120,7 @@ with =OPENAI_API_KEY= and:
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
-eldev test -f e2e/e-live-e2e-test.el
+eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
 
 The Engineering AI Model Gateway profile used by the Doom configuration is
@@ -129,7 +129,7 @@ selected with =ENG_AI_MODEL_GW_KEY= and:
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
-eldev test -f e2e/e-live-e2e-test.el
+eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
 
 The Anthropic gateway sample is selected with:
@@ -137,16 +137,16 @@ The Anthropic gateway sample is selected with:
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-anthropic.el \
-eldev test -f e2e/e-live-e2e-test.el
+eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
 
-The two fresh Feature 88 cache-compatibility selectors are:
+The exact built-in ChatGPT cache-compatibility selectors are:
 
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 E_E2E_CACHE_SCENARIO_TIMEOUT_SECONDS=120 \
-eldev test -f e2e/e-live-e2e-test.el \
+eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-chatgpt-canonical-warm-prefix \
   e-live-e2e-test-chatgpt-canonical-tool-heavy
 #+end_src
@@ -161,10 +161,13 @@ record includes provider/profile and endpoint identity, transport and store
 mode, model and layout/cache-key revisions, request-shape digests, socket
 identity, usage, timeout, elapsed time, repository revision, and separate
 semantic/cache classifications.  Missing Codex authentication produces a
-bounded =configuration-unavailable= record before the selector skips.  Prompt contents, authentication headers,
-response bodies, and provider-internal values are not printed.  A missing
-cached-token field is reported as =unavailable=; it is not inferred to be a
-cache hit.  The timeout is a private runner bound and is not a product limit.
+bounded =configuration-unavailable= record before the selector skips.  Prompt
+contents, authentication headers, response bodies, and provider-internal
+values are not printed.  A missing cached-token field is reported as
+=unavailable=; it is not inferred to be a cache hit.  These exact
+ChatGPT/WebSocket claims remain capability-unconfirmed because the current
+accepted run uses the configured Responses HTTP profile.  The timeout is a
+private runner bound and is not a product limit.
 
 Useful environment variables:
 
@@ -200,7 +203,7 @@ measurements:
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
-eldev test -f e2e/e-live-e2e-test.el \
+eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-responses-autonomous-curation-adoption
 #+end_src
 
@@ -210,8 +213,50 @@ curation carrier, durable replacement, and next-turn raw-source exclusion.
 Its bounded evidence record reports independent =adoption-result=,
 =composition-result=, and =failure-stage= fields without prompt or response
 content.  This selector is intentionally not run by repository-side tests;
-external adoption capability remains unconfirmed until a credentialed record
-is reviewed.
+the configured Responses HTTP record is current and confirms exact adoption for
+that profile.  Exact built-in ChatGPT/WebSocket adoption remains a separate,
+unconfirmed scope.
+
+The Addendum 6 negative-adoption selector uses a fresh session and the same
+configured Responses profile:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
+eldev -s test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-responses-autonomous-curation-drop
+#+end_src
+
+It requires the ordinary deterministic tool to be useful only for the current
+answer, then checks the exact transformed answer and one exhaustive drop
+disposition.  Its bounded record reports =adoption-disposition drop=,
+=adoption-result=, =composition-result=, and =failure-stage= separately and
+contains no prompt, sentinel, answer, summary text, or authentication data.
+The current configured HTTP run passed this scenario; it does not confirm the
+exact ChatGPT/WebSocket scope.
+
+To rerun the current configured Responses HTTP evidence set, select all five
+Feature 88 scenarios together:
+
+#+begin_src sh
+E_E2E=1 \
+E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
+eldev -s test -f e2e/e-live-e2e-test.el \
+  e-live-e2e-test-responses-reasoning-summary-capability \
+  e-live-e2e-test-responses-autonomous-curation-adoption \
+  e-live-e2e-test-responses-autonomous-curation-drop \
+  e-live-e2e-test-responses-canonical-warm-prefix \
+  e-live-e2e-test-responses-canonical-tool-heavy
+#+end_src
+
+The 2026-08-28 run at revision =01a8466a= used the Engineering AI Model
+Gateway / GPT (Responses) profile over native HTTP, with =:json-false= store
+mode and model =gpt-5.6-sol=.  It passed the one-request reasoning probe, exact
+adoption, explicit drop adoption, warm-prefix cache, and tool-heavy cache
+scenarios.  The identity-complete records contain only bounded request
+identity, revisions, classifications, counts, and timing; see the Feature 88
+addendum ledgers for exact metrics.  HTTP evidence does not confirm the exact
+built-in ChatGPT/WebSocket selectors.
 
 The Addendum 6 reasoning-summary capability probe is a separate, one-request
 check of the configured Responses adapter:
@@ -220,7 +265,7 @@ check of the configured Responses adapter:
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
 E_E2E_CACHE_SCENARIO_TIMEOUT_SECONDS=120 \
-eldev test -f e2e/e-live-e2e-test.el \
+eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-responses-reasoning-summary-capability
 #+end_src
 

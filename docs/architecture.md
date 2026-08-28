@@ -11,10 +11,12 @@ startup, a provider-neutral harness core, JSONL-backed session persistence,
 capability-owned behavior bundles, layer presets, context assembly, a turn loop,
 resource-operation tools, OpenAI-like backend adapters, presentation shells, live
 reload support, and ERT coverage. Feature 88's current path adds consumer-bound
-ephemeral context frames, model-directed `context-curate`, version-3 durable
-curation records, and read-only version-2 compatibility; external cache
-evidence is current for the configured Responses HTTP profile, while the exact
-ChatGPT/WebSocket scope remains unconfirmed. Durable user data is primarily
+ephemeral context frames, model-directed `context-curate`, exhaustive
+`keep`/`summaries`/`drop` dispositions, mandatory Responses reasoning
+summaries, version-3 durable curation records, and read-only version-2
+compatibility; external reasoning-summary, adoption, and cache evidence is
+current for the configured Responses HTTP profile at revision `01a8466a`, while
+the exact ChatGPT/WebSocket scope remains unconfirmed. Durable user data is primarily
 session state under the user's Emacs directory plus optional project-local
 capability configuration.
 
@@ -418,13 +420,15 @@ and [`F88A3-SEM`](feats/88-generational-context-ephemeral-frames/addendum3.org).
 
 The loop keeps ordinary tool lifecycle and the one matching immediate causal
 follow-up.  The OpenAI adapter owns only the `context-curate` wire carrier,
-opaque immediate acknowledgement, response availability, and provider cache
-evidence; labels, estimates, provenance, and frame identities do not cross the
-wire.  Canonical later requests contain durable session projection, selected
-curation messages, and the new frontier.  The external cache capability is
-current for the configured compatible Responses HTTP profile, independently of
-the still-unconfirmed ChatGPT/WebSocket-specific scope and deterministic
-semantic acceptance.
+opaque immediate acknowledgement, mandatory effective reasoning effort/summary,
+response availability, and provider cache evidence; labels, estimates,
+provenance, and frame identities do not cross the wire.  The strict curation
+carrier requires an exhaustive `keep`/`summaries`/`drop` partition, while
+returned reasoning summary text remains diagnostic only.  Canonical later
+requests contain durable session projection, selected curation messages, and
+the new frontier.  The external cache capability is current for the configured
+compatible Responses HTTP profile, independently of the still-unconfirmed
+ChatGPT/WebSocket-specific scope and deterministic semantic acceptance.
 
 A reserved-only curation response gets an audit-only session activity identity
 after pure preflight, while the E2E evidence boundary derives its identity from
@@ -634,14 +638,16 @@ bounded diagnostics. The provider-continuation integration test composes the
 real harness, context, tool, anchor, renderer, and fake socket boundaries;
 credentialed Codex E2E remains an explicit fast gate for private endpoint and
 cache behavior; the configured Responses HTTP selectors currently provide
-identity-complete warm evidence, while the strict ChatGPT/WebSocket selectors
-remain separately unconfirmed.
+identity-complete reasoning-summary, adoption, and warm-cache evidence at
+revision `01a8466a`, while the strict ChatGPT/WebSocket selectors remain
+separately unconfirmed.
 Shell tests should keep proving command wiring and rendering against harness
 events rather than reimplementing harness tests.
 
-Runtime-facing changes still require live Emacs reload and focused live probes
-because batch-green Emacs Lisp does not prove the user's current Emacs process
-has the new definitions.
+Runtime-facing changes still require focused live probes because batch-green
+Emacs Lisp does not prove the user's current Emacs process has the new
+definitions.  New core or backend-adapter behavior requires an Emacs restart;
+the running Emacs is not changed by repository-side validation.
 
 ## Change Management
 

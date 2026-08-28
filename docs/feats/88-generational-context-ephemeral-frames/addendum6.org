@@ -3,8 +3,12 @@
 
 * Status
 
-Planned.  This candidate requires independent specification review before
-implementation.
+In-review (repository-controlled implementation complete; configured Responses
+HTTP reasoning-summary, autonomous-adoption, and cache evidence
+capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).
+The implementation and current configured evidence are recorded below.  The
+addendum remains In-review rather than Done because the exact built-in
+ChatGPT/WebSocket transport has not been exercised.
 
 This addendum extends Addendum 5 and supersedes it only where Addendum 5 treats
 stronger generic carrier narration or omission as evidence that the model
@@ -44,11 +48,62 @@ to retain it.
 
 | Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External compatibility evidence | Telemetry | Status |
 |-------------+--------------+---------------------+-----------------------+------------------------+---------------------------------+-----------+--------|
-| =F88A6-REASONING-SUMMARY= | new Responses request-shape requirement | Every OpenAI Responses request explicitly sends the effective reasoning effort and =reasoning.summary=.  The default is ="auto"=; only an explicit diagnostic request/profile choice may select ="detailed"=.  The field cannot be disabled, and no semantic or adoption result depends on returned summary content. | OpenAI adapter owns one effective =:reasoning-summary= option and request translation; request overrides profile, which overrides adapter default; core and harness do not inspect summary prose | literal HTTP and WebSocket request bodies; explicit =:reasoning= join; validation and precedence; response parsing for present, empty, and absent summaries; material/continuation identity fence | a minimal configured Responses summary-capability probe precedes composed scenarios; rejection is unavailable/capability-unconfirmed, never retried without the field; exact ChatGPT/WebSocket remains separate | summary presence and text are diagnostic only and must not enter bounded evidence records | proposed |
-| =F88A6-DISPOSITION= | supersedes Addendum 5 omission-as-drop guidance and extends =F88A4-CURATE= | A =context-curate= call explicitly partitions every presented ephemeral source label exactly once among =keep=, =summaries[*].sources=, and =drop=.  At most 16 labels may be retained across =keep= and summaries; =drop= contains every remaining presented label and is bounded by the actual live frame rather than the retained-source ceiling. | OpenAI adapter exposes the strict schema; core validates one linear complete partition against the live frame and derives retained provenance; harness atomically commits retained items and consumes the frame | strict schema; exact complete partition; duplicate/unknown/missing-label rejection; 16/17 retained boundary; large drop-only and mixed dispositions; atomic failure | repository-controlled; no provider capability claim | exact/summary/drop counts may be bounded diagnostics | proposed |
-| =F88A6-DROP= | new negative curation effect | A valid drop-only reserved response appends the existing audit/control response, appends no durable context-promotion record, consumes the matching live frame, and emits the existing content-free consumption linkage.  The control/consumption relation persists only while both remain in the existing bounded activity tail; it is not pinned.  No-call still drops the ephemeral frame operationally but is not evidence that the model considered retention. | core/harness existing reserved-response and frame-consumption owners; bounded session activity tail; no session schema extension | drop-only preflight/commit, zero semantic record, immediate reopen, exact tail eviction without semantic residue, descendant-frame safety, invalid-effect atomicity | configured naturalistic negative-adoption scenario produces a separately finalized bounded evidence record | a bounded =drop= disposition is contract evidence for that run; no-call remains unobserved | proposed |
-| =F88A6-ADOPTION= | refines =F88A5-ADOPTION= | Positive naturalistic adoption still requires one valid exact or summary disposition and next-turn durable use without raw replay.  A separate negative naturalistic scenario must visibly use a source only in the current answer and then explicitly emit a valid exhaustive =drop= disposition.  Missing invocation is distinguishable from explicit rejection. | configured model selects a disposition; existing runner joins the exact source-bearing request, current answer, effect, audit/control, and frame consumption | independent positive/drop classifiers; prompt negative inventory; exact request-boundary carrier validation; exact current-answer assertion; content-free records | configured compatible Responses profile; exact ChatGPT/WebSocket scope remains separate | population-level disposition frequency, summaries, token/cache use, and latency are observational | proposed |
-| =F88A3-CACHE= | inherited, evidence invalidated by material request changes | Semantic correctness remains independent of cache behavior.  The reasoning request field and curation schema/guidance change material request identity, so prior configured cache records cannot be reused after implementation. | unchanged OpenAI evidence boundary | request identity, tool-set hash, prompt-layout/schema revision, and scenario-runner gates | rerun configured Responses HTTP warm-prefix and tool-heavy scenarios; exact ChatGPT/WebSocket remains separate | cached ratio and latency remain observational | inherited contract; current evidence becomes stale after implementation |
+| =F88A6-REASONING-SUMMARY= | new Responses request-shape requirement | Every OpenAI Responses request explicitly sends the effective reasoning effort and =reasoning.summary=.  The default is ="auto"=; only an explicit diagnostic request/profile choice may select ="detailed"=.  The field cannot be disabled, and no semantic or adoption result depends on returned summary content. | OpenAI adapter owns one effective =:reasoning-summary= option and request translation; request overrides profile, which overrides adapter default; core and harness do not inspect summary prose | literal HTTP and WebSocket request bodies; explicit =:reasoning= join; validation and precedence; response parsing for present, empty, and absent summaries; material/continuation identity fence | the configured Responses summary-capability probe passed for the recorded HTTP identity; rejection remains unavailable/capability-unconfirmed, never retried without the field; exact ChatGPT/WebSocket remains separate | summary presence and text are diagnostic only and must not enter bounded evidence records | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A6-DISPOSITION= | supersedes Addendum 5 omission-as-drop guidance and extends =F88A4-CURATE= | A =context-curate= call explicitly partitions every presented ephemeral source label exactly once among =keep=, =summaries[*].sources=, and =drop=.  At most 16 labels may be retained across =keep= and summaries; =drop= contains every remaining presented label and is bounded by the actual live frame rather than the retained-source ceiling. | OpenAI adapter exposes the strict schema; core validates one linear complete partition against the live frame and derives retained provenance; harness atomically commits retained items and consumes the frame | strict schema; exact complete partition; duplicate/unknown/missing-label rejection; 16/17 retained boundary; large drop-only and mixed dispositions; atomic failure | configured Responses HTTP positive and negative adoption scenarios passed with exact and drop dispositions; exact ChatGPT/WebSocket remains separate | exact/summary/drop counts may be bounded diagnostics | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A6-DROP= | new negative curation effect | A valid drop-only reserved response appends the existing audit/control response, appends no durable context-promotion record, consumes the matching live frame, and emits the existing content-free consumption linkage.  The control/consumption relation persists only while both remain in the existing bounded activity tail; it is not pinned.  No-call still drops the ephemeral frame operationally but is not evidence that the model considered retention. | core/harness existing reserved-response and frame-consumption owners; bounded session activity tail; no session schema extension | drop-only preflight/commit, zero semantic record, immediate reopen, exact tail eviction without semantic residue, descendant-frame safety, invalid-effect atomicity | =responses-autonomous-curation-drop= passed for the configured Responses HTTP profile | a bounded =drop= disposition is contract evidence for that run; no-call remains unobserved | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A6-ADOPTION= | refines =F88A5-ADOPTION= | Positive naturalistic adoption still requires one valid exact or summary disposition and next-turn durable use without raw replay.  A separate negative naturalistic scenario must visibly use a source only in the current answer and then explicitly emit a valid exhaustive =drop= disposition.  Missing invocation is distinguishable from explicit rejection. | configured model selects a disposition; existing runner joins the exact source-bearing request, current answer, effect, audit/control, and frame consumption | independent positive/drop classifiers; prompt negative inventory; exact request-boundary carrier validation; exact current-answer assertion; content-free records | positive exact-retention and negative explicit-drop scenarios both passed for the configured Responses HTTP profile; exact ChatGPT/WebSocket scope remains separate | population-level disposition frequency, summaries, token/cache use, and latency are observational | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-CACHE= | inherited, evidence invalidated by material request changes | Semantic correctness remains independent of cache behavior.  The reasoning request field and curation schema/guidance change material request identity, so prior configured cache records cannot be reused after implementation. | unchanged OpenAI evidence boundary | request identity, tool-set hash, prompt-layout/schema revision, and scenario-runner gates | configured Responses HTTP warm-prefix and tool-heavy scenarios passed at =01a8466a=; exact ChatGPT/WebSocket remains separate | cached ratio and latency remain observational | accepted specification/runner; current Responses HTTP evidence at =01a8466a=; ChatGPT/WebSocket capability-unconfirmed |
+
+* Implementation and current external evidence
+
+The repository-controlled Addendum 6 implementation is complete at
+=01a8466a=.  The ordered implementation and live-found corrections are:
+
+| Commit | Boundary |
+|--------+----------|
+| =51a29483= | accepted explicit-disposition and reasoning-summary specification |
+| =cab12162= | mandatory Responses reasoning effort and summary fields |
+| =b8a37045= | bounded reasoning-summary capability evidence |
+| =611fc115= | pure exhaustive =keep=/=summaries=/=drop= semantics |
+| =43ed86bb= | strict exhaustive disposition carrier |
+| =448fa897=, =42eb2568= | normalize reasoning summary replay arrays across successive continuations |
+| =cb0a44c6=, =4001735e= | autonomous adoption runner and finalizer orchestration correction |
+| =99d11381= | source-bearing tool-heavy capture at the authoritative preparation boundary |
+| =c6755665= | carrier-local lifecycle affordance restoration |
+| =01a8466a= | exact drop-control/consumed-event linkage, ignoring unrelated consumption |
+
+The configured run on 2026-08-28 used provider/profile =eng-ai-gateway-gpt=,
+profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Responses HTTP transport, =:json-false= store mode, native requester
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
+endpoint adds =/responses=; all material requests agreed on this effective
+identity.  Each evidence record was bounded and content-free.
+
+| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
+|----------+----------+-------------+--------------+----------+---------------------+-------------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,246 | 0 (observational) | pass | exact | pass | pass |
+| =responses-autonomous-curation-drop= | 3 | 1,149 | 0 (observational) | pass | drop | pass | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | pass | n/a | n/a | pass |
+
+The summary probe used effort =high= and summary =auto=; returned-summary
+presence was =absent= as a diagnostic and did not affect the pass.  The
+positive and negative adoption records reported =failure-stage none= and
+dispositions =exact= and =drop= respectively.  Their prompt identities are
+=060813089ddb687bb81272c21985545c7fc9b6a4bf0a4a94cf811d528d06fd40= and
+=b8ab122c8a149d90cc58e45114d1e0e6ec3f849f21fb33fd4801ce1d5248789c=;
+both use dependency-cone identity
+=65d6c882ad25513c5c74f50f3dadb1a20d95c659a3a4275d7630b61290c50394=.
+The adoption scenarios' zero cached-input observations are observational only;
+the raw adoption cache classification does not gate adoption or composition.
+
+This evidence confirms the configured Responses HTTP identity only.  It does
+not exercise the exact built-in ChatGPT Codex WebSocket retained/replaced-socket
+or response-continuation behavior, which remains separately
+=capability-unconfirmed=.  The Addendum 6 rows are accepted for the recorded
+HTTP identity and the feature remains =In-review= rather than =Done=.
 
 * Decisions
 
@@ -212,7 +267,7 @@ their established unavailable spellings.
 Add the validated Responses reasoning-summary option/default, effective
 request/profile precedence, response parsing regressions, captured diagnostics,
 identity fencing, and bounded capability classification without changing the
-curation carrier.
+curation carrier.  Implemented at =cab12162= and =b8a37045=.
 
 ** Slice 2: Provider-neutral drop semantics before exposure
 
@@ -223,7 +278,7 @@ evidence.  Keep the existing wire schema working at this intermediate slice
 boundary;
 the new internal shape may be accepted before it is advertised.  This temporary
 pre-exposure join is removed in Slice 3 and is not a steady-state compatibility
-shim.
+shim.  Implemented at =611fc115=.
 
 ** Slice 3: Atomically expose the strict disposition carrier
 
@@ -233,7 +288,7 @@ material schema/layout revisions, and remove the superseded omission/no-call
 path in the same slice.  Captured HTTP and WebSocket request tests must prove
 that adapter schema and core normalization agree literally.  Do not add or
 strengthen generic narration in stable instructions, markers, prompts, or the
-carrier.
+carrier.  Implemented at =43ed86bb=.
 
 ** Slice 4: Adoption and regression evidence
 
@@ -242,16 +297,17 @@ negative scenario.  Preserve the evidence-integrity remediations from Addendum
 5 implementation review: typed timeout cleanup, causal carrier localization,
 independent adoption checkpoints, and stage-aware retry cardinality.  Add
 content-free explicit-drop classification and reasoning-summary request-shape
-checks.  Do not inspect reasoning summary prose.
+checks.  Do not inspect reasoning summary prose.  Implemented through
+=01a8466a=, including replay normalization and exact drop-audit linkage.
 
 ** Slice 5: Configured validation and ledgers
 
 Run the minimal reasoning-summary capability selector, then rerun positive
 adoption, negative drop adoption, canonical warm-prefix, and
 canonical tool-heavy scenarios against the configured Responses HTTP profile
-after all runner and material-identity changes.  Update Addenda 3–6,
-=limitations.org=, the E2E guide, implementation review, and feature index with
-exact profile-scoped results.  Keep exact ChatGPT/WebSocket status separate.
+after all runner and material-identity changes.  Completed on 2026-08-28 at
+=01a8466a=; the exact profile-scoped results are recorded above and in the
+Feature 88 ledgers.  Keep exact ChatGPT/WebSocket status separate.
 
 * Compatibility and cleanup
 

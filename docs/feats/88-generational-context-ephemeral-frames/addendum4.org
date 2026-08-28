@@ -26,16 +26,17 @@ the exact built-in ChatGPT Codex WebSocket scope remains
 depend on external evidence.  The material prompt and reserved-tool change
 invalidated earlier =F88A3-CACHE= evidence by request-shape identity; the
 current profile-aware records are listed below.  Addendum 5's self-explaining
-marker and reserved-carrier guidance changed material request identity; the
-configured Responses HTTP cache scenarios were refreshed under that identity
-at =317be237=.
+marker and reserved-carrier guidance, followed by Addendum 6's mandatory
+reasoning summary and exhaustive disposition, changed material request
+identity.  The configured Responses HTTP scenarios were refreshed under the
+resulting identity at =01a8466a=.
 
 * Normative contract matrix
 
 | Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External status | Status |
 |-------------+--------------+---------------------+-----------------------+------------------------+-----------------+--------|
 | =F88A4-PRESENT= | new | Each independently curatable frame source has a deterministic one-based local label and approximate token count.  Presentation metadata and internal IDs are absent from retained semantic values and durable records. | core lifetime source preparation; harness and adapter consume the late frontier | source splitting, label order, estimate, fingerprint, and exact-value separation | not applicable | accepted |
-| =F88A4-CURATE= | replaces =F88A3-PROMOTION= | One =context-curate= effect can keep exact source values, replace one or more sources with each submitted summary, and drop every omitted source without model-supplied runtime identities. | core schema and provenance; loop carrier; harness/session application; adapter wire codec | =curate-keep-summary-drop= | not applicable | accepted |
+| =F88A4-CURATE= | replaces =F88A3-PROMOTION= | One =context-curate= effect can keep exact source values, replace one or more sources with each submitted summary, and explicitly drop every remaining source without model-supplied runtime identities. | core schema and provenance; loop carrier; harness/session application; adapter wire codec | =curate-keep-summary-drop= | not applicable | accepted |
 | =F88A4-ATOMIC= | joins inherited =F88A3-TOOL= | Zero or one effect is accepted per complete response.  All preparation precedes mutation; a valid record commits before later provider dispatch; invalid or multiple effects use the existing response-failure boundary. | loop and harness response-completion boundary | =curate-invalid-atomic= and =curate-wire-follow-up= | not applicable | accepted |
 | =F88A4-BOUNDS= | replaces original promotion limits | A curation has 1--16 disposed sources and a prepared durable record of at most 8,192 canonical UTF-8 bytes; exact-bound values pass and one-over values fail before mutation. | pure core validation before session append | =curate-exact-boundaries= and =curate-large-handle= | not applicable | accepted |
 | =F88A4-DURABLE= | joins inherited =F88A3-COMPAT= | New version-3 =context-promotion= records hold ordered exact/summary items with per-item core-derived provenance and project one portable system message per item.  V2 remains read-only compatible; presentation and backing objects are absent. | core codec and session append/projection/reopen/branch/compaction | =curate-persistence-compat= with literal role/content before and after compaction | not applicable | accepted |
@@ -43,8 +44,8 @@ at =317be237=.
 | =F88A3-SEM= | inherited with terminology substitution | The next ordinary request is canonical durable state plus successful curation items and the new frontier; consumed raw values and contaminated lineage are absent. | unchanged session/harness composition | revised canonical observe-curate-forget composition | not applicable | accepted inherited implementation join |
 | =F88A3-LAYOUT= | inherited | Curation source presentation is late-frontier input.  Stable policy and reserved schema remain stable-prefix-compatible; presentation/schema revisions fence anchors and cache evidence. | unchanged harness/OpenAI layout owners | literal request order, prefix, and fingerprint tests | not applicable | accepted inherited implementation join |
 | =F88A3-DELIVERY= | inherited | Affected frontier observations remain inherited under continuation and contaminated descendants remain immediate-followup-only. | unchanged capability/anchor owners | retained delivery and anchor-safety scenarios | not applicable | accepted inherited contract |
-| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | configured compatible Responses tool-heavy run reports continuation and cache separately; ChatGPT/WebSocket-specific continuation remains unconfirmed | accepted inherited implementation join |
-| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | configured compatible Responses HTTP profile is current under the Addendum 5 material identity; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | accepted specification/runner; current Responses HTTP evidence at =317be237=; ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-TOOL= | inherited with =F88A4-ATOMIC= join | Ordinary streamed tools and one canonical recovery remain unchanged; a reserved acknowledgement is immediate replay only. | loop and adapter | mixed curation/tool continuation and recovery | configured compatible Responses tool-heavy run reports continuation and cache separately at =01a8466a=; ChatGPT/WebSocket-specific continuation remains unconfirmed | accepted inherited implementation join |
+| =F88A3-CACHE= | inherited | Cache correctness remains independent of semantics and requires fresh evidence after the material request-shape change. | OpenAI evidence boundary | identity and scenario runner gates | configured compatible Responses HTTP profile is current after the Addendum 6 reasoning/disposition changes; ChatGPT/WebSocket retained/replacement behavior remains unconfirmed and not exercised | accepted specification/runner; current Responses HTTP evidence at =01a8466a=; ChatGPT/WebSocket capability-unconfirmed |
 | =F88A3-CLEANUP= | inherited | No response graph or durable recovery machinery returns; the old model-facing =context-promote= carrier and writers are removed. | adapter/core/session negative inventory | negative source inventory and lifecycle tests | not applicable | accepted |
 | =F88A3-COMPAT= | inherited | V2 durable context records, generic anchors/branches, compaction, and unrelated transports remain valid. | core/session plus unaffected adapters | mixed v2/v3 reopen and regressions | not applicable | accepted inherited contract |
 
@@ -74,50 +75,52 @@ dependency order is:
 | =81bf0f08= | reserved-only curation response gets a distinct durable audit/control identity |
 | =031bd2a92e63f66e420cc9a4eb7984357e2dd843= | effective evidence identity is derived from captured requests and rejects drift |
 | =f991f895= | I5 checkpoint retention pins referenced curation audit controls beyond the bounded activity tail |
+| =3fdcf799= | Addendum 5 self-explaining source affordance and material revision fence |
+| =317be237= | Addendum 5 naturalistic adoption evidence and refreshed cache scenarios |
+| =cab12162= | mandatory Responses reasoning effort and summary request identity |
+| =611fc115= | pure exhaustive curation disposition semantics |
+| =43ed86bb= | strict =keep=/=summaries=/=drop= carrier exposure |
+| =42eb2568= | normalize reasoning summary replay arrays across continuations |
+| =448fa897= | normalize the remaining Responses reasoning replay path |
+| =cb0a44c6= | configured autonomous disposition adoption runner |
+| =4001735e= | correct capability-runner keyword binding |
+| =99d11381= | capture exhaustive curation source identity in tool-heavy evidence |
+| =c6755665= | restore the carrier-local lifecycle affordance |
+| =01a8466a= | match drop audit linkage by control response and turn, rejecting duplicates |
 
 The I5 durable correction gives a reserved-only curation response its own
 audit-resolvable control entry, binding that entry consistently to the v3
 record, consumed frame, and consumption event while keeping it out of model
 projection.  The I6 evidence correction derives endpoint, store, model,
 transport, and native requester from captured material requests and rejects
-identity drift or declaration mismatch as acceptance evidence.  The I5
-checkpoint-retention correction pins the exact referenced control beyond the
-bounded activity tail without changing model projection.  Authoritative
-validation at =f991f895= is =eldev test= with 2,367 total tests, 2,365
-expected passes, 0 unexpected, and 2 expected skips; =eldev compile= passed and
-the focused checkpoint test passed 1/1.
+identity drift or declaration mismatch as acceptance evidence.  Addendum 6
+adds mandatory reasoning summaries, exhaustive dispositions, normalized replay
+arrays, and exact matching of the drop control to its consumed event even when
+unrelated frame-consumption events are present.
 
-The 2026-08-27 configured run, after the Addendum 5 material affordance change,
-exercised the two canonical scenarios with the compatible Responses
-provider/profile =eng-ai-gateway-gpt=, exact base URL
+The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
+profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
 =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP transport, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The
-warm-prefix selector used a predeclared 180-second bound and the tool-heavy
-selector used a predeclared 300-second bound.  The identity-complete records at revision
-=317be2378997aea38bc0114006a8a7d8c00b5a4f= report identity =pass= and:
-The captured endpoint is that base URL with the Responses =/responses= suffix;
-all five identity fields agree across each scenario's material requests.
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
+endpoint adds =/responses= and all material requests agreed on the effective
+identity.  Current cache evidence at =01a8466a= is:
 
 | Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------+--------|
-| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | pass | warm | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | pass | warm | pass |
 
-The prior =031bd2a9= cache record is historical and was not reused after the
-Addendum 5 material marker and reserved-tool guidance changed the request
-identity.  The current proof is the =317be237= record above.  The later
-=f991f895= session-checkpoint change remains independent of request/evidence
-owners, and independent Tick 6 at exact candidate =835ba655= closed =F88A4.I5=
-with zero P0-P3 repository findings and zero deterministic unknowns.
-
-This is current external compatibility evidence for the configured Responses
-HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
-WebSocket retained/replaced-socket or response-continuation claims; those
-remain separately unconfirmed and not exercised.  All repository-controlled
-A3/A4 rows are accepted, including the =F88A3-CACHE= specification and
-runners, but this addendum remains =In-review= rather than =Done= while that
-ChatGPT/WebSocket-specific scope is unconfirmed.
+The Addendum 5/6 adoption and reasoning results are recorded in their owning
+documents.  Earlier =317be237= cache/adoption records are historical and were
+not reused after the Addendum 6 reasoning and exhaustive-disposition
+request-shape changes.  This is current external compatibility evidence for
+the configured Responses HTTP profile.  It does not exercise the exact
+built-in ChatGPT Codex WebSocket retained/replaced-socket or
+response-continuation claims; those remain separately unconfirmed and not
+exercised.  All repository-controlled A3/A4 rows remain accepted, while this
+addendum remains =In-review= rather than =Done= for that remaining
+transport-specific scope.
 
 * Decision
 
@@ -140,24 +143,27 @@ the model may call =context-curate= with:
   "keep": [1],
   "summaries": [
     {"sources": [2, 3], "text": "The durable fact learned from results 2 and 3."}
-  ]
+  ],
+  "drop": []
 }
 #+end_src
 
 The result is durable context containing the exact model-visible value of
 =[1]= and the submitted replacement for =[2, 3]=.  The original values of
-=[2]= and =[3]= are absent from later ordinary context.  Any source not
-mentioned by a successful curation call is dropped.  If the model makes no
-call, the whole frame is dropped as it is today.
+=[2]= and =[3]= are absent from later ordinary context.  Under the current
+Addendum 6 contract, every source is explicitly assigned to =keep=,
+=summaries=, or =drop=; the =drop= list is empty in this example.  If the
+model makes no call, the whole frame is dropped as it is today, but that is not
+evidence that the model considered retention.
 
-The model-facing object has exactly the optional keys =keep= and =summaries=;
-unknown keys are invalid.  An omitted key is an empty list.  =keep= is an
-ordered array of positive integer frame labels.  =summaries= is an ordered
-array of objects having exactly =sources= and =text=; =sources= is a non-empty
-array of positive integer frame labels and =text= is a non-empty string.  Core
-does not coerce strings to labels, scalar values to arrays, or other malformed
-JSON shapes.  At least one source must receive a disposition after both lists
-are normalized.
+The current model-facing object has exactly the required keys =keep=,
+=summaries=, and =drop=; unknown or omitted keys are invalid.  Each is an
+array; =keep= and =drop= contain positive integer frame labels, while
+=summaries= contains objects having exactly =sources= and =text=.  Core does
+not coerce strings to labels, scalar values to arrays, or other malformed JSON
+shapes.  The three arrays must form one non-empty, duplicate-free partition of
+the presented labels.  Addendum 6 owns the exhaustive shape and its separate
+retained-source bound.
 
 The labels are short references scoped to the active frame.  The runtime binds
 them to the real frame, observation, generation, request, and provenance
@@ -432,14 +438,14 @@ report the two inherited external cache scenarios separately.
 
 * Minimum acceptance
 
-Acceptance requires every proposed =F88A4-*= matrix row to be independently
-cleared, every inherited join to remain green, exact and one-over limit tests,
+Acceptance requires every =F88A4-*= matrix row to be independently cleared,
+every inherited join to remain green, exact and one-over limit tests,
 and the complete deterministic scenario ledger.  In particular:
 
 1. Each independently curatable input has a local label and approximate size;
    no internal identity is model-facing.
 2. One call keeps one exact value, summarizes several others together, and
-   omits the rest.
+   explicitly drops the rest under Addendum 6's exhaustive disposition.
 3. Exact retention copies only the trusted bounded semantic value shown behind
    the label, never model-supplied replacement content or a backing object.
 4. Core derives per-item provenance and invalid mixed/multiple effects commit

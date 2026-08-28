@@ -12,44 +12,47 @@ durable transaction system.  The earlier design mixed model-visible lifetime
 with recovery of interrupted side effects; the latter belongs with the planned
 SQLite persistence and atomic-transition work.
 
-Addenda 3 and 4 are the current implementation authorities for this feature.
+Addenda 3--6 are the current implementation authorities for this feature.
 Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
 tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
-records; the persisted =context-promotion= family remains readable as version 2
-only.  [[file:addendum5.org][Addendum 5]] is a separate planned extension that adds
-explicit tool-output context erasure; it is not part of the accepted
-implementation described below.  The repository-controlled implementation is
-at deterministic fixed point.  Independent Tick 6 at exact candidate
-=835ba655= (implementation =f991f895=) closed =F88A4.I5= with zero P0-P3
-repository findings and zero deterministic unknowns.  I6 remains closed at
-=031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  Because this later change is
-session-checkpoint-only and does not alter request/evidence owners, the
-configured Responses HTTP proof at that revision remains reusable/current.
-The preceding remediation commits are =81bf0f08= for a distinct durable audit
-identity on reserved-only curation responses and =031bd2a92= for evidence
-identity derived from captured requests.  A configured compatible
-Responses HTTP profile has current cache evidence; ChatGPT/WebSocket-specific
-continuation and retained/replacement-socket behavior remain unconfirmed.
+records; Addenda 5 and 6 add the source-lifetime affordance, mandatory
+Responses reasoning summary, and explicit exhaustive dispositions.  The
+persisted =context-promotion= family remains readable as version 2 only.
+The repository-controlled implementation is at deterministic fixed point at
+=01a8466a=; configured Responses HTTP evidence is current, while exact
+built-in ChatGPT/WebSocket capability remains unconfirmed.  The implementation
+includes the Addendum 6 reasoning, exhaustive-disposition, replay, affordance,
+and audit-linkage corrections through =01a8466a=.
 
-The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=, exact
-base URL =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Updated main also introduces a separate planned explicit tool-output erasure
+extension.  Because this branch already owns Addenda 5 and 6, that document is
+reconciled as Addendum 7 after the rebase; it is not part of the accepted
+implementation described below.
+
+The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
+profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
 Responses HTTP transport, =:json-false= store mode, native requester
-=e-openai-codex--http-request-start=, model =gpt-5.6-sol=, and the bounded
-scenario runners at the I6 evidence revision =031bd2a92=.  The captured endpoint adds
-=/responses=; identity and scenario results are =pass=:
+=e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
+endpoint adds =/responses=; all material requests agreed on the effective
+identity.  Current scenario evidence is recorded in Addendum 6 and remains
+content-free:
 
-| Scenario | Requests | Total input | Cached input | Semantic | Cache | Result |
-|----------+----------+-------------+--------------+----------+-------+--------|
-| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,453 | 11,240 | pass | warm | pass |
+| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
+|----------+----------+-------------+--------------+----------+----------------------+-------------+--------|
+| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,246 | 0 (observational) | pass | exact | pass | pass |
+| =responses-autonomous-curation-drop= | 3 | 1,149 | 0 (observational) | pass | drop | pass | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | pass | n/a | n/a | pass |
 
-This is current external compatibility evidence for that configured Responses
-profile.  It does not exercise the exact built-in ChatGPT Codex WebSocket
-retained/replaced-socket or response-continuation claims; those remain a
-separate unconfirmed scope.  Addendum 4 supersedes Addendum 3 only where the
-model-facing promotion contract conflicts, using =context-curate= and durable
-version-3 records while retaining read-only version-2 compatibility.
+The summary probe used effort =high= and summary =auto=; returned-summary
+presence was =absent= as a diagnostic and did not affect the pass.  Missing
+cache usage in the adoption scenarios is observational and does not gate their
+semantic or composition results.  Addendum 4 supersedes Addendum 3 only where
+the model-facing promotion contract conflicts, using =context-curate= and
+durable version-3 records while retaining read-only version-2 compatibility.
 
 Authoritative validation recorded at =f991f895= is =eldev test= with 2,367
 total tests, 2,365 expected passes, 0 unexpected, and 2 expected skips;
@@ -332,14 +335,15 @@ wire syntax is not a second semantic contract.
                             :text "The durable fact from sources 2 and 3."))))
 #+end_example
 
-The model-facing arguments contain only optional =:keep= and =:summaries=.
-Keep labels are positive integers; every summary has non-empty positive integer
-source labels and non-empty text.  Unknown fields, coercion, duplicate
-dispositions, unknown labels, malformed values, multiple effects, or an empty
-disposition fail before mutation.  Core binds labels to the still-live
-consumer-bound frame and derives exact source values and provenance; no model or
-adapter-supplied frame, observation, reference, or fingerprint identity is
-trusted.
+The model-facing arguments contain the required =:keep=, =:summaries=, and
+=:drop= arrays.  Keep and drop labels are positive integers; every summary has
+non-empty positive integer source labels and non-empty text.  The three arrays
+must form one non-empty, duplicate-free, complete partition of the presented
+labels.  Unknown or omitted fields, coercion, duplicate dispositions, unknown
+labels, malformed values, multiple effects, or an empty disposition fail before
+mutation.  Core binds labels to the still-live consumer-bound frame and derives
+exact source values and provenance; no model or adapter-supplied frame,
+observation, reference, or fingerprint identity is trusted.
 
 The core accepts 1--16 disposed sources and a prepared record of at most 8,192
 canonical UTF-8 bytes.  Exact keep items precede summaries in their submitted
@@ -360,9 +364,10 @@ old model-facing =context-promote= carrier and writer are removed.
 - Invalid curation follows the existing provider-response failure path.  Calls
   already streamed are not rolled back, and later calls from that response are
   not dispatched after invalidity is detected.
-- Omitted sources are forgotten.  A successful curation stores only selected
-  exact values or submitted summaries and derived provenance; the next request
-  omits all consumed raw observations, labels, estimates, and transport data.
+- Sources explicitly assigned to =drop= are forgotten.  A successful curation
+  stores only selected exact values or submitted summaries and derived
+  provenance; the next request omits all consumed raw observations, labels,
+  estimates, and transport data.
 - No journal, barrier, outbox, recovery state machine, or automatic summarizer
   is introduced for this normal-turn path.
 
@@ -447,7 +452,7 @@ fields:
 | =observation-delivery= | kind-scoped mapping to =inherited= or =request-local-replaceable= | whether each frontier item is inherited |
 | =prefix-cache= | =none=, =implicit=, =explicit= | acceleration only |
 | =provider-compaction= | =none=, =opaque= | optional provider checkpoint projection |
-| =reasoning-state= | =none=, =replayable= | ordinary replay treatment |
+| =reasoning-state= | =none=, =replayable= | ordinary replay treatment; distinct from the Responses =reasoning.summary= request field |
 | =reserved-effect-carrier= | =none= or =context-curate-wire= | adapter carrier support for the core schema |
 
 Missing capabilities select stateless reconstruction.  Unknown values are
@@ -455,9 +460,11 @@ configuration errors.  OpenAI alone maps proven replacement for
 =current-state= and =dynamic-context= to =instructions=; no core module names
 that wire field.  An adapter must not claim a capability it cannot implement
 for its effective endpoint and transport.  No provider-owned reasoning-state
-capability is supported: only =none= and =replayable= are allowed.  If a
-provider requires an ordinary follow-up replay item, the semantic model gives
-it a local provider-neutral identity and the adapter owns only its wire
+capability is supported: only =none= and =replayable= are allowed for ordinary
+replay treatment.  This is separate from the mandatory OpenAI Responses
+=reasoning= request object, whose effective =:summary= is =auto= or =detailed=.
+If a provider requires an ordinary follow-up replay item, the semantic model
+gives it a local provider-neutral identity and the adapter owns only its wire
 encoding.  Core constructs the normalized =context-curate= schema, limits,
 and revision/content fingerprint.  The reserved =context-curate-wire= carrier
 only advertises that the adapter can encode/decode the exact core schema.  It
@@ -854,7 +861,7 @@ and atomic transitions are the future owner of that concern.
 - A marker present only in a consumed observation is present in exactly the
   consuming invocation and absent from the next request.
 - A selected exact curation item or submitted summary remains in the next
-  durable projection; an omitted source does not.
+  durable projection; a source explicitly assigned to =drop= does not.
 - =e-harness-turn-context= can identify source observation, frame identity, and
   curation provenance from the canonical session path without implicitly adding
   source-observation or frame-payload fields to the durable projection.  An
@@ -1053,8 +1060,10 @@ latency: that mechanism is outside this feature.
   supplies alternate limits.  The fingerprint fences incompatible tool-schema/
   anchor identities.
 - *A provider requires an unsupported reasoning mode.* Use only =none= or
-  =replayable=; represent any ordinary replay item with a local semantic ID and
-  let the adapter encode it, rather than adding provider-owned state.
+  =replayable= for ordinary replay treatment; represent any ordinary replay
+  item with a local semantic ID and let the adapter encode it, rather than
+  adding provider-owned state.  The mandatory Responses =reasoning.summary=
+  request field is separate and uses =auto= or =detailed=.
 - *Portable/provider compaction drifts.* Portable context is canonical; opaque
   state is accepted only at the same boundary/fingerprint and is disposable.
 - *A successful turn retains source fields accidentally.* Assert that the
@@ -1099,10 +1108,12 @@ latency: that mechanism is outside this feature.
 9. *Performance?* Repeated observation bytes disappear while monotonic prefixes
    remain reusable; cold work is limited to compaction/fallback.
 10. *Real abstractions?* Each capability corresponds to a request strategy;
-    missing capabilities select valid stateless behavior.  The only reasoning
-    modes are =none= and =replayable=.  Core is the sole authority for the
-    reserved curation schema, limits, and revision/content fingerprint; an
-    optional carrier is only an adapter wire concern.
+    missing capabilities select valid stateless behavior.  The ordinary replay
+    modes are =none= and =replayable=; they are distinct from the mandatory
+    Responses =reasoning.summary= values =auto= and =detailed=.  Core is the
+    sole authority for the reserved curation schema, limits, and
+    revision/content fingerprint; an optional carrier is only an adapter wire
+    concern.
 11. *Compatibility?* Opt-in is explicit; an opted-in session changes
     classification only at a deliberate generation boundary, never merely
     because a boundary exists or by reclassifying old results.
@@ -1118,15 +1129,12 @@ latency: that mechanism is outside this feature.
 * Residual ambiguities
 
 - The configured =eng-ai-gateway-gpt= Responses HTTP profile has current
-  identity-complete cache evidence: warm-prefix is 3 requests with 6,204 total
-  and 4,087 cached input tokens; tool-heavy is 5 requests with 14,453 total
-  and 11,240 cached input tokens.  Both runs report identity and semantic
-  =pass=, cache =warm=, and result =pass= at revision
-  =031bd2a92e63f66e420cc9a4eb7984357e2dd843=; the later =f991f895=
-  checkpoint-only change does not alter request/evidence owners, so this proof
-  remains reusable/current.  Independent Tick 6 at exact candidate
-  =835ba655= closed =F88A4.I5= with zero P0-P3 repository findings and zero
-  deterministic unknowns.
+  identity-complete evidence at =01a8466a=.  The fresh 2026-08-28 run passed
+  the reasoning-summary probe, exact-retention adoption, explicit-drop
+  adoption, warm-prefix cache, and tool-heavy cache scenarios; the exact
+  request counts and token observations are tabulated above.  Adoption cache
+  usage was zero and remains observational.  The records contain no prompt,
+  sentinel, answer, returned summary, or authentication content.
 - The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
   response-continuation claims were not exercised by that HTTP run and remain
   unconfirmed; this keeps the plan =In-review= rather than =Done=.

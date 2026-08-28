@@ -5,20 +5,23 @@
 * Status
 
 In-review.  Slice 1 is accepted at =3fdcf799= and Slice 2's bounded adoption
-runner and deterministic gates are at =317be237=.  The configured Responses
-HTTP adoption and cache evidence recorded below is capability-confirmed/current
-for that profile; the exact built-in ChatGPT/WebSocket capability remains
-unconfirmed.
+runner and deterministic gates are at =317be237=.  Addendum 6's reasoning,
+exhaustive-disposition, and drop-evidence work is implemented through
+=01a8466a=.  The configured Responses HTTP adoption and cache evidence
+recorded below is capability-confirmed/current for that profile; the exact
+built-in ChatGPT/WebSocket capability remains unconfirmed.
 
 This addendum extends Addendum 4 without changing its curation semantics.  It
 adds a model-facing affordance contract and a naturalistic external adoption
 scenario.  Addendum 4 remains authoritative for frame-local labels, exact and
-summary dispositions, omission-as-drop, atomic completion, bounds, durable
-records, and compatibility.  Addendum 3 remains authoritative for canonical
-request layout, inherited observation delivery, continuation, cache evidence,
-and cleanup.  Where wording conflicts, this addendum supersedes only Addendum
-4's assumption that exposing the reserved carrier is sufficient guidance for
-spontaneous model use.
+summary dispositions, atomic completion, bounds, durable records, and
+compatibility; Addendum 6 supersedes its omission-as-drop input semantics with
+the explicit exhaustive =keep=/=summaries=/=drop= partition and adds mandatory
+Responses reasoning summaries.  Addendum 3 remains authoritative for
+canonical request layout, inherited observation delivery, continuation, cache
+evidence, and cleanup.  Where wording conflicts, this addendum supersedes only
+Addendum 4's assumption that exposing the reserved carrier is sufficient
+guidance for spontaneous model use.
 
 The matrix below is this addendum's sole normative authority.  Other sections
 explain its rows or name their evidence; they do not create additional
@@ -53,9 +56,9 @@ or its schema.
 
 | Contract ID | Relationship | Observable contract | Owner and composition | Deterministic evidence | External compatibility evidence | Telemetry | Status |
 |-------------+--------------+---------------------+-----------------------+------------------------+---------------------------------+-----------+--------|
-| =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, what omission means, and when no curation call is useful. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | accepted at =3fdcf799= |
-| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= passed for the configured compatible Responses HTTP profile; exact ChatGPT/WebSocket scope remains separate | population-level invocation frequency, exact-versus-summary distribution, token/cache usage, and latency are observational; whether this acceptance scenario produced one valid reserved effect is contract evidence | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
-| =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker and reserved-tool description revise material request identity; the configured canonical scenarios were rerun under that identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | configured Responses HTTP warm-prefix and tool-heavy scenarios passed; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | accepted specification/runner; current Responses HTTP evidence at =317be237=; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A5-AFFORDANCE= | extends =F88A4-PRESENT= and =F88A4-CURATE= | When curatable sources are present, the model can identify each following value as a labeled ephemeral context source and can discover from the reserved carrier when to keep an exact value, when to write a compact durable summary, and when no curation call is useful. The current exhaustive disposition semantics are defined by Addendum 6. | core source presentation owns source/lifetime identification; the OpenAI adapter owns the Responses function description; harness composition preserves their relative request placement | literal source-marker and reserved-tool request-shape scenarios, stable-prefix/frontier identity fences, and unchanged strict argument schema | not applicable; repository-controlled request construction | not applicable | accepted at =3fdcf799= |
+| =F88A5-ADOPTION= | new external evidence for =F88A5-AFFORDANCE= joined to =F88A4-CURATE= and =F88A3-SEM= | Given an isolated ordinary request that uses a normal tool, states that its result will be needed in the next user turn, and never names the reserved carrier, labels, or argument fields, the configured model autonomously curates the resulting ephemeral source and the next ordinary turn can use the durable replacement without receiving the raw tool result again. | configured model chooses the reserved effect; existing core/loop/harness owners validate, commit, consume, and project it | deterministic runner classification, prompt negative inventory, request capture, curation audit linkage, and raw-source exclusion | =responses-autonomous-curation-adoption= passed at =01a8466a= for the configured compatible Responses HTTP profile; exact ChatGPT/WebSocket scope remains separate | population-level invocation frequency, exact-versus-summary distribution, token/cache usage, and latency are observational; whether this acceptance scenario produced one valid reserved effect is contract evidence | accepted for the recorded Responses HTTP identity; exact ChatGPT/WebSocket capability-unconfirmed |
+| =F88A3-CACHE= | inherited, evidence invalidated by material guidance text | Semantic correctness remains independent of cache behavior.  The changed source marker, reserved-tool description, reasoning summary, and exhaustive disposition revise material request identity; the configured canonical scenarios were rerun under that identity. | unchanged OpenAI evidence boundary | existing identity and scenario-runner gates plus revised presentation fingerprint | configured Responses HTTP warm-prefix and tool-heavy scenarios passed at =01a8466a=; exact ChatGPT/WebSocket scope remains separate | cached ratio, latency, and warm/cold frequency remain observational | accepted specification/runner; current Responses HTTP evidence at =01a8466a=; exact ChatGPT/WebSocket capability-unconfirmed |
 
 * Decision
 
@@ -82,13 +85,17 @@ carrier that performs it.  Its meaning is:
   its exact value or a compact replacement in a later turn;
 - use =keep= for exact retention and =summaries= for smaller durable
   replacement text;
-- a source omitted from a successful call is dropped; and
-- make no call when nothing from the frame should remain available.
+- a source omitted from a successful call was dropped under the former
+  Addendum 5 input semantics; and
+- make no call when nothing from the frame should remain available.  The
+  current exhaustive input requires an explicit =drop= disposition and is
+  defined by Addendum 6.
 
-The implementation may refine the sentence structure, but it must preserve all
-four meanings without adding hidden policy, automatic selection, or another
-instruction authority.  The strict Addendum 4 JSON schema remains unchanged
-and continues to provide field-level shapes.
+The implementation may refine the sentence structure, but the four meanings
+above describe the historical Addendum 5 guidance.  The current exhaustive
+carrier and its field-level shapes are owned by Addendum 6; no hidden policy,
+automatic selection, or second instruction authority is added.  The strict
+schema remains the sole shape authority.
 
 The marker is late-frontier input.  The reserved-tool definition is stable
 request material.  Both changes revise the applicable presentation or schema
@@ -177,44 +184,40 @@ class leaves autonomous adoption =capability-unconfirmed=.
 Slice 1 is accepted at =3fdcf799641557079a22937aeccf5b58c8943f65=.
 Slice 2's isolated naturalistic runner, deterministic partitions, and
 content-free finalization are at =317be2378997aea38bc0114006a8a7d8c00b5a4f=.
-The 2026-08-27 configured run used provider/profile =eng-ai-gateway-gpt=,
-the configured Responses HTTP transport, =:json-false= store mode, model
-=gpt-5.6-sol=, and the native HTTP requester
-=e-openai-codex--http-request-start=.  The captured base URL was
-=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=;
-the request endpoint adds =/responses=.  The adoption record also carried
-prompt identity
-=060813089ddb687bb81272c21985545c7fc9b6a4bf0a4a94cf811d528d06fd40=,
-dependency-cone identity
-=2f123773fa3df136484bd2dc5d0ee0392886e782200c459dadddfef5f30b069b=,
-presentation =context-curation-presentation-v2=, and schema
-=context-curate-v2=.  These identity values are hashes or revisions; the
-record contains no prompt, sentinel, or model content.
-
-The isolated naturalistic adoption record reported identity, scenario,
-semantic, adoption, composition, and top-level result =pass=, with
-=failure-stage none= and disposition =exact=.  It captured five requests and
-1,712 total input tokens.  The adoption selector used a predeclared
-180-second bound; the warm-prefix selector also used 180 seconds, and the
-tool-heavy selector used 300 seconds.  The provider reported zero cached input
-tokens for the adoption scenario, so its raw cache result was
-=product-contract-failure=; that classification is observational here and
-does not gate adoption.  The model retained the exact unique sentinel and
-returned it on the following ordinary turn; the record itself remained
-content-free.
+The Addendum 6 reasoning, exhaustive-disposition, replay, and audit-linkage
+corrections are implemented through =01a8466a=.  The 2026-08-28 configured
+run used provider/profile =eng-ai-gateway-gpt=, profile =Engineering AI Model
+Gateway / GPT (Responses)=, exact base URL
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl=,
+Responses HTTP transport, =:json-false= store mode, model =gpt-5.6-sol=, and
+the native HTTP requester =e-openai-codex--http-request-start=.  The captured
+endpoint adds =/responses= and all material requests agreed on the effective
+identity.  The records were content-free.
 
 | Scenario | Requests | Total input | Cached input | Adoption | Composition | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+----------+-------------+----------+-------+--------|
-| =responses-autonomous-curation-adoption= | 5 | 1,712 | 0 (observational) | pass | pass | pass | product-contract-failure (observational; does not gate adoption) | pass |
-| =responses-canonical-warm-prefix= | 3 | 6,204 | 4,087 | n/a | n/a | pass | warm | pass |
-| =responses-canonical-tool-heavy= | 5 | 14,717 | 11,414 | n/a | n/a | pass | warm | pass |
+| =responses-autonomous-curation-adoption= | 6 | 2,246 | 0 (observational) | pass | pass | pass | product-contract-failure (observational; does not gate adoption) | pass |
+| =responses-autonomous-curation-drop= | 3 | 1,149 | 0 (observational) | drop | pass | pass | n/a | pass |
+| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | n/a | n/a | pass | warm | pass |
+| =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | n/a | n/a | pass | warm | pass |
 
-The canonical warm-prefix and tool-heavy scenarios were rerun under the
-Addendum 5 material identity and both passed semantically with warm cache
-results.  The adoption result proves autonomous use only for this recorded
-configured Responses HTTP identity.  It does not exercise the exact built-in
-ChatGPT Codex WebSocket retained/replaced-socket or continuation scope, which
-remains =capability-unconfirmed=.
+The adoption record retained the exact unique sentinel; the negative scenario
+used the transformed current-answer path and then emitted an explicit drop.
+Their prompt identities are
+=060813089ddb687bb81272c21985545c7fc9b6a4bf0a4a94cf811d528d06fd40= and
+=b8ab122c8a149d90cc58e45114d1e0e6ec3f849f21fb33fd4801ce1d5248789c=;
+both use dependency-cone identity
+=65d6c882ad25513c5c74f50f3dadb1a20d95c659a3a4275d7630b61290c50394=.
+The positive and negative adoption records reported =failure-stage none=;
+the summary probe separately reported effort =high=, summary =auto=, one
+request, input 31, cached 0, returned-summary presence =absent=, and result
+=pass=.  Missing adoption cache usage is observational and does not gate the
+semantic or composition result.
+
+This is current external compatibility evidence for the configured Responses
+HTTP profile.  It does not exercise the exact built-in ChatGPT Codex WebSocket
+retained/replaced-socket or continuation scope, which remains
+=capability-unconfirmed=.
 
 * Scenario portfolio
 
@@ -264,7 +267,7 @@ changes.  Preserve the separate exact ChatGPT/WebSocket status.
 | strengthen | core marker presentation and OpenAI literal request-shape tests to cover source lifetime wording, decision guidance, stable/frontier placement, and revised identity |
 | strengthen | external evidence finalization and identity tests with independent adoption/composition results, bounded failure stage, established top-level result spellings, freshness, and a content-free record |
 | add | isolated configured =responses-autonomous-curation-adoption= scenario and deterministic unavailable/failure classifications |
-| rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change; both passed at =317be237= |
+| rerun | configured =responses-canonical-warm-prefix= and =responses-canonical-tool-heavy= after the material guidance change; the =317be237= result is historical and superseded by current evidence at =01a8466a= |
 | delete | none planned |
 
 Tests may assert the accepted material prompt text where it is the behavior
