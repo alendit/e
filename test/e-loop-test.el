@@ -795,6 +795,46 @@
                       (mapcar (lambda (event) (plist-get event :type))
                               events)))))))
 
+(ert-deftest e-loop-test-unexpected-call-preparation-error-surfaces ()
+  "An internal preparation defect fails the turn instead of becoming rejection."
+  (let* ((backend
+          (e-backend-fake-create
+           :items '((:type tool-call
+                     :id "defective-call"
+                     :name "echo"
+                     :arguments (:stated_purpose "Exercise preparation."
+                                 :text "hi"))
+                    (:type done :reason tool-use))))
+         (tools (e-tools-registry-create))
+         (handler-called nil)
+         (messages nil))
+    (e-tools-test-register
+     tools
+     :name "echo"
+     :description "Echo text."
+     :handler (lambda (_arguments)
+                (setq handler-called t)
+                "should-not-run"))
+    (cl-letf (((symbol-function 'e-tools-prepare-call)
+               (lambda (&rest _arguments)
+                 (error "synthetic preparation defect"))))
+      (let ((err
+             (should-error
+              (e-loop-run-turn-batch
+               :session-id "session-preparation-defect"
+               :turn-id "turn-preparation-defect"
+               :messages '((:role user :content "hi"))
+               :backend backend
+               :tools tools
+               :options nil
+               :on-event #'ignore
+               :append-message (lambda (message)
+                                 (push message messages))))))
+        (should (string-match-p "synthetic preparation defect"
+                                (error-message-string err)))))
+    (should-not handler-called)
+    (should-not messages)))
+
 (ert-deftest e-loop-test-refreshes-messages-after-tool-requesting-context-refresh ()
   "A tool result may ask the loop to rebuild context before follow-up sampling."
   (let* ((calls 0)

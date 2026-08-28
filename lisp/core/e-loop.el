@@ -273,7 +273,8 @@ CAUSES lists every completed tool call that induced a follow-up request."
             cancelled-p drain-pending-input segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
-            on-tool-observation on-tool-observation-presentation)
+            on-tool-observation on-tool-observation-presentation
+            on-tool-call-start)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
@@ -291,7 +292,9 @@ before a non-tool assistant message is appended and returns a pure prepared
 completion value for ON-RESPONSE-COMPLETE.  ON-TOOL-OBSERVATION-PRESENTATION,
 when supplied, receives the fresh frame and both in-memory provider message
 projections after a tool result is observed; it returns those projections with
-the frame-local presentation installed."
+the frame-local presentation installed.  ON-TOOL-CALL-START receives the
+bounded transcript call, plus an optional detached archival call and rejection
+metadata, before tool execution begins."
   (let ((turn-messages (copy-sequence messages))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
@@ -874,6 +877,9 @@ the frame-local presentation installed."
                                        tool-lifecycle
                                        (plist-get entry :tool-call))
                                     (plist-get entry :tool-call)))
+                                 (archival-call nil)
+                                 (archival-rejected-p nil)
+                                 (archival-received-arguments nil)
                                  (tool-call
                                   (if (not (e-tools-registry-p tools))
                                       execution-call
@@ -885,9 +891,21 @@ the frame-local presentation installed."
                                        ;; Keep the provider protocol shape
                                        ;; while dropping invalid envelope
                                        ;; fields before transcript writes.
-                                       (let ((rejected
-                                              (e-tools-project-call-for-rejection
-                                               tools execution-call)))
+                                       (let* ((tool
+                                               (gethash
+                                                (plist-get execution-call :name)
+                                                (e-tools-registry-tools tools)))
+                                              (archival
+                                               (e-tools--call-without-stated-purpose
+                                                execution-call tool))
+                                              (rejected
+                                               (e-tools-project-call-for-rejection
+                                                tools execution-call)))
+                                         (setq archival-call archival
+                                               archival-rejected-p t
+                                               archival-received-arguments
+                                               (e-tools--copy-schema-value
+                                                (plist-get archival :arguments)))
                                          (plist-put
                                           rejected
                                           :metadata
@@ -895,15 +913,30 @@ the frame-local presentation installed."
                                            (copy-sequence
                                             (plist-get rejected :metadata))
                                            :purpose-status 'invalid))))
-                                      (error
+                                      (e-tools-invalid-arguments
                                        ;; Keep provider protocol shape while
                                        ;; dropping undeclared rejected fields
                                        ;; before transcript and activity writes.
-                                       (e-tools-project-call-for-rejection
-                                        tools
-                                        (or (plist-get (cddr err)
-                                                       :prepared-call)
-                                            execution-call))))))
+                                       (let* ((prepared
+                                               (or (plist-get (cddr err)
+                                                              :prepared-call)
+                                                   execution-call))
+                                              (archival (copy-tree prepared)))
+                                         (setq archival-call archival
+                                               archival-rejected-p t
+                                               archival-received-arguments
+                                               (e-tools--copy-schema-value
+                                                (plist-get archival :arguments)))
+                                         (let ((rejected
+                                                (e-tools-project-call-for-rejection
+                                                 tools prepared)))
+                                           (plist-put
+                                            rejected
+                                            :metadata
+                                            (plist-put
+                                             (copy-sequence
+                                              (plist-get rejected :metadata))
+                                             :argument-status 'invalid))))))))
                                  (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
@@ -917,11 +950,21 @@ the frame-local presentation installed."
                             (e-loop--emit :on-event on-event
                                           :type 'tool-started
                                           :payload tool-call)
+                            (when on-tool-call-start
+                              (funcall on-tool-call-start
+                                       tool-call
+                                       archival-call
+                                       archival-rejected-p
+                                       archival-received-arguments))
                             (let ((request
                                    (if tool-lifecycle
                                        (e-tool-lifecycle-start-call
                                         tool-lifecycle
                                         tool-call
+                                        :archival-call archival-call
+                                        :archival-rejected-p archival-rejected-p
+                                        :archival-received-arguments
+                                        archival-received-arguments
                                         :on-request-start
                                         (lambda (request)
                                           (publish-tool-request
@@ -1230,7 +1273,8 @@ the frame-local presentation installed."
             segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
-            on-tool-observation on-tool-observation-presentation)
+            on-tool-observation on-tool-observation-presentation
+            on-tool-call-start)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -1266,6 +1310,7 @@ and returns the pure completion value passed to ON-RESPONSE-COMPLETE."
      :on-response-complete on-response-complete
      :on-tool-observation on-tool-observation
      :on-tool-observation-presentation on-tool-observation-presentation
+     :on-tool-call-start on-tool-call-start
      :on-done (lambda (value)
                 (setq result value)
                 (setq done t))

@@ -574,8 +574,26 @@ and string length and pattern constraints before transcript persistence."
   (condition-case err
       (e-tools--prepare-call-arguments call tool)
     (e-tools-invalid-arguments
+     ;; Preserve the detached, schema-coerced operation arguments for the
+     ;; harness archival side channel.  The projected transcript call is built
+     ;; separately and may contain only values safe to show after rejection.
+     (let* ((parameters (plist-get tool :parameters))
+            (arguments (e-tools--coerce-arguments
+                        (plist-get call :arguments) parameters)))
+       (plist-put call :arguments arguments))
      (signal (car err)
              (append (cdr err) (list :prepared-call call))))))
+
+(defun e-tools--call-without-stated-purpose (call tool)
+  "Return detached CALL with its envelope field removed and args coerced."
+  (let* ((copy (copy-tree call))
+         (arguments (copy-tree (plist-get copy :arguments)))
+         (parameters (plist-get tool :parameters)))
+    (when (e-tools--plist-p arguments)
+      (cl-remf arguments :stated_purpose)
+      (plist-put copy :arguments
+                 (e-tools--coerce-arguments arguments parameters)))
+    copy))
 
 (defun e-tools-prepare-call (registry call)
   "Return a validated, coerced copy of CALL from REGISTRY.
@@ -1244,7 +1262,18 @@ handle after allocation and before its runner may execute."
             (when on-done
               (funcall on-done result))
             nil)
-        (let ((work (plist-get tool :work))
+        (if (eq (plist-get (plist-get call :metadata) :argument-status)
+                'invalid)
+            (let ((result
+                   (e-tools--result
+                    call
+                    'error
+                    "Tool arguments are invalid"
+                    '(:error e-tools-invalid-arguments))))
+              (when on-done
+                (funcall on-done result))
+              nil)
+          (let ((work (plist-get tool :work))
               settled
               active-request
               deadline-timer)
@@ -1398,7 +1427,7 @@ handle after allocation and before its runner may execute."
              nil)
             (error
              (finish-error err)
-              nil))))))))
+              nil)))))))))
 
 (provide 'e-tools)
 

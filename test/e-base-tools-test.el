@@ -1206,6 +1206,7 @@ picker."
                  (e-harness-tool-lifecycle harness "session-1" "turn-1")
                  '(:id "call-1"
                    :name "bash"
+                   :stated-purpose "Verify large output streaming."
                    :arguments (:command "printf 'one\ntwo\nthree\nfour\n'"))
                  :on-done (lambda (value) (setq result value))))
           (should (e-tools-request-p request))

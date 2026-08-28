@@ -96,6 +96,7 @@
     e-raw-results
     e-session-tmp-resources
     e-raw-result-cleanup
+    e-tool-invocation-details
     e-tool-output-truncation
     e-layers-shell
     e-openai

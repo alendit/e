@@ -18,6 +18,7 @@
 (require 'e-session-tmp-resources)
 (require 'e-session-resources)
 (require 'e-raw-result-cleanup)
+(require 'e-tool-invocation-details)
 (require 'e-tool-output-truncation)
 
 (defconst e-harness-base-instructions
@@ -41,6 +42,7 @@
                        (e-raw-results-capability-create)
                        (e-session-tmp-capability-create)
                        (e-session-resources-capability-create)
+                       (e-tool-invocation-details-capability-create)
                        (e-tool-output-truncation-capability-create))))
 
 (provide 'e-harness-base)

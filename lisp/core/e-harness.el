@@ -2070,6 +2070,8 @@ compaction) where exposing tools risks a tool-call instead of a reply."
              tools prepared context)))
     (setq result
           (e-hooks-run-reduce hooks :post-tool-call result context))
+    (setq result
+          (e-hooks-run-reduce hooks :tool-result-presentation result context))
     (e-harness--emit-turn-event
      harness
      session-id
@@ -2143,7 +2145,8 @@ compaction) where exposing tools risks a tool-call instead of a reply."
        :start
        (cl-function
          (lambda (tool-call &key on-request-start on-done on-error on-event
-                            on-work-prepared)
+                            on-work-prepared archival-call
+                            archival-rejected-p archival-received-arguments)
           (e-harness--profile-call
            'harness.tool-start
            (list :session-id session-id
@@ -2159,14 +2162,14 @@ compaction) where exposing tools risks a tool-call instead of a reply."
                :on-event on-event
               :on-done
               (lambda (result)
-                (condition-case err
+                  (condition-case err
                     (when on-done
-                      (funcall on-done
-                               (e-hooks-run-reduce
-                                (hooks)
-                                :post-tool-call
-                                result
-                                (context))))
+                      (funcall
+                       on-done
+                        (e-harness--tool-result-through-stages
+                         harness session-id turn-id tool-call result
+                         archival-call archival-rejected-p
+                        archival-received-arguments (context))))
                   (error
                    (if on-error
                        (funcall on-error err)
@@ -2823,10 +2826,44 @@ also emitting the normal compaction failure event."
         :content "Cancelled"
         :metadata '(:error cancelled)))
 
+(defun e-harness--tool-result-through-stages
+    (harness session-id turn-id tool-call result
+             &optional archival-call archival-rejected-p
+             archival-received-arguments stage-context)
+  "Run RESULT through semantic, archival, and presentation stages.
+ARCHIVAL-CALL and its rejection fields are an internal detached side channel;
+they are never included in the transcript message or lifecycle event."
+  (let* ((hooks (e-harness-hooks harness))
+         (context (or stage-context
+                      (e-harness--tool-hook-context
+                       harness session-id turn-id
+                       (e-harness-tools harness session-id turn-id))))
+         (semantic-result
+          (e-hooks-run-reduce hooks :post-tool-call result context))
+         (detail-context
+          (append (list :tool-call tool-call
+                        :archival-call archival-call
+                        :archival-rejected-p archival-rejected-p
+                        :archival-received-arguments
+                        archival-received-arguments)
+                  context))
+         (archived-result
+          (e-hooks-run-reduce hooks :invocation-details semantic-result
+                              detail-context)))
+    (e-hooks-run-reduce hooks :tool-result-presentation archived-result context)))
+
 (defun e-harness--append-cancelled-tool-result (harness session-id turn-id entry)
   "Append a cancellation tool result when ENTRY has an open tool call."
   (when-let ((tool-call (plist-get entry :open-tool-call)))
-    (let* ((result (e-harness--cancelled-tool-result tool-call))
+    (let* ((archival-call (plist-get entry :open-tool-archival-call))
+           (archival-rejected-p (plist-get entry :open-tool-archival-rejected-p))
+           (archival-received-arguments
+            (plist-get entry :open-tool-archival-received-arguments))
+           (result (e-harness--tool-result-through-stages
+                    harness session-id turn-id tool-call
+                    (e-harness--cancelled-tool-result tool-call)
+                    archival-call archival-rejected-p
+                    archival-received-arguments))
            (message (list :role 'tool
                           :content result
                           :metadata nil)))
@@ -2834,7 +2871,10 @@ also emitting the normal compaction failure event."
       (e-harness--emit-turn-event
        harness session-id turn-id 'tool-finished
        (list :tool-call tool-call :result result))
-      (plist-put entry :open-tool-call nil))))
+      (plist-put entry :open-tool-call nil)
+      (plist-put entry :open-tool-archival-call nil)
+      (plist-put entry :open-tool-archival-rejected-p nil)
+      (plist-put entry :open-tool-archival-received-arguments nil))))
 
 (defun e-harness--backend-error-message (err)
   "Return the compact user-visible error message for condition ERR.
@@ -4172,7 +4212,8 @@ request emits no candidate at all."
     (harness session-id turn-id &key on-request-start on-done on-error
              cancelled-p append-message on-event context drain-pending-input
              on-context-refresh on-response-preflight on-response-complete
-             on-tool-observation on-tool-observation-presentation)
+             on-tool-observation on-tool-observation-presentation
+             on-tool-call-start)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -4195,6 +4236,7 @@ request emits no candidate at all."
         :on-response-complete on-response-complete
         :on-tool-observation on-tool-observation
         :on-tool-observation-presentation on-tool-observation-presentation
+        :on-tool-call-start on-tool-call-start
          :turn-work-handle (plist-get
                             (gethash session-id
                              (e-harness-active-turns harness))
@@ -4460,11 +4502,14 @@ cancellation.  SESSION-ID identifies the session."
 	                (lambda (type payload)
 	                  (when (and (active-entry-p)
 	                             (not (plist-get entry :cancelled)))
-	                    (pcase type
-	                      ('tool-started
-	                       (plist-put entry :open-tool-call payload))
-	                      ('tool-finished
-	                       (plist-put entry :open-tool-call nil))
+                        (pcase type
+                          ('tool-started
+                           (plist-put entry :open-tool-call payload))
+                          ('tool-finished
+                           (plist-put entry :open-tool-call nil)
+                           (plist-put entry :open-tool-archival-call nil)
+                           (plist-put entry :open-tool-archival-rejected-p nil)
+                           (plist-put entry :open-tool-archival-received-arguments nil))
                       ('provider-request-finished
 	                       ;; A request that completes clears the transient-retry
 	                       ;; window: the budget bounds a consecutive failure
@@ -4500,10 +4545,22 @@ cancellation.  SESSION-ID identifies the session."
 	                    ;; `turn-finished' here is the loop's private terminal
 	                    ;; edge.  The harness emits its public terminal event
 	                    ;; after `:turn-finished' hooks settle in `finish-done'.
-	                    (unless (eq type 'turn-finished)
+                    (unless (eq type 'turn-finished)
 	                      (e-harness--emit-turn-event
-	                       harness session-id turn-id type payload))))
-	                :append-message
+                       harness session-id turn-id type payload))))
+                :on-tool-call-start
+                (lambda (tool-call archival-call rejected-p received-arguments)
+                  ;; The transcript callback above receives only TOOL-CALL.
+                  ;; Keep the complete rejected invocation on this detached
+                  ;; lifecycle side channel until the archival stage runs.
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (plist-put entry :open-tool-call tool-call)
+                    (plist-put entry :open-tool-archival-call archival-call)
+                    (plist-put entry :open-tool-archival-rejected-p rejected-p)
+                    (plist-put entry :open-tool-archival-received-arguments
+                               received-arguments)))
+                :append-message
 	                (lambda (message)
 	                  (when (and (active-entry-p)
 	                             (not (plist-get entry :cancelled)))

@@ -16,6 +16,21 @@ and only six sandbox-blocked localhost cases, all six of which passed in the
 permitted socket environment.  Receipt details and resources remain future
 slices.
 
+Slice F90.2 is complete: the harness now inserts an explicit invocation-details
+stage between semantic tool hooks and provider-facing presentation.  That stage
+writes a canonical versioned JSON document under
+=tmp://tool-invocations/<turn>/<call>.json= for every settled top-level tool
+call, including rejected calls, cancellation, and timeout, while keeping
+rejected arguments detached from transcript and activity state.  Nested host
+calls are deliberately excluded.  Path components are collision-resistant,
+nonportable result metadata is omitted, and invalid executable arguments fail
+before dispatch.  The focused lifecycle, tool, details, truncation, and base
+tool suite passes all 332 tests.  Repository validation compiled cleanly; the
+full 2,406-test run had 2,398 expected passes, two expected graphical skips,
+and only six sandbox-blocked localhost cases, all six of which passed in the
+permitted socket environment.  Receipt projection and unified truncation
+references remain future slices.
+
 * Goal
 
 Keep a compact, truthful mark of every completed model-facing tool invocation

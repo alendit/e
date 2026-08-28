@@ -198,7 +198,7 @@
      (e-tool-output-truncation-capability-create)
      registry)
     (should (equal (mapcar #'e-hook-id
-                           (e-hooks-for-point registry :post-tool-call))
+                           (e-hooks-for-point registry :tool-result-presentation))
                    '("50-tool-output-truncation")))))
 
 (provide 'e-tool-output-truncation-test)

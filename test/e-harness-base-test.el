@@ -55,6 +55,7 @@
                      raw-result-resources
                      session-tmp-resources
                      session-resources
+                     tool-invocation-details
                      tool-output-truncation)))))
 
 (ert-deftest e-harness-base-test-context-asks-for-novel-reasoning-messages ()
@@ -104,7 +105,12 @@
     (should (equal (mapcar #'e-hook-id
                            (e-hooks-for-point
                             (e-harness-hooks harness)
-                            :post-tool-call))
+                            :invocation-details))
+                   '("40-tool-invocation-details")))
+    (should (equal (mapcar #'e-hook-id
+                           (e-hooks-for-point
+                            (e-harness-hooks harness)
+                            :tool-result-presentation))
                    '("50-tool-output-truncation")))
     (e-harness-set-intrinsic-capabilities harness nil)
     (should-not (e-harness-base-test--raw-result-read-method-p
@@ -113,7 +119,10 @@
                  (e-harness-resources harness "session-1" "turn-1")))
     (should-not (e-hooks-for-point
                  (e-harness-hooks harness)
-                 :post-tool-call))))
+                 :invocation-details))
+    (should-not (e-hooks-for-point
+                 (e-harness-hooks harness)
+                 :tool-result-presentation))))
 
 (provide 'e-harness-base-test)
 

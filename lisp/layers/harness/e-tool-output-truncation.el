@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; A post-tool-call hook that bounds model-visible tool result content and stores
+;; A tool-result-presentation hook that bounds model-visible tool result content and stores
 ;; the full output in the owning session tmp resources, or in generic raw-result
 ;; resources when no session owns the result.
 
@@ -207,7 +207,7 @@
    :hooks
    (list (e-hook-create
           :id "50-tool-output-truncation"
-          :point :post-tool-call
+          :point :tool-result-presentation
           :handler #'e-tool-output-truncation-post-tool-call))))
 
 (provide 'e-tool-output-truncation)
