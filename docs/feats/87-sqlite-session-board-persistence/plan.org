@@ -5,6 +5,10 @@
 
 Planned.
 
+Implementation is blocked until Feature 91, [[file:../91-improve-modularization/plan.org][Improve Modularization]], reaches
+=Done=.  Feature 91 first establishes the session/storage and board/runtime
+boundaries that this feature will implement against.
+
 * Goal
 
 Make one SQLite database the durable authority for all e-owned mutable runtime state.

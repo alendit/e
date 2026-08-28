@@ -6,6 +6,11 @@
 
 In-progress.
 
+Further implementation is paused until Feature 91,
+[[file:../91-improve-modularization/plan.org][Improve Modularization]], reaches =Done=.  Completed Feature 90 slices remain
+the accepted preservation baseline, and this feature must rebaseline source
+anchors before its next implementation slice.
+
 Slice F90.1 is complete: the provider-neutral invocation envelope now
 decorates ordinary registered tool definitions with the required bounded
 =stated_purpose= field, and the provider queue extracts it before operation

@@ -4,7 +4,12 @@
 
 * Status
 
-Planned.
+Ready.
+
+This feature is the current implementation gate.  It must reach =Done= before
+implementation or review remediation continues in any other feature.  Planning
+and read-only review may continue, but accepted source behavior is frozen as
+the preservation baseline while this modularization work is active.
 
 * Goal
 
@@ -19,6 +24,20 @@ layers package capabilities, backend adapters own provider behavior, and shells
 own presentation.  Improve the physical decomposition and the interfaces
 between those owners rather than introducing a new framework or changing
 product behavior.
+
+* Blocking prerequisite
+
+The operator selected this work as a prerequisite for all further
+implementation.  No new slice, continuation slice, review remediation, or
+opportunistic implementation in another feature may begin until this feature
+is =Done=.
+
+Features that are already =In-progress= or =In-review= keep those statuses
+because the index records their factual lifecycle.  Their accepted commits and
+tests become the baseline for this behavior-neutral decomposition; their
+implementation lanes are paused.  After Feature 91 is complete, each affected
+feature must rebaseline its source anchors and resume from its last accepted
+semantic state.
 
 * Why now
 
@@ -189,11 +208,17 @@ codec/replay, checkpoint policy, and physical storage.  Candidate owners are:
 - catalog/checkpoint projections; and
 - the session storage adapter.
 
-Do not implement a parallel decomposition that conflicts with Feature 87.
-Feature 87 owns the SQLite storage contracts, migration, and removal of JSONL,
-checkpoint, and index paths.  This feature supplies modularization acceptance
-for the resulting session boundary and may extract stable aggregate/codec code
-only when that work will survive the SQLite cutover.
+Feature 91 runs before Feature 87 implementation.  It separates the stable
+session aggregate, record codec/replay, checkpoint/catalog policy, and current
+JSONL storage adapter behind the owner-shaped =e-session-storage= direction
+already selected by Feature 87.  This is the preparatory boundary that makes
+the later SQLite replacement local; it must not introduce a competing storage
+port or migrate durable data.
+
+Feature 87 continues to own SQLite transactions, migration, cutover, and the
+eventual removal of JSONL, checkpoint, and index paths.  Feature 91 extracts
+only current behavior and deletes obsolete in-file/private coupling that is no
+longer needed after the extraction.
 
 Concrete shell, subagent, task-queue, board-orchestration, and MCP state should
 use owner-shaped typed operations, capability state, or domain records rather
@@ -232,8 +257,11 @@ chat renderer or composer implementation.
 ** Large cohesive roots
 
 Do not split =e-board=, =e-context-lifetime=, =e-loop=, =e-tools=, or =e-work=
-merely because they are large.  Re-evaluate them with residual topology after
-Feature 87 and Feature 88 settle.
+merely because they are large.  Evaluate them during this feature against the
+current accepted Feature 88/90 behavior and Feature 87's selected architectural
+direction, and retain them only with residual topology evidence.  Later
+semantic work must build on that accepted physical boundary rather than
+postponing the modularization decision.
 
 Plausible complete boundaries such as board observer cursors, pickup lifecycle,
 or routing classification may be extracted only when the new owner can preserve
@@ -242,16 +270,20 @@ without duplicating board state or weakening atomic transitions.
 
 * Coordination with active features
 
-- Feature 87 owns SQLite session and board persistence.  Reuse its
-  =e-session-storage=, =e-board-storage=, and independent chat/participant
-  boundaries rather than creating competing ports.
-- Feature 88 is =In-review= and owns generational context semantics.  Do not
-  move its harness/session/context code until its exact accepted revision is
-  known; then extract without changing its behavioral contract.
-- Feature 90 is =In-progress= and currently changes tool, harness, session tmp,
-  activity, and context-projection behavior.  Do not begin an overlapping
-  harness/session extraction until its active slice is accepted or the operator
-  explicitly coordinates the overlap.
+- Feature 91 completes before any further implementation in Feature 87, 88, 90,
+  or another feature.  This ordering is mandatory, not an advisory conflict
+  warning.
+- Feature 87 remains =Planned=.  Feature 91 introduces the stable current
+  session/storage and board/runtime boundaries first; Feature 87 later replaces
+  storage implementations through those boundaries.
+- Feature 88 remains =In-review=.  Read-only review may continue, but code
+  remediation pauses.  Feature 91 preserves its current accepted generational
+  context behavior while extracting harness/session/context owners.  Feature 88
+  rebaselines source locations before remediation resumes.
+- Feature 90 remains =In-progress= because its completed slices are real.
+  Further implementation pauses.  Those completed slices supply the accepted
+  tool, harness, session-tmp, activity, and context-projection contracts that
+  Feature 91 must preserve.
 - Feature 70 is complete and supplies the accepted transcript/composer
   behavioral contract.  Its source and graphical tests are preservation
   evidence for the chat physical decomposition.
@@ -303,8 +335,9 @@ later slices do not proceed.
      unrelated auth, parser, and transport code.
 
 5. *Harness internal owners*
-   - Start only after overlapping Feature 88 and Feature 90 work reaches an
-     accepted revision.
+   - Freeze Feature 88 and Feature 90 at their current accepted behavior and
+     extract their shared harness/session/context code before either feature
+     resumes implementation.
    - Extract activity, queue, capability derivation, context runtime, and turn
      orchestration through complete state-owning boundaries.
    - Split =test/e-harness-test.el= by stable owner contract.
@@ -313,15 +346,16 @@ later slices do not proceed.
      show no unjustified regression.
 
 6. *Session/storage convergence*
-   - Execute with or after the Feature 87 storage slices rather than ahead of
-     their accepted contracts.
-   - Leave stable aggregate, codec/replay, and storage responsibilities in
-     separate modules with typed owner-shaped APIs.
-   - Remove obsolete JSONL/checkpoint/index modules when Feature 87 cuts over;
-     do not preserve them as runtime compatibility paths.
+   - Execute before Feature 87 implementation and use its already selected
+     =e-session-storage= direction as the contract target.
+   - Separate the stable aggregate, codec/replay, checkpoint/catalog policy,
+     and current JSONL implementation behind typed owner-shaped APIs.
+   - Keep JSONL/checkpoint/index behavior only as the current storage adapter;
+     Feature 87 later replaces and removes it without changing session callers.
    - Gate: session consumers do not call storage-private functions, concrete
      feature state no longer expands a generic metadata bag without an owning
-     typed contract, and restart tests prove the accepted storage semantics.
+     typed contract, restart tests prove the current storage semantics, and
+     Feature 87 can replace the adapter without reopening the aggregate API.
 
 7. *Residual topology and documentation*
    - Re-inventory every production file above 2,500 lines and every test file
@@ -371,13 +405,16 @@ later slices do not proceed.
   harness-private functions and callback variables.
 - Harness activity, queue, context-runtime, and turn-orchestration state have
   explicit owners; the facade does not remain a renamed god module.
-- Session aggregate, record codec/replay, and physical storage responsibilities
-  are distinct after Feature 87 convergence.
+- Session aggregate, record codec/replay, checkpoint/catalog policy, and the
+  current physical storage adapter are distinct before Feature 87 begins.
 - OpenAI wire APIs and transports, MCP transports, and base file/bash behavior
   are independently testable behind their existing facades.
 - Source and test decomposition align; no extracted owner remains buried in a
   monolithic mirror test file.
 - Every retained large root has a current residual-topology justification.
+- Feature 91 is =Done= before implementation or review remediation resumes in
+  Feature 87, 88, 90, or any other feature; each resumed feature records a
+  source-anchor rebaseline.
 - No compatibility wrapper, fallback path, generic plugin framework, or shared
   helper module remains solely to make extraction easier.
 - Focused tests, compilation, relevant graphical tests, the complete batch
@@ -412,8 +449,9 @@ later slices do not proceed.
   block, focus, and status state.
 - Remove central transport branches that become facade composition over
   independent OpenAI or MCP implementations.
-- Remove obsolete JSONL/checkpoint/index modules through Feature 87 rather than
-  retaining them as a second runtime path.
+- Move JSONL/checkpoint/index behavior out of the session aggregate into the
+  current storage adapter.  Feature 87 removes that adapter at SQLite cutover;
+  Feature 91 does not retain duplicate in-aggregate paths.
 - Remove tests whose only contract is the old file placement or private call
   graph; retain and relocate their stable behavioral assertions.
 
@@ -427,8 +465,9 @@ later slices do not proceed.
   plist among modules.
 - *Behavior drift during large moves*: compare public outputs and event order,
   use small semantic commits, and delete the old path in the same slice.
-- *Conflict with active features*: respect the Feature 87/88/90 sequencing
-  gates and rebaseline source ownership before each affected package.
+- *Conflict with active features*: pause their implementation lanes, preserve
+  their last accepted behavior, and require source-anchor rebaselining only
+  after Feature 91 reaches =Done=.
 - *Slower runtime through extra abstraction*: keep composition direct and
   measure load and hot paths; reject added scans, copies, timers, or synchronous
   work without a first-principles requirement.
@@ -444,10 +483,10 @@ later slices do not proceed.
    and matching focused tests even if later slices stop.
 2. The feature moves toward the existing capability-first runtime with physical
    modules that match semantic owners.
-3. Storage and context semantics are likely to change under Features 87 and 88,
-   so those decisions remain local to their owners and are sequenced after
-   acceptance.  Presentation and transport boundaries are already stable
-   enough to extract.
+3. Storage and context semantics may later change under Features 87 and 88.
+   Feature 91 freezes their current accepted behavior, localizes the uncertain
+   implementation behind owner-shaped boundaries now, and lets later work
+   replace those implementations without reopening unrelated modules.
 4. Every target component has one named owner and primary change reason; the
    facade owns composition rather than all implementation details.
 5. Coupling decreases by removing private cross-component calls and replacing

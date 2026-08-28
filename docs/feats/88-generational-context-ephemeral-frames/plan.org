@@ -5,6 +5,11 @@
 
 In-review (origin-authoritative Addendum 7 integrated implementation).
 
+Read-only review may continue, but further implementation or review remediation
+is blocked until Feature 91, [[file:../91-improve-modularization/plan.org][Improve Modularization]], reaches =Done=.
+The current accepted context behavior is Feature 91's preservation baseline;
+this feature must rebaseline source anchors before remediation resumes.
+
 This plan was materially narrowed on 2026-08-24.  Its authoritative scope is
 semantic context visibility, model-directed curation, and cache-safe canonical
 continuation on normal successful turns.  It does not make external tool follow-up a
