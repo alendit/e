@@ -1231,7 +1231,8 @@ messages so the transcript reads as one clean answer."
                                :id "run-action"
                                :name "run_elisp"
                                :arguments
-                               (:code
+                               (:stated_purpose "Finalize the daily run."
+                                :code
                                 "(e-actions-call 'daily-run :finalize nil)")))
                             (funcall on-item '(:type done :reason tool-use)))
                         (funcall on-item

@@ -139,7 +139,8 @@
                              '(:type tool-call
                                :id "call-1"
                                :name "echo"
-                               :arguments (:text "hi")))
+                               :arguments (:stated_purpose "Echo text."
+                                           :text "hi")))
                     (funcall on-item '(:type done :reason tool-use)))
                 (funcall on-item '(:type assistant-message :content "done"))
                 (funcall on-item '(:type done :reason stop)))))))
@@ -419,7 +420,8 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "hi")))
+                                               :arguments (:stated_purpose "Echo text."
+                                                           :text "hi")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -472,7 +474,8 @@
                     (funcall on-item
                              '(:type tool-call :id "marker-call"
                                :name "process_marker"
-                               :arguments (:signal "success" :note "ok")))
+                               :arguments (:stated_purpose "Mark success."
+                                           :signal "success" :note "ok")))
                     (funcall on-item
                              '(:type token-usage :usage (:input-tokens 10)))
                     (funcall on-item '(:type done :reason tool-use)))
@@ -528,10 +531,12 @@
                   (progn
                     (funcall on-item
                              '(:type tool-call :id "marker-call"
-                               :name "process_marker" :arguments nil))
+                               :name "process_marker"
+                               :arguments (:stated_purpose "Mark progress.")))
                     (funcall on-item
                              '(:type tool-call :id "echo-call"
-                               :name "echo" :arguments nil))
+                               :name "echo"
+                               :arguments (:stated_purpose "Echo text.")))
                     (funcall on-item '(:type done :reason tool-use)))
                 (funcall on-item '(:type token-usage :usage (:input-tokens 20)))
                 (funcall on-item '(:type assistant-message :content "done"))
@@ -576,7 +581,8 @@
                                              '(:type tool_call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "hi")))
+                                               :arguments (:stated_purpose "Echo text."
+                                                           :text "hi")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -667,7 +673,8 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "hi")))
+                                               :arguments (:stated_purpose "Echo text."
+                                                           :text "hi")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -699,6 +706,95 @@
       (should (equal (plist-get (plist-get payload :result) :content)
                      "hi")))))
 
+(ert-deftest e-loop-test-invalid-stated-purpose-is-bounded-tool-error ()
+  "A missing or invalid purpose becomes a bounded tool error and settles."
+  (dolist (arguments '((:text "hi")
+                       (:stated_purpose "SECRET\npurpose" :text "hi")))
+    (let* ((calls 0)
+           (handler-called nil)
+           (backend
+            (e-backend-create
+             :name "invalid-stated-purpose"
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (ignore options)
+                (setq calls (1+ calls))
+                (if (= calls 1)
+                    (progn
+                      (should (equal (mapcar (lambda (message)
+                                               (plist-get message :role))
+                                             messages)
+                                     '(user)))
+                      (funcall on-item
+                               (list :type 'tool-call
+                                     :id "invalid-purpose-call"
+                                     :name "echo"
+                                     :arguments arguments))
+                      (funcall on-item
+                               '(:type done :reason tool-use)))
+                  (should (equal (mapcar (lambda (message)
+                                           (plist-get message :role))
+                                         messages)
+                                 '(user tool-call tool)))
+                  (funcall on-item
+                           '(:type assistant-message :content "settled"))
+                  (funcall on-item '(:type done :reason stop)))))))
+           (tools (e-tools-registry-create))
+           (messages nil)
+           (events nil))
+      (e-tools-test-register
+       tools
+       :name "echo"
+       :description "Echo text."
+       :handler (lambda (_arguments)
+                  (setq handler-called t)
+                  "should-not-run"))
+      (let ((result
+             (e-loop-run-turn-batch
+              :session-id "session-invalid-purpose"
+              :turn-id "turn-invalid-purpose"
+              :messages '((:role user :content "hi"))
+              :backend backend
+              :tools tools
+              :options nil
+              :on-event (lambda (type payload)
+                          (push (list :type type :payload payload) events))
+              :append-message (lambda (message)
+                                (setq messages
+                                      (append messages (list message)))))))
+        (should (equal (plist-get result :status) 'done))
+        (should (= calls 2))
+        (should-not handler-called)
+        (let* ((tool-call
+                (cl-find 'tool-call messages
+                         :key (lambda (message) (plist-get message :role))))
+               (tool-result
+                (cl-find 'tool messages
+                         :key (lambda (message) (plist-get message :role))))
+               (call-content (plist-get tool-call :content))
+               (result-content (plist-get tool-result :content)))
+          (should (eq (plist-get call-content :type) 'tool-call))
+          (should (eq (plist-get (plist-get call-content :metadata)
+                                :purpose-status)
+                      'invalid))
+          (should-not (plist-member (plist-get call-content :arguments)
+                                    :stated_purpose))
+          (should-not (string-match-p
+                       (regexp-quote "SECRET")
+                       (prin1-to-string messages)))
+          (should (equal (plist-get result-content :tool-call-id)
+                         "invalid-purpose-call"))
+          (should (equal (plist-get result-content :name) "echo"))
+          (should (eq (plist-get result-content :status) 'error))
+          (should (eq (plist-get (plist-get result-content :metadata) :error)
+                      'e-tools-invalid-stated-purpose)))
+        (should (equal (plist-get (car (last messages)) :content)
+                       "settled"))
+        (should (memq 'turn-finished
+                      (mapcar (lambda (event) (plist-get event :type))
+                              events)))))))
+
 (ert-deftest e-loop-test-refreshes-messages-after-tool-requesting-context-refresh ()
   "A tool result may ask the loop to rebuild context before follow-up sampling."
   (let* ((calls 0)
@@ -718,7 +814,7 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "refreshing_tool"
-                                               :arguments nil))
+                                               :arguments (:stated_purpose "Refresh context.")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (setq second-request-messages messages)
@@ -775,7 +871,7 @@
                                      '(:type tool-call
                                        :id "call-refresh"
                                        :name "refreshing_tool"
-                                       :arguments nil))
+                                       :arguments (:stated_purpose "Refresh context.")))
                             (funcall on-item '(:type done :reason tool-use)))
                         (setq second-request-messages messages
                               second-request-options options)
@@ -850,7 +946,7 @@
                                      '(:type tool-call
                                        :id "call-refresh-fence"
                                        :name "refreshing_tool"
-                                       :arguments nil))
+                                       :arguments (:stated_purpose "Refresh stable projection.")))
                             (funcall on-item '(:type done :reason tool-use)))
                         (setq second-request-messages messages
                               second-request-options options)
@@ -945,7 +1041,8 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "raw")))
+                                               :arguments (:stated_purpose "Echo raw text."
+                                                           :text "raw")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -1008,7 +1105,7 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments nil))
+                                               :arguments (:stated_purpose "Echo text.")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -1066,7 +1163,7 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments nil))
+                                               :arguments (:stated_purpose "Echo text.")))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
                                 (funcall on-item
@@ -1131,7 +1228,8 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "hi")))
+                                               :arguments (:stated_purpose "Echo text."
+                                                           :text "hi")))
                                 (funcall on-item '(:type done :reason tool-use)))
                                 (should (equal (mapcar (lambda (message)
                                                          (plist-get message :role))
@@ -1187,7 +1285,8 @@
                                              '(:type tool-call
                                                :id "call-1"
                                                :name "echo"
-                                               :arguments (:text "hi")))
+                                               :arguments (:stated_purpose "Echo text."
+                                                           :text "hi")))
                                     (funcall on-item '(:type done :reason stop)))
                                 (should (equal (mapcar (lambda (message)
                                                          (plist-get message :role))
@@ -1322,7 +1421,8 @@
                                         '(:type tool-call
                                           :id "call-1"
                                           :name "echo"
-                                          :arguments (:text "hi")))
+                                          :arguments (:stated_purpose "Echo text."
+                                                      :text "hi")))
                                (funcall on-item
                                         '(:type done :reason tool-use)))
                            (should (equal (mapcar (lambda (message)
@@ -1387,12 +1487,14 @@
                                      '(:type tool-call
                                        :id "call-1"
                                        :name "immediate"
-                                       :arguments (:text "one")))
+                                       :arguments (:stated_purpose "Return one."
+                                                   :text "one")))
                             (funcall on-item
                                      '(:type tool-call
                                        :id "call-2"
                                        :name "immediate"
-                                       :arguments (:text "two")))
+                                       :arguments (:stated_purpose "Return two."
+                                                   :text "two")))
                             (funcall on-item
                                      '(:type done :reason tool-use)))
                         (should (equal (mapcar (lambda (message)
@@ -1547,7 +1649,7 @@
                                         '(:type tool-call
                                           :id "call-quit"
                                           :name "quit-tool"
-                                          :arguments nil))
+                                          :arguments (:stated_purpose "Handle quit.")))
                                (funcall on-item
                                         '(:type done :reason tool-use)))
                            (should (equal (mapcar (lambda (message)
@@ -1629,7 +1731,8 @@
                                         '(:type tool-call
                                           :id "call-1"
                                           :name "later"
-                                          :arguments (:text "hi")))
+                                          :arguments (:stated_purpose "Return later."
+                                                      :text "hi")))
                                (funcall on-item
                                         '(:type done :reason tool-use)))
                            (should (equal (mapcar (lambda (message)
@@ -1709,12 +1812,14 @@
                                         '(:type tool-call
                                           :id "call-1"
                                           :name "later"
-                                          :arguments (:text "first")))
+                                          :arguments (:stated_purpose "Return first."
+                                                      :text "first")))
                                (funcall on-item
                                         '(:type tool-call
                                           :id "call-2"
                                           :name "later"
-                                          :arguments (:text "second")))
+                                          :arguments (:stated_purpose "Return second."
+                                                      :text "second")))
                                (funcall on-item
                                         '(:type done :reason tool-use)))
                            (should (equal (mapcar (lambda (message)
@@ -2631,7 +2736,8 @@ call; stateless fallback carries the complete call/result pair."
                                  '(:type tool-call
                                    :id "compact-call"
                                    :name "echo"
-                                   :arguments (:text "hello")))
+                                   :arguments (:stated_purpose "Echo text."
+                                               :text "hello")))
                         (funcall on-item '(:type done :reason tool-use)))
                     (funcall on-item
                              '(:type assistant-message :content "tool-seen"))
@@ -2836,7 +2942,8 @@ rely on `provider-request'."
                                '(:type tool-call
                                  :id "sync-compact-call"
                                  :name "echo"
-                                 :arguments (:text "hello")))
+                                 :arguments (:stated_purpose "Echo text."
+                                             :text "hello")))
                       (funcall on-item '(:type done :reason tool-use)))
                   (funcall on-item
                            '(:type assistant-message :content "tool-seen"))
@@ -2981,7 +3088,7 @@ rely on `provider-request'."
                              '(:type tool-call
                                :id "call-disabled-refresh"
                                :name "disabled_refreshing_tool"
-                               :arguments nil))
+                               :arguments (:stated_purpose "Refresh without lifetime.")))
                     (funcall on-item '(:type done :reason tool-use)))
                 (funcall on-item
                          '(:type assistant-message :content "done"))
@@ -3061,7 +3168,7 @@ rely on `provider-request'."
                           '(:type tool-call
                             :id "call-refresh-bundle"
                             :name "refreshing_tool"
-                            :arguments nil))
+                            :arguments (:stated_purpose "Refresh context.")))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item

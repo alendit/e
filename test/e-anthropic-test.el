@@ -110,6 +110,44 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       :description "Read a URI."
       :input_schema (:type "object"))])))
 
+(ert-deftest e-anthropic-test-request-body-retains-invocation-envelope-schema ()
+  "Messages carries the decorated operation schema without reinterpretation."
+  (let* ((body
+          (e-anthropic-request-body
+           :messages '((:role user :content "hello"))
+           :options '(:model "claude-test" :max-tokens 1024)
+           :tools
+           '((:type "function"
+             :name "read"
+             :description "Read a URI."
+             :parameters (:type "object"
+                           :properties (:uri (:type "string")
+                                         :stated_purpose
+                                         (:type "string" :minLength 1 :maxLength 200))
+             :required ["uri" "stated_purpose"]
+             :additionalProperties :json-false)
+             :strict :json-false))))
+         (wire-tool (aref (plist-get body :tools) 0))
+         (round-trip
+          (json-parse-string
+           (json-encode body)
+           :object-type 'plist
+           :array-type 'list
+           :null-object nil
+           :false-object :json-false))
+         (round-trip-tool (car (plist-get round-trip :tools))))
+    (should (equal (plist-get (plist-get wire-tool :input_schema) :required)
+                   ["uri" "stated_purpose"]))
+    (should (eq (plist-get (plist-get wire-tool :input_schema)
+                           :additionalProperties)
+                :json-false))
+    (should (equal (plist-get (plist-get round-trip-tool :input_schema)
+                             :required)
+                   '("uri" "stated_purpose")))
+    (should (eq (plist-get (plist-get round-trip-tool :input_schema)
+                           :additionalProperties)
+                :json-false))))
+
 (ert-deftest e-anthropic-test-request-body-maps-tool-call-and-result-turns ()
   "Tool-call messages become tool_use blocks; tool results become user tool_result turns."
   (should

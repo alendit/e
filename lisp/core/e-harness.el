@@ -1936,11 +1936,15 @@ built without those tools."
                 :project-root (e-harness-project-root harness session-id)
                 :layer-ids
                 (e-harness-effective-layer-ids harness session-id)
-                :tool-names
-                (mapcar (lambda (tool) (plist-get tool :name))
-                        (or (plist-get options :tools)
-                            (e-tools-definitions
-                             (e-harness-tools harness session-id)))))))
+                :tool-definitions
+                (mapcar
+                 (lambda (tool)
+                   (list :name (plist-get tool :name)
+                         :fingerprint
+                         (e-tools-definition-fingerprint tool)))
+                 (or (plist-get options :tools)
+                     (e-tools-definitions
+                      (e-harness-tools harness session-id)))))))
     (concat prefix
             (e-harness--prompt-cache-hash
              identity

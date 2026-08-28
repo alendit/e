@@ -3499,7 +3499,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                        '(:type tool-call
                          :id "call-1"
                          :name "held-tool"
-                         :arguments (:text "hi")))
+                         :arguments (:stated_purpose "Hold this tool call."
+                                     :text "hi")))
               (funcall on-item '(:type done :reason tool-use))
               (funcall on-done '(:status done))
               nil))))
@@ -11454,7 +11455,8 @@ gamma
                             :id "call-1"
                             :name "run_elisp"
                             :arguments
-                            (:code "(e-actions-call 'session-compaction :compact '(:keep_recent_tokens 1))")))
+                            (:stated_purpose "Compact the active session."
+                             :code "(e-actions-call 'session-compaction :compact '(:keep_recent_tokens 1))")))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item

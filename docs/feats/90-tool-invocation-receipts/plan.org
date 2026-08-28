@@ -4,7 +4,17 @@
 
 * Status
 
-Planned.
+In-progress.
+
+Slice F90.1 is complete: the provider-neutral invocation envelope now
+decorates ordinary registered tool definitions with the required bounded
+=stated_purpose= field, and the provider queue extracts it before operation
+validation and dispatch.  Owner, loop, OpenAI, Anthropic, MCP, and material
+schema-identity tests cover the accepted slice.  Repository validation compiled
+cleanly; the full 2,390-test run had 2,382 expected passes, two expected skips,
+and only six sandbox-blocked localhost cases, all six of which passed in the
+permitted socket environment.  Receipt details and resources remain future
+slices.
 
 * Goal
 

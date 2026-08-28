@@ -71,7 +71,7 @@
       (should (equal (plist-get definition :description)
                      "Save one task-relative tool or action observation."))
       (should (equal (plist-get (plist-get definition :parameters) :required)
-                     ["signal" "note"]))
+                     ["signal" "note" "stated_purpose"]))
       (setq result
             (e-tools--execute-batch-with-context
              registry

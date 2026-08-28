@@ -268,7 +268,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                  (list :type "function_call"
                        :call_id "call-normalize-price"
                        :name "normalize-price"
-                       :arguments "{\"sku\":\"SKU-ONE\"}")))
+                       :arguments "{\"stated_purpose\":\"Normalize the price.\",\"sku\":\"SKU-ONE\"}")))
                (e-context-lifetime-e2e--sse
                 '((type . "response.output_item.done")
                   (item . ((type . "reasoning")
@@ -279,7 +279,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                   (item . ((type . "function_call")
                            (call_id . "call-normalize-price")
                            (name . "normalize-price")
-                           (arguments . "{\"sku\":\"SKU-ONE\"}"))))
+                           (arguments . "{\"stated_purpose\":\"Normalize the price.\",\"sku\":\"SKU-ONE\"}"))))
                 '((type . "response.completed")
                   (response . ((id . "resp-A")
                                (status . "completed"))))))
@@ -1005,11 +1005,11 @@ persisted anchor response ids for the caller's semantic assertions."
                     (list :type "function_call"
                           :call_id "call-one"
                           :name "inspect-one"
-                          :arguments "{\"target\":\"ONE\"}")
+                          :arguments "{\"stated_purpose\":\"Inspect the first value.\",\"target\":\"ONE\"}")
                     (list :type "function_call"
                           :call_id "call-two"
                           :name "inspect-two"
-                          :arguments "{\"target\":\"TWO\"}")))
+                          :arguments "{\"stated_purpose\":\"Inspect the second value.\",\"target\":\"TWO\"}")))
                   (e-context-lifetime-e2e--sse
                    '((type . "response.output_item.done")
                      (item . ((type . "reasoning")
@@ -1020,12 +1020,12 @@ persisted anchor response ids for the caller's semantic assertions."
                      (item . ((type . "function_call")
                               (call_id . "call-one")
                               (name . "inspect-one")
-                              (arguments . "{\"target\":\"ONE\"}"))))
+                              (arguments . "{\"stated_purpose\":\"Inspect the first value.\",\"target\":\"ONE\"}"))))
                    '((type . "response.output_item.done")
                      (item . ((type . "function_call")
                               (call_id . "call-two")
                               (name . "inspect-two")
-                              (arguments . "{\"target\":\"TWO\"}"))))
+                              (arguments . "{\"stated_purpose\":\"Inspect the second value.\",\"target\":\"TWO\"}"))))
                    (list (cons 'type "response.completed")
                          (cons 'response
                                (list (cons 'id next-response-id)
@@ -1210,10 +1210,18 @@ contaminated descendant can become a later durable anchor."
           (should call-two)
           (should output-one)
           (should output-two)
+          ;; Stateless replay reconstructs the prepared provider-neutral call,
+          ;; whose operation arguments no longer contain envelope metadata.
+          ;; Anchored continuations inherit the provider's original function
+          ;; call, including the provider-visible stated purpose.
           (should (equal (plist-get call-one :arguments)
-                         "{\"target\":\"ONE\"}"))
+                         (if (eq label 'stateless)
+                             "{\"target\":\"ONE\"}"
+                           "{\"stated_purpose\":\"Inspect the first value.\",\"target\":\"ONE\"}")))
           (should (equal (plist-get call-two :arguments)
-                         "{\"target\":\"TWO\"}"))
+                         (if (eq label 'stateless)
+                             "{\"target\":\"TWO\"}"
+                           "{\"stated_purpose\":\"Inspect the second value.\",\"target\":\"TWO\"}")))
           (should (equal (plist-get output-one :output)
                          "TOOL-RESULT-ONE"))
           (should (equal (plist-get output-two :output)

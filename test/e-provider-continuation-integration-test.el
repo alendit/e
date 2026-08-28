@@ -118,7 +118,8 @@ covered by the adapter tests below."
                           '(:type tool-call
                             :id "call-ephemeral"
                             :name "inspect-ephemeral"
-                            :arguments (:target "raw")))
+                            :arguments (:stated_purpose "Inspect the raw result."
+                                        :target "raw")))
                  (funcall on-item
                           '(:type provider-anchor-candidate
                             :provider-id fake
@@ -434,7 +435,7 @@ covered by the adapter tests below."
                     (item . ((type . "function_call")
                              (call_id . "call-1")
                              (name . "inspect")
-                             (arguments . "{\"target\":\"state\"}"))))
+                             (arguments . "{\"stated_purpose\":\"Inspect the current state.\",\"target\":\"state\"}"))))
                   '((type . "response.completed")
                     (response . ((id . "resp-tool")
                                  (status . "completed"))))))
@@ -646,7 +647,7 @@ covered by the adapter tests below."
                        (item . ((type . "function_call")
                                 (call_id . "refresh-call")
                                 (name . "refresh-state")
-                                (arguments . "{}"))))
+                                (arguments . "{\"stated_purpose\":\"Refresh the current state.\"}"))))
                      '((type . "response.completed")
                        (response . ((id . "resp-refresh")
                                     (status . "completed")))))
@@ -1126,7 +1127,7 @@ ordinary-turn anchor."
                    (item . ((type . "function_call")
                             (call_id . "call-canonical-inspect")
                             (name . "inspect-canonical")
-                            (arguments . "{\"target\":\"raw\"}"))))
+                            (arguments . "{\"stated_purpose\":\"Inspect the canonical result.\",\"target\":\"raw\"}"))))
                  '((type . "response.completed")
                    (response . ((id . "resp-r1")
                                 (status . "completed"))))))

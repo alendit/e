@@ -877,15 +877,33 @@ the frame-local presentation installed."
                                  (tool-call
                                   (if (not (e-tools-registry-p tools))
                                       execution-call
-                                    (condition-case nil
+                                    (condition-case err
                                         (e-tools-prepare-call
-                                         tools execution-call)
+                                         tools
+                                         execution-call)
+                                      (e-tools-invalid-stated-purpose
+                                       ;; Keep the provider protocol shape
+                                       ;; while dropping invalid envelope
+                                       ;; fields before transcript writes.
+                                       (let ((rejected
+                                              (e-tools-project-call-for-rejection
+                                               tools execution-call)))
+                                         (plist-put
+                                          rejected
+                                          :metadata
+                                          (plist-put
+                                           (copy-sequence
+                                            (plist-get rejected :metadata))
+                                           :purpose-status 'invalid))))
                                       (error
                                        ;; Keep provider protocol shape while
                                        ;; dropping undeclared rejected fields
                                        ;; before transcript and activity writes.
                                        (e-tools-project-call-for-rejection
-                                        tools execution-call)))))
+                                        tools
+                                        (or (plist-get (cddr err)
+                                                       :prepared-call)
+                                            execution-call))))))
                                  (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
@@ -903,7 +921,7 @@ the frame-local presentation installed."
                                    (if tool-lifecycle
                                        (e-tool-lifecycle-start-call
                                         tool-lifecycle
-                                        execution-call
+                                        tool-call
                                         :on-request-start
                                         (lambda (request)
                                           (publish-tool-request
@@ -921,7 +939,7 @@ the frame-local presentation installed."
                                         :on-error #'fail)
                                      (e-tools-start
                                       tools
-                                      execution-call
+                                      tool-call
                                        :context
                                        (list :session-id session-id
                                              :turn-id turn-id

@@ -1858,7 +1858,7 @@ Return request options, persisted anchors, and the final context."
                      '(:type tool-call
                        :id "refresh-1"
                        :name "refresh-anchor"
-                       :arguments nil))
+                       :arguments (:stated_purpose "Refresh the anchor.")))
                     (funcall
                      on-item
                      '(:type provider-anchor-candidate
@@ -2289,7 +2289,8 @@ Return request options, persisted anchors, and the final context."
                                '(:type tool-call
                                  :id "call-1"
                                  :name "held-tool"
-                                 :arguments (:text "hi")))
+                                 :arguments (:stated_purpose "Hold the request."
+                                             :text "hi")))
                       (funcall on-item '(:type done :reason tool-use))
                       (funcall on-done '(:status done))
                       nil))))
@@ -3576,7 +3577,8 @@ Return request options, persisted anchors, and the final context."
                              '(:type tool-call
                                :id "call-1"
                                :name "echo"
-                               :arguments (:text "raw")))
+                               :arguments (:stated_purpose "Echo the text."
+                                           :text "raw")))
                     (funcall on-item '(:type done :reason tool-use)))
                 (funcall on-item
                          '(:type assistant-message :content "done"))
@@ -3603,8 +3605,14 @@ Return request options, persisted anchors, and the final context."
              :point :pre-tool-call
              :handler (lambda (tool-call context)
                         (should (eq (plist-get context :harness) harness))
-                        (plist-put (copy-sequence tool-call)
-                                   :arguments '(:text "prepared"))))
+                        (let ((prepared (copy-sequence tool-call)))
+                          (plist-put
+                           prepared
+                           :arguments
+                           (list :stated_purpose
+                                 (plist-get (plist-get tool-call :arguments)
+                                            :stated_purpose)
+                                 :text "prepared")))))
             (e-hook-create
              :id "50-shape-result"
              :point :post-tool-call
@@ -3851,7 +3859,9 @@ Return request options, persisted anchors, and the final context."
                              (list :type 'tool-call
                                    :id "run-1"
                                    :name "run_elisp"
-                                   :arguments (list :code code)))
+                                   :arguments (list :stated_purpose
+                                                     "Run the requested code."
+                                                     :code code)))
                     (funcall on-item '(:type done :reason tool-use)))
                 (setq second-request-messages messages)
                 (should (equal (mapcar (lambda (message)
@@ -3946,7 +3956,9 @@ Return request options, persisted anchors, and the final context."
                              (list :type 'tool-call
                                    :id "run-error"
                                    :name "run_elisp"
-                                   :arguments (list :code code)))
+                                   :arguments (list :stated_purpose
+                                                     "Run the requested code."
+                                                     :code code)))
                     (funcall on-item '(:type done :reason tool-use)))
                 (setq second-request-messages messages)
                 (funcall on-item
@@ -4760,6 +4772,58 @@ Return request options, persisted anchors, and the final context."
         (should-not (equal key other-root-key))
         (should-not (equal key other-model-key))
         (should-not (equal key other-tools-key))))))
+
+(ert-deftest e-harness-test-derived-prompt-cache-key-canonicalizes-tool-schemas ()
+  "Equivalent nested hash schemas share a key; material changes do not."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((properties-a (make-hash-table :test 'equal))
+           (properties-b (make-hash-table :test 'equal))
+           (properties-c (make-hash-table :test 'equal))
+           (path-schema '(:type "string" :minLength 1))
+           (other-schema '(:type "string" :maxLength 40)))
+      (puthash "path" path-schema properties-a)
+      (puthash "other" other-schema properties-a)
+      ;; Insert the equivalent hash object in the opposite order.
+      (puthash "other" (copy-tree other-schema) properties-b)
+      (puthash "path" (copy-tree path-schema) properties-b)
+      (puthash "path" '(:type "number") properties-c)
+      (puthash "other" (copy-tree other-schema) properties-c)
+      (let* ((definition-a
+              (list :type "function" :name "read" :description "Read."
+                    :parameters (list :type "object"
+                                      :properties properties-a
+                                      :required ["path"]
+                                      :additionalProperties :json-false)
+                    :strict :json-false))
+             (definition-b
+              (list :strict :json-false :parameters
+                    (list :additionalProperties :json-false
+                          :required ["path"] :properties properties-b
+                          :type "object")
+                    :description "Read." :name "read" :type "function"))
+             (definition-c
+              (list :type "function" :name "read" :description "Read."
+                    :parameters (list :type "object"
+                                      :properties properties-c
+                                      :required ["path"]
+                                      :additionalProperties :json-false)
+                    :strict :json-false))
+             (options-a (list :model "gpt-test" :tools (list definition-a)))
+             (options-b (list :model "gpt-test" :tools (list definition-b)))
+             (options-c (list :model "gpt-test" :tools (list definition-c)))
+             (key-a (e-harness--derived-prompt-cache-key
+                     (e-harness-create :backend (e-backend-fake-create :items nil))
+                     "session-1" options-a))
+             (key-b (e-harness--derived-prompt-cache-key
+                     (e-harness-create :backend (e-backend-fake-create :items nil))
+                     "session-1" options-b))
+             (key-c (e-harness--derived-prompt-cache-key
+                     (e-harness-create :backend (e-backend-fake-create :items nil))
+                     "session-1" options-c)))
+        (should (equal (e-tools-definition-fingerprint definition-a)
+                       (e-tools-definition-fingerprint definition-b)))
+        (should (equal key-a key-b))
+        (should-not (equal key-a key-c))))))
 
 (ert-deftest e-harness-test-provider-diagnostics-retain-websocket-lifecycle ()
   "Durable provider diagnostics retain bounded WebSocket lifecycle state."
@@ -6175,7 +6239,8 @@ an empty summary\"."
                     '(:type tool-call
                       :id "call-tool-result"
                       :name "inspect-result"
-                      :arguments (:target "raw")))
+                      :arguments (:stated_purpose "Inspect the raw result."
+                                  :target "raw")))
                    (funcall on-item '(:type done :reason tool-use)))
                   (2
                    (setq curation-input
@@ -6438,7 +6503,7 @@ an empty summary\"."
                          '(:type tool-call
                            :id "call-before-invalid-session"
                            :name "before-invalid-session"
-                           :arguments nil))
+                           :arguments (:stated_purpose "Record the result.")))
                 (funcall on-item
                          '(:type context-curate
                            :arguments (:keep (999)
@@ -7060,7 +7125,7 @@ an empty summary\"."
                              '(:type tool-call
                                :id "call-steering"
                                :name "inspect-steering"
-                               :arguments nil))
+                               :arguments (:stated_purpose "Inspect steering.")))
                     (funcall on-item
                              '(:type provider-anchor-candidate
                                :provider-id fake

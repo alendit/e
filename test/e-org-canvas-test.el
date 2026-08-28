@@ -1832,7 +1832,8 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
                        '(:type tool-call
                          :id "call-1"
                          :name "held-tool"
-                         :arguments (:text "hi")))
+                         :arguments (:stated_purpose "Hold this tool call."
+                                     :text "hi")))
               (funcall on-item '(:type done :reason tool-use))
               (funcall on-done '(:status done))
               nil))))

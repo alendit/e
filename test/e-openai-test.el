@@ -169,6 +169,44 @@
       :parallel_tool_calls t
       :reasoning (:effort "high" :summary "auto")))))
 
+(ert-deftest e-openai-test-request-body-retains-invocation-envelope-schema ()
+  "Responses carries the decorated operation schema without reinterpretation."
+  (let* ((tool
+          '(:type "function"
+            :name "read"
+            :description "Read a URI."
+            :parameters (:type "object"
+                          :properties (:uri (:type "string")
+                                        :stated_purpose
+                                        (:type "string" :minLength 1 :maxLength 200))
+                          :required ["uri" "stated_purpose"]
+                          :additionalProperties :json-false)
+            :strict :json-false))
+         (body (e-openai-codex-request-body
+                :messages '((:role user :content "hello"))
+                :options '(:model "gpt-test")
+                :tools (list tool)))
+         (wire-tool (aref (plist-get body :tools) 0))
+         (round-trip
+          (json-parse-string
+           (json-encode body)
+           :object-type 'plist
+           :array-type 'list
+           :null-object nil
+           :false-object :json-false))
+         (round-trip-tool (car (plist-get round-trip :tools))))
+    (should (equal (plist-get (plist-get wire-tool :parameters) :required)
+                   ["uri" "stated_purpose"]))
+    (should (eq (plist-get (plist-get wire-tool :parameters)
+                           :additionalProperties)
+                :json-false))
+    (should (equal (plist-get (plist-get round-trip-tool :parameters)
+                             :required)
+                   '("uri" "stated_purpose")))
+    (should (eq (plist-get (plist-get round-trip-tool :parameters)
+                           :additionalProperties)
+                :json-false))))
+
 (ert-deftest e-openai-test-request-body-defaults-to-gpt55-high-effort ()
   "OpenAI request bodies default to GPT-5.5 with high reasoning effort."
   (should
