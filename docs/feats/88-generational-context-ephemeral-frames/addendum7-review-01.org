@@ -4,20 +4,20 @@
 
 * Status and decision
 
-In-review.  This independent rebaseline specification Tick reviewed exact
-revision =bcd27e309a67a3a332e709ef617ba3227b4db95f=.
+Specification fixed point.  Tick 1 reviewed exact revision
+=bcd27e309a67a3a332e709ef617ba3227b4db95f=; this independent incremental Tick 2
+reviewed exact revision =80c095306f3eb68a18481b34cf0648b243ba554b=.
 
-Addendum 7 is not at specification fixed point and is not implementation-ready.
-Three P1 and four P2 findings remain.  The proposal has a coherent product
-distinction between =drop= and =erase=, but its material schema identity is
-already occupied, mixed promotion/erasure cannot use the current one-record
-session append path atomically, and the proposed early package has no observable
-consumer before planned Feature 90.  Required authority, branch, evidence, and
-bound cells also remain unresolved.
+All seven Tick 1 findings are closed.  Exactly zero P0--P3 specification
+findings and zero required repository unknowns remain.  Addendum 7 is
+implementation-ready as one dependent package.  Its internal preparation
+slices are not independently shippable: package acceptance includes the real
+Feature 90 receipt consumer, drop-versus-erase composition, and the distinct
+Feature 88 carrier exposure.
 
 - P0: none.
-- P1: =F88A7.S1= through =F88A7.S3=.
-- P2: =F88A7.S4= through =F88A7.S7=.
+- P1: none; =F88A7.S1= through =F88A7.S3= are closed.
+- P2: none; =F88A7.S4= through =F88A7.S7= are closed.
 - P3: none.
 
 Feature 90 is =Planned= and has no production receipt provider
@@ -27,7 +27,7 @@ the =context-curate-v4= identity only.  Addendum 7 has no current external
 evidence; its future configured HTTP and exact ChatGPT/WebSocket capabilities
 are =capability-unconfirmed=, not failed.
 
-* Scope and authority
+* Tick 1 scope and authority
 
 The review covered =addendum7.org=, its Feature 88 plan, Feature 90 plan, and
 feature-index edits; accepted Addenda 4 and 6; current core, harness, session,
@@ -48,7 +48,7 @@ The reviewer did not edit the specification or production code, contact the
 running Emacs, or make a provider request.  The unrelated dirty Feature 87 plan
 was preserved.
 
-* Normalized contract and evidence matrix
+* Tick 1 normalized contract and evidence matrix
 
 The following matrix normalizes the proposal for review.  It is not yet the
 specification's authority because Finding =F88A7.S4= remains open.
@@ -62,9 +62,9 @@ specification's authority because Finding =F88A7.S4= remains open.
 | =F88A7-F90-JOIN= | A receipt provider filters the Feature 88 erased-tool-call set before ordering, bounds, counts, or markers; no receipt consumer means no join acceptance. | Feature 90 owns receipt projection; Feature 88 owns only the path-scoped query. | activated only with Feature 90 receipt projection | composed drop keeps receipt; erase removes receipt and aggregate mark | external erase composition only after deterministic join | receipt counts and bytes observational | deferred; Feature 90 Planned; =S3= and =S4= open |
 | =F88A7-IDENTITY= | The fourth disposition advances the material curation identity, invalidates old anchors and cache evidence, preserves reasoning-summary requirements, and keeps HTTP/WebSocket scope separate. | Core identity, OpenAI request construction, E2E capture/finalization. | carrier exposure and evidence refresh | new revision in request fingerprints; old-anchor rejection; request-shape tests | named configured adoption/cache records with exact identity and freshness | tokens, cached tokens, and latency observational | proposed; =S1= and =S6= open |
 
-* Findings
+* Tick 1 findings
 
-** TODO High P1 =F88A7.S1=: the proposed schema revision is already Addendum 6's identity
+** DONE High P1 =F88A7.S1=: the proposed schema revision is already Addendum 6's identity
 
 Contract cell: =F88A7-IDENTITY=.
 
@@ -93,7 +93,7 @@ WebSocket request bodies, anchor mismatch tests, captured request identity, and
 all Addendum 7 external records agree on =context-curate-v5=.  Addendum 6
 =v4= records remain historical and are not reusable.
 
-** TODO High P1 =F88A7.S2=: two independent session appends cannot satisfy mixed-curation atomicity
+** DONE High P1 =F88A7.S2=: two independent session appends cannot satisfy mixed-curation atomicity
 
 Contract cells: =F88A7-ATOMIC= and =F88A7-DURABLE=.
 
@@ -136,7 +136,7 @@ publication; truncate or reject replay before commit; reopen/checkpoint after
 each failure; and prove both-or-neither semantic visibility, no frame
 consumption, and a clean retry.
 
-** TODO High P1 =F88A7.S3=: the proposed stopping point has no current consumer and no carrier-exposure slice
+** DONE High P1 =F88A7.S3=: the proposed stopping point has no current consumer and no carrier-exposure slice
 
 Contract cells: =F88A7-DISPOSITION=, =F88A7-ERASURE=, and =F88A7-F90-JOIN=.
 
@@ -175,7 +175,7 @@ If Feature 88 must ship independently, the specification must instead name an
 already implemented derived projection and prove a present user-visible
 drop/erase distinction.  None exists at this revision.
 
-** TODO Medium P2 =F88A7.S4=: normative authority is fragmented across repeated prose and Feature 90
+** DONE Medium P2 =F88A7.S4=: normative authority is fragmented across repeated prose and Feature 90
 
 Contract cells: all six normalized rows.
 
@@ -205,7 +205,7 @@ or rendering policy.
 Feature 90 should reference =F88A7-DURABLE= for query semantics while retaining
 its own filtering-order authority.
 
-** TODO Medium P2 =F88A7.S5=: erasure visibility is not defined for selected heads, siblings, and clean forks
+** DONE Medium P2 =F88A7.S5=: erasure visibility is not defined for selected heads, siblings, and clean forks
 
 Contract cell: =F88A7-DURABLE=.
 
@@ -241,7 +241,7 @@ Acceptance evidence: selected-head before/after, sibling, descendant, clean
 fork, 63/64 audit-tail boundary, checkpoint reopen, compaction, and safe-prune
 tests agree on exactly one path-scoped identity set.
 
-** TODO Medium P2 =F88A7.S6=: the evidence requirement has no diagnosable portfolio or reuse rule
+** DONE Medium P2 =F88A7.S6=: the evidence requirement has no diagnosable portfolio or reuse rule
 
 Contract cells: all rows, especially =F88A7-IDENTITY= and =F88A7-F90-JOIN=.
 
@@ -281,7 +281,7 @@ tests for =v5=; add owner and composed erase tests; replace no test with a
 Feature 90-only fixture; delete only obsolete literal three-key carrier
 expectations after exposure.
 
-** TODO Medium P2 =F88A7.S7=: the new 8,192-byte erasure-package limit lacks its own justification
+** DONE Medium P2 =F88A7.S7=: the new 8,192-byte erasure-package limit lacks its own justification
 
 Contract cell: =F88A7-DURABLE=.
 
@@ -313,7 +313,7 @@ Addendum 4 retained-value measurement alone does not justify this cap.
 Until those measurements exist, exact-limit justification is a required
 unknown and the 8,192 value cannot be a stable acceptance contract.
 
-* Required specification-cell ledger
+* Tick 1 required specification-cell ledger
 
 | Required cell | Disposition |
 |---------------+-------------|
@@ -334,7 +334,7 @@ Every unresolved required repository cell maps to one of the seven findings;
 there are no additional repository unknowns.  The external capability state is
 separately unconfirmed rather than a repository or product-contract failure.
 
-* Architecture review
+* Tick 1 architecture review
 
 The intended ownership is sound: core decides semantic erasure, session owns
 path-scoped durability, harness owns orchestration, the adapter owns the wire
@@ -351,7 +351,7 @@ consumer exists, followed by one explicit carrier-exposure slice and composed
 acceptance.  That keeps Feature 90 from parsing curation or writing erasure
 records and keeps Feature 88 from owning receipt ordering or aggregation.
 
-* Design self-check
+* Tick 1 design self-check
 
 1. As written, stopping after Slice 3 is not better than omitting the package;
    the user-visible distinction exists only with a real derived projection.
@@ -381,7 +381,7 @@ records and keeps Feature 88 from owning receipt ordering or aggregation.
 14. Owner tests can remain narrow, but composed receipt and external evidence
     cannot be accepted before Feature 90 exists.
 
-* Verification
+* Tick 1 verification
 
 Read-only review at exact =bcd27e309a67a3a332e709ef617ba3227b4db95f=
 confirmed:
@@ -401,10 +401,86 @@ linked feature plans, and the index; the reviewed commit and staged artifact
 passed =git diff --check=.  The final clear-technical-writing pass used the
 selected runtime glossary and changed no finding, severity, evidence, or owner.
 
-* Unresolved
+* Tick 1 unresolved state
 
-All seven findings must close before implementation.  A subsequent independent
-specification Tick must re-evaluate the corrected material identity, atomic
-session boundary, package/slice order, normalized authority, path semantics,
-evidence portfolio, and exact-limit justification.  Zero findings is required
-for specification fixed point.
+At Tick 1, all seven findings had to close before implementation.  Tick 2 below
+records their independent disposition; the finding text above remains the
+historical evidence and correction request.
+
+* Specification Tick 2
+
+** Review mode and scope
+
+This was an incremental closure review from reviewed revision
+=bcd27e309a67a3a332e709ef617ba3227b4db95f= and Review 01 commit
+=2305cbb56dd222950bcf46ff7d32e571ab7c56bc= to exact candidate
+=80c095306f3eb68a18481b34cf0648b243ba554b=.  The candidate changes only
+Addendum 7 and its Feature 88/90 plan joins.  Current core, harness, session,
+OpenAI adapter, owner tests, and Feature 90 implementation status were checked
+as feasibility evidence; no unchanged accepted cell was reopened without a
+contradiction.
+
+** Finding dispositions
+
+| Finding | Disposition | Independent evidence |
+|---------+-------------+----------------------|
+| =F88A7.S1= | closed | =F88A7-IDENTITY= now advances the implemented =context-curate-v4= to =context-curate-v5=, fences old anchors/cache evidence, and names literal HTTP/WebSocket evidence (=addendum7.org:259-280,343-358,378-380=).  Current core remains =v4= and the three-key adapter remains unmodified, so the text describes a future material change rather than current implementation (=lisp/core/e-context-lifetime.el:73-80=; =lisp/adapters/openai/e-openai.el:1631-1668=). |
+| =F88A7.S2= | closed | Core prepares one detached package; session owns one atomic commit unit across direct, queued, controller-backed, checkpoint, and replay paths; failure leaves both semantic projections absent and the frame unconsumed (=addendum7.org:220-232,333-341=).  This explicitly replaces the impossible two-append interpretation exposed by the current one-record paths (=lisp/core/e-harness.el:3281-3297=; =lisp/core/e-session.el:640-649,873-890,1522-1543,2200-2242=). |
+| =F88A7.S3= | closed | Slices 1--3 are internal preparation, not a shippable package.  Acceptance requires the real Feature 90 consumer, drop-versus-erase composition, and a distinct Feature 88 HTTP/WebSocket carrier-exposure slice; a fixture cannot substitute (=addendum7.org:234-257,312-358=). |
+| =F88A7.S4= | closed | The stable six-row matrix is the single Addendum 7 implementation/evidence authority (=addendum7.org:41-54=).  Feature 88 owns only the selected-path query; Feature 90 retains filtering order, budgets, counts, and aggregates (=addendum7.org:241-246=; =docs/feats/90-tool-invocation-receipts/plan.org:221-248=). |
+| =F88A7.S5= | closed | The query is exact for session plus selected head: pre-erase siblings do not observe it, descendants do, checkpoint/compaction preserve eligible authority, and a clean fork copies neither receipt nor erasure unless a future portable contract carries both (=addendum7.org:203-218=).  This composes with current path-scoped projection and clean-fork ownership (=lisp/core/e-session.el:3016-3088,3202-3272=). |
+| =F88A7.S6= | closed | Named owner, real-composition, naturalistic external, and cache scenarios separate deterministic proof from compatibility evidence; records inherit Addendum 6's content-free exactly-once finalization, complete effective identity, seven-day freshness, dependency-cone invalidation, and exact outcome classes.  HTTP/WebSocket capability remains separate, telemetry is observational, and tests have explicit retain/strengthen/add/replace/delete dispositions (=addendum7.org:282-310=). |
+| =F88A7.S7= | closed | =8,192= is now explicitly local, reversible, and non-normative.  Carrier exposure requires representative fanout, canonical-byte, storage/query-cost, exact/one-over, and rejection-consequence measurements; the measured ceiling, boundary tests, and material identity are committed together (=addendum7.org:109-124,195-196,314-322=). |
+
+** Required-cell closure ledger
+
+| Required cell | Tick 2 disposition |
+|---------------+--------------------|
+| Normative authority | clear: stable matrix IDs are authoritative; Feature 90 alone owns receipt projection policy |
+| Durable contract boundary | clear: content-free v1 erasure authority, one session commit package, and conservative eligible lifetime are exact |
+| Scenario diagnosability | clear: owner, real composition, naturalistic erase, warm-prefix, and tool-heavy scenarios have distinct observables |
+| Evidence topology | clear: deterministic repository proof, external compatibility, and observational telemetry cannot substitute for one another |
+| External identity/freshness/failure | clear as a specification: Addendum 6's complete identity, exactly-once finalizer, seven-day freshness, dependency-cone, and outcome taxonomy are inherited; Addendum 7 evidence is not yet claimed |
+| Telemetry role | clear: counts, bytes, tokens, cached tokens, and latency remain observational without a baseline and threshold |
+| Exact-limit justification | clear: a measured committed ceiling is required before exposure; provisional =8,192= is not stable acceptance |
+| Workflow boundary | clear: no review-round, phase-commit, or reviewer mechanics enter the product contract |
+| Test stability | clear: affected tests are explicitly retained, strengthened, added, replaced, or deleted only when obsolete |
+| Architecture ownership | clear: core policy, session durability, harness orchestration, adapter wire shape, and Feature 90 projection remain narrowly owned with dependencies toward the Feature 88 query |
+
+** Whole-specification and architecture disposition
+
+The contradiction scan found no new P0--P3 defect.  The specification does not
+claim current Feature 90 implementation: its plan remains =Planned= and no
+production receipt provider exists (=docs/feats/90-tool-invocation-receipts/plan.org:5-24,317-335=).
+Addendum 7 itself remains =Planned= and its current =v4= source/adapter owners are
+unchanged.  “Implementation-ready” therefore means the ordered dependent
+package is exact enough to build, not that any internal slice, Feature 90 join,
+carrier, or external evidence has been accepted.
+
+The package has a useful stopping point only when the real consumer and carrier
+exposure land together.  Until then, internal preparation may be reviewed as
+dependent implementation slices but must remain unexposed.  The transaction
+encoding and measured numeric ceiling stay local, reversible implementation
+decisions under exact semantic and evidence constraints.  No speculative
+interface, compatibility shim, provider dependency in core, or independently
+durable UI state is requested.  No architecture follow-up is needed.
+
+** Verification
+
+Read-only inspection confirmed the candidate is documentation-only, current
+source still uses =context-curate-v4= and the three-key carrier, current session
+persistence appends one record at a time, and Feature 90 remains unimplemented.
+Org parsing passed for Addendum 7, this review, both linked feature plans, and
+the feature index.  The candidate range and final review artifact passed
+=git diff --check=.  No ERT or provider execution was needed because production
+owners did not change.  The running Emacs was left unchanged, and the unrelated
+Feature 87 worktree edit was preserved.
+
+** Fixed-point decision
+
+Exactly zero P0--P3 specification findings and zero required repository
+unknowns remain at =80c095306f3eb68a18481b34cf0648b243ba554b=.  Addendum 7 has
+reached deterministic specification fixed point and is implementation-ready as
+the dependent package defined above.  External Addendum 7 evidence remains
+=capability-unconfirmed= pending implementation; that external state does not
+weaken the repository specification decision.
