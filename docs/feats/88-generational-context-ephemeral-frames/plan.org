@@ -12,13 +12,15 @@ durable transaction system.  The earlier design mixed model-visible lifetime
 with recovery of interrupted side effects; the latter belongs with the planned
 SQLite persistence and atomic-transition work.
 
-Addenda 3--6 are the current implementation authorities for this feature.
+Addenda 3--6 remain the implementation authorities for the accepted behavior.
 Addendum 3 defines canonical replay, late-frontier delivery, immediate causal
 tool continuation, cleanup, and cache evidence.  Addendum 4 supersedes this
 plan's model-facing promotion details with =context-curate= and version-3
 records; Addenda 5 and 6 add the source-lifetime affordance, mandatory
-Responses reasoning summary, and explicit exhaustive dispositions.  The
-persisted =context-promotion= family remains readable as version 2 only.
+Responses reasoning summary, and explicit exhaustive dispositions.  Addendum 7
+is the specification authority for the planned fourth =erase= disposition and
+its derived-projection suppression; its stable identity is =F88A7-IDENTITY=.
+The persisted =context-promotion= family remains readable as version 2 only.
 The repository-controlled implementation is at deterministic fixed point at
 =01a8466a=; configured Responses HTTP evidence is current, while exact
 built-in ChatGPT/WebSocket capability remains unconfirmed.  The implementation
@@ -29,9 +31,12 @@ Updated main also introduces a separate planned explicit tool-output erasure
 extension, [[file:addendum7.org][Addendum 7]].  It extends and supersedes Addendum 6
 only for the fourth =erase= disposition and its derived-projection suppression;
 it does not reopen Addendum 4's accepted presentation, provenance, atomicity,
-or durable-record foundations.  Addendum 7 is planned and is not part of the
-accepted implementation described below; its Feature 90 receipt-consumer proof
-is explicitly deferred until that planned consumer exists.
+or durable-record foundations.  Addendum 7 is specification-ready but not part
+of the accepted implementation described below.  Its internal preparation and
+atomic session slices are not independently shippable: final acceptance
+requires the real Feature 90 receipt consumer, drop-versus-erase composition,
+and the explicit carrier-exposure slice defined by =F88A7-F90-JOIN= and
+=F88A7-IDENTITY=.
 
 The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
 profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL

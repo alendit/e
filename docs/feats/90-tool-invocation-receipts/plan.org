@@ -229,7 +229,11 @@ explicitly drops the matching exact tool source.  An explicit =drop= therefore
 removes the exact bundle but leaves its compact mark.  Feature 88 Addendum 7's explicit
 =erase= disposition suppresses the matching receipt completely.  Feature 90
 does not define, infer, or persist that decision; it consumes the canonical
-erased-tool-call set produced by Feature 88.
+erased-tool-call set produced by Feature 88.  The path-scoped authority and
+eligibility query are the =F88A7-DURABLE= boundary in
+[[file:../88-generational-context-ephemeral-frames/addendum7.org][Addendum 7]];
+Feature 90 owns the receipt filtering order and all receipt-specific bounds,
+counts, and aggregates below.
 
 Receipt filtering happens before ordering, entry and byte budgets, omitted
 counts, latest-item selection, or any other aggregate.  An erased invocation
