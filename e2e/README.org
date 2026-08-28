@@ -197,8 +197,10 @@ unconfirmed until fresh records show the required warm results with matching
 identity.  The repository-side tests continue to cover provider-continuation
 and encrypted-reasoning fallbacks without credentials.
 
-The deterministic naturalistic adoption selector is separate from those cache
-measurements:
+The credentialed naturalistic adoption selector is separate from those cache
+measurements.  Its deterministic runner gates classify captured behavior, but
+the selector itself is external compatibility evidence, not a deterministic
+repository test:
 
 #+begin_src sh
 E_E2E=1 \
