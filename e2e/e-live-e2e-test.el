@@ -1847,11 +1847,46 @@ wrapper around the receipt value."
   (equal (plist-get (plist-get reopened-event :payload) :receipt)
          (plist-get (plist-get original-event :payload) :receipt)))
 
+(defun e-live-e2e--ordinary-tool-receipt-prerequisite
+    (harness session-id tool-finishes)
+  "Return the direct receipt prerequisite for TOOL-FINISHES, or nil.
+The ordinary fixture must have exactly one durable tool-finished event with a
+string call identity, a live details URI, and a matching receipt already
+visible through the harness projection.  This prerequisite is deliberately
+separate from the later erasure-persistence gate."
+  (when (= (length tool-finishes) 1)
+    (let* ((event (car tool-finishes))
+           (payload (plist-get event :payload))
+           (receipt (plist-get payload :receipt))
+           (tool-call-id (and (listp receipt)
+                              (plist-get receipt :tool-call-id)))
+           (details-uri (and (listp receipt)
+                             (plist-get receipt :details-uri)))
+           (projection
+            (e-harness-base-receipt-projection harness session-id)))
+      (when (and (stringp tool-call-id)
+                 (stringp details-uri)
+                 (e-session-tmp-reference-available-p
+                  harness session-id details-uri)
+                 (= (plist-get projection :selected-count) 1)
+                 (= (plist-get projection :total-count) 1)
+                 (= (plist-get projection :omitted-count) 0)
+                 (seq-some
+                  (lambda (view)
+                    (equal (plist-get view :tool-call-id) tool-call-id))
+                  (plist-get projection :receipts)))
+        (list :event event
+              :receipt receipt
+              :tool-call-id tool-call-id
+              :details-uri details-uri
+              :projection projection)))))
+
 (cl-defun e-live-e2e--classify-autonomous-erase
     (&key identity-result ordinary-tool-p prompt-control-p carrier-p
           current-answer-p effect-present-p explicit-erasure-p
           audit-linked-p consumed-p no-promotion-p erasure-persisted-p
-          receipt-suppressed-p details-preserved-p reopened-p)
+          receipt-prerequisite-p receipt-erasure-id-p receipt-suppressed-p
+          details-preserved-p reopened-p)
   "Return bounded classification for explicit negative adoption.
 An absent effect is a product-contract observation, while a wrong current
 answer is semantic failure.  A valid explicit erasure requires the audit,
@@ -1912,10 +1947,22 @@ reopen gates before composition can pass."
             :failure-stage "no-promotion"
             :adoption-disposition "erase"
             :result "semantic-failure"))
+     ((not receipt-prerequisite-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "receipt-prerequisite"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
      ((not erasure-persisted-p)
       (list :adoption-result "pass"
             :composition-result "failure"
             :failure-stage "erasure-persisted"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not receipt-erasure-id-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "receipt-erasure-id"
             :adoption-disposition "erase"
             :result "semantic-failure"))
      ((not receipt-suppressed-p)
@@ -2234,6 +2281,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                 :current-answer-p t :effect-present-p t
                 :explicit-erasure-p t
                 :audit-linked-p t :consumed-p t :no-promotion-p t
+                :receipt-prerequisite-p t :receipt-erasure-id-p t
                 :erasure-persisted-p t :receipt-suppressed-p t
                 :details-preserved-p t :reopened-p t)))
     (let ((passing (apply #'e-live-e2e--classify-autonomous-erase base)))
@@ -2263,8 +2311,12 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             "semantic-failure")
            (:no-promotion-p nil "pass" "failure" "no-promotion" "erase"
             "semantic-failure")
+           (:receipt-prerequisite-p nil "pass" "failure"
+            "receipt-prerequisite" "erase" "semantic-failure")
            (:erasure-persisted-p nil "pass" "failure" "erasure-persisted" "erase"
             "semantic-failure")
+           (:receipt-erasure-id-p nil "pass" "failure" "receipt-erasure-id"
+            "erase" "semantic-failure")
            (:receipt-suppressed-p nil "pass" "failure" "receipt-suppressed" "erase"
             "semantic-failure")
            (:details-preserved-p nil "pass" "failure" "details-preserved" "erase"
@@ -2891,6 +2943,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        :current-answer-p t :effect-present-p t
                        :explicit-erasure-p t
                        :audit-linked-p t :consumed-p t :no-promotion-p t
+                       :receipt-prerequisite-p t :receipt-erasure-id-p t
                        :erasure-persisted-p t :receipt-suppressed-p t
                        :details-preserved-p t :reopened-p t))
          (cases
@@ -2910,6 +2963,18 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                  :result "semantic-failure" :adoption "unavailable"
                  :composition "failure" :stage "current-answer"
                  :disposition "unavailable")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :receipt-prerequisite-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "receipt-prerequisite"
+                 :disposition "erase")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :receipt-erasure-id-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "receipt-erasure-id"
+                 :disposition "erase")
            (list :gates base-gates :bodies nil :condition nil
                  :result "identity-unavailable" :adoption "unavailable"
                  :composition "unavailable" :stage "none"
@@ -4628,7 +4693,8 @@ and provider arguments stay local to the scenario gates."
         (e-live-e2e--with-harness
             (harness session-id
                      :persistent t
-                     :layers (list (e-live-e2e--deterministic-tool-layer))
+                     :layers (list (e-harness-base-layer-create)
+                                   (e-live-e2e--deterministic-tool-layer))
                      :events-var events)
           (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
                  (started-at (float-time))
@@ -4637,6 +4703,7 @@ and provider arguments stay local to the scenario gates."
                  request-handles
                  first-result
                  tool-finished-before
+                 receipt-prerequisite
                  curation-preparation
                  curation-arguments
                  curation-source-count
@@ -4740,6 +4807,8 @@ and provider arguments stay local to the scenario gates."
                                    :audit-linked-p t
                                    :consumed-p t
                                    :no-promotion-p t
+                                   :receipt-prerequisite-p t
+                                   :receipt-erasure-id-p t
                                    :erasure-persisted-p t
                                    :receipt-suppressed-p t
                                    :details-preserved-p t
@@ -4755,7 +4824,9 @@ and provider arguments stay local to the scenario gates."
                            ("model-selection" :explicit-erasure-p)
                            ("no-promotion" :no-promotion-p)
                            ("commit" :audit-linked-p)
+                           ("receipt-prerequisite" :receipt-prerequisite-p)
                            ("erasure-persisted" :erasure-persisted-p)
+                           ("receipt-erasure-id" :receipt-erasure-id-p)
                            ("receipt-suppressed" :receipt-suppressed-p)
                            ("details-preserved" :details-preserved-p)
                            ("reopen" :reopened-p)
@@ -4772,6 +4843,8 @@ and provider arguments stay local to the scenario gates."
                              :explicit-erasure-p explicit-p
                              :audit-linked-p t :consumed-p t
                              :no-promotion-p t :erasure-persisted-p t
+                             :receipt-prerequisite-p t
+                             :receipt-erasure-id-p t
                              :receipt-suppressed-p t :details-preserved-p t
                              :reopened-p t))
                       (ert-fail message))
@@ -4823,6 +4896,7 @@ and provider arguments stay local to the scenario gates."
                          :current-answer-p t :effect-present-p t
                          :explicit-erasure-p nil
                          :audit-linked-p t :consumed-p t :no-promotion-p t
+                         :receipt-prerequisite-p t :receipt-erasure-id-p t
                          :erasure-persisted-p t :receipt-suppressed-p t
                          :details-preserved-p t :reopened-p t))
                       (ert-fail
@@ -4842,6 +4916,13 @@ and provider arguments stay local to the scenario gates."
                                  "ordinary-tool"
                                  "The ordinary deterministic tool did not finish once.")
                    (setq tool-finished-before (car tool-finishes))
+                   (setq receipt-prerequisite
+                         (e-live-e2e--ordinary-tool-receipt-prerequisite
+                          harness session-id tool-finishes))
+                   (require-gate
+                    receipt-prerequisite
+                    "receipt-prerequisite"
+                    "The ordinary tool did not produce one projected live receipt with details.")
                    (require-gate
                     (equal (string-trim assistant)
                            (concat (reverse raw-tool-output)))
@@ -4923,8 +5004,7 @@ and provider arguments stay local to the scenario gates."
                            (e-live-e2e--autonomous-erase-audit-links
                             store session-id))
                           (tool-finished
-                           (car (e-live-e2e--activity-of-type
-                                 harness session-id 'tool-finished)))
+                           (plist-get receipt-prerequisite :event))
                           (receipt
                            (and tool-finished
                                 (plist-get (plist-get tool-finished :payload)
@@ -4940,6 +5020,14 @@ and provider arguments stay local to the scenario gates."
                           (actual-erasures
                            (e-session-context-erasures store session-id))
                           (actual-erasure (car actual-erasures))
+                          (expected-erased-tool-call-ids
+                           (and erasure-record
+                                (e-context-lifetime-curation-erasure-tool-call-ids
+                                 erasure-record)))
+                          (actual-session-erased-tool-call-ids
+                           (cl-mapcan
+                            #'e-context-lifetime-curation-erasure-tool-call-ids
+                            actual-erasures))
                           (package-entry
                            (seq-find
                             (lambda (entry)
@@ -4978,8 +5066,7 @@ and provider arguments stay local to the scenario gates."
                       "no-promotion"
                       "Erase-only curation persisted a promotion component.")
                      (require-gate
-                      (and (stringp tool-call-id)
-                           (= (length actual-erasures) 1)
+                      (and (= (length actual-erasures) 1)
                            (equal actual-erasure erasure-record)
                            (equal (plist-get erasure-record
                                              :response-entry-id)
@@ -4987,13 +5074,19 @@ and provider arguments stay local to the scenario gates."
                            (equal
                             (e-context-lifetime-curation-erasure-tool-call-ids
                              erasure-record)
-                            (list tool-call-id))
-                           (equal erased-tool-call-ids (list tool-call-id))
-                           (= (length tool-finishes-after) 1)
-                           (equal (car tool-finishes-after)
-                                  tool-finished-before))
+                            expected-erased-tool-call-ids)
+                           (equal actual-session-erased-tool-call-ids
+                                  expected-erased-tool-call-ids)
+                           (equal erased-tool-call-ids
+                                  expected-erased-tool-call-ids))
                       "erasure-persisted"
                       "The selected path did not expose one durable tool erasure.")
+                     (require-gate
+                      (and (= (length expected-erased-tool-call-ids) 1)
+                           (equal tool-call-id
+                                  (car expected-erased-tool-call-ids)))
+                      "receipt-erasure-id"
+                      "The durable receipt did not identify the erased tool call.")
                      (require-gate
                       (and (null (plist-get receipt-projection :receipts))
                            (= (plist-get receipt-projection :selected-count) 0)
@@ -5003,7 +5096,10 @@ and provider arguments stay local to the scenario gates."
                       "receipt-suppressed"
                       "The erased receipt or an aggregate mark remained projected.")
                      (require-gate
-                      (and (listp receipt)
+                      (and (= (length tool-finishes-after) 1)
+                           (equal (car tool-finishes-after)
+                                  tool-finished-before)
+                           (listp receipt)
                            (stringp details-uri)
                            (e-session-tmp-reference-available-p
                             harness session-id details-uri))
@@ -5058,6 +5154,7 @@ and provider arguments stay local to the scenario gates."
                         :current-answer-p t :effect-present-p t
                         :explicit-erasure-p t :audit-linked-p t :consumed-p t
                         :no-promotion-p t :erasure-persisted-p t
+                        :receipt-prerequisite-p t :receipt-erasure-id-p t
                         :receipt-suppressed-p t :details-preserved-p t
                         :reopened-p t)))))))))))))
 
@@ -5076,6 +5173,101 @@ and provider arguments stay local to the scenario gates."
     (should-not
      (equal (plist-get (plist-get reopened :payload) :receipt)
             (plist-get receipt :receipt)))))
+
+(ert-deftest e-live-e2e-test-autonomous-erase-scenario-layers-provide-support ()
+  "The configured bare factory exposes receipt/details owners from its layers."
+  (let (factory-store)
+    (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
+               (lambda () t))
+              ((symbol-function 'e-default-harness--effective-chat-spec)
+               (lambda ()
+                 (list :factory
+                       (lambda (&rest arguments)
+                         (setq factory-store
+                               (plist-get arguments :sessions))
+                         (e-harness-create
+                          :backend (e-backend-fake-create :items nil)
+                          :sessions factory-store)))))
+              ((symbol-function 'e-board-e2e-create-session)
+               (lambda (harness &rest _arguments)
+                 (e-harness-create-session harness :id "test-session")
+                 "test-session")))
+      (e-live-e2e--with-harness
+          (harness session-id
+                   :layers (list (e-harness-base-layer-create)
+                                 (e-live-e2e--deterministic-tool-layer)))
+        (let* ((capabilities
+                (e-harness-effective-capabilities harness session-id))
+               (capability-ids (mapcar #'e-capability-id capabilities))
+               (base-context
+                (seq-find (lambda (capability)
+                            (eq (e-capability-id capability)
+                                'harness-base-context))
+                          capabilities)))
+          (should factory-store)
+          (should (memq 'harness-base-context capability-ids))
+          (should (memq 'tool-invocation-details capability-ids))
+          (should base-context)
+          (should
+           (seq-some
+            (lambda (provider)
+              (eq (e-context-provider-name provider)
+                  'tool-invocation-receipts))
+            (e-capability-context-providers base-context)))
+          (should
+           (seq-some
+            (lambda (hook)
+              (equal (e-hook-id hook) "40-tool-invocation-details"))
+            (e-hooks-for-point
+             (e-harness-hooks harness)
+             :invocation-details)))
+          (let ((e-harness--trusted-tool-details-uri
+                 "tmp://tool-invocations/test/call-1.json"))
+            (cl-letf (((symbol-function 'e-session-tmp-reference-available-p)
+                       (lambda (&rest _) t)))
+              (e-harness--emit-turn-event
+               harness session-id "turn-1" 'tool-finished
+               '(:tool-call (:id "call-1" :name "probe"
+                            :stated-purpose "Inspect the bounded result.")
+                 :result (:tool-call-id "call-1" :name "probe" :status ok
+                         :content "ok")))
+              (let* ((provider
+                      (car (e-capability-context-providers base-context)))
+                     (messages
+                      (e-context-provider-build
+                       provider :harness harness :session-id session-id
+                       :turn-id "turn-1"))
+                     (printed (prin1-to-string messages)))
+                (should messages)
+                (should (string-match-p "call-1" printed))))))))))
+
+(ert-deftest e-live-e2e-test-autonomous-erase-receipt-prerequisite-is-direct ()
+  "The erase prerequisite requires one projected direct live receipt."
+  (let ((event '(:event-type tool-finished
+                 :payload (:receipt (:tool-call-id "call-1"
+                                      :details-uri
+                                      "tmp://tool-invocations/t/c.json"))))
+        (projection '(:receipts ((:tool-call-id "call-1"))
+                      :selected-count 1 :total-count 1 :omitted-count 0))
+        available-arguments)
+    (cl-letf (((symbol-function 'e-session-tmp-reference-available-p)
+               (lambda (&rest arguments)
+                 (setq available-arguments arguments)
+                 t))
+              ((symbol-function 'e-harness-base-receipt-projection)
+               (lambda (&rest _) projection)))
+      (let ((prerequisite
+             (e-live-e2e--ordinary-tool-receipt-prerequisite
+              'harness "session-1" (list event))))
+        (should prerequisite)
+        (should (equal (plist-get prerequisite :tool-call-id) "call-1"))
+        (should (equal (plist-get prerequisite :details-uri)
+                       "tmp://tool-invocations/t/c.json"))
+        (should available-arguments)
+        (should-not
+         (e-live-e2e--ordinary-tool-receipt-prerequisite
+          'harness "session-1"
+          (list (list :event-type 'tool-finished :payload nil))))))))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
   "The adoption runner passes only its declared keywords before cleanup."
