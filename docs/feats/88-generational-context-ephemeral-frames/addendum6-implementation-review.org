@@ -4,42 +4,44 @@
 
 * Status and fixed-point decision
 
-In-review.  This independent implementation Tick reviewed exact candidate
-revision =e5da1fb9a1d2639fe395763af347035074e658b9= against the accepted
-Addendum 6 contract at =51a29483a6f0dac4421fda60c79ef8c45e6f48d3=.
-The implementation range begins at =cab12162f540557c087885ed0acf715e765e5d62=;
-the final implementation/evidence owner revision is
-=01a8466a026de44f0aac04dfb061c0b2000dcdd8=, and =e5da1fb9= changes only
-documentation after that owner revision.
+In-review.  Implementation Tick 2 reviewed exact candidate revision
+=9ae836565355cf4cd95c3f7048676181b159553b= against the accepted Addendum 6
+contract at =51a29483a6f0dac4421fda60c79ef8c45e6f48d3= and the prior Tick at
+=e5da1fb9a1d2639fe395763af347035074e658b9=.  The implementation range begins
+at =cab12162f540557c087885ed0acf715e765e5d62=; the final implementation and
+evidence owner revision remains =01a8466a026de44f0aac04dfb061c0b2000dcdd8=.
 
-The repository has not reached a complete fixed point because one P3
-documentation finding remains open.  The implementation itself has zero P0,
-P1, P2, or P3 findings, and every repository-controlled semantic, durability,
-architecture, performance, and evidence-runner cell is clear.
+The repository-controlled Addendum 6 package has reached
+=deterministic-fixed-point=.  =F88A6.I1= is closed, no P0--P3 finding remains,
+and every repository-controlled semantic, durability, architecture,
+performance, documentation, and evidence-runner cell is clear.
 
 - P0: none.
 - P1: none.
 - P2: none.
-- P3: one open documentation finding, =F88A6.I1=.
+- P3: none; =F88A6.I1= closed in =9ae83656=.
 
 The fresh 2026-08-28 configured =eng-ai-gateway-gpt= Responses HTTP records at
 =01a8466a= remain current at this candidate: the complete adoption dependency
-cone is byte-identical through =e5da1fb9=, its recomputed identity is
+cone is byte-identical through =9ae83656=, its recomputed identity is
 =65d6c882ad25513c5c74f50f3dadb1a20d95c659a3a4275d7630b61290c50394=,
 and the seven-day freshness window is open.  This confirms only the recorded
 Responses HTTP, =:json-false=, =gpt-5.6-sol= identity.  Exact built-in
 ChatGPT/WebSocket remains separately =capability-unconfirmed=, so Feature 88
-correctly remains =In-review= and is not =Done= regardless of the P3 wording
-fix.
+correctly remains =In-review= and is not =Done= after the repository fixed
+point.
 
 * Scope and authority
 
-The review inspected the full =51a29483..e5da1fb9= package: production code,
-owner tests, E2E evidence code, Addenda 3--6, Feature 88 plan and limitations,
+Tick 1 inspected the full =51a29483..e5da1fb9= package: production code, owner
+tests, E2E evidence code, Addenda 3--6, Feature 88 plan and limitations,
 =docs/architecture.md=, =docs/feats/index.org=, =e2e/README.org=, and the
-relevant prior reviews.  Addendum 6 is authoritative for mandatory Responses
-reasoning summaries and exhaustive dispositions.  Addendum 5 remains inherited
-for source affordance and naturalistic adoption except where Addendum 6 replaces
+relevant prior reviews.  Tick 2 audited the documentation-only
+=bc2052b5..9ae83656= remediation and its evidence-classification joins; it
+carried the unchanged implementation cells forward after confirming owner-cone
+equality.  Addendum 6 is authoritative for mandatory Responses reasoning
+summaries and exhaustive dispositions.  Addendum 5 remains inherited for
+source affordance and naturalistic adoption except where Addendum 6 replaces
 omission semantics.  Addendum 4 remains authoritative for curation durability,
 and Addendum 3 remains authoritative for canonical reconstruction, immediate
 tool continuation/retry, cache evidence, cleanup, and compatibility.
@@ -67,7 +69,7 @@ running Emacs, and preserved the unrelated dirty Feature 87 plan.
 | Negative adoption | The naturalistic current-answer prompt contains no reserved vocabulary.  The runner requires exact transformed use, one exhaustive drop-only effect, exact response/control/consumption linkage, reopen, bounded-tail eviction, and zero promotion/residue (=e2e/e-live-e2e-test.el:4776-4956=).  Unrelated consumption events are ignored only when response and turn do not match; duplicates fail. | clear; fresh configured result =pass= with drop disposition |
 | Evidence identity, finalization, and content bounds | Capability/adoption records derive effective endpoint, transport, store, requester, model, request hashes, revisions, and dependency identity from captured requests; classifiers preserve configuration, unsupported, provider, timeout, identity, semantic, adoption, composition, and cache outcomes exactly once.  Returned summary presence is bounded diagnostic state and raw prompt/answer/summary/auth content is excluded (=e2e/e-live-e2e-test.el:450-715,1280-1701,1830-2107=). | clear |
 | Affected =F88A3-CACHE= | Material body/tool/layout hashes include the reasoning and v4 carrier changes.  The fresh configured warm-prefix record reports 3 requests, 6,184 input and 4,077 cached tokens; tool-heavy reports 5 requests, 14,726 input and 11,467 cached tokens.  Both report semantic =pass=, cache =warm=, and result =pass=. | clear for recorded Responses HTTP identity; exact ChatGPT/WebSocket external unknown remains separate |
-| Status and operator documentation | Addenda 3--6, plan, limitations, architecture, and feature index consistently retain =In-review=/not =Done= and distinguish current configured Responses HTTP from unconfirmed exact ChatGPT/WebSocket.  One README phrase misclassifies the credentialed adoption selector. | open: =F88A6.I1= |
+| Status and operator documentation | Addenda 3--6, plan, limitations, architecture, feature index, and E2E guide consistently retain =In-review=/not =Done= and distinguish current configured Responses HTTP from unconfirmed exact ChatGPT/WebSocket.  The E2E guide now distinguishes deterministic runner gates from the credentialed selector's external evidence class (=e2e/README.org:200-220=). | clear; =F88A6.I1= closed |
 
 No required repository-controlled cell is unknown.  The only unknown is the
 explicit external exact ChatGPT/WebSocket scope, which is neither inferred from
@@ -93,7 +95,7 @@ consumption (=e2e/e-live-e2e-test.el:1952-2012,2700-2740=).
 
 * Findings
 
-** TODO Low P3 =F88A6.I1=: the E2E guide calls external adoption deterministic
+** DONE Low P3 =F88A6.I1=: the E2E guide called external adoption deterministic
 
 Expected behavior: Addendum 6 classifies
 =responses-autonomous-curation-adoption= as external compatibility evidence;
@@ -129,6 +131,14 @@ contradiction-scan the README with Addendum 6's scenario portfolio.  The phrase
 must still state that the selector is not repository-side, the configured HTTP
 record is current for its captured identity, and exact ChatGPT/WebSocket is
 unconfirmed.
+
+Tick 2 disposition: closed at =9ae836565355cf4cd95c3f7048676181b159553b=.
+=e2e/README.org:200-203= now states that the credentialed selector is external
+compatibility evidence while its runner gates are deterministic.  Lines
+=217-220= retain the repository-side exclusion, current configured Responses
+HTTP result, and separately unconfirmed exact ChatGPT/WebSocket scope.  This is
+the owning documentation correction; no classifier, scenario, or runtime
+contract changed.
 
 * Verification
 
@@ -180,6 +190,24 @@ Additional checks passed:
   drop 3/1,149, warm-prefix 3/6,184, and tool-heavy 5/14,726, all with the
   documented pass classifications and cache counts.
 
+** Tick 2 incremental validation
+
+The =bc2052b5..9ae83656= remediation changes only =e2e/README.org=.  The
+following checks passed at exact =9ae836565355cf4cd95c3f7048676181b159553b=:
+
+- the README's naturalistic-adoption paragraph agrees with Addendum 6's
+  external-compatibility classification and retains the HTTP/current versus
+  ChatGPT/WebSocket/unconfirmed split;
+- the phrase =deterministic naturalistic adoption selector= is absent;
+- the production, test, E2E runner, and adoption-evidence owner cone is
+  byte-identical from =01a8466a..9ae83656=;
+- both changed Org files parse successfully; and
+- =git diff --check bc2052b5..9ae83656= passes.
+
+No Lisp test or provider run was repeated because this Tick changes only the
+operator guide and does not invalidate the accepted code, runner, or fresh
+external evidence.  The user's running Emacs was not contacted.
+
 No graphical or live-Emacs playthrough was required: Addendum 6 changes backend
 request shape, provider-neutral semantic validation, and external evidence, not
 presentation focus, window layout, rendering, or key interaction.  The user's
@@ -211,12 +239,14 @@ copies only provider replay items at the adapter boundary.  No extra ordinary
 provider request is introduced; only explicit external evidence scenarios add
 test traffic.  No performance finding or follow-up is justified.
 
-The sole open issue is documentation-local and requires no architecture change.
+The documentation-only remediation changes no ownership, dependency, state,
+compatibility, or performance boundary.  No architecture finding or follow-up
+remains.
 
 * Design self-check
 
-1. The implementation is already a useful stopping point; only evidence-class
-   wording prevents the repository package from reaching review fixed point.
+1. The implementation and corrected evidence-class wording form a useful
+   stopping point at repository deterministic fixed point.
 2. It moves toward explicit model-directed context lifetime with diagnosable
    considered-and-rejected dispositions.
 3. Diagnostic summary mode and scenario wording remain local and reversible;
@@ -243,12 +273,11 @@ The sole open issue is documentation-local and requires no architecture change.
 
 * Unresolved and next Tick
 
-Only =F88A6.I1= remains.  Apply the one-sentence README correction, validate Org
-and whitespace, and run a narrow independent documentation Tick.  No production
-or test change and no provider rerun are required.  The current configured HTTP
-evidence remains reusable because that wording file is outside the named
-capability/adoption owner cone; exact ChatGPT/WebSocket remains a separate
-external gate after repository fixed point.
+No repository-controlled Addendum 6 finding or required coverage unknown
+remains.  =F88A6.I1= is closed and the package is at deterministic fixed point.
+Exact built-in ChatGPT/WebSocket remains a separate external gate with status
+=capability-unconfirmed=; it keeps Feature 88 =In-review= and not =Done= without
+reopening repository remediation.
 
 The final clear-technical-writing pass used the selected runtime glossary and
 changed no finding, severity, evidence classification, or contract decision.
