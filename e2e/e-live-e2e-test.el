@@ -1839,13 +1839,65 @@ or argument vocabulary."
    "Call the %s lookup tool exactly once. The returned sentinel is useful only for this answer, and after this answer I do not want any reminder that the lookup happened carried into later turns. Reverse every character of the sentinel exactly and reply with only that transformed value and no extra text."
    (or tool-name "e2e_deterministic")))
 
+(defun e-live-e2e--receipt-field-keys (receipt)
+  "Return the sorted keyword field set of RECEIPT, or nil when malformed.
+The field set is kept separate from values so an omitted optional field cannot
+compare equal to a present nil field after JSON replay."
+  (let ((tail receipt)
+        keys
+        (valid t))
+    (while (and valid tail)
+      (if (and (consp tail)
+               (keywordp (car tail))
+               (consp (cdr tail)))
+          (progn
+            (push (car tail) keys)
+            (setq tail (cddr tail)))
+        (setq valid nil)))
+    (when (and valid (null tail))
+      (sort keys (lambda (left right)
+                   (string< (symbol-name left) (symbol-name right)))))))
+
+(defun e-live-e2e--normalize-reopened-receipt (receipt)
+  "Normalize only persisted enum symbols in RECEIPT for JSON replay.
+All other values remain exact, including identities, purpose, URI, and any
+future receipt fields.  Nil enum values remain nil so field presence is tested
+separately by the equality predicate."
+  (let ((normalized (copy-tree receipt)))
+    (dolist (key '(:status :purpose-status :details-lifetime))
+      (when (plist-member normalized key)
+        (let ((value (plist-get normalized key)))
+          (when (and value (symbolp value))
+            (setq normalized
+                  (plist-put normalized key (symbol-name value)))))))
+    normalized))
+
 (defun e-live-e2e--reopened-receipt-equal-p (original-event reopened-event)
   "Return non-nil when REOPENED-EVENT preserves ORIGINAL-EVENT's receipt.
-Both arguments are durable `tool-finished' activity events; compare their
-payload receipts directly rather than treating a receipt field as another
-wrapper around the receipt value."
-  (equal (plist-get (plist-get reopened-event :payload) :receipt)
-         (plist-get (plist-get original-event :payload) :receipt)))
+Compare durable payload receipts directly, allowing only the three enum
+values that JSON replay represents as strings to differ from live symbols.
+Every key, value, identity, optional-field presence, purpose, and URI remains
+part of the comparison."
+  (let* ((original-receipt
+          (plist-get (plist-get original-event :payload) :receipt))
+         (reopened-receipt
+          (plist-get (plist-get reopened-event :payload) :receipt))
+         (original-keys (e-live-e2e--receipt-field-keys original-receipt))
+         (reopened-keys (e-live-e2e--receipt-field-keys reopened-receipt))
+         (original-normalized
+          (e-live-e2e--normalize-reopened-receipt original-receipt))
+         (reopened-normalized
+          (e-live-e2e--normalize-reopened-receipt reopened-receipt)))
+    (and original-keys
+         reopened-keys
+         (equal original-keys reopened-keys)
+         (equal
+          (mapcar (lambda (key)
+                    (list key (plist-get original-normalized key)))
+                  original-keys)
+          (mapcar (lambda (key)
+                    (list key (plist-get reopened-normalized key)))
+                  reopened-keys)))))
 
 (defun e-live-e2e--ordinary-tool-receipt-prerequisite
     (harness session-id tool-finishes)
@@ -1886,12 +1938,13 @@ separate from the later erasure-persistence gate."
           current-answer-p effect-present-p explicit-erasure-p
           audit-linked-p consumed-p no-promotion-p erasure-persisted-p
           receipt-prerequisite-p receipt-erasure-id-p receipt-suppressed-p
-          details-preserved-p reopened-p)
+          details-preserved-p reopen-audit-p reopen-erasure-p
+          reopen-no-promotion-p reopen-receipt-p)
   "Return bounded classification for explicit negative adoption.
 An absent effect is a product-contract observation, while a wrong current
 answer is semantic failure.  A valid explicit erasure requires the audit,
-consumption, persistence, receipt-suppression, details-preservation, and
-reopen gates before composition can pass."
+  consumption, persistence, receipt-suppression, details-preservation, and
+  reopen gates before composition can pass."
   (if (not (equal identity-result "pass"))
       (list :adoption-result "unavailable"
             :composition-result "unavailable"
@@ -1977,10 +2030,28 @@ reopen gates before composition can pass."
             :failure-stage "details-preserved"
             :adoption-disposition "erase"
             :result "semantic-failure"))
-     ((not reopened-p)
+     ((not reopen-audit-p)
       (list :adoption-result "pass"
             :composition-result "failure"
-            :failure-stage "reopen"
+            :failure-stage "reopen-audit"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not reopen-erasure-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "reopen-erasure"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not reopen-no-promotion-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "reopen-no-promotion"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not reopen-receipt-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "reopen-receipt"
             :adoption-disposition "erase"
             :result "semantic-failure"))
      (t
@@ -2283,7 +2354,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                 :audit-linked-p t :consumed-p t :no-promotion-p t
                 :receipt-prerequisite-p t :receipt-erasure-id-p t
                 :erasure-persisted-p t :receipt-suppressed-p t
-                :details-preserved-p t :reopened-p t)))
+                :details-preserved-p t
+                :reopen-audit-p t :reopen-erasure-p t
+                :reopen-no-promotion-p t :reopen-receipt-p t)))
     (let ((passing (apply #'e-live-e2e--classify-autonomous-erase base)))
       (should (equal passing
                      '(:adoption-result "pass"
@@ -2321,7 +2394,13 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             "semantic-failure")
            (:details-preserved-p nil "pass" "failure" "details-preserved" "erase"
             "semantic-failure")
-           (:reopened-p nil "pass" "failure" "reopen" "erase"
+           (:reopen-audit-p nil "pass" "failure" "reopen-audit" "erase"
+            "semantic-failure")
+           (:reopen-erasure-p nil "pass" "failure" "reopen-erasure" "erase"
+            "semantic-failure")
+           (:reopen-no-promotion-p nil "pass" "failure"
+            "reopen-no-promotion" "erase" "semantic-failure")
+           (:reopen-receipt-p nil "pass" "failure" "reopen-receipt" "erase"
             "semantic-failure")))
       (let* ((arguments
               (plist-put (copy-sequence base) (nth 0 case) (nth 1 case)))
@@ -2945,7 +3024,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        :audit-linked-p t :consumed-p t :no-promotion-p t
                        :receipt-prerequisite-p t :receipt-erasure-id-p t
                        :erasure-persisted-p t :receipt-suppressed-p t
-                       :details-preserved-p t :reopened-p t))
+                       :details-preserved-p t
+                       :reopen-audit-p t :reopen-erasure-p t
+                       :reopen-no-promotion-p t :reopen-receipt-p t))
          (cases
           (list
            (list :gates base-gates :bodies (list body)
@@ -2974,6 +3055,30 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                  :bodies (list body) :condition 'ert-test-failed
                  :result "semantic-failure" :adoption "pass"
                  :composition "failure" :stage "receipt-erasure-id"
+                 :disposition "erase")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :reopen-audit-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "reopen-audit"
+                 :disposition "erase")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :reopen-erasure-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "reopen-erasure"
+                 :disposition "erase")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :reopen-no-promotion-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "reopen-no-promotion"
+                 :disposition "erase")
+           (list :gates (plist-put (copy-sequence base-gates)
+                                   :reopen-receipt-p nil)
+                 :bodies (list body) :condition 'ert-test-failed
+                 :result "semantic-failure" :adoption "pass"
+                 :composition "failure" :stage "reopen-receipt"
                  :disposition "erase")
            (list :gates base-gates :bodies nil :condition nil
                  :result "identity-unavailable" :adoption "unavailable"
@@ -4812,7 +4917,10 @@ and provider arguments stay local to the scenario gates."
                                    :erasure-persisted-p t
                                    :receipt-suppressed-p t
                                    :details-preserved-p t
-                                   :reopened-p t
+                                   :reopen-audit-p t
+                                   :reopen-erasure-p t
+                                   :reopen-no-promotion-p t
+                                   :reopen-receipt-p t
                                    )))
                         (plist-put
                          gates
@@ -4829,7 +4937,10 @@ and provider arguments stay local to the scenario gates."
                            ("receipt-erasure-id" :receipt-erasure-id-p)
                            ("receipt-suppressed" :receipt-suppressed-p)
                            ("details-preserved" :details-preserved-p)
-                           ("reopen" :reopened-p)
+                           ("reopen-audit" :reopen-audit-p)
+                           ("reopen-erasure" :reopen-erasure-p)
+                           ("reopen-no-promotion" :reopen-no-promotion-p)
+                           ("reopen-receipt" :reopen-receipt-p)
                            )
                          nil)))
                     (fail (stage message)
@@ -4846,7 +4957,8 @@ and provider arguments stay local to the scenario gates."
                              :receipt-prerequisite-p t
                              :receipt-erasure-id-p t
                              :receipt-suppressed-p t :details-preserved-p t
-                             :reopened-p t))
+                             :reopen-audit-p t :reopen-erasure-p t
+                             :reopen-no-promotion-p t :reopen-receipt-p t))
                       (ert-fail message))
                     (require-gate (condition stage message)
                       (unless condition
@@ -4898,7 +5010,9 @@ and provider arguments stay local to the scenario gates."
                          :audit-linked-p t :consumed-p t :no-promotion-p t
                          :receipt-prerequisite-p t :receipt-erasure-id-p t
                          :erasure-persisted-p t :receipt-suppressed-p t
-                         :details-preserved-p t :reopened-p t))
+                         :details-preserved-p t
+                         :reopen-audit-p t :reopen-erasure-p t
+                         :reopen-no-promotion-p t :reopen-receipt-p t))
                       (ert-fail
                        (format "Invalid curation disposition: %S" caught)))
                      (error (signal (car caught) (cdr caught)))))
@@ -5115,6 +5229,9 @@ and provider arguments stay local to the scenario gates."
                             (reopened-erasures
                              (e-session-context-erasures reopened session-id))
                             (reopened-erasure (car reopened-erasures))
+                            (reopened-erased-tool-call-ids
+                             (e-session-erased-tool-call-ids
+                              reopened session-id))
                             (reopened-receipt-event
                              (seq-find
                               (lambda (event)
@@ -5129,50 +5246,85 @@ and provider arguments stay local to the scenario gates."
                        (require-gate
                         (and reopened-links
                              (equal (plist-get reopened-links :response-entry-id)
-                                    response-entry-id)
-                             (= (length (e-session-context-erasures
-                                         reopened session-id))
-                                1)
-                             (equal (e-session-erased-tool-call-ids
-                                     reopened session-id)
-                                    (list tool-call-id))
-                             (= (length reopened-erasures) 1)
+                                    response-entry-id))
+                        "reopen-audit"
+                        "The curation audit control did not replay with its response identity.")
+                       (require-gate
+                        (and (= (length reopened-erasures) 1)
                              (equal reopened-erasure erasure-record)
-                             (null (e-session-context-curations
-                                    reopened session-id))
+                             (equal reopened-erased-tool-call-ids
+                                    expected-erased-tool-call-ids))
+                        "reopen-erasure"
+                        "The erasure record or selected erased IDs failed replay.")
+                       (require-gate
+                        (and (null (e-session-context-curations
+                                   reopened session-id))
                              (null (e-session-context-promotions
-                                    reopened session-id))
-                             reopened-receipt-event
+                                    reopened session-id)))
+                        "reopen-no-promotion"
+                        "Replay exposed a promotion or curation projection for erase-only state.")
+                       (require-gate
+                        (and reopened-receipt-event
                              (e-live-e2e--reopened-receipt-equal-p
-                              tool-finished-before reopened-receipt-event)
-                             (e-session-tmp-reference-available-p
-                              harness session-id details-uri))
-                        "reopen"
-                        "Erasure authority or preserved storage failed reopen."))
-                     (classify
-                      '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
-                        :current-answer-p t :effect-present-p t
-                        :explicit-erasure-p t :audit-linked-p t :consumed-p t
-                        :no-promotion-p t :erasure-persisted-p t
-                        :receipt-prerequisite-p t :receipt-erasure-id-p t
-                        :receipt-suppressed-p t :details-preserved-p t
-                        :reopened-p t)))))))))))))
+                              tool-finished-before reopened-receipt-event))
+                        "reopen-receipt"
+                        "The durable tool receipt did not replay with equivalent semantics.")
+                       (classify
+                        '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                          :current-answer-p t :effect-present-p t
+                          :explicit-erasure-p t :audit-linked-p t :consumed-p t
+                          :no-promotion-p t :erasure-persisted-p t
+                          :receipt-prerequisite-p t :receipt-erasure-id-p t
+                          :receipt-suppressed-p t :details-preserved-p t
+                          :reopen-audit-p t :reopen-erasure-p t
+                          :reopen-no-promotion-p t :reopen-receipt-p t))))))))))))))
 
 (ert-deftest e-live-e2e-test-responses-autonomous-curation-erase ()
   "A configured Responses model autonomously erases a current-turn source."
   (e-live-e2e--run-autonomous-curation-erase))
 
 (ert-deftest e-live-e2e-test-reopened-receipt-equality-is-direct ()
-  "A reopened tool receipt compares the durable payload values directly."
-  (let* ((receipt '(:tool-call-id "call-1" :tool-name "tool-1"
-                    :details-uri "tmp://tool-invocations/s/c.json"))
+  "A replayed receipt normalizes only persisted enum spellings.
+The fixture mirrors live activity, where enum values are symbols, and JSON
+replay, where those same values are strings."
+  (let* ((receipt '(:tool-call-id "call-1"
+                    :tool "tool-1"
+                    :status ok
+                    :stated-purpose "Inspect the bounded result."
+                    :details-uri "tmp://tool-invocations/s/c.json"
+                    :details-lifetime session-tmp))
          (original (list :event-type 'tool-finished
                          :payload (list :receipt receipt)))
-         (reopened (copy-tree original)))
+         (replayed-receipt '(:details-lifetime "session-tmp"
+                             :details-uri "tmp://tool-invocations/s/c.json"
+                             :stated-purpose "Inspect the bounded result."
+                             :status "ok"
+                             :tool "tool-1"
+                             :tool-call-id "call-1"))
+         (reopened (list :event-type 'tool-finished
+                         :payload (list :receipt replayed-receipt))))
     (should (e-live-e2e--reopened-receipt-equal-p original reopened))
-    (should-not
-     (equal (plist-get (plist-get reopened :payload) :receipt)
-            (plist-get receipt :receipt)))))
+    (let ((wrong-call (copy-tree reopened)))
+      (plist-put (plist-get wrong-call :payload)
+                 :receipt
+                 (plist-put (copy-tree replayed-receipt)
+                            :tool-call-id "call-other"))
+      (should-not (e-live-e2e--reopened-receipt-equal-p original wrong-call)))
+    (let ((wrong-uri (copy-tree reopened)))
+      (plist-put (plist-get wrong-uri :payload)
+                 :receipt
+                 (plist-put (copy-tree replayed-receipt)
+                            :details-uri "tmp://tool-invocations/s/other.json"))
+      (should-not (e-live-e2e--reopened-receipt-equal-p original wrong-uri)))
+    (let ((missing-purpose (copy-tree reopened)))
+      (cl-remf (plist-get missing-purpose :payload) :receipt)
+      (plist-put (plist-get missing-purpose :payload)
+                 :receipt
+                 (let ((copy (copy-tree replayed-receipt)))
+                   (cl-remf copy :stated-purpose)
+                   copy))
+      (should-not
+       (e-live-e2e--reopened-receipt-equal-p original missing-purpose)))))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-scenario-layers-provide-support ()
   "The configured bare factory exposes receipt/details owners from its layers."
