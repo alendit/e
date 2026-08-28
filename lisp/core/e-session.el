@@ -3968,10 +3968,10 @@ otherwise a list containing one message is flattened into one object."
 (defun e-session--context-entry-components (entry)
   "Return semantic context components carried by durable ENTRY.
 
-Standalone promotion/erasure entries remain readable compatibility records.
-The current curation package is one indexed session entry whose optional
-  components are projected here without creating virtual entries or a second
-  ledger."
+Standalone promotion entries remain readable compatibility records; erasure is
+valid only as a curation-package component. The current curation package is
+one indexed session entry whose optional components are projected here
+without creating virtual entries or a second ledger."
   (pcase (plist-get entry :type)
     ('context-promotion
      (list (cons 'context-promotion
