@@ -1,0 +1,410 @@
+#+title: Review 01: Addendum 7 Explicit Tool-Output Context Erasure
+#+date: 2026-08-28
+#+startup: overview
+
+* Status and decision
+
+In-review.  This independent rebaseline specification Tick reviewed exact
+revision =bcd27e309a67a3a332e709ef617ba3227b4db95f=.
+
+Addendum 7 is not at specification fixed point and is not implementation-ready.
+Three P1 and four P2 findings remain.  The proposal has a coherent product
+distinction between =drop= and =erase=, but its material schema identity is
+already occupied, mixed promotion/erasure cannot use the current one-record
+session append path atomically, and the proposed early package has no observable
+consumer before planned Feature 90.  Required authority, branch, evidence, and
+bound cells also remain unresolved.
+
+- P0: none.
+- P1: =F88A7.S1= through =F88A7.S3=.
+- P2: =F88A7.S4= through =F88A7.S7=.
+- P3: none.
+
+Feature 90 is =Planned= and has no production receipt provider
+(=docs/feats/90-tool-invocation-receipts/plan.org:5-7,221-244=).  Existing
+Addendum 6 configured Responses HTTP evidence remains historical evidence for
+the =context-curate-v4= identity only.  Addendum 7 has no current external
+evidence; its future configured HTTP and exact ChatGPT/WebSocket capabilities
+are =capability-unconfirmed=, not failed.
+
+* Scope and authority
+
+The review covered =addendum7.org=, its Feature 88 plan, Feature 90 plan, and
+feature-index edits; accepted Addenda 4 and 6; current core, harness, session,
+OpenAI adapter, owner tests, and E2E identity owners; =docs/agents/review.org=;
+and the architecture constraints in =AGENTS.md=.  Addendum 7 supersedes
+Addendum 6 only for the proposed fourth disposition and its suppression
+semantics.  It does not change the accepted meaning of keep, summary, drop,
+reasoning-summary requests, or version-3 promotion records.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Core owns the
+provider-neutral disposition and suppression policy; the harness owns turn
+orchestration; the session owns durable records, current-path replay, and
+checkpointing; the OpenAI backend adapter owns the Responses carrier; a future
+Feature 90 context provider owns receipt projection.  The reserved
+=context-curate= carrier is not an ordinary model-facing tool.
+
+The reviewer did not edit the specification or production code, contact the
+running Emacs, or make a provider request.  The unrelated dirty Feature 87 plan
+was preserved.
+
+* Normalized contract and evidence matrix
+
+The following matrix normalizes the proposal for review.  It is not yet the
+specification's authority because Finding =F88A7.S4= remains open.
+
+| Contract | Observable contract | Semantic owner and public composition | Delivery slice | Deterministic evidence | External compatibility evidence | Telemetry | Status |
+|----------+---------------------+---------------------------------------+----------------+------------------------+---------------------------------+-----------+--------|
+| =F88A7-DISPOSITION= | =context-curate= requires one exhaustive partition across keep, summaries, drop, and ordinary-tool-only erase; invalid input mutates nothing. | Core decides; OpenAI serializes the carrier; harness composes the response. | pure preparation, atomic application, then carrier exposure | exact keys; duplicate/unknown/missing/non-tool partitions; keep/summary/drop regressions; literal HTTP and WebSocket bodies | configured erase adoption under the new material identity | disposition counts observational | proposed; =S1= and =S3= open |
+| =F88A7-ERASURE= | A successful erase excludes the exact tool source and every automatic projection derived solely from it, while transcript, activity, audit, and temporary details remain inspectable; an explicit later read is a new observation. | Core owns eligibility; each context provider consumes the session query before deriving output. | durable query plus real consumer composition | drop-versus-erase projection and explicit-read re-observation | configured naturalistic erase scenario; no raw content in evidence | receipt/erasure counts observational | proposed; consumer absent |
+| =F88A7-DURABLE= | One content-free version-1 erasure authority is bounded, current-path scoped, replayable, checkpoint-safe, and retained only while its subject can still project. | Core codec and session path/checkpoint projection. | codec/query, then atomic application | exact/one-over bound; reopen; selected-head/sibling/fork; checkpoint/compaction; audit identity | not applicable: repository-owned persistence | record bytes and lookup counts observational | proposed; =S2=, =S5=, and =S7= open |
+| =F88A7-ATOMIC= | One curation makes its optional version-3 promotion and optional version-1 erasure visible and durable together or not at all, before frame consumption or later provider dispatch. | Session owns one commit unit; harness invokes it after pure preparation. | session transaction boundary before harness join | validation, first/second component failure, direct/queued/controller persistence, replay interruption, duplicate retry | not applicable: repository-owned transaction | not applicable | proposed; =S2= open |
+| =F88A7-F90-JOIN= | A receipt provider filters the Feature 88 erased-tool-call set before ordering, bounds, counts, or markers; no receipt consumer means no join acceptance. | Feature 90 owns receipt projection; Feature 88 owns only the path-scoped query. | activated only with Feature 90 receipt projection | composed drop keeps receipt; erase removes receipt and aggregate mark | external erase composition only after deterministic join | receipt counts and bytes observational | deferred; Feature 90 Planned; =S3= and =S4= open |
+| =F88A7-IDENTITY= | The fourth disposition advances the material curation identity, invalidates old anchors and cache evidence, preserves reasoning-summary requirements, and keeps HTTP/WebSocket scope separate. | Core identity, OpenAI request construction, E2E capture/finalization. | carrier exposure and evidence refresh | new revision in request fingerprints; old-anchor rejection; request-shape tests | named configured adoption/cache records with exact identity and freshness | tokens, cached tokens, and latency observational | proposed; =S1= and =S6= open |
+
+* Findings
+
+** TODO High P1 =F88A7.S1=: the proposed schema revision is already Addendum 6's identity
+
+Contract cell: =F88A7-IDENTITY=.
+
+Observed fact: Addendum 7 says the fourth key advances =context-curate-v3= to
+=context-curate-v4= and later asks evidence to refresh under =v4=
+(=addendum7.org:213-220,270-275,305-308=).  Current core already defines
+=e-context-lifetime-curation-schema-revision= as =context-curate-v4=, and its
+owner test asserts that literal identity
+(=lisp/core/e-context-lifetime.el:73-80=;
+=test/e-context-lifetime-test.el:790-799=).  The current OpenAI carrier still
+has only keep, summaries, and drop (=lisp/adapters/openai/e-openai.el:1631-1668=).
+
+Consequence: following the specification would change the wire schema without
+changing its material revision.  Existing anchor and cache identities could be
+accepted for an incompatible carrier, directly contradicting the proposal's
+invalidation rule.
+
+Minimal correction: replace every Addendum 7 =context-curate-v4= target with
+=context-curate-v5= and replace “advances from =context-curate-v3=” with
+“advances from the implemented =context-curate-v4= identity.”  Feature 90 and
+Feature 88 link text should refer to =F88A7-IDENTITY= rather than copy the
+literal revision.
+
+Acceptance evidence: literal core and adapter identity tests, HTTP and
+WebSocket request bodies, anchor mismatch tests, captured request identity, and
+all Addendum 7 external records agree on =context-curate-v5=.  Addendum 6
+=v4= records remain historical and are not reusable.
+
+** TODO High P1 =F88A7.S2=: two independent session appends cannot satisfy mixed-curation atomicity
+
+Contract cells: =F88A7-ATOMIC= and =F88A7-DURABLE=.
+
+Observed fact: the proposal requires a mixed curation to append a version-3
+promotion and a version-1 erasure, then states that failure in either append
+makes no partial curation visible (=addendum7.org:186-193,255-261,301-302=).
+The current harness appends at most one promotion through
+=e-session-append-context-curation= before consuming the frame
+(=lisp/core/e-harness.el:3268-3312=).  Session persistence accepts and writes one
+record at a time (=lisp/core/e-session.el:640-649,873-890=), while checkpoint
+and replay dispatch each record independently
+(=lisp/core/e-session.el:1522-1543,2200-2242=).
+
+Consequence: adding a second ordinary append leaves a concrete failure window.
+If the first semantic record persists and the second append fails or replay
+sees only the first, reopen exposes a partial curation even though the frame was
+not validly consumed.  Reversing append order only reverses which half leaks.
+
+Minimal correction: replace =addendum7.org:186-193= with:
+
+#+begin_quote
+Core prepares one detached curation package containing an optional version-3
+promotion component and an optional version-1 erasure component.  Session
+accepts that package through one atomic commit boundary and makes both semantic
+components visible and durable together or neither visible.  Persistent direct,
+queued, controller-backed, checkpoint, and replay paths encode one commit unit;
+they must not implement a mixed curation as two independent record appends.
+Validation, write, flush, or replay failure leaves both semantic projections
+absent and the frame unconsumed.  The inherited audit-only response-control
+rule remains separate and cannot commit either semantic component.
+#+end_quote
+
+The implementation appendix may select a compound journal record or explicit
+transaction envelope, but must preserve the two semantic codec identities and
+one session-owned commit boundary.
+
+Acceptance evidence: test keep+erase and summary+erase across direct, queued,
+and controller-backed persistence; inject failure before and between component
+publication; truncate or reject replay before commit; reopen/checkpoint after
+each failure; and prove both-or-neither semantic visibility, no frame
+consumption, and a clean retry.
+
+** TODO High P1 =F88A7.S3=: the proposed stopping point has no current consumer and no carrier-exposure slice
+
+Contract cells: =F88A7-DISPOSITION=, =F88A7-ERASURE=, and =F88A7-F90-JOIN=.
+
+Observed fact: Addendum 7 acknowledges that Feature 90's receipt provider is
+only planned and defers its proof, yet calls Slices 1--3 useful independent
+Feature 88 stopping points (=addendum7.org:195-211=).  In the current repository,
+=drop= already removes the exact tool source; without a receipt provider or
+another identified derived projection, =erase= has no distinct observable
+effect.  Slices 1--3 add core, session, and harness machinery, but no slice owns
+the actual OpenAI carrier/guidance change at
+=lisp/adapters/openai/e-openai.el:1631-1668=.  Slice 5 waits for Feature 90
+before composed evidence (=addendum7.org:236-276=).
+
+Consequence: implementing the stated stopping point either ships durable state
+and material cache churn with no user-visible behavior, or encourages a
+Feature 88-only fake consumer that the specification itself rejects.  Following
+the slice list literally also leaves the fourth disposition unreachable from a
+real model request.
+
+Minimal correction: replace the last paragraph of the Receipt integration
+boundary with:
+
+#+begin_quote
+Slices 1--3 are internal preparation slices, not an independently shippable
+Feature 88 package.  Do not expose =erase= in a backend carrier or claim the
+Addendum 7 package accepted until a real eligible derived-projection consumer
+exists.  When Feature 90's receipt provider is ready, first accept the
+provider-neutral codec/query and atomic session boundary, then add a distinct
+Feature 88 exposure slice that updates the concise carrier guidance, strict
+HTTP and WebSocket schema, =context-curate-v5= identity, and literal adapter
+tests.  The package stopping point includes the real Feature 90 consumer and
+drop-versus-erase composition; no speculative fixture satisfies it.
+#+end_quote
+
+If Feature 88 must ship independently, the specification must instead name an
+already implemented derived projection and prove a present user-visible
+drop/erase distinction.  None exists at this revision.
+
+** TODO Medium P2 =F88A7.S4=: normative authority is fragmented across repeated prose and Feature 90
+
+Contract cells: all six normalized rows.
+
+Observed fact: Addendum 7 has no stable contract IDs or normative matrix.  Its
+Decision, model-facing contract, erasure semantics, receipt boundary, slices,
+acceptance criteria, and self-check repeat the same requirements.  It also says
+Feature 90 owns receipt projection while prescribing Feature 90's filtering
+order at =addendum7.org:202-206,263-268,303-304=.  Feature 90 already owns that
+same policy at =docs/feats/90-tool-invocation-receipts/plan.org:221-244,313-320=.
+
+Consequence: implementation, evidence, and later amendments have no single row
+to update.  The same cross-feature behavior has two normative owners and can
+drift independently.
+
+Minimal correction: insert the six-row matrix from this review after
+=* Decision=, with =F88A7-F90-JOIN= owned by Feature 90 and the other rows owned
+by Feature 88.  Replace repeated acceptance and slice prose with those IDs.
+In Addendum 7, replace the Feature 90 filtering algorithm with:
+
+#+begin_quote
+=F88A7-F90-JOIN= is accepted only by the Feature 90 model-context projection
+contract.  Feature 88 supplies the path-scoped erased-tool-call query defined by
+=F88A7-DURABLE= and does not restate receipt ordering, budgeting, aggregation,
+or rendering policy.
+#+end_quote
+
+Feature 90 should reference =F88A7-DURABLE= for query semantics while retaining
+its own filtering-order authority.
+
+** TODO Medium P2 =F88A7.S5=: erasure visibility is not defined for selected heads, siblings, and clean forks
+
+Contract cell: =F88A7-DURABLE=.
+
+Observed fact: the proposal says erasure “survives branch selection” and exposes
+a canonical erased-tool-call query, but does not say which selected head the
+query uses or what a sibling branch and clean fork inherit
+(=addendum7.org:175-184,246-253,299-300=).  Current semantic projection is
+explicitly current-path/head scoped (=lisp/core/e-session.el:3202-3213,3238-3272=),
+and a clean fork rebuilds portable meaning without copying source-session
+anchors or curation controls (=lisp/core/e-session.el:3016-3088=).
+
+Consequence: an implementation that scans all session erasure records can
+suppress a receipt on a sibling whose selected path predates the erase.  An
+implementation that drops every erasure at checkpoint or fork can let a copied
+eligible derived projection reappear.  Both satisfy the current vague wording.
+
+Minimal correction: insert under Durable erasure authority:
+
+#+begin_quote
+The erased-tool-call query is evaluated for a session and selected head.  An
+erasure is effective only when its committed record lies on that head's
+canonical path and its generation/subject remains eligible for an automatic
+projection.  A sibling head before the erasure does not observe it; a descendant
+head does.  Checkpoint and compaction preserve the erasure and its inherited
+response-audit dependency while the subject remains eligible.  A clean fork
+copies neither receipt nor erasure when it copies no eligible derived
+projection; if a future fork contract copies such a projection, it must carry
+equivalent suppression authority in the same portable boundary.  Never apply a
+session-global erasure set across unrelated branches.
+#+end_quote
+
+Acceptance evidence: selected-head before/after, sibling, descendant, clean
+fork, 63/64 audit-tail boundary, checkpoint reopen, compaction, and safe-prune
+tests agree on exactly one path-scoped identity set.
+
+** TODO Medium P2 =F88A7.S6=: the evidence requirement has no diagnosable portfolio or reuse rule
+
+Contract cells: all rows, especially =F88A7-IDENTITY= and =F88A7-F90-JOIN=.
+
+Observed fact: the specification says to run one drop turn, one erase turn, and
+refresh configured cache evidence, but supplies no scenario names, owner-level
+versus external decision roles, exact captured identity, seven-day freshness
+rule, content-free record contract, or failure classification
+(=addendum7.org:270-276,305-308=).  Addendum 6's current records are explicitly
+invalidated at =addendum7.org:229-234=, so they cannot fill these cells.
+
+Consequence: a credentialed provider outcome can be mistaken for deterministic
+repository proof, and no rule decides whether a future record is current,
+reusable, stale, unavailable, or a valid product-contract failure.  One heroic
+turn also cannot localize schema, atomicity, query, receipt filtering, adoption,
+and cache failures.
+
+Minimal correction: add a Scenario portfolio with these independent entries:
+
+| Scenario | Contracts | Observable invariant | Class |
+|----------+-----------+----------------------+-------|
+| =curate-erase-owner= | =F88A7-DISPOSITION=, =F88A7-DURABLE=, =F88A7-ATOMIC= | pure four-way validation; atomic direct/queued append; path/reopen/checkpoint/compaction invariants | deterministic |
+| =curate-erase-composition= | =F88A7-ERASURE=, =F88A7-F90-JOIN= | drop retains one receipt; erase removes receipt and all derived aggregates while stored history remains explicitly readable | deterministic |
+| =responses-autonomous-curation-erase= | =F88A7-DISPOSITION=, =F88A7-ERASURE=, =F88A7-IDENTITY= | one naturalistic explicit erase crosses the exact causal request and composed projection | external compatibility |
+| refreshed warm-prefix/tool-heavy | =F88A7-IDENTITY= | semantic and cache outcomes are reported independently under the new complete material identity | external compatibility |
+
+External records must inherit Addendum 6's content-free exactly-once finalizer,
+effective endpoint/profile/transport/store/requester/model/reasoning/schema/tool
+identity, seven-calendar-day freshness, unchanged owner-cone rule, and exact
+configuration, unsupported, provider, timeout, identity, semantic, adoption,
+composition, and cache classifications.  Exact ChatGPT/WebSocket remains a
+separate capability.  Counts, record bytes, tokens, cached tokens, and latency
+are observational unless a baseline and regression threshold are added.
+
+Test disposition: retain Addendum 6 keep/summary/drop, reasoning, continuation,
+reopen, and compatibility tests; strengthen partition, identity, and cache
+tests for =v5=; add owner and composed erase tests; replace no test with a
+Feature 90-only fixture; delete only obsolete literal three-key carrier
+expectations after exposure.
+
+** TODO Medium P2 =F88A7.S7=: the new 8,192-byte erasure-package limit lacks its own justification
+
+Contract cell: =F88A7-DURABLE=.
+
+Observed fact: Addendum 7 makes 8,192 canonical UTF-8 bytes a separate normative
+erasure-package boundary and requires exact rejection before mutation
+(=addendum7.org:92-101,169-173,238-244,285-287=).  Addendum 4 justifies 8,192
+for a different payload containing retained exact values, summary text, and
+provenance (=addendum4.org:238-253=).  Addendum 7 supplies no erasure workload
+measurement, resource estimate, or reason the same number admits representative
+label-only tool frames.
+
+Consequence: a large live frame can be completely disposable but impossible to
+erase for an unexplained identifier-package threshold.  Tests at 8,192/8,193
+would freeze the number without proving that it bounds the right workload.
+
+Minimal correction: either classify the byte cap as an implementation default
+until measured, or add this complete justification beside the normative limit:
+
+#+begin_quote
+The erasure-package limit is a distinct resource ceiling.  Record the maximum
+representative tool-source fan-out, measured canonical bytes at that workload,
+per-record and per-session storage/query cost, exact-limit acceptance and
+one-over rejection, and the consequence when an otherwise valid complete erase
+does not fit.  Revise the limit only with new workload evidence and update the
+schema identity, boundary tests, and cache-evidence identity together.  The
+Addendum 4 retained-value measurement alone does not justify this cap.
+#+end_quote
+
+Until those measurements exist, exact-limit justification is a required
+unknown and the 8,192 value cannot be a stable acceptance contract.
+
+* Required specification-cell ledger
+
+| Required cell | Disposition |
+|---------------+-------------|
+| Single normative authority | finding =F88A7.S4=: no stable IDs/matrix and receipt-filter policy has two owners |
+| Durable contract boundary | findings =S2= and =S5=: atomic package and selected-head lifetime are not exact |
+| Scenario diagnosability | finding =S6=: no named owner/composed/external portfolio |
+| Evidence topology | finding =S6=: deterministic, external, and observational roles are not separated |
+| External freshness and failure | finding =S6=: no Addendum 7 identity/freshness/finalization contract; capability-unconfirmed |
+| Telemetry decision power | finding =S6=: cache and other measurements lack an explicit observational disposition |
+| Exact-limit justification | finding =S7=: new 8,192-byte package cap lacks workload and resource evidence |
+| Workflow boundary | clear: no Tick/Tock, reviewer-selection, phase-commit, or stop mechanics appear |
+| Test stability | finding =S6=: affected tests are not classified retain/strengthen/replace/delete |
+| Architecture ownership | Feature 88/F90 direction is conceptually narrow, but =S3= and =S4= leave the package boundary and authority wrong |
+| Compatibility and cleanup | clear: v2/v3 reads remain, omission is not revived, no shim is requested, and pruning is conservative pending =S5= |
+| Explicit non-goals | clear: deletion, privacy/audit erasure, anchor cleaning, ordinary-tool controls, and speculative receipt implementation are excluded |
+
+Every unresolved required repository cell maps to one of the seven findings;
+there are no additional repository unknowns.  The external capability state is
+separately unconfirmed rather than a repository or product-contract failure.
+
+* Architecture review
+
+The intended ownership is sound: core decides semantic erasure, session owns
+path-scoped durability, harness owns orchestration, the adapter owns the wire
+carrier, and Feature 90 owns receipt projection.  The current proposal does not
+yet preserve that direction as a useful package.  Slices 1--3 would add durable
+state, schema migration pressure, and future coupling without a consumer, while
+the actual adapter exposure is unowned.  This is a current package-boundary
+finding, not a deferrable architectural follow-up; no follow-up ledger was
+created or changed.
+
+The smallest non-speculative direction is one dependent package whose internal
+Feature 88 preparation remains hidden until the real Feature 90 receipt
+consumer exists, followed by one explicit carrier-exposure slice and composed
+acceptance.  That keeps Feature 90 from parsing curation or writing erasure
+records and keeps Feature 88 from owning receipt ordering or aggregation.
+
+* Design self-check
+
+1. As written, stopping after Slice 3 is not better than omitting the package;
+   the user-visible distinction exists only with a real derived projection.
+2. The final direction—explicit provenance-backed future-context suppression—is
+   sound once a consumer exists.
+3. The stable erase meaning is direct; transaction encoding, pruning, and exact
+   byte cap must remain local until their evidence is complete.
+4. Core, session, harness, adapter, and Feature 90 have plausible cohesive
+   owners, subject to =S3= and =S4=.
+5. One path-scoped identity query is narrow; duplicated cross-feature policy is
+   not.
+6. No stable core dependency on Feature 90 is needed; the future context
+   provider depends on the core/session query.
+7. Provider and persistence side effects remain outside pure preparation, but
+   =S2= requires one session commit boundary.
+8. Erasure authority is durable semantic state; =S5= must define its exact path
+   and pruning lifetime.
+9. Per-record work is bounded in shape, but =S7= leaves the numeric resource
+   argument unproven.
+10. =erase= is a real semantic contract; a speculative consumer or transaction
+    interface is not.
+11. V2/v3 read compatibility is explicit; the material carrier identity is
+    incorrect until =S1= closes.
+12. No existing runtime path is removable before the real consumer lands.
+13. Invalid input is intended to fail visibly; append/replay failure semantics
+    are incomplete until =S2= closes.
+14. Owner tests can remain narrow, but composed receipt and external evidence
+    cannot be accepted before Feature 90 exists.
+
+* Verification
+
+Read-only review at exact =bcd27e309a67a3a332e709ef617ba3227b4db95f=
+confirmed:
+
+- current core and owner tests use =context-curate-v4=;
+- current carrier shape contains exactly keep, summaries, and drop;
+- the harness has one optional promotion append before frame consumption;
+- direct, queued, checkpoint, and replay session paths operate on individual
+  records;
+- Feature 90 is =Planned= and has no production receipt-provider implementation;
+  and
+- the Addendum 7 commit changes documentation only.
+
+No ERT, provider, graphical, or live-Emacs execution was required for this
+specification review.  Org parsing passed for Addendum 7, this review, both
+linked feature plans, and the index; the reviewed commit and staged artifact
+passed =git diff --check=.  The final clear-technical-writing pass used the
+selected runtime glossary and changed no finding, severity, evidence, or owner.
+
+* Unresolved
+
+All seven findings must close before implementation.  A subsequent independent
+specification Tick must re-evaluate the corrected material identity, atomic
+session boundary, package/slice order, normalized authority, path semantics,
+evidence portfolio, and exact-limit justification.  Zero findings is required
+for specification fixed point.
