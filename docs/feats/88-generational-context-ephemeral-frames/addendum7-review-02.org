@@ -206,38 +206,38 @@ Remediation and final-Tick evidence for the repository fixed point:
   diff check passed.  The final docstring-only revision passed its narrow
   warnings-as-errors compile and diff check.
 
-* Post-review configured evidence
+* Post-review evidence loop
 
-The accepted current evidence run was captured at
-=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using provider
-=eng-ai-gateway-gpt=, profile =Engineering AI Model Gateway / GPT
-(Responses)=, endpoint =/responses= over Responses HTTP, =:json-false= store
-mode, native requester =e-openai-codex--http-request-start=, model
-=gpt-5.6-sol=, =context-curate-v5=, and
-=context-curation-presentation-v2=.  This evidence revision is distinct from
-the repository fixed point reviewed above; exact built-in ChatGPT/WebSocket
-behavior was not tested.
+The repository fixed point reviewed above remains
+=9d5d1b0799fe8bdc1a12c5780498e1847f4967f9= with the independent review's
+final Tick at zero P0-P3 findings.  The subsequent evidence-lane corrections
+were bounded and do not change that repository fixed-point claim:
 
-| Scenario | Requests | Total input | Cached input | Semantic | Adoption/disposition | Composition | Result |
-|----------+----------+-------------+--------------+----------+----------------------+-------------+--------|
-| =responses-reasoning-summary-capability= | 1 | 31 | 0 | pass | n/a | n/a | pass |
-| =responses-autonomous-curation-adoption= | 6 | 2,789 | 0 (observational) | pass | exact | pass | pass |
-| =responses-autonomous-curation-erase= | 3 | 4,822 | 3,033 | pass | erase | pass | pass |
-| =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | pass | n/a | n/a | pass/warm |
-| =responses-canonical-tool-heavy= | 5 | 15,124 | 11,688 | pass | n/a | n/a | pass/warm |
+- =78c3346fb1e168365c89399aa4184c32a7e3ddc7= (commit timestamp
+  =2026-08-28T14:37:34+02:00=) corrected the naturalistic erase prompt to state
+  the future-turn no-reminder intent without reserved carrier vocabulary.
+- =0cac8e75e8ae418c88127f5ceb11d1a9e067359a= (commit timestamp
+  =2026-08-28T15:07:38+02:00=) activated the production base-layer support and
+  made the receipt prerequisite and semantic erasure gates non-vacuous.
+- =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= (commit timestamp
+  =2026-08-28T15:21:01+02:00=) normalized replayed receipt enum values and split
+  the reopen audit, erasure, promotion, and receipt gates.
 
-The reasoning-summary record used effort =high= and summary =auto=, with
-returned-summary =absent= as a diagnostic only; its companion dependency
-identity was =da64a0a7ff700b61252f0586e0fa554c0ab77b0c8a46cf48b5a7a1d3af848ac8=.
-The adoption and erase cache results were
-=product-contract-failure (observational; does not gate adoption)=.  The
-erase record used prompt identity
-=28d132555abbe76e0ab6c9d322bcde75f9943fdfbb9f8204e1271bbe88e40f26= and
-adoption dependency identity
-=a67001609dab1e8cd6722ed3f95311bdce094110c21a5deecb38140c54eff84e=.
-The explicit erase lane non-vacuously proved the prerequisite receipt, erase
-selection and persistence, tool-call identity join, receipt suppression,
-activity/tmp preservation, and exact reopen behavior.
+The independent evidence-loop Tick at =bbda59aa= closed with zero P0-P3
+findings.  Its source lane accounted for 72 checks: 50 passes and 22 expected
+skips; focused receipt/package/path-replay owners passed 4/4; and the five
+configured Responses HTTP scenarios were accepted with their bounded
+content-free records.  This is external compatibility evidence for the
+configured HTTP profile, not proof of exact built-in ChatGPT/WebSocket
+behavior.
+
+The accepted current configured evidence record, capture timestamp, seven-day
+expiry, effective identity, and unchanged owner-cone reuse rule are maintained
+authoritatively in
+[[file:limitations.org::*Current configured Addendum 7 evidence][limitations.org]].
+That record is for eng-ai-gateway-gpt Responses HTTP with =context-curate-v5=
+and does not establish exact built-in ChatGPT/WebSocket capability.  Exact
+built-in ChatGPT/WebSocket remains =capability-unconfirmed=.
 
 * Architecture and design disposition
 

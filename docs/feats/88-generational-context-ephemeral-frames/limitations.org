@@ -189,6 +189,25 @@ activity/tmp preservation, and exact reopen behavior.  This configured
 evidence confirms the Responses HTTP profile only; exact built-in
 ChatGPT/WebSocket capability remains unconfirmed.
 
+The repository evidence timestamp available for these records is
+=2026-08-28T15:21:01+02:00=, the commit timestamp recorded for
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; no finer provider-start timestamp
+was retained.  The inherited freshness window is seven calendar days
+(604800 seconds); its computed threshold is =2026-09-04T15:21:01+02:00=.
+Reuse is allowed only while the recorded age is at most 604800 seconds and
+becomes =stale= once that threshold is exceeded.  Reuse also requires equality of every recorded effective identity field,
+material/probe request shape, scenario identity, prompt identity, and
+affordance/presentation/reasoning identity, and unchanged contents of the
+adoption owner cone: =lisp/core/e-context-lifetime.el=,
+=lisp/core/e-harness.el=, =lisp/core/e-loop.el=,
+=lisp/core/e-session.el=, =lisp/layers/harness/e-harness-base.el=,
+=lisp/layers/harness/e-tool-invocation-details.el=,
+=lisp/layers/harness/e-session-tmp-resources.el=,
+=lisp/adapters/openai/e-openai.el=, and =e2e/e-live-e2e-test.el=.
+After expiry or any identity/owner change, the record is =stale= and must be
+rerun.  The recorded repository revision remains provenance rather than a
+substitute for the dependency-cone or freshness checks.
+
 * Systems and sessions inspected
 
 All observations came from persisted session JSONL, checkpoints, and the
