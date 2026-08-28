@@ -1,0 +1,180 @@
+#+title: Review 003 — Restored Board Participant Routing Policy
+#+startup: overview
+
+* Decision
+
+Fixed point is accepted with zero actionable P0--P3 findings.
+
+Reviewed revision:
+=c76b5d238601a6cac41efc898e56158428e62959=.
+Comparison base and Review 002 revision:
+=2c835ba4d7d3fa191aa34452d21be78f846823b8=.
+Goal: =BUG-RBPRP-1=.
+
+This was a fresh incremental closure review of F003, F004, F005, F008, and
+F009, followed by a contradiction scan across the complete routing,
+restoration, selected-settlement, and admission package.  The candidate closes
+all five findings without reopening F001, F002, F006, or F007.
+
+* Finding disposition
+
+| ID | Tick 003 disposition | Evidence |
+|----+----------------------+----------|
+| F003 | Closed | =e-chat-service-open-board= calls the public, read-only runtime admission query before persisting a legacy upgrade.  Occupied participant and attached-session failures preserve association, journal, and index bytes; an unused identity succeeds and reopens. |
+| F004 | Closed | Session owns one prepared root/association admission pair.  Direct storage uses one replacement-file publication, queued storage uses one queue entry, and controller storage uses one retry-identified =append-batch=.  Runtime membership is unpublished until that boundary succeeds, and owned synchronous failure cleanup preserves unrelated work. |
+| F005 | Closed | The 8192-node whole-policy walk now runs before field or encoding work, is iterative and cycle-safe, and rejects an oversized vector before enqueuing its children.  Canonical UTF-8 remains capped at 65536 bytes. |
+| F008 | Closed | The board exports the one pure attribute-clause grammar consumed by session admission and matching.  Valid nil/plist/alist forms route; unsupported top-level vectors, scalar lists, odd plists, and malformed alists reject before mutation. |
+| F009 | Closed | Ordinary board input is selected in the service projection while terminal ownership remains subject-based.  The real observer/render/reopen test retains one input-id key and keeps same-causal sibling rows isolated. |
+
+* Contract and evidence matrix
+
+| ID | Required behavior | Tick 003 disposition |
+|----+-------------------+----------------------|
+| R1-SCHEMA | Complete participant identity and bounded executable policy | Cleared: exact fields, board-owned attribute grammar, and node/byte bounds precede mutation |
+| R1-REPLAY | JSONL, index, checkpoint, and Node writer preserve routing meaning | Cleared: reversible attribute codec and exact controller batch survive reopen |
+| R1-OWNERS | Session owns durability, service owns admission, registry/board owns identity and matching | Cleared: no duplicate selector grammar or reversed shell/provider dependency |
+| R2-FRESH | Main input reaches the selected root only; private input reaches its intended participant only | Cleared by the real board/chat composition |
+| R2-RESTART | Recipients, deliveries, defaults, and root observation survive restart | Cleared by flush, process-local reset, reopen, and repeated composition |
+| S1-TERMINAL | Only selected-owned output or terminal state settles the selected presentation | Cleared for success, failure, cancellation, and empty output; sibling rows remain visible |
+| S1-IDENTITY | Selected and sibling rows retain stable live/replay identities | Cleared: ordinary input has one selected key and sibling rows use participant/source-turn identity |
+| S2-INTENT | Submit/steer follows the selected participant's active state | Cleared in the composed steer-to-submit scenario |
+| COMPAT | Canonical legacy defaults, fail-closed participant restore, one explicit upgrade | Cleared, including occupied and already-attached upgrade conflicts before durable mutation |
+| ATOMIC | Expected failed admission leaves no false session, association, participant event, binding, active route, or owned durability obligation | Cleared for preparation, attachment, and submission failures in direct, queued, and controller modes |
+| BRANCH | Routing identity remains session-owned; branch/checkpoint/reopen add no policy ledger | Cleared; the candidate does not alter the previously accepted branch/fork contract |
+| TEST | Owners and real composition exercise the contract non-vacuously | Cleared; focused owners, actual controller finalization/reopen, Node writer, and classified aggregate evidence agree |
+| DOC | Current candidate claims remain distinct from historical evidence and review acceptance | Cleared; status remains =New=/=In-review= until this independent decision is incorporated |
+
+There are no unknown repository-controlled contract cells.  The historical
+live incident remains motivation, not a completion gate.  Provider access and
+graphical redisplay are not needed to prove this provider-free semantic bug.
+
+* Admission boundary review
+
+The controller path does not invent synchronous physical durability.  The
+accepted Feature 66 architecture requires board publication not to await the
+asynchronous writer.  Within that constraint, the candidate establishes the
+narrowest coherent boundary:
+
+- =e-session-create-board-admission= detaches and validates the complete pair,
+  including the exact next controller command identity and wire shape, before
+  runtime attachment;
+- =e-session-commit-board-admission= publishes one =append-batch= obligation,
+  rather than two independently replayable appends;
+- the Node writer constructs and renames one complete journal, marks both
+  records with the same command id, and deduplicates retry by that id;
+- only after submission succeeds does the service publish
+  =participant-added=; synchronous failure discards the private binding,
+  session reservation, and only the target's retained command;
+- terminal writer rejection after a successful service return is an
+  asynchronous persistence failure, not a retractable participant-admission
+  rejection.  It remains visible through the existing persistence error path.
+
+A real writer probe finalized and reopened one service-created participant as
+=(:association-role "participant" :participant-id
+"review-real-controller-participant")= with an empty outbox.  An injected
+terminal response after the successful submission produced the expected
+visible persistence error; it did not reveal a false claim that an already
+accepted controller command could be synchronously retracted.
+
+The board-side rollback was also inspected.  A forced synchronous commit
+failure leaves no =participant-added= for the target, no registry participant,
+and no active pickup or observer route.  Setup lifecycle rows that truthfully
+precede cancellation are process-local board history, not a replayable
+participant membership or routing authority.
+
+* Verification
+
+Independent focused regression run:
+
+#+begin_src sh
+eldev test \
+  -f test/e-board-test.el \
+  e-board-test-attribute-grammar-routes-valid-plist-and-alist \
+  e-board-test-attribute-grammar-rejects-non-clause-shapes \
+  -f test/e-chat-test.el \
+  e-chat-test-board-input-keeps-one-selected-key-through-reopen \
+  -f test/e-modernchat-test.el \
+  e-chat-service-test-legacy-upgrade-preflights-occupancy-and-reopens \
+  e-chat-service-test-participant-admission-direct-store-is-atomic \
+  e-chat-service-test-participant-admission-queued-store-is-atomic \
+  e-chat-service-test-participant-admission-controller-is-atomic \
+  -f test/e-session-persistence-test.el \
+  e-session-persistence-test-admission-preflight-uses-final-id-shape \
+  -f test/e-session-test.el \
+  e-session-test-board-routing-policy-attributes-reject-before-mutation \
+  e-session-test-board-routing-policy-public-budget-bounds-collections
+#+end_src
+
+Result: 10/10 passed, 0 unexpected.
+
+#+begin_src sh
+node --test test/e-session-writer-test.mjs
+#+end_src
+
+Result: 12/12 passed, 0 failed.
+
+The independent real-controller probe used
+=e-chat-service-create-participant=, =e-session-finalize=, and a fresh
+=e-session-persistent-index-store-create=; finalization completed, the outbox
+was empty, and the complete participant association reopened.
+
+Neutral exact-revision evidence supplied with the candidate was checked for
+scope and classified as follows:
+
+- integrated focused package: 28/28 passed;
+- affected owner suites: 701 passed and one expected skip;
+- Node writer: 12/12 passed;
+- strict warnings-as-errors compilation: 7/7 changed owners passed;
+- check-parens: 11/11; Org parsing: 3/3;
+- full ERT: 2482 total, 2474 expected passes, 2 expected skips, and only the
+  six restricted-loopback fixture failures; those exact six passed 6/6 with
+  loopback access;
+- =git diff --check
+  2c835ba4d7d3fa191aa34452d21be78f846823b8..c76b5d238601a6cac41efc898e56158428e62959=
+  passed.
+
+The loopback failures are environmental, not repository findings.  The
+running Emacs was not contacted or changed.  These core/session/service/shell
+changes require a restart before they affect it.
+
+* Architecture and design disposition
+
+The package is a useful stopping point: restart preserves private routing and
+sibling completion cannot settle the selected conversation.  It moves toward
+session-owned durable identity with service-owned admission, registry/board-
+owned routing, and shell-owned presentation.
+
+The new boundaries are real and narrow.  Session does not depend on the board
+matcher except through its pure consumer-shaped attribute validator; core does
+not depend on the shell, Grimoire, or a provider.  The only new durable state is
+the complete routing policy at session lifetime.  Pending admission and
+selected ownership remain process-local and rebuildable.  Controller retry
+uses the existing asynchronous persistence port instead of adding a second
+ledger or blocking transport dependency.
+
+Worst-case policy validation is bounded before encoding, and ordinary routing
+or presentation work gains no unbounded scan.  Compatibility is explicit:
+canonical root/owner records retain historical main behavior, unreconstructable
+participant records fail closed, and a complete explicit upgrade is the only
+legacy mutation.  Expected admission errors roll back at the owning service;
+unexpected persistence errors surface at the controller.
+
+The tests are divided at stable owners and joined by real fresh/restart and
+controller/reopen compositions.  No custom Grimoire restart hook, shell-local
+routing policy, board-wide completion aggregator, compatibility shim, or
+speculative transaction interface remains.
+
+* Residual risks and fixed-point disposition
+
+- As for all accepted board-mode writes, physical controller acknowledgement
+  remains asynchronous.  A later operational writer failure remains visible
+  through persistence diagnostics; this review does not relabel it as a
+  synchronous admission rollback or claim automatic compensation.
+- Runtime-generated identifiers and timing are intentionally asserted through
+  semantic ownership and replay invariants, not frozen whole representations.
+- The user's running Emacs still contains its prior loaded code until a full
+  restart; repository-side acceptance does not claim a live reload.
+
+There are exactly zero actionable P0, P1, P2, or P3 findings at
+=c76b5d238601a6cac41efc898e56158428e62959=.  The deterministic repository
+fixed point for =BUG-RBPRP-1= is accepted.
