@@ -369,8 +369,7 @@ This feature now persists only the lifecycle facts needed to classify and recove
 No live process object moves into storage, and no generic external side effect gains an exactly-once guarantee merely because its local record committed.
 
 [[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] is already inside the board-storage scope.
-Its run facts and keyed completion/handoff facts are ordinary board records.
-Any domain claim or receipt it publishes is shared application data, not a storage-layer delivery claim or broker receipt.
+Its run facts, keyed completion inputs, publication claims, and consumption receipts are board records.
 Its queue assignments remain task-queue state and reconcile by stable identity after both stores restore.
 
 ** Sessions
