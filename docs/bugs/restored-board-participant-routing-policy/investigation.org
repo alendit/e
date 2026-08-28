@@ -204,10 +204,11 @@ Focused repository validation:
 - Org Canvas and the starter shell pass the same retry activity through their
   existing chat presentation path.
 
-The candidate restored-routing correction is present in repository source.
-The running Emacs was not reloaded; the core/service/session and shell changes
-require a restart before they can affect that process.  The bug remains =New=
-until an independent fixed-point review accepts the complete package.
+At this partial-fix checkpoint, the candidate restored-routing correction was
+present in repository source.  The running Emacs was not reloaded; the
+core/service/session and shell changes required a restart before they could
+affect that process.  The bug remained =New= until the later independent
+fixed-point acceptance recorded below.
 
 * Partial-Fix Validation
 
@@ -253,14 +254,16 @@ Focused repository evidence:
   compilation of the changed Lisp owners passed; no full suite was run.
 
 The earlier settlement incident and partial-fix counts above are retained as
-historical evidence.  The new ownership gate addresses that gap in this
-candidate, but does not replace the required independent acceptance.
+historical evidence.  At this pre-review checkpoint, the new ownership gate
+addressed that gap in the candidate but did not replace the required
+independent acceptance later recorded below.
 
-* F001-F007 Implementation And Evidence (2026-08-28)
+* F001-F007 Implementation And Evidence (2026-08-28; pre-Review 003 handoff)
 
-The current candidate remediates the review's implementation cells without
-changing the ownership boundary.  It remains pending independent acceptance;
-this section records implementation evidence rather than closing the bug.
+The then-current candidate remediated the review's implementation cells
+without changing the ownership boundary.  This section records the
+pre-acceptance implementation handoff; Review 003 below is the authoritative
+status for the exact revision.
 =e-session= now admits one complete routing
 policy with an iterative, cycle-safe JSON-shape walk performed before JSON
 encoding or session mutation.  Its reversible
@@ -305,11 +308,12 @@ Current repository-side evidence is bounded as follows:
   recorded as green because the unchanged
   =tools/migrate-session-checkpoints.el= target exited with its CLI usage.
 
-The bug index remains =New= pending a fresh independent review of the exact
-revision.  The historical full-suite classification above is not a current
-acceptance claim; the focused evidence is the bounded candidate evidence only.
+At this pre-Review 003 handoff, the bug index was =New= pending a fresh
+independent review of the exact revision.  The historical full-suite
+classification above is not a current acceptance claim; the focused evidence
+is the bounded candidate evidence only.
 
-* Integrated candidate closure (2026-08-28)
+* Integrated candidate closure (2026-08-28; pre-Review 003 handoff)
 
 This candidate now has one explicit admission boundary for a board-backed
 participant.  Board and routing-policy validation, participant identity, and
@@ -336,10 +340,35 @@ unbudgeted structures before mutation.
 
 The focused F009 and controller-command-shape regressions are green (4/4 and
 2/2 respectively); the broader owner-lane results are recorded only after the
-bounded closure run below.  This section is an implementation handoff, not a
-fixed-point acceptance: the bug remains =New= and =In-review= pending an
-independent review of the exact candidate revision.  Running Emacs was left
-untouched.
+bounded closure run below.  This section is an implementation handoff before
+the independent review.  Running Emacs was left untouched.
+
+* Review 003 acceptance (2026-08-28)
+
+Review 003 accepted implementation revision
+=c76b5d238601a6cac41efc898e56158428e62959= with zero actionable P0--P3
+findings.  The review document is =reviews/003.org= and was committed as
+=7a8a2e34=; its comparison base was =2c835ba4d7d3fa191aa34452d21be78f846823b8=.
+The independent review closed F003, F004, F005, F008, and F009 without
+reopening F001, F002, F006, or F007.
+
+The accepted boundary is the one described by the handoff above: session
+owns the complete prepared admission pair and its direct/queued/controller
+publication unit; the deferred participant event follows successful durable
+admission; the board owns selector grammar and identity; service derives
+selected ownership; and the shell settles only selected-owned terminal
+activity while rendering sibling rows.  The Node writer's one batch command,
+reopen/index path, exact command-id preflight, legacy admission, and selected
+identity regressions are part of the accepted evidence.
+
+Review 003 recorded 10/10 focused owner tests, 12/12 Node writer tests,
+28/28 integrated focused tests, 701 owner-suite passes plus one expected skip,
+7/7 strict compilations, 11/11 check-parens, and 3/3 Org parses.  The six
+restricted loopback fixtures were classified as environmental and passed 6/6
+with loopback access.  The bug is now =Closed=; the prior =New=/=In-review=
+wording in the handoff sections is historical.  The running Emacs was left
+untouched and requires a full restart to load these core/session/service/shell
+changes.
 
 * Presentation cleanup
 

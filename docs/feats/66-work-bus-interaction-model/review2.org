@@ -1249,13 +1249,14 @@ Focused evidence is
 supersedes the earlier composition-gap statement; the surrounding review
 remains historical evidence for the board cutover.
 
-* Restored-routing candidate: F001-F007 (2026-08-28)
+* Restored-routing candidate: F001-F007 (2026-08-28; accepted by Review 003)
 
 ** Status
 
-In-review, pending a fresh independent acceptance of the exact candidate
-revision.  This section is an implementation handoff, not a fixed-point
-acceptance; the bug index remains =New=.
+Accepted at implementation revision
+=c76b5d238601a6cac41efc898e56158428e62959= by Review 003 (=7a8a2e34=).
+This section is the accepted post-review handoff; the historical review above
+remains unchanged.
 
 ** Current contract and evidence
 
@@ -1274,8 +1275,8 @@ creation's queued entries while preserving unrelated queued work, timer,
 derived-index obligation, dirty state, and unsettled count.
 
 Focused implementation evidence is recorded in the bug investigation.  The
-current candidate remains pending independent review; historical board-cutover
-claims above must not be read as acceptance of F001-F007.
+candidate is accepted by Review 003; historical board-cutover claims above
+remain historical evidence and are not rewritten by this later closure note.
 
 ** Integrated admission/settlement candidate note (2026-08-28)
 
@@ -1288,7 +1289,7 @@ is not described as retractable.  The selected settlement fact remains
 derived by the service from the binding and event subject, so sibling terminal
 rows are observable without settling selected progress or composer state.
 
-This is a current implementation note, not a new completion decision.  The
-bug index remains =New= and the candidate remains =In-review= pending an
-independent acceptance of the exact revision.  The historical review and its
-completion record above are unchanged in meaning.
+This is the accepted current implementation note for revision
+=c76b5d238601a6cac41efc898e56158428e62959= and Review 003 (=7a8a2e34=).
+The bug is =Closed=; the historical review and its completion record above
+are unchanged in meaning.

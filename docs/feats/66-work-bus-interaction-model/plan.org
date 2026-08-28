@@ -24,8 +24,10 @@ The identity, bus-selector/settlement, board-registry, inbox-delivery,
 main-thread execution boundary, and first-version default contracts have been
 reviewed together.
 
-The restored-participant routing correction is present in repository source,
-pending its independent fixed-point review. New board-backed bindings persist
+The restored-participant routing correction is present in repository source
+and was accepted at implementation revision
+=c76b5d238601a6cac41efc898e56158428e62959= by Review 003 (=7a8a2e34=).
+New board-backed bindings persist
 one complete routing policy in the existing board-session-state record, and
 restart restoration validates that policy before attachment. The session
 codec preserves nested selector attribute types through JSONL, index,
@@ -38,8 +40,9 @@ ownership for projected board events; =e-chat= renders sibling output and
 activity, while only selected-owned terminal output/activity settles progress,
 status, or the composer. The selected attachment remains the sole source of
 submit/steer intent. This is a correction to the association and settlement
-boundary, not a board-wide completion aggregator. The bug index remains New
-until a fresh independent review accepts the implementation evidence.
+boundary, not a board-wide completion aggregator. The restored-routing bug is
+now closed; the historical review and pre-Review 003 handoff remain below as
+audit evidence.
 Slice 0 is complete.  Slice 1 and Slice 2 foundations are in progress: board
 identity/routing, prepared work enrollment, exact invocation replies, attached
 harness work observation, participant output publication, and the board-owned
@@ -1800,7 +1803,8 @@ unacknowledged work owned by a failed admission and does not pretend to retract
 acknowledged controller commands.
 
 The fresh/restart routing and selected-settlement composition, policy codec,
-Node checkpoint/index path, and focused owner regressions are implementation
-evidence for this candidate.  The restored-routing bug remains =New= and the
-candidate remains =In-review= pending independent acceptance; this note does
-not change the historical board-cutover completion records above.
+Node checkpoint/index path, and focused owner regressions are accepted
+implementation evidence for revision
+=c76b5d238601a6cac41efc898e56158428e62959=, independently accepted by Review
+003 (=7a8a2e34=).  The restored-routing bug is =Closed=; this note does not
+change the historical board-cutover completion records above.
