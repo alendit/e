@@ -890,6 +890,28 @@ session root is already gone, or the referenced file is already absent."
         (e-session-tmp--touch-root root)
         path))))
 
+(defun e-session-tmp-reference-available-p (harness session-id reference)
+  "Return non-nil when REFERENCE currently resolves to a regular tmp file.
+
+This is a non-mutating liveness query.  Unlike the read and write helpers it
+never creates a lineage root, registers a harness, touches root expiry, or
+updates file timestamps.  Invalid/missing references simply report nil so
+receipt projection can render an unavailable detail state without changing the
+durable receipt."
+  (when (and harness
+             (stringp session-id)
+             (not (string-empty-p session-id)))
+    (condition-case nil
+        (when-let* ((uri (e-session-tmp--reference-uri reference))
+                    (lineage-id (e-session-tmp--lineage-id harness session-id))
+                    (root (gethash lineage-id e-session-tmp--roots)))
+          (and (file-directory-p root)
+               (let* ((relative-name
+                       (e-session-tmp--relative-name-from-uri uri))
+                      (path (e-session-tmp--path-in-root root relative-name)))
+                 (file-regular-p path))))
+      (error nil))))
+
 (defun e-session-tmp-cleanup-references (harness session-id references)
   "Delete session tmp REFERENCES for HARNESS SESSION-ID.
 Return the list of deleted file paths.  This helper is intended for cache

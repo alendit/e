@@ -82,6 +82,51 @@
                    "complete")))
       (e-session-tmp-cleanup-harness harness))))
 
+(ert-deftest e-session-tmp-test-reference-availability-is-nonmutating ()
+  "Reference liveness sees only existing files without creating or touching roots."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (session-id (format "availability-%s" (gensym))))
+    (e-harness-create-session harness :id session-id)
+    (let ((root-count (hash-table-count e-session-tmp--roots)))
+      ;; A missing reference must not lazily create the session root.
+      (should-not
+       (e-session-tmp-reference-available-p
+        harness session-id "tmp://missing/details.json"))
+      (should (= (hash-table-count e-session-tmp--roots) root-count))
+      (let* ((uri (e-session-tmp-write
+                   harness session-id "details/one.json" "{}"))
+             (root (e-session-tmp-directory harness session-id))
+             (root-time (file-attribute-modification-time
+                         (file-attributes root)))
+             (reference (list :uri uri :storage 'session-tmp)))
+        (should (e-session-tmp-reference-available-p
+                 harness session-id uri))
+        (should (e-session-tmp-reference-available-p
+                 harness session-id reference))
+        (should-not
+         (e-session-tmp-reference-available-p
+          harness session-id "tmp://details"))
+        (should-not
+         (e-session-tmp-reference-available-p
+          harness session-id (list :uri uri :storage 'raw-result)))
+        (should-not
+         (e-session-tmp-reference-available-p
+          harness session-id "not-a-tmp-uri"))
+        ;; The query itself must not extend the root's idle lifetime.
+        (should (equal root-time
+                       (file-attribute-modification-time
+                        (file-attributes root))))
+        (should (equal
+                 (e-session-tmp-cleanup-reference harness session-id uri)
+                 (expand-file-name "details/one.json" root)))
+        (should-not
+         (e-session-tmp-reference-available-p harness session-id uri))))
+    (e-session-tmp-cleanup-harness harness)))
+
 (ert-deftest e-session-tmp-test-write-does-not-prompt-for-coding ()
   "Writing eight-bit content never invokes the coding-system selector.
 Regression: tmp:// writes left `coding-system-for-write' unbound, so bytes the
