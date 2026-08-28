@@ -909,7 +909,8 @@ durable receipt."
                (let* ((relative-name
                        (e-session-tmp--relative-name-from-uri uri))
                       (path (e-session-tmp--path-in-root root relative-name)))
-                 (file-regular-p path))))
+                 (and (file-regular-p path)
+                      (file-readable-p path)))))
       (error nil))))
 
 (defun e-session-tmp-cleanup-references (harness session-id references)

@@ -1428,17 +1428,23 @@ fields outside that error contract."
          :turn-id turn-id
          :metadata (list :event-type (and type (symbol-name type))))
    (lambda ()
-     (let ((store (e-harness-sessions harness)))
-       (let ((event (e-session-append-activity-event
-                     store
-                     session-id
-                     turn-id
-                     type
-                     (e-harness--durable-activity-payload type payload)
-                     :write-index nil)))
-         (when (e-harness--activity-index-flush-event-p type)
-           (e-session--write-index store))
-         event)))))
+     (let* ((store (e-harness-sessions harness))
+            (durable-payload
+             (e-harness--durable-activity-payload type payload))
+            (checkpoint-retain
+             (and (eq type 'tool-finished)
+                  (plist-member durable-payload :receipt)))
+            (event (e-session-append-activity-event
+                    store
+                    session-id
+                    turn-id
+                    type
+                    durable-payload
+                    :write-index nil
+                    :checkpoint-retain checkpoint-retain)))
+       (when (e-harness--activity-index-flush-event-p type)
+         (e-session--write-index store))
+       event))))
 
 (defun e-harness--emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."

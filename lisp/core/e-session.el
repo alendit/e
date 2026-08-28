@@ -119,6 +119,16 @@
   :type 'integer
   :group 'e-session)
 
+(defcustom e-session-checkpoint-marked-activity-event-limit 16
+  "Maximum marked activity entries retained in a resume checkpoint.
+
+Marked activity is a generic persistence hint supplied by the activity
+producer.  It is selected from the complete current path independently of the
+ordinary recent activity tail; the session layer does not inspect its payload
+or assign meaning to the marker."
+  :type 'integer
+  :group 'e-session)
+
 (defcustom e-session-checkpoint-board-message-limit 256
   "Maximum recent board messages retained in a resume checkpoint."
   :type 'integer
@@ -1363,6 +1373,21 @@ bodies are reconstructed by the later context consumer from session entries."
             (lambda (entry) (member (plist-get entry :id) path-ids))
             (plist-get session :activity-events))
            e-session-checkpoint-activity-event-limit))
+         ;; Producers may mark durable activity that must remain resolvable
+         ;; after a compaction boundary or a busy tail.  Keep only a bounded
+         ;; tail of marked entries from the complete selected path; this layer
+         ;; deliberately does not inspect their payloads.
+         (complete-path (e-session-current-path store session-id))
+         (complete-path-ids
+          (mapcar (lambda (entry) (plist-get entry :id)) complete-path))
+         (marked-activity
+          (e-session--checkpoint-tail
+           (cl-remove-if-not
+            (lambda (entry)
+              (and (member (plist-get entry :id) complete-path-ids)
+                   (plist-get entry :checkpoint-retain)))
+            (plist-get session :activity-events))
+           e-session-checkpoint-marked-activity-event-limit))
          (latest-token (plist-get session :latest-token-usage-event))
          (reports
           (e-session--checkpoint-tail
@@ -1412,8 +1437,10 @@ bodies are reconstructed by the later context consumer from session entries."
                     (when (memq (plist-get entry :type)
                                 '(message branch-summary compaction))
                       (plist-get entry :id)))
-                  path)
+                 path)
                  (mapcar (lambda (entry) (plist-get entry :id)) activity)
+                 (mapcar (lambda (entry) (plist-get entry :id))
+                         marked-activity)
                  (and latest-token (list (plist-get latest-token :id)))
                  (mapcar (lambda (entry) (plist-get entry :id)) reports)
                  (mapcar (lambda (entry) (plist-get entry :id)) anchors)
@@ -1428,7 +1455,10 @@ bodies are reconstructed by the later context consumer from session entries."
        (and (not (equal (plist-get entry :id)
                         (e-session--root-event-id session)))
             (member (plist-get entry :id) required-ids)))
-     path)))
+     ;; Iterate the complete path so marked activity before a compaction
+     ;; suffix remains in checkpoint order; required-ids still bounds every
+     ;; other entry to the ordinary suffix/tails above.
+     complete-path)))
 (defun e-session--checkpoint-root (session)
   "Return compact current root state for SESSION."
   (list :id (e-session--root-event-id session)
@@ -1479,13 +1509,16 @@ bodies are reconstructed by the later context consumer from session entries."
          (list :type "message" :session-id session-id :timestamp timestamp
                :id id :parent-id parent-id :message message)))
       ('activity-event
-       (list :type "activity-event" :session-id session-id
-             :id id :parent-id parent-id
-             :turn-id (plist-get entry :turn-id)
-             :board-activity-sequence
-             (plist-get entry :board-activity-sequence)
-             :timestamp timestamp :event-type (plist-get entry :event-type)
-             :payload (copy-tree (plist-get entry :payload))))
+       (append
+        (list :type "activity-event" :session-id session-id
+              :id id :parent-id parent-id
+              :turn-id (plist-get entry :turn-id)
+              :board-activity-sequence
+              (plist-get entry :board-activity-sequence)
+              :timestamp timestamp :event-type (plist-get entry :event-type)
+              :payload (copy-tree (plist-get entry :payload)))
+        (when (plist-get entry :checkpoint-retain)
+          (list :checkpoint-retain t))))
       ('branch-summary
        (list :type "branch-summary" :session-id session-id
              :id id :parent-id parent-id :timestamp timestamp
@@ -2089,13 +2122,17 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
-        (let* ((event-data
-                (list :id (plist-get record :id)
-                      :parent-id (plist-get record :parent-id)
-                      :turn-id (plist-get record :turn-id)
-                      :event-type (plist-get record :event-type)
-                      :payload (plist-get record :payload)
-                      :created-at timestamp))
+         (let* ((event-data
+                 (append
+                  (list :id (plist-get record :id)
+                        :parent-id (plist-get record :parent-id)
+                        :turn-id (plist-get record :turn-id)
+                        :event-type (plist-get record :event-type)
+                        :payload (plist-get record :payload)
+                        :created-at timestamp)
+                  (when (plist-member record :checkpoint-retain)
+                    (list :checkpoint-retain
+                          (plist-get record :checkpoint-retain)))))
                (_ (when (plist-member record :board-activity-sequence)
                     (plist-put event-data :board-activity-sequence
                                (plist-get record :board-activity-sequence))))
@@ -3512,7 +3549,8 @@ the updated message, or nil when no such message exists."
       message)))
 
 (defun e-session--append-activity-event-entry
-    (store session-id turn-id event-type payload entry-id write-index)
+    (store session-id turn-id event-type payload entry-id write-index
+           checkpoint-retain)
   "Append activity EVENT-TYPE with optional durable ENTRY-ID.
 
 ENTRY-ID is reserved for the one audit-only context-curation response control
@@ -3524,6 +3562,8 @@ activity events continue to mint their own ids."
                  session
                  'activity-event
                  (append (when entry-id (list :id entry-id))
+                         (when checkpoint-retain
+                           (list :checkpoint-retain t))
                          (list :turn-id turn-id
                                :event-type event-type
                                :payload (copy-tree payload)
@@ -3543,24 +3583,33 @@ activity events continue to mint their own ids."
     (e-session--touch store session timestamp)
     (e-session--append-record
      store session-id
-     (list :type "activity-event"
-           :session-id session-id
-           :id (plist-get event :id)
-           :parent-id (plist-get event :parent-id)
-           :turn-id turn-id
-           :board-activity-sequence (plist-get event :board-activity-sequence)
-           :timestamp timestamp
-           :event-type event-type
-           :payload (copy-tree (plist-get event :payload))))
+     (append
+      (list :type "activity-event"
+            :session-id session-id
+            :id (plist-get event :id)
+            :parent-id (plist-get event :parent-id)
+            :turn-id turn-id
+            :board-activity-sequence (plist-get event :board-activity-sequence)
+            :timestamp timestamp
+            :event-type event-type
+            :payload (copy-tree (plist-get event :payload)))
+      (when (plist-get event :checkpoint-retain)
+        (list :checkpoint-retain t))))
     (when write-index
       (e-session--write-index store))
     event))
 
 (cl-defun e-session-append-activity-event
-    (store session-id turn-id event-type payload &key (write-index t))
-  "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
+    (store session-id turn-id event-type payload &key (write-index t)
+           checkpoint-retain)
+  "Append durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID.
+
+When CHECKPOINT-RETAIN is non-nil, persist a generic retention marker on the
+activity entry.  Checkpoint construction may pin a bounded marked tail from
+the complete selected path; it does not interpret PAYLOAD."
   (e-session--append-activity-event-entry
-   store session-id turn-id event-type payload nil write-index))
+   store session-id turn-id event-type payload nil write-index
+   checkpoint-retain))
 
 (cl-defun e-session-append-context-curation-response
     (store session-id turn-id response-entry-id &key (write-index t))
@@ -3577,7 +3626,7 @@ messages, so it is resolvable by id but cannot enter ordinary model context."
   (e-session--append-activity-event-entry
    store session-id turn-id 'context-curation-response
    (list :response-entry-id response-entry-id)
-   response-entry-id write-index))
+   response-entry-id write-index nil))
 
 (defun e-session-append-process-report (store session-id report)
   "Append out-of-band process REPORT to SESSION-ID in STORE.

@@ -107,6 +107,16 @@
                  harness session-id uri))
         (should (e-session-tmp-reference-available-p
                  harness session-id reference))
+        (let ((path (expand-file-name "details/one.json" root))
+              (original-readable-p (symbol-function 'file-readable-p)))
+          (cl-letf (((symbol-function 'file-readable-p)
+                     (lambda (candidate)
+                       (and (not (equal candidate path))
+                            (funcall original-readable-p candidate)))))
+            (should-not (e-session-tmp-reference-available-p
+                         harness session-id uri)))
+          (should (e-session-tmp-reference-available-p
+                   harness session-id uri)))
         (should-not
          (e-session-tmp-reference-available-p
           harness session-id "tmp://details"))
