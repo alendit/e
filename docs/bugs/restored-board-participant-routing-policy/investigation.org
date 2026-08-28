@@ -32,24 +32,43 @@ installs it in the process-local binding.  Grimoire creates the Daily update
 participant with a =grimoire-update= pickup selector, self-only observer,
 =grimoire-update= default tags, and =:self= default target.
 
-The chat service persists only =board-id= and =principal= in
-=board-session-state=.  On restart, =e-chat-service--bind-session= reconstructs
-the binding by calling =e-chat-service--install-participant-binding= with only
-those two fields.  That installer therefore applies its generic defaults:
+The historical defect was that the chat service persisted only =board-id= and
+=principal= in =board-session-state=.  On restart,
+=e-chat-service--bind-session= reconstructed the binding with generic defaults:
 =(:tags (main))= pickup and observer selectors, =(main)= default tags, no exact
-target, and a newly generated participant identity.
+target, and a newly generated participant identity.  The source correction now
+persists one complete nested =:routing-policy= for each new binding, containing
+the resolved participant id, pickup selector, observer selector, default tags,
+and default target.  =e-session= validates the JSON-shaped declarative policy
+before changing the association, detaches its values for JSONL, index, and
+checkpoint writes, and normalizes replayed tags and message-kind values for
+board matching.  The Node writer carries the complete nested board-state object
+through its index/checkpoint records.
 
-The background participant consequently stops being private after every
-restart and begins consuming ordinary interactive chat input.
+=e-chat-service= prepares this policy before attachment and resolves =:self=
+to the allocated participant id.  =e-board-registry= remains the owner of
+participant-id allocation.  Restoration passes the persisted policy to the
+attachment boundary instead of re-inferencing it.  A malformed policy fails
+before attachment; a role-bearing legacy owner remains readable with its
+historical defaults, while a legacy participant record without a complete
+policy fails closed instead of being silently rebound to =main=.
 
-There is a second presentation defect which amplifies the symptom.
-=e-board-runtime--visible-harness-activity-types= publishes provider request
-failures but omits =turn-retrying=.  The chat shell has a dedicated
-=turn-retrying= status renderer, but board-backed chat never receives that
-event.  It therefore renders each retryable provider failure as
-=Thought failed after ...= without explaining that the same turn is being
-retried.  Activity from both private turns is correlated to the same causal
-board input, so their retry rows appear together.
+The background participant consequently stopped being private after every
+restart and began consuming ordinary interactive chat input in the historical
+failure state.  The corrected source prevents that new binding path.  The
+provider-free fresh/restart recipient proof is now covered by
+=e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only=.
+
+The following retry-status omission is a historical observation from before
+the partial fix recorded below; it is not a current-source claim.  It was a
+second presentation defect which amplified the symptom.
+=e-board-runtime--visible-harness-activity-types= then published provider
+request failures but omitted =turn-retrying=.  The chat shell had a dedicated
+=turn-retrying= status renderer, but board-backed chat did not receive that
+event.  It therefore rendered each retryable provider failure as
+=Thought failed after ...= without explaining that the same turn was being
+retried.  Activity from both private turns was correlated to the same causal
+board input, so their retry rows appeared together.
 
 * Conclusion
 
@@ -123,6 +142,41 @@ be derived from an application-level board completion contract that accounts
 for every intended responder.  A generic =main=-tagged sibling output is not a
 sound completion witness for the selected attachment.
 
+* Accepted Routing Contract
+
+The product contract for this report is explicit:
+
+- *R1 — durable policy:* every new board-backed binding stores one complete
+  routing policy inside the existing board-session-state record.  Its fields
+  are the resolved participant id, pickup selector, observer selector, default
+  tags, and default target, including explicit nil values.  Selectors are
+  bounded JSON-shaped declarative data; predicates, functions, unknown keys,
+  and unpersistable values are rejected before persistence or attachment.
+  =e-session= owns schema and replay validation, =e-chat-service= owns policy
+  preparation, and the registry owns participant-id allocation.
+- *R2 — routing composition:* a provider-free fresh and restarted board/chat
+  composition must show ordinary Daily input delivered only to the selected
+  root participant and private-update input delivered only to its intended
+  participant, with exact recipient and delivery identities.  The composed
+  fresh/restart proof is =e-chat-test-board-routing-isolated-after-restart-and-
+  settles-selected-only=.
+- *S1 — selected settlement:* only output or terminal activity whose subject
+  participant is the selected binding may settle that chat's progress, status,
+  or composer.  Sibling output remains renderable and non-settling; a
+  board-wide completion aggregator is superseded.
+- *S2 — submit intent:* submit/steer is derived only from the selected
+  binding's active state.  A sibling terminal event leaves steer active; the
+  selected participant's terminal event changes it to submit.  This is covered
+  by =e-chat-test-sibling-terminal-events-do-not-settle-selected-turn= and the
+  selected-terminal half of the composed restart proof.
+
+Role-less canonical legacy root and owner records retain their established
+main defaults.  A participant-role record without a complete policy is an
+explicit invalid association for implicit restore; there is no role inference,
+default-main fallback, shell-local policy, Grimoire hook, or automatic
+migration.  An explicit caller-supplied policy for a legacy open remains a
+bounded admission upgrade only when it is complete and validated.
+
 The live investigation used the bounded =scripts/e-live-probe chat= probe plus
 the two durable private journals and the owning board journal.  No live state
 was changed and the running Emacs was not reloaded.
@@ -149,8 +203,9 @@ Focused repository validation:
 - Org Canvas and the starter shell pass the same retry activity through their
   existing chat presentation path.
 
-The primary restored-routing defect remains open.  The running Emacs was not
-reloaded.
+The primary restored-routing defect is fixed in repository source.  The
+running Emacs was not reloaded; the core/service/session and shell changes
+require a restart before they can affect that process.
 
 * Partial-Fix Validation
 
@@ -160,6 +215,44 @@ reloaded.
 - Focused graphical retry presentation: 1 passed, 0 unexpected.  The captured
   frame visibly contains the retry schedule and retained provider error and no
   =Thought failed= text.
+
+* Step 2 Implementation And Evidence (2026-08-28)
+
+The restored binding now carries its complete policy into the attachment
+boundary.  =e-chat-service= derives a process-local selected-participant fact
+from the binding's attached participant and each projected event's subject;
+the fact is not persisted.  =e-chat= continues to render observed sibling
+messages and activity, but only selected-owned terminal output or terminal
+activity may settle progress, status, or the composer.  A sibling failure or
+cancellation remains renderable as semantic activity; it does not mark the
+selected chat failed/cancelled or restore its composer.  Submit/steer remains
+owned by the selected binding's active-turn state.
+
+The provider-free composed test creates root and private-update participants,
+routes both input classes with exact message, pickup, and participant ids,
+flushes the board-backed session, resets process-local registries, restores
+the same bindings from persistence, and repeats the identity checks.  Private
+input is posted through the restored private binding without routing overrides,
+so the second pass exercises its durable default tags and exact target.  The
+test then delivers sibling terminal output through the restored root's real
+observer subscription while the selected root is active (output is rendered,
+progress remains active, and intent remains =steer=) before settling the
+selected root (progress stops and intent becomes =submit=).
+
+Focused repository evidence:
+
+- =e-chat-service-test-board-output-identifies-terminal-presentation=: 1/1.
+- =e-chat-test-sibling-terminal-events-do-not-settle-selected-turn=: 1/1.
+- =e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only=: 1/1.
+- The Step 1 routing-policy, service-restore, and persistence-index owner
+  tests remain green (4/4, 3/3, and 1/1 respectively).
+- The selected complete-package lane was 4/4, including the existing selected
+  terminal/progress and replay guards.  Check-parens and warning-as-error
+  compilation of the changed Lisp owners passed; no full suite was run.
+
+The earlier settlement incident and partial-fix counts above are retained as
+historical evidence.  The new ownership gate supersedes their conclusion
+that the restored-routing defect remained open.
 
 * Presentation cleanup
 
@@ -181,7 +274,7 @@ the derived intermittent entry.
 - Focused retry detail ERT: 1/1 passed.
 - Strict =e-chat.el= compilation: passed.
 
-* Architecture Self-Check
+* Retry Architecture Self-Check
 
 1. This is independently useful: retries are truthful and diagnosable even
    before the separate restored-routing defect is fixed.
@@ -211,3 +304,38 @@ the derived intermittent entry.
     surface through =turn-failed= rather than being swallowed.
 14. Harness, board, shared chat, starter, Org Canvas, and graphical tests cover
     the behavior at their respective boundaries.
+
+* Restored-Routing Architecture Self-Check
+
+1. If this package stopped here, restart no longer widens private participant
+   routing, and sibling completion cannot falsely settle the selected chat.
+2. It moves toward durable board identity with shell-neutral routing and
+   participant-owned lifecycle settlement.
+3. Selector vocabulary may evolve and remains localized in the session codec;
+   durable identity, exact restoration, and selected ownership are stable
+   requirements modeled directly.
+4. =e-session= owns the durable schema, =e-chat-service= owns binding policy and
+   event projection, the registry owns allocation/routing, and =e-chat= owns
+   presentation settlement.
+5. Coupling is reduced to one complete association value and one derived event
+   fact; neither interface exposes unrelated board capabilities.
+6. Policy depends on the stable session and registry contracts.  No core owner
+   depends on the chat shell or on Grimoire.
+7. Persistence and attachment remain application-service side effects; the
+   shell only consumes projected facts.
+8. The added durable state is the smallest restart-lived routing policy.
+   Selected ownership is derived per event and is never persisted.
+9. Validation, detachment, and one participant comparison are bounded by the
+   existing association and projection paths; ordinary provider work is
+   unchanged.
+10. The routing policy is one real, complete association contract.  A partial
+    implementation cannot silently weaken it because partial state is invalid.
+11. Legacy root/owner associations retain =main= behavior.  Unreconstructable
+    participant associations fail closed; no automatic migration is invented.
+12. The generic-main restore path and shell-local participant inference are no
+    longer available for participant-role records.
+13. Invalid durable policy fails before mutation or attachment.  Unexpected
+    persistence, registry, and attachment failures continue to surface.
+14. Codec, Node checkpoint/index replay, compatibility, fresh/restart routing,
+    real observer delivery, sibling non-settlement, and selected settlement are
+    covered independently and in composition.

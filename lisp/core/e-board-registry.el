@@ -324,6 +324,19 @@ The source board is registered with `e-board' under the same board identity."
   "Return process-local board ID, or signal `e-board-registry-missing'."
   (e-board-registry--resolve id))
 
+(defun e-board-registry-allocate-participant-id (board-or-id)
+  "Reserve one board-local participant identity for BOARD-OR-ID.
+
+The returned opaque id is intentionally not attached yet.  Application services
+may persist a complete participant policy with it before attaching the runtime
+endpoint; a collision is rejected rather than silently reusing an identity."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (id (e-board-registry--next-id
+              (e-board-registry-board-id-function board) 'participant)))
+    (when (gethash id (e-board-registry-board-participants board))
+      (signal 'e-board-registry-id-conflict (list id)))
+    id))
+
 (defun e-board-registry-principal-role (board-or-id principal)
   "Return PRINCIPAL's board role, or nil when it has no board grant."
   (and principal

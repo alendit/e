@@ -1223,3 +1223,26 @@ Regression coverage crosses the actual product seams:
 Repository validation after this correction is recorded in the feature
 completion evidence.  Batch compilation is warning-free, deterministic E2E is
 green, and the running Emacs was left unchanged.
+
+** Restored routing and selected settlement correction (2026-08-28)
+
+The earlier review's missing mixed-participant composition was subsequently
+closed by the restored board-participant routing fix. The complete routing
+policy is persisted with the existing board-session association and restored
+before attachment; the provider-free fresh/restart scenario
+=e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only=
+asserts exact root and private-update recipient/delivery identities on both
+sides of the reset. =e-chat-service= supplies a process-local selected-owner
+fact for projected events. =e-chat= still renders sibling messages and
+failure/cancellation activity, but sibling terminal events cannot settle the
+selected chat; only selected-owned terminal output/activity changes progress,
+status, or composer state. The selected binding's active turn remains the
+source of =steer= versus =submit=.
+
+Focused evidence is
+=e-chat-service-test-board-output-identifies-terminal-presentation= (1/1),
+=e-chat-test-sibling-terminal-events-do-not-settle-selected-turn= (1/1), and
+=e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only=
+(1/1), with the Step 1 persistence/restore owners also green. This section
+supersedes the earlier composition-gap statement; the surrounding review
+remains historical evidence for the board cutover.

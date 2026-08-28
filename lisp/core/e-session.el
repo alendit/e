@@ -1872,6 +1872,169 @@ disappear while an automatic projection could still reference its subject."
   '(:invalid-board-association t)
   "Bounded internal marker for a present malformed board association.")
 
+(defconst e-session--board-routing-policy-keys
+  '(:participant-id :pickup-selector :observer-selector :default-tags
+    :default-to)
+  "Complete durable fields for one board participant routing policy.")
+
+(defconst e-session--board-routing-selector-keys
+  '(:kind :activity-kind :to :author :subject-participant-id :attributes
+    :tags :tags-all :tags-any)
+  "JSON-shaped declarative selector keys admitted to routing policy.")
+
+(defun e-session--board-routing-json-value-p (value &optional visiting)
+  "Return non-nil when VALUE is a finite JSON-shaped Lisp value.
+Functions, hash tables, and cyclic values are deliberately not durable board
+policy.  VISITING is the active identity set used to reject cycles without
+accepting an executable selector predicate by accident."
+  (setq visiting (or visiting (make-hash-table :test 'eq)))
+  (cond
+   ((or (null value) (eq value t) (numberp value) (stringp value)) t)
+   ;; Symbols are data in selectors, even when the same symbol names a
+   ;; callable function.  Executable function objects and forms are rejected
+   ;; by the branches below instead.
+   ((and (symbolp value) (not (keywordp value))) t)
+   ((functionp value) nil)
+   ((and (consp value) (memq (car value) '(lambda function))) nil)
+   ((or (vectorp value) (consp value))
+    (unless (gethash value visiting)
+      (puthash value t visiting)
+      (unwind-protect
+          (if (vectorp value)
+              (cl-every
+               (lambda (item)
+                 (e-session--board-routing-json-value-p item visiting))
+               value)
+            (if (e-session--keyword-plist-shape-p value)
+                (let ((tail value)
+                      (valid t))
+                  (while (and valid tail)
+                    (pop tail)
+                    (setq valid
+                          (e-session--board-routing-json-value-p
+                           (pop tail) visiting)))
+                  valid)
+              (if (proper-list-p value)
+                  (cl-every
+                   (lambda (item)
+                     (e-session--board-routing-json-value-p item visiting))
+                   value)
+                (and (or (keywordp (car value))
+                         (stringp (car value)))
+                     (e-session--board-routing-json-value-p
+                      (cdr value) visiting)))))
+        (remhash value visiting))))
+   (t nil)))
+
+(defun e-session--board-routing-json-value-valid-p (value)
+  "Return non-nil when VALUE is finite and encodable as JSON."
+  (and (e-session--board-routing-json-value-p value)
+       (condition-case nil
+           (progn (json-encode value) t)
+         (error nil))))
+
+(defun e-session--board-routing-tag-list-valid-p (value)
+  "Return non-nil when VALUE is a list of declarative tag atoms."
+  (and (proper-list-p value)
+       (cl-every
+        (lambda (tag)
+          (and (or (symbolp tag) (stringp tag))
+               (not (and (symbolp tag) (keywordp tag)))))
+        value)))
+
+(defun e-session--board-routing-selector-valid-p (selector)
+  "Return non-nil when SELECTOR is declarative and JSON-shaped."
+  (and (e-session--keyword-plist-shape-p selector)
+       (let ((tail selector)
+             seen
+             (valid t))
+         (while (and valid tail)
+          (let ((key (pop tail))
+                (value (pop tail)))
+             (setq valid
+                   (and (memq key e-session--board-routing-selector-keys)
+                        (not (memq key seen))
+                        (cond
+                         ((memq key '(:tags :tags-all :tags-any))
+                          (e-session--board-routing-tag-list-valid-p value))
+                         ((memq key '(:kind :activity-kind))
+                          (or (symbolp value) (stringp value)))
+                         ((memq key '(:to :author :subject-participant-id))
+                          (stringp value))
+                         ((eq key :attributes)
+                          (e-session--board-routing-json-value-valid-p value))
+                         (t nil))))
+             (push key seen)))
+         valid)))
+
+(defun e-session--board-routing-policy-valid-p (policy)
+  "Return non-nil when POLICY has exactly the complete durable shape."
+  (and (e-session--keyword-plist-shape-p policy)
+       (let ((tail policy)
+             seen
+             (valid t))
+         (while (and valid tail)
+           (let ((key (pop tail))
+                 (value (pop tail)))
+             (setq valid
+                   (and (memq key e-session--board-routing-policy-keys)
+                        (not (memq key seen))
+                        (cond
+                         ((eq key :participant-id)
+                          (and (stringp value)
+                               (not (string-empty-p value))))
+                         ((memq key '(:pickup-selector :observer-selector))
+                          (e-session--board-routing-selector-valid-p value))
+                         ((eq key :default-tags)
+                          (e-session--board-routing-tag-list-valid-p value))
+                         ((eq key :default-to)
+                          (or (null value) (stringp value)))
+                         (t nil))))
+             (push key seen)))
+         (and valid
+              (= (length seen) (length e-session--board-routing-policy-keys))
+              (e-session--board-routing-json-value-valid-p policy)))))
+
+(defun e-session--normalize-board-routing-selector (selector)
+  "Return SELECTOR in the in-memory symbol form used by board matchers."
+  (let ((selector (e-session--board-routing-copy-value selector)))
+    (dolist (key '(:kind :activity-kind))
+      (when (stringp (plist-get selector key))
+        (plist-put selector key (intern (plist-get selector key)))))
+    (dolist (key '(:tags :tags-all :tags-any))
+      (when (plist-member selector key)
+        (plist-put selector key
+                   (mapcar (lambda (tag)
+                             (if (stringp tag) (intern tag) tag))
+                           (plist-get selector key)))))
+    selector))
+
+(defun e-session--board-routing-copy-value (value)
+  "Deep-copy JSON-shaped board routing VALUE, including strings."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((consp value)
+    (cons (e-session--board-routing-copy-value (car value))
+          (e-session--board-routing-copy-value (cdr value))))
+   ((vectorp value)
+    (vconcat (mapcar #'e-session--board-routing-copy-value value)))
+   (t value)))
+
+(defun e-session--normalize-board-routing-policy (policy)
+  "Return detached POLICY with replayed tag/kind values normalized."
+  (when policy
+    (let ((policy (e-session--board-routing-copy-value policy)))
+      (dolist (key '(:pickup-selector :observer-selector))
+        (plist-put policy key
+                   (e-session--normalize-board-routing-selector
+                    (plist-get policy key))))
+      (when (plist-member policy :default-tags)
+        (plist-put policy :default-tags
+                   (mapcar (lambda (tag)
+                             (if (stringp tag) (intern tag) tag))
+                           (plist-get policy :default-tags))))
+      policy)))
+
 (defun e-session--board-association-keys-valid-p (association)
   "Return non-nil when ASSOCIATION contains only its bounded unique keys."
   (let ((tail association)
@@ -1879,7 +2042,8 @@ disappear while an automatic projection could still reference its subject."
         (valid t))
     (while (and valid tail)
       (let ((key (pop tail)))
-        (setq valid (and (memq key '(:board-id :principal :association-role))
+        (setq valid (and (memq key '(:board-id :principal :association-role
+                                     :routing-policy))
                          (not (memq key seen))))
         (push key seen)
         (pop tail)))
@@ -1893,13 +2057,38 @@ disappear while an automatic projection could still reference its subject."
        (stringp (plist-get association :principal))
        (or (not (plist-member association :association-role))
            (member (plist-get association :association-role)
-                   '("owner" "participant")))))
+                   '("owner" "participant")))
+       (or (not (plist-member association :routing-policy))
+           (e-session--board-routing-policy-valid-p
+            (plist-get association :routing-policy)))))
 
 (defun e-session--normalize-board-association (association)
   "Return a bounded normalized representation of present ASSOCIATION."
   (if (e-session--valid-board-association-p association)
-      (copy-tree association)
+      (let ((normalized (copy-tree association)))
+        (when (plist-member normalized :routing-policy)
+          (plist-put normalized :routing-policy
+                     (e-session--normalize-board-routing-policy
+                      (plist-get normalized :routing-policy))))
+        normalized)
     (copy-tree e-session--invalid-board-association)))
+
+(defun e-session-board-routing-policy (session)
+  "Return SESSION's detached complete routing policy, or nil when absent."
+  (when-let ((association (e-session-board-association session)))
+    (unless (e-session-board-association-invalid-p association)
+      (when (plist-member association :routing-policy)
+        (e-session--board-routing-copy-value
+         (plist-get association :routing-policy))))))
+
+(defun e-session-board-routing-policy-valid-p (policy)
+  "Return non-nil when POLICY is a complete durable routing policy."
+  (e-session--board-routing-policy-valid-p policy))
+
+(defun e-session-board-association-policy-present-p (association)
+  "Return non-nil when ASSOCIATION explicitly carries a routing policy."
+  (and (not (e-session-board-association-invalid-p association))
+       (plist-member association :routing-policy)))
 
 (defun e-session--projected-board-association (projection)
   "Return normalized board association from persisted PROJECTION.
@@ -3125,17 +3314,33 @@ silently replacing records from another namespace."
     nil))
 
 (defun e-session-declare-board-state
-    (store session-id principal board-id &optional association-role)
-  "Persist SESSION-ID's board identity and ASSOCIATION-ROLE.
+    (store session-id principal board-id &optional association-role
+           routing-policy)
+  "Persist SESSION-ID's board identity, role, and ROUTING-POLICY.
 ASSOCIATION-ROLE is either `owner' or `participant'.  Nil omits the role for
-replay-compatible callers that create the legacy board identity shape."
+replay-compatible callers that create the legacy board identity shape.
+ROUTING-POLICY, when non-nil, must contain every key in
+`e-session--board-routing-policy-keys'; a present policy is never partially
+persisted."
   (unless (member association-role '(nil "owner" "participant"))
     (error "Invalid board association role: %S" association-role))
+  (unless (and (stringp session-id) (stringp principal) (stringp board-id))
+    (error "Board association identity must be strings: %S %S %S"
+           session-id principal board-id))
+  (when (and routing-policy
+             (not (e-session--board-routing-policy-valid-p routing-policy)))
+    (error "Invalid board routing policy: %S" routing-policy))
   (let* ((session (e-session--get-live store session-id))
-         (board-state (list :board-id board-id :principal principal)))
+         (board-state (list :board-id (copy-sequence board-id)
+                            :principal (copy-sequence principal))))
     (when association-role
       (setq board-state
             (plist-put board-state :association-role association-role)))
+    (when routing-policy
+      (setq board-state
+            (plist-put
+             board-state :routing-policy
+             (e-session--normalize-board-routing-policy routing-policy))))
     (plist-put session :board-session-state (copy-tree board-state))
     (e-session--append-record
      store session-id
@@ -3146,7 +3351,7 @@ replay-compatible callers that create the legacy board identity shape."
            :board-activity-sequence
            (or (plist-get session :board-activity-sequence) 0)))
     (e-session--write-index store)
-    board-state))
+    (copy-tree board-state)))
 
 (defun e-session--fork-message-seed (message)
   "Return MESSAGE stripped of source-session identity for fork replay.

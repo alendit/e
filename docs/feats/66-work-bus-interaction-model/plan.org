@@ -23,6 +23,19 @@ full restart rather than =e-dev-reload=.
 The identity, bus-selector/settlement, board-registry, inbox-delivery,
 main-thread execution boundary, and first-version default contracts have been
 reviewed together.
+
+The restored-participant routing correction is also complete in repository
+source. New board-backed bindings persist one complete routing policy in the
+existing board-session-state record, and restart restoration validates that
+policy before attachment. The provider-free proof
+=e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only=
+checks exact root/private-update recipient and delivery identities before and
+after process-local reset. =e-chat-service= derives selected participant
+ownership for projected board events; =e-chat= renders sibling output and
+activity, while only selected-owned terminal output/activity settles progress,
+status, or the composer. The selected attachment remains the sole source of
+submit/steer intent. This is a correction to the association and settlement
+boundary, not a board-wide completion aggregator.
 Slice 0 is complete.  Slice 1 and Slice 2 foundations are in progress: board
 identity/routing, prepared work enrollment, exact invocation replies, attached
 harness work observation, participant output publication, and the board-owned

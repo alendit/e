@@ -249,6 +249,15 @@ checkpoint parsing retain their ordinary semantics. Presentation surfaces that
 select chats consume the chat-service root catalog rather than reconstructing
 ownership.
 
+New board-backed chat associations also persist one complete routing policy in
+the existing board-session-state record: the resolved participant id, pickup
+selector, observer selector, default tags, and default target, including
+explicit nil values. `e-session` owns schema, detachment, replay, index, and
+checkpoint validation; `e-chat-service` prepares the policy and resolves
+`:self`; `e-board-registry` allocates participant ids. Restoration validates
+the policy before attachment, while a participant-role record without a
+complete policy fails closed rather than borrowing the `main` route.
+
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a
 presentation shell; they should be session records or separate resources with
@@ -501,7 +510,12 @@ Current shells:
   output views, context preview, compaction command, overview/sidebar, resume,
   switch, rename, model/effort commands, abort/reset, and source-reference
   capture. It requires `chat-session` and talks to the harness through public
-  APIs and capability actions.
+  APIs and capability actions. Board projections include a process-local
+  selected-participant fact derived by `e-chat-service` from the attached
+  participant and each event subject. The shell renders observed sibling
+  messages and activity, but only selected-owned terminal output/activity
+  settles progress, status, or the composer; submit/steer remains derived from
+  the selected attachment's active state.
 - `e-chat-starter`: global one-shot contextual prompt shell over a chat session.
 - `e-canvas`: commands that create or attach live buffer/file context as
   `chat-session` attachments, including a primary canvas attachment.

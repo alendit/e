@@ -434,13 +434,14 @@ whole batch; each submitted writer command owns its ordinary outbox slot."
       first-command-id)))
 
 (defun e-session-persistence-declare-board-state
-    (controller session-id principal board-id &optional association-role)
-  "Persist board identity and ASSOCIATION-ROLE for SESSION-ID.
+    (controller session-id principal board-id &optional association-role
+               routing-policy)
+  "Persist board identity, ASSOCIATION-ROLE, and ROUTING-POLICY.
 PRINCIPAL is trusted host policy, never inferred from transcript content.  The
 derived session-index checkpoint remains asynchronous."
   (let ((store (e-session-persistence-store controller)))
     (e-session-declare-board-state
-     store session-id principal board-id association-role)))
+     store session-id principal board-id association-role routing-policy)))
 
 (defun e-session-persistence-request-checkpoint (controller)
   "Debounce a derived session-index checkpoint for CONTROLLER."

@@ -57,6 +57,132 @@ stand in for the pure curation preparation path."
                       :source-fingerprint (format "fingerprint-%s" suffix)
                       :tool-call-id (format "tool-call-%s" suffix))))))
 
+(defun e-session-test--routing-policy (&optional participant-id)
+  "Return one valid detached board routing policy fixture."
+  (list :participant-id (or participant-id "participant-private")
+        :pickup-selector '(:kind input :tags (private))
+        :observer-selector '(:subject-participant-id "participant-private")
+        :default-tags '(private)
+        :default-to "participant-private"))
+
+(ert-deftest e-session-test-board-routing-policy-round-trips-and-detaches ()
+  "A complete routing policy survives index/checkpoint and caller mutation."
+  (let* ((store (e-session-store-create))
+         (session-id "routing-policy")
+         (policy (e-session-test--routing-policy))
+         (expected (e-session--board-routing-copy-value policy))
+         (returned nil))
+    (e-session-create store :id session-id)
+    (setq returned
+          (e-session-declare-board-state
+           store session-id "chat:routing-policy" "board-routing"
+           "participant" policy))
+    (setcar (plist-get policy :default-tags) 'caller-mutated)
+    (setf (aref (plist-get policy :participant-id) 0) ?X)
+    (should (equal (e-session-board-routing-policy
+                    (e-session-get store session-id))
+                   expected))
+    (should (equal (plist-get (plist-get returned :routing-policy)
+                              :participant-id)
+                   "participant-private"))
+    (let* ((indexed (car (e-session-list store)))
+           (indexed-state (plist-get indexed :board-state))
+           (manifest (e-session-checkpoint-manifest store session-id))
+           (manifest-state (plist-get manifest :board-state)))
+      (should (equal (plist-get indexed-state :routing-policy) expected))
+      (should (equal (plist-get manifest-state :routing-policy) expected))
+      (setf (aref (plist-get (plist-get manifest-state :routing-policy)
+                             :participant-id)
+                  0)
+            ?Y))
+    (should (equal (plist-get (e-session-board-association
+                               (e-session-get store session-id))
+                              :routing-policy)
+                   expected))))
+
+(ert-deftest e-session-test-board-routing-policy-persistence-round-trips ()
+  "A policy is restored from JSONL and its index without compatibility shims."
+  (let ((directory (make-temp-file "e-session-routing-policy-" t)))
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "persistent-routing")
+               (policy (e-session-test--routing-policy "participant-persist")))
+          (e-session-create store :id session-id)
+          (e-session-declare-board-state
+           store session-id "chat:persistent-routing" "board-persist"
+           "participant" policy)
+          (e-session-flush-write-queue store)
+          (let ((restored
+                 (e-session-get
+                  (e-session-persistent-store-create directory) session-id)))
+            (should (equal (e-session-board-routing-policy restored) policy))
+            (should (equal (plist-get (e-session-board-association restored)
+                                      :association-role)
+                           "participant"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-board-routing-policy-invalid-is-atomic ()
+  "Partial, executable, and unknown policy values do not mutate association."
+  (let* ((store (e-session-store-create))
+         (session-id "routing-invalid"))
+    (e-session-create store :id session-id)
+    (e-session-declare-board-state
+     store session-id "chat:routing-invalid" "board-invalid" "owner")
+    (let ((before (copy-tree (e-session-board-association
+                              (e-session-get store session-id)))))
+      (dolist (policy
+               (list
+                '(:participant-id "p" :pickup-selector (:tags (private))
+                  :observer-selector (:tags (private)) :default-tags (private))
+                '(:participant-id "p" :pickup-selector
+                  (:tags (private) :predicate (lambda (_message) t))
+                  :observer-selector (:tags (private)) :default-tags (private)
+                  :default-to nil)
+                '(:participant-id "p" :pickup-selector (:tags (private))
+                  :observer-selector (:tags (private)) :default-tags (private)
+                  :default-to nil :unknown t)))
+        (should-error
+         (e-session-declare-board-state
+          store session-id "chat:routing-invalid" "board-invalid" "owner"
+          policy)))
+      (should (equal (e-session-board-association
+                      (e-session-get store session-id))
+                     before)))
+      ;; Names that happen to be callable remain data when they are used as
+      ;; declarative selector atoms; executable objects/forms do not.
+      (let ((data-symbol-policy
+             '(:participant-id "p"
+               :pickup-selector (:kind car :tags (car mapcar)
+                                 :attributes (:marker car))
+               :observer-selector (:kind mapcar :tags (length))
+               :default-tags (car mapcar)
+               :default-to nil)))
+        (should (e-session-board-routing-policy-valid-p data-symbol-policy)))
+      (let ((function-form-policy
+             '(:participant-id "p"
+               :pickup-selector (:kind input :tags (private)
+                                 :attributes (:marker (lambda () t)))
+               :observer-selector (:tags (private))
+               :default-tags (private)
+               :default-to nil)))
+        (should-not
+         (e-session-board-routing-policy-valid-p function-form-policy)))))
+
+(ert-deftest e-session-test-board-routing-policy-owner-legacy-remains-readable ()
+  "Role-bearing legacy owner state retains its established readable shape."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "legacy-owner")
+    (e-session-declare-board-state
+     store "legacy-owner" "chat:legacy-owner" "legacy-board" "owner")
+    (let ((association (e-session-board-association
+                        (e-session-get store "legacy-owner"))))
+      (should (equal association
+                     '(:board-id "legacy-board"
+                       :principal "chat:legacy-owner"
+                       :association-role "owner")))
+      (should-not (e-session-board-routing-policy
+                   (e-session-get store "legacy-owner"))))))
+
 (ert-deftest e-session-test-standalone-context-erasure-replay-is-rejected ()
   "Version-1 erasure is valid only inside the atomic curation package."
   (let* ((store (e-session-store-create))

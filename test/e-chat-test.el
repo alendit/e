@@ -714,6 +714,8 @@ Production presentation never performs this compatibility translation."
                          (list 'fixture session-id (cl-incf sequence)))
                     :source-turn-id turn-id
                     :created-at (plist-get message :created-at)
+                    :subject-participant-id
+                    (and (not user-p) participant-id)
                     :reply-to-message-ids (and reply-id (list reply-id))
                     :routing-state 'historical)
                 envelopes))))
@@ -6151,6 +6153,292 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (should (equal (e-chat--composer-text) "follow-up draft")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-sibling-terminal-events-do-not-settle-selected-turn ()
+  "Observed sibling output remains visible without settling selected work."
+  (let ((buffer (e-chat-test--buffer nil "chat-sibling-terminal")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--active-turn-running-p)
+                     (lambda () t)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "selected-turn"
+                            :created-at 0))
+            (let ((selected-status e-chat--status))
+              ;; Every board-backed sibling event carries an explicit nil
+              ;; ownership fact.  It may be rendered, but it cannot alter the
+              ;; selected turn's progress/status or composer settlement.
+              (e-chat--render-event
+               (list :type 'message-added :session-id e-chat-session-id
+                     :turn-id "sibling-turn" :created-at 1
+                     :board-seq 10 :selected-participant-p nil
+                     :payload
+                     '(:message (:id "sibling-output" :role assistant
+                                 :content "Sibling answer."
+                                 :terminal-output t
+                                 :selected-participant-p nil))))
+              (e-chat--render-event
+               (list :type 'turn-finished :session-id e-chat-session-id
+                     :turn-id "sibling-turn" :created-at 2
+                     :board-seq 11 :selected-participant-p nil))
+              (e-chat--render-event
+               (list :type 'turn-failed :session-id e-chat-session-id
+                     :turn-id "sibling-failed" :created-at 3
+                     :board-seq 12 :selected-participant-p nil
+                     :payload '(:error "sibling failure")))
+              (e-chat--render-event
+               (list :type 'turn-cancelled :session-id e-chat-session-id
+                     :turn-id "sibling-cancelled" :created-at 4
+                     :board-seq 13 :selected-participant-p nil))
+              (e-chat--render-event
+               (list :type 'backend-empty-output :session-id e-chat-session-id
+                     :turn-id "sibling-turn" :created-at 5
+                     :board-seq 14 :selected-participant-p nil))
+              (should (string-match-p "Sibling answer" (buffer-string)))
+              (should (equal e-chat--progress-turn-id "selected-turn"))
+              (should (equal e-chat--status selected-status))
+              (should (eq (e-chat--submit-intent nil) 'steer))))
+            (e-chat--render-event
+             (list :type 'turn-finished :session-id e-chat-session-id
+                   :turn-id "selected-turn" :created-at 6
+                   :selected-participant-p t))
+            (should-not e-chat--progress-turn-id)
+            (should (equal e-chat--status "done"))
+            (should (eq (e-chat--submit-intent nil) 'submit)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only ()
+  "Board routing and presentation ownership survive a provider-free restart."
+  (let ((directory (make-temp-file "e-chat-routing-composition-" t))
+        (e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        root-buffer)
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (harness (e-harness-create
+                         :sessions store :enabled-layer-ids nil))
+               (root-session
+                (e-chat-service-create-session
+                 :harness harness :id "routing-root"))
+               (root-id (plist-get root-session :id))
+               (root-binding (e-chat-service-binding harness root-id))
+               (runtime-board (e-chat-service-binding-board root-binding))
+               (source (e-board-registry-board-source-board runtime-board))
+               (root-participant
+                (e-board-registry-participant-id
+                 (e-board-runtime-attachment-participant
+                  (e-chat-service-binding-attachment root-binding))))
+               (update-session
+                (e-chat-service-create-participant
+                 runtime-board harness :id "routing-private"
+                 :pickup-selector '(:tags (private-update))
+                 :observer-selector :self
+                 :default-tags '(private-update)
+                 :default-to :self))
+               (update-id (plist-get update-session :id))
+               (update-binding (e-chat-service-binding harness update-id))
+               (update-participant
+                (plist-get
+                 (e-session-board-routing-policy update-session)
+                 :participant-id))
+               (route-input
+                (lambda (source runtime-board binding prompt tags to
+                         expected-participant)
+                  (let ((message-id
+                         (e-chat-service-post
+                          binding prompt :tags tags :to to)))
+                    (while (e-board-input-classifications source)
+                      (e-board-runtime--drain-input-routing
+                       runtime-board
+                       (lambda ()
+                         (e-board-drain-input-classifications source))))
+                    (let* ((message (e-board-message source message-id))
+                           (pickup-id
+                            (car (e-board-message-pickup-ids message)))
+                           (pickup (e-board-pickup source pickup-id)))
+                      (should (equal
+                               (e-board-message-matching-participant-ids message)
+                               (list expected-participant)))
+                      (should (equal (e-board-pickup-message-id pickup)
+                                     message-id))
+                      (should (equal
+                               (e-board-pickup-participant-id pickup)
+                               expected-participant))
+                      (should (eq (e-board-message-routing-state message)
+                                  'routed))
+                      message-id))))
+               (main-input
+                (funcall route-input source runtime-board root-binding
+                         "main input" '(main) nil root-participant))
+               (_private-input
+                (funcall route-input source runtime-board update-binding
+                         "private update" nil nil update-participant))
+               (root-policy (e-session-board-routing-policy root-session))
+               (private-policy
+                (e-session-board-routing-policy update-session))
+               (board-id (e-board-registry-board-id runtime-board)))
+          ;; The two bindings advertise different durable selectors, and the
+          ;; first routing pass proves recipient and delivery identity rather
+          ;; than merely counting publications.
+          (should (equal (plist-get root-policy :pickup-selector)
+                         '(:tags (main))))
+          (should (equal (plist-get private-policy :pickup-selector)
+                         '(:tags (private-update))))
+          (should (equal (plist-get private-policy :observer-selector)
+                         (list :subject-participant-id update-participant)))
+          (should (equal (plist-get private-policy :default-tags)
+                         '(private-update)))
+          (should (equal (plist-get private-policy :default-to)
+                         update-participant))
+          (e-session-flush-write-queue store)
+          ;; Recreate the board/service runtime while retaining only durable
+          ;; board-session state and its owner log.
+          (setq e-board--registry (make-hash-table :test 'equal)
+                e-board-registry--boards (make-hash-table :test 'equal)
+                e-board-registry--unsettled-pickup-count 0
+                e-board-registry--unsettled-effect-count 0
+                e-board-registry--unsettled-routing-count 0
+                e-board-registry--unsettled-generation 0
+                e-board-registry--board-index
+                (avl-tree-create (lambda (left right)
+                                   (string< (car left) (car right))))
+                e-chat-service--bindings
+                (make-hash-table :test 'eq :weakness 'key)
+                e-chat-service--board-bindings (make-hash-table :test 'equal)
+                e-chat-service--board-log-owners (make-hash-table :test 'equal)
+                e-board-runtime--attachments (make-hash-table :test 'equal)
+                e-board-runtime--session-attachments (make-hash-table :test 'equal)
+                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
+                e-board-runtime--invocations (make-hash-table :test 'equal)
+                e-board-runtime--pending-pickup-head nil
+                e-board-runtime--pending-pickup-tail nil
+                e-board-runtime--pending-pickup-set
+                (make-hash-table :test 'equal)
+                e-board-runtime--pickup-drain-scheduled nil)
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (restarted (e-harness-create
+                             :sessions loaded :enabled-layer-ids nil))
+                 (restored-root
+                  (e-chat-service-ensure-binding restarted root-id))
+                 (restored-private
+                  (e-chat-service-ensure-binding restarted update-id))
+                 (restored-board
+                  (e-chat-service-binding-board restored-root))
+                 (restored-source
+                  (e-board-registry-board-source-board restored-board))
+                 (restored-root-participant
+                  (e-board-registry-participant-id
+                   (e-board-runtime-attachment-participant
+                    (e-chat-service-binding-attachment restored-root))))
+                 (restored-private-participant
+                  (e-board-registry-participant-id
+                   (e-board-runtime-attachment-participant
+                    (e-chat-service-binding-attachment restored-private)))))
+            (should (equal (e-board-registry-board-id restored-board) board-id))
+            (should (equal restored-root-participant root-participant))
+            (should (equal restored-private-participant update-participant))
+            (let ((restarted-main-input
+                   (funcall route-input restored-source restored-board
+                            restored-root "main after restart" '(main) nil
+                            restored-root-participant)))
+              ;; Posting through the restored private binding with no routing
+              ;; overrides exercises its durable default tags and exact target.
+              (funcall route-input restored-source restored-board
+                       restored-private "private after restart" nil nil
+                       restored-private-participant)
+              (setq root-buffer
+                    (e-chat-open :harness restarted :session-id root-id))
+              (with-current-buffer root-buffer
+                (setq e-chat--assume-redraw-visible t)
+                (should
+                 (equal
+                  (e-board-observer-selector
+                   (e-chat-service-subscription-observer
+                    e-chat--event-subscription))
+                  '(:tags (main))))
+                (puthash root-id
+                         (list :id restarted-main-input :status 'running)
+                       (e-harness-active-turns restarted))
+                (e-chat--render-event
+                 (list :type 'turn-started :session-id root-id
+                       :turn-id restarted-main-input :created-at 10
+                       :selected-participant-p t))
+                (e-board-post-output
+                        restored-source :id "sibling-output"
+                        :author (format "participant:%s"
+                                        restored-private-participant)
+                        :subject-participant-id restored-private-participant
+                        :source-turn-id "sibling-turn" :tags '(main)
+                        :content "Observed sibling answer."
+                        :source-output-key '(routing sibling-output 1))
+                (e-board-post-activity
+                        restored-source :id "sibling-finished"
+                        :author (format "participant:%s"
+                                        restored-private-participant)
+                        :subject-participant-id restored-private-participant
+                        :source-turn-id "sibling-turn"
+                        :activity-kind 'turn-summary :tags '(main)
+                        :attributes '(:status finished)
+                        :source-activity-key '(routing sibling-summary 1))
+                ;; Exercise the real subscription observer and shell callback;
+                ;; do not bypass selection with a directly synthesized event.
+                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-ui-work-with-batch-drain
+                  (e-ui-work-drain-batch :buffer root-buffer))
+                (should (string-match-p "Observed sibling answer"
+                                        (buffer-string)))
+                (should (equal e-chat--progress-turn-id restarted-main-input))
+                (should-not
+                 (member e-chat--status '("done" "error" "cancelled")))
+                (should (eq (e-chat--submit-intent nil) 'steer))
+                (e-board-post-output
+                        restored-source :id "root-output"
+                        :author (format "participant:%s"
+                                        restored-root-participant)
+                        :subject-participant-id restored-root-participant
+                        :source-turn-id "root-turn" :tags '(main)
+                        :content "Selected root answer."
+                        :reply-to-message-ids (list restarted-main-input)
+                        :source-output-key '(routing root-output 1))
+                (e-board-post-activity
+                        restored-source :id "root-finished"
+                        :author (format "participant:%s"
+                                        restored-root-participant)
+                        :subject-participant-id restored-root-participant
+                        :source-turn-id "root-turn"
+                        :activity-kind 'turn-summary :tags '(main)
+                        :attributes '(:status finished)
+                        :reply-to-message-ids (list restarted-main-input)
+                        :source-activity-key '(routing root-summary 1))
+                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-ui-work-with-batch-drain
+                  (e-ui-work-drain-batch :buffer root-buffer))
+                (remhash root-id (e-harness-active-turns restarted))
+                (should-not e-chat--progress-turn-id)
+                (should (equal e-chat--status "done"))
+                (should (eq (e-chat--submit-intent nil) 'submit))))))
+      (when (buffer-live-p root-buffer)
+        (kill-buffer root-buffer))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-final-message-preserves-follow-up-draft ()
   "Assistant final output keeps already typed follow-up composer text."

@@ -622,17 +622,23 @@
       (delete-directory directory t))))
 
 (ert-deftest e-session-persistence-test-checkpoint-indexes-board-identity ()
-  "The writer checkpoints board identity without dormant-session policy rows."
+  "The writer checkpoints complete board routing policy through index/replay."
   (skip-unless (executable-find e-session-persistence-node-executable))
   (let* ((directory (make-temp-file "e-session-board-index-" t))
          (store (e-session-persistent-index-store-create directory))
-         (controller (e-session-persistence-enable store)))
+         (controller (e-session-persistence-enable store))
+         (routing-policy
+          '(:participant-id "participant-1"
+            :pickup-selector (:kind input :tags (private))
+            :observer-selector (:subject-participant-id "participant-1")
+            :default-tags (private)
+            :default-to "participant-1")))
     (unwind-protect
         (progn
           (e-session-create store :id "session-1")
           (e-session-persistence-declare-board-state
            controller "session-1" "principal:owner" "board-1"
-           "participant")
+           "participant" routing-policy)
           (e-session-persistence-test--await-durable store)
           (let* ((indexed-store
                   (e-session-persistent-index-store-create directory))
@@ -643,6 +649,9 @@
             (should (equal (plist-get (plist-get entry :board-state)
                                       :association-role)
                            "participant"))
+            (should (equal (plist-get (plist-get entry :board-state)
+                                      :routing-policy)
+                           routing-policy))
             (should-not (plist-member entry :state)))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (state (plist-get (e-session-get loaded "session-1")
@@ -650,7 +659,14 @@
             (should (equal state
                            '(:board-id "board-1"
                              :principal "principal:owner"
-                             :association-role "participant")))))
+                             :association-role "participant"
+                             :routing-policy
+                             (:participant-id "participant-1"
+                              :pickup-selector (:kind input :tags (private))
+                              :observer-selector
+                              (:subject-participant-id "participant-1")
+                              :default-tags (private)
+                              :default-to "participant-1"))))))
       (when-let ((process (e-session-persistence-process controller)))
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))

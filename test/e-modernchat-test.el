@@ -63,11 +63,29 @@
             :subject-participant-id participant-id :tags '(main)
             :content "Finished answer." :source-turn-id "source-turn"
             :source-output-key '(test terminal-output 1))))
+         (sibling-message
+          (e-board-publication-message
+           (e-board-post-output
+            board :id "sibling-answer"
+            :author "participant:other"
+            :subject-participant-id "other" :tags '(main)
+            :content "Sibling answer." :source-turn-id "sibling-turn"
+            :source-output-key '(test terminal-output 2))))
          (event (e-chat-service--message-event binding message))
-         (rendered-message (plist-get (plist-get event :payload) :message)))
+         (rendered-message (plist-get (plist-get event :payload) :message))
+         (sibling-event
+          (e-chat-service--message-event binding sibling-message))
+         (sibling-rendered-message
+          (plist-get (plist-get sibling-event :payload) :message)))
     (should (eq (plist-get event :type) 'message-added))
+    (should (eq (plist-get event :selected-participant-p) t))
     (should (eq (plist-get rendered-message :role) 'assistant))
-    (should (plist-get rendered-message :terminal-output))))
+    (should (eq (plist-get rendered-message :selected-participant-p) t))
+    (should (plist-get rendered-message :terminal-output))
+    (should (eq (plist-get sibling-event :selected-participant-p) nil))
+    (should (eq (plist-get sibling-rendered-message :selected-participant-p)
+                nil))
+    (should (plist-get sibling-rendered-message :terminal-output))))
 
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
@@ -318,7 +336,8 @@ messages so the transcript reads as one clean answer."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal)))
-    (let* ((board (e-board-registry-create :id "shared"))
+    (let* ((board (e-board-registry-create
+                   :id "shared" :principal "shared-principal"))
            (harness (e-harness-create :enabled-layer-ids nil)))
       (e-harness-create-session harness :id "pre-board")
       (should-error
@@ -396,6 +415,52 @@ messages so the transcript reads as one clean answer."
     (should (equal (plist-get
                     (e-chat-service-session harness "role-participant") :id)
                    "role-participant"))))
+
+(ert-deftest e-chat-service-test-restored-participant-without-policy-fails-closed ()
+  "A legacy participant association is not silently rebound as main chat."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
+         (session-id "legacy-participant"))
+    (e-session-create store :id session-id)
+    (e-session-declare-board-state
+     store session-id "board-owner" "legacy-board" "participant")
+    (should-error (e-chat-service-ensure-binding harness session-id)
+                  :type 'e-session-error)
+    (should-not (gethash "legacy-board" e-board-registry--boards))
+    (should (equal (e-session-board-association
+                    (e-session-get store session-id))
+                   '(:board-id "legacy-board"
+                     :principal "board-owner"
+                     :association-role "participant")))))
+
+(ert-deftest e-chat-service-test-restores-routing-policy-before-attachment ()
+  "Restoration passes the durable policy to the attachment boundary verbatim."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
+         (session-id "restored-routing")
+         (policy
+          '(:participant-id "ptc-restored"
+            :pickup-selector (:kind input :tags (private))
+            :observer-selector (:subject-participant-id "ptc-restored")
+            :default-tags (private)
+            :default-to "ptc-restored"))
+         captured)
+    (e-session-create store :id session-id)
+    (e-session-declare-board-state
+     store session-id "board-owner" "restored-board" "participant" policy)
+    (cl-letf (((symbol-function 'e-chat-service--install-participant-binding)
+               (lambda (_board _harness _session-id &rest arguments)
+                 (setq captured arguments)
+                 :captured)))
+      (should (eq (e-chat-service-ensure-binding harness session-id)
+                  :captured)))
+    (should (equal (plist-get captured :participant-id) "ptc-restored"))
+    (should (equal (plist-get captured :pickup-selector)
+                   '(:kind input :tags (private))))
+    (should (equal (plist-get captured :observer-selector)
+                   '(:subject-participant-id "ptc-restored")))
+    (should (equal (plist-get captured :default-tags) '(private)))
+    (should (equal (plist-get captured :default-to) "ptc-restored"))))
 
 (ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
   "A participant cannot become a root by reusing the owner's id in its store."

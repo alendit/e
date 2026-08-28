@@ -326,6 +326,20 @@ input publication and the acknowledgement fact."
                  (reply (e-board-message source reply-id)))
        (and (eq (e-board-message-kind reply) 'input) reply-id)))))
 
+(defun e-chat-service--binding-participant-id (binding)
+  "Return the participant identity attached to BINDING, or nil.
+The attachment is the process-local owner of a binding; board message subjects
+are compared with it rather than inferred from tags, authors, or causal ids."
+  (when-let* ((attachment (e-chat-service-binding-attachment binding))
+              (participant (e-board-runtime-attachment-participant attachment)))
+    (e-board-registry-participant-id participant)))
+
+(defun e-chat-service--selected-participant-p (binding subject-participant-id)
+  "Return non-nil when SUBJECT-PARTICIPANT-ID owns BINDING's attachment."
+  (and subject-participant-id
+       (equal subject-participant-id
+              (e-chat-service--binding-participant-id binding))))
+
 (defun e-chat-service--message-event (binding message)
   "Translate one immutable board MESSAGE for BINDING's existing reducers."
   (let* ((kind (e-board-message-kind message))
@@ -350,6 +364,9 @@ input publication and the acknowledgement fact."
                 :reference (copy-tree (e-board-message-reference message))
                 :subject-participant-id
                 subject-participant-id
+                :selected-participant-p
+                (e-chat-service--selected-participant-p
+                 binding subject-participant-id)
                 :source-turn-id source-turn-id
                 :caused-by-delivery-ids
                 (copy-tree (e-board-message-caused-by-delivery-ids message)))))
@@ -371,7 +388,9 @@ input publication and the acknowledgement fact."
                            :board-id (e-board-message-board-id message)
                            :board-seq (e-board-message-seq message)
                            :subject-participant-id
-                           (e-board-message-subject-participant-id message)))))))
+                           (e-board-message-subject-participant-id message)
+                           :selected-participant-p
+                           (plist-get identity :selected-participant-p)))))))
       ('output
        (append identity
                (list :type 'message-added :session-id session-id
@@ -393,7 +412,9 @@ input publication and the acknowledgement fact."
                                :board-id (e-board-message-board-id message)
                                :board-seq (e-board-message-seq message)
                                :subject-participant-id
-                               (e-board-message-subject-participant-id message))))))
+                               (e-board-message-subject-participant-id message)
+                               :selected-participant-p
+                               (plist-get identity :selected-participant-p))))))
       ('activity
        (let ((activity-kind (e-board-message-activity-kind message)))
          (when (and source-turn-id causal-input-id)
@@ -634,6 +655,52 @@ input publication and the acknowledgement fact."
                 (e-board-registry-board-source-board board)))
         (e-chat-service--schedule-observer-drain binding))))))
 
+(defconst e-chat-service--board-role-root "owner"
+  "Durable chat board role for the user-facing owning session.")
+
+(defconst e-chat-service--board-role-participant "participant"
+  "Durable chat board role for a private execution session.")
+
+(defun e-chat-service--routing-policy
+    (participant-id pickup-selector observer-selector default-tags default-to)
+  "Return one validated, detached routing policy for PARTICIPANT-ID.
+`:self' is a caller-facing admission shorthand only; durable state contains the
+resolved participant identity so restart never needs shell or caller policy."
+  (let* ((observer-selector
+          (if (eq observer-selector :self)
+              (list :subject-participant-id participant-id)
+            observer-selector))
+         (default-to (if (eq default-to :self) participant-id default-to))
+         (policy (list :participant-id (copy-sequence participant-id)
+                       :pickup-selector (copy-tree pickup-selector)
+                       :observer-selector (copy-tree observer-selector)
+                       :default-tags (copy-tree default-tags)
+                       :default-to (copy-tree default-to))))
+    (unless (e-session-board-routing-policy-valid-p policy)
+      (signal 'e-session-error (list "Invalid board routing policy" policy)))
+    policy))
+
+(defun e-chat-service--session-routing-policy (session)
+  "Return SESSION's durable routing policy or signal for unsafe restoration."
+  (let ((association (e-session-board-association session)))
+    (when (e-session-board-association-invalid-p association)
+      (signal 'e-session-error
+              (list "Malformed board association" (plist-get session :id))))
+    (cond
+     ((e-session-board-association-policy-present-p association)
+      (let ((policy (e-session-board-routing-policy session)))
+        (unless (e-session-board-routing-policy-valid-p policy)
+          (signal 'e-session-error
+                  (list "Malformed board routing policy"
+                        (plist-get session :id))))
+        policy))
+     ((equal (plist-get association :association-role)
+             e-chat-service--board-role-participant)
+      (signal 'e-session-error
+              (list "Participant board association has no routing policy"
+                    (plist-get session :id))))
+     (t nil))))
+
 (cl-defun e-chat-service--install-participant-binding
     (board harness session-id &key principal participant-id
            (pickup-selector '(:tags (main)))
@@ -717,6 +784,7 @@ input publication and the acknowledgement fact."
   (or (e-chat-service-binding harness session-id)
       (let* ((session (e-session-get (e-harness-sessions harness) session-id))
              (board-state (plist-get session :board-session-state))
+             (routing-policy (e-chat-service--session-routing-policy session))
              (principal (plist-get board-state :principal))
              (board-id (plist-get board-state :board-id))
              (_ (unless (and (stringp board-id) principal)
@@ -742,23 +810,25 @@ input publication and the acknowledgement fact."
                    (e-board-registry-board-source-board board) envelope)))
             (e-board-orchestration-mark-restored
              (e-board-registry-board-source-board board))))
-        (e-chat-service--install-participant-binding
-         board harness session-id :principal principal))))
-
-(defconst e-chat-service--board-role-root "owner"
-  "Durable chat board role for the user-facing owning session.")
-
-(defconst e-chat-service--board-role-participant "participant"
-  "Durable chat board role for a private execution session.")
+        (if routing-policy
+            (e-chat-service--install-participant-binding
+             board harness session-id :principal principal
+             :participant-id (plist-get routing-policy :participant-id)
+             :pickup-selector (plist-get routing-policy :pickup-selector)
+             :observer-selector (plist-get routing-policy :observer-selector)
+             :default-tags (plist-get routing-policy :default-tags)
+             :default-to (plist-get routing-policy :default-to))
+          (e-chat-service--install-participant-binding
+           board harness session-id :principal principal)))))
 
 (defun e-chat-service--persist-board-state
-    (store session-id principal board-id role)
-  "Persist SESSION-ID's BOARD-ID, PRINCIPAL, and chat ROLE through STORE."
+    (store session-id principal board-id role &optional routing-policy)
+  "Persist board identity, chat ROLE, and ROUTING-POLICY through STORE."
   (if-let ((controller (e-session-store-persistence-controller store)))
       (e-session-persistence-declare-board-state
-       controller session-id principal board-id role)
+       controller session-id principal board-id role routing-policy)
     (e-session-declare-board-state
-     store session-id principal board-id role)))
+     store session-id principal board-id role routing-policy)))
 
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
@@ -767,12 +837,21 @@ input publication and the acknowledgement fact."
          (session-id (plist-get session :id))
          (principal (format "chat:%s" session-id))
          (board (e-board-registry-create :principal principal))
-         (store (e-harness-sessions harness)))
+         (store (e-harness-sessions harness))
+         (participant-id (e-board-registry-allocate-participant-id board))
+         (routing-policy
+          (e-chat-service--routing-policy
+           participant-id '(:tags (main)) '(:tags (main)) '(main) nil)))
     (e-chat-service--persist-board-state
      store session-id principal (e-board-registry-board-id board)
-     e-chat-service--board-role-root)
+     e-chat-service--board-role-root routing-policy)
     (e-chat-service--install-participant-binding
-     board harness session-id :principal principal)))
+     board harness session-id :principal principal
+     :participant-id participant-id
+     :pickup-selector (plist-get routing-policy :pickup-selector)
+     :observer-selector (plist-get routing-policy :observer-selector)
+     :default-tags (plist-get routing-policy :default-tags)
+     :default-to (plist-get routing-policy :default-to))))
 
 (cl-defun e-chat-service-open-board
     (board harness session-id &key participant-id pickup-selector
@@ -780,18 +859,38 @@ input publication and the acknowledgement fact."
   "Open existing BOARD by attaching HARNESS SESSION-ID as one participant."
   (let* ((board (e-board-registry-get board))
          (session (e-session-get (e-harness-sessions harness) session-id))
-         (state (plist-get session :board-session-state)))
+         (state (plist-get session :board-session-state))
+         (routing-policy (e-chat-service--session-routing-policy session)))
     (unless (and (equal (plist-get state :board-id)
                         (e-board-registry-board-id board))
                  (equal (plist-get state :principal)
                         (e-board-registry-board-principal board)))
       (signal 'e-session-missing (list session-id 'board-session-state)))
-    (e-chat-service--install-participant-binding
-     board harness session-id
-     :participant-id participant-id
-     :pickup-selector (or pickup-selector '(:tags (main)))
-     :observer-selector (or observer-selector '(:tags (main)))
-     :default-tags (or default-tags '(main)) :default-to default-to)))
+    (unless routing-policy
+      (when participant-id
+        (setq routing-policy
+              (e-chat-service--routing-policy
+               participant-id (or pickup-selector '(:tags (main)))
+               (or observer-selector '(:tags (main)))
+               (or default-tags '(main)) default-to))
+        (e-chat-service--persist-board-state
+         (e-harness-sessions harness) session-id
+         (plist-get state :principal) (plist-get state :board-id)
+         (plist-get state :association-role) routing-policy)))
+    (if routing-policy
+        (e-chat-service--install-participant-binding
+         board harness session-id
+         :participant-id (plist-get routing-policy :participant-id)
+         :pickup-selector (plist-get routing-policy :pickup-selector)
+         :observer-selector (plist-get routing-policy :observer-selector)
+         :default-tags (plist-get routing-policy :default-tags)
+         :default-to (plist-get routing-policy :default-to))
+      (e-chat-service--install-participant-binding
+       board harness session-id
+       :participant-id participant-id
+       :pickup-selector (or pickup-selector '(:tags (main)))
+       :observer-selector (or observer-selector '(:tags (main)))
+       :default-tags (or default-tags '(main)) :default-to default-to))))
 
 (cl-defun e-chat-service-list-boards-page (&key after limit)
   "Return one bounded registry board page after AFTER.
@@ -802,28 +901,31 @@ LIMIT defaults to the registry's fixed page bound."
 
 (cl-defun e-chat-service-create-participant
     (board harness &key metadata id participant-id pickup-selector
-           observer-selector default-tags default-to)
+           observer-selector (default-tags '(main)) default-to)
   "Create and attach a private execution session as a participant on BOARD."
   (let* ((session (e-harness-create-session harness :id id :metadata metadata))
          (session-id (plist-get session :id))
-         (participant-id (or participant-id (format "participant:%s" session-id)))
          (board (e-board-registry-get board))
+         (participant-id (or participant-id
+                             (e-board-registry-allocate-participant-id board)))
          (principal (e-board-registry-board-principal board))
          (store (e-harness-sessions harness))
+         (routing-policy
+          (e-chat-service--routing-policy
+           participant-id (or pickup-selector '(:tags (main)))
+           (or observer-selector '(:tags (main)))
+           default-tags default-to))
          (_ (e-chat-service--persist-board-state
              store session-id principal (e-board-registry-board-id board)
-             e-chat-service--board-role-participant))
+             e-chat-service--board-role-participant routing-policy))
          (binding
           (e-chat-service--install-participant-binding
            board harness session-id
-           :participant-id participant-id
-           :pickup-selector (or pickup-selector '(:tags (main)))
-           :observer-selector
-           (if (eq observer-selector :self)
-               (list :subject-participant-id participant-id)
-             (or observer-selector '(:tags (main))))
-           :default-tags default-tags
-           :default-to (if (eq default-to :self) participant-id default-to))))
+           :participant-id (plist-get routing-policy :participant-id)
+           :pickup-selector (plist-get routing-policy :pickup-selector)
+           :observer-selector (plist-get routing-policy :observer-selector)
+           :default-tags (plist-get routing-policy :default-tags)
+           :default-to (plist-get routing-policy :default-to))))
     (ignore binding)
     session))
 
