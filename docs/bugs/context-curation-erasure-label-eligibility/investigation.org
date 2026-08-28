@@ -1,0 +1,95 @@
+#+title: Context Curation Erase Label Lacks Eligibility Investigation
+#+startup: overview
+
+* Conclusion
+
+This is a model-facing contract defect at the Feature 88 presentation boundary.
+Core correctly rejects erasure of a non-tool source, but the source marker does
+not tell the model which labels satisfy that restriction.  A valid decision is
+therefore avoidably fragile in a mixed-source frame, and an invalid selection
+fails the complete turn.
+
+Feature 90 receipt projection is not the owner of this defect.  The owning
+contract is Feature 88 Addendum 7 source presentation and carrier guidance.
+
+* Evidence
+
+** Source inspection
+
+=e-context-lifetime--curation-source-descriptors= retains trusted =:kind= and
+=:tool-call-id= fields.  However, its model-facing marker contains only the
+numeric label and estimated size:
+
+#+begin_example
+[ephemeral context source 2, ~N tokens]
+#+end_example
+
+=e-context-lifetime-curation-source-presentation= deliberately removes the
+trusted fields and returns only =:label=, =:value=, =:estimated-tokens=, and
+=:marker=.  Tool-result values also exclude their call identity.  The harness
+places each marker immediately before its source value, so the model can
+sometimes infer the source class from the following message envelope, but the
+marker itself does not expose the erasure-eligibility decision already known to
+core.
+
+The OpenAI =context-curate= tool description says to use =erase= for ordinary
+tool results.  Its schema accepts any positive integer in =erase= and cannot
+constrain the array to frame-local eligible labels.
+
+At response commit,
+=e-context-lifetime--curation-erasure-record= requires the selected descriptor
+to have =:kind= = "tool-result" and a non-empty =:tool-call-id=.  Otherwise it
+signals exactly:
+
+#+begin_example
+(curation-erasure :non-tool-source LABEL)
+#+end_example
+
+The reported =LABEL= was =2=, matching the screenshot.
+
+** Specification inspection
+
+Feature 88 Addendum 7 defines =erase= as valid only for an ordinary tool-result
+source.  It also requires the model to receive concise omission-versus-erasure
+guidance.  The strict runtime rejection is therefore correct; the missing
+model-visible eligibility is the inconsistent part of the contract.
+
+Relaxing =erase= to non-tool sources would expand the settled product semantics
+and is unnecessary: ordinary omission already removes the exact non-tool source
+without creating a Feature 90 receipt.  Converting the validation failure into
+silent omission would also hide an invalid semantic decision.
+
+** Live inspection
+
+=scripts/e-live-probe chat= completed successfully and reported that the
+currently selected =*doom*= dashboard buffer has no chat harness or session.
+The bounded probe therefore could not inspect the affected chat frame after the
+fact.  The user-provided live screenshot supplies the exact emitted error; no
+raw =emacsclient= evaluation or reload was performed.
+
+* Proposed correction
+
+Keep the trusted runtime validation and make its eligibility decision visible
+without exposing internal identities:
+
+1. Mark a source as =erase-eligible= only when its trusted descriptor is an
+   ordinary tool result with a usable tool-call identity.
+2. Include that positive eligibility marker in the detached model-facing source
+   marker; do not expose the tool-call ID or other provenance.
+3. Tell the =context-curate= carrier that only labels explicitly marked
+   =erase-eligible= may appear in =erase=.
+4. Bump the presentation and carrier revision identities because both the late
+   source marker and stable carrier guidance materially change.
+5. Add a mixed-frame regression with a non-tool source and an erasable tool
+   result.  Verify the model-facing distinction, successful erasure of the tool
+   label, and unchanged deterministic rejection of the non-tool label.
+
+* Execution gate
+
+The dev-work index currently states that Feature 91 is =Ready= and must become
+=Done= before implementation or review remediation continues in any other
+feature.  This correction belongs to Feature 88 Addendum 7, so source changes
+and test remediation are intentionally deferred at that gate.  Planning and
+this evidence record remain permitted.
+
+The running Emacs was left unchanged.

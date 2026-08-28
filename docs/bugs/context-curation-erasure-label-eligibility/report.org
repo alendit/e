@@ -1,0 +1,16 @@
+#+title: Context Curation Erase Label Lacks Eligibility
+#+startup: overview
+
+* Report
+
+The user reported that a chat turn failed after the model submitted an explicit
+context-erasure decision:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation-erasure,
+:non-tool-source, 2
+#+end_example
+
+The failure occurred while using the Feature 88 Addendum 7
+=context-curate= carrier.  The model selected ephemeral source label =2= for
+=erase=, but that label referred to a non-tool source.
